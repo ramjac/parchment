@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -211,6 +214,82 @@ func TestSaveRejectsSymlinkedArtifactDirectory(t *testing.T) {
 	}
 }
 
+func TestConcurrentSavesKeepArtifactFilesConsistent(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	firstWorkspace, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondWorkspace, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := note.NewService(firstWorkspace, 10).Create(ctx, "Initial", "Initial")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var saves sync.WaitGroup
+	errs := make(chan error, 20)
+	for i := range 20 {
+		saves.Add(1)
+		go func(i int) {
+			defer saves.Done()
+			updated := created
+			updated.Title = fmt.Sprintf("Note %d", i)
+			updated.Body = fmt.Sprintf("Note %d", i)
+			if i%2 == 0 {
+				errs <- firstWorkspace.Save(ctx, updated)
+			} else {
+				errs <- secondWorkspace.Save(ctx, updated)
+			}
+		}(i)
+	}
+	saves.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	loaded, err := firstWorkspace.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Title != loaded.Body || !strings.HasPrefix(loaded.Title, "Note ") {
+		t.Fatalf("concurrent save mixed artifact files: title=%q body=%q", loaded.Title, loaded.Body)
+	}
+}
+
+func TestArtifactLockWaitsAndHonorsCancellation(t *testing.T) {
+	artifactsDir := filepath.Join(t.TempDir(), ".parchment", "artifacts")
+	if err := os.MkdirAll(artifactsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const id = "0123456789abcdef0123456789abcdef"
+	unlock, err := lockArtifact(context.Background(), artifactsDir, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if _, err := lockArtifact(ctx, artifactsDir, id); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("contended lock error = %v, want context deadline exceeded", err)
+	}
+	if err := unlock(); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err = lockArtifact(context.Background(), artifactsDir, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unlock(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestOpenRecoversInterruptedArtifactReplacement(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -266,6 +345,36 @@ func TestOpenRecoversInterruptedArtifactReplacement(t *testing.T) {
 	}
 	if loaded.Title != created.Title || loaded.Body != created.Body {
 		t.Fatalf("recovered note = %+v, want original note", loaded)
+	}
+}
+
+func TestOpenFinishesInterruptedArtifactDeletion(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := note.NewService(ws, 10).Create(ctx, "Deleted", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactsDir := filepath.Join(root, ".parchment", "artifacts")
+	dir := filepath.Join(artifactsDir, created.ID)
+	tombstone := filepath.Join(artifactsDir, deletedArtifactPrefix+created.ID)
+	if err := os.Rename(dir, tombstone); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reopened.Get(ctx, created.ID); !errors.Is(err, note.ErrNotFound) {
+		t.Fatalf("deleted note lookup error = %v, want note not found", err)
+	}
+	if _, err := os.Lstat(tombstone); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deletion tombstone remains: %v", err)
 	}
 }
 

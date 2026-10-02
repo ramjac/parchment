@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,8 +17,9 @@ import (
 )
 
 const (
-	metadataName    = "metadata.json"
-	transactionName = ".parchment-transaction.json"
+	metadataName          = "metadata.json"
+	transactionName       = ".parchment-transaction.json"
+	deletedArtifactPrefix = ".parchment-deleted-"
 )
 
 var validID = regexp.MustCompile(`^[a-f0-9]{32}$`)
@@ -62,10 +64,20 @@ func Open(path string) (*Workspace, error) {
 		return nil, fmt.Errorf("list artifacts: %w", err)
 	}
 	for _, entry := range entries {
+		if id := strings.TrimPrefix(entry.Name(), deletedArtifactPrefix); id != entry.Name() && validID.MatchString(id) {
+			if err := withArtifactLock(context.Background(), artifacts, id, func() error {
+				return cleanupDeletedArtifact(artifacts, id)
+			}); err != nil {
+				return nil, fmt.Errorf("finish deletion of artifact %s: %w", id, err)
+			}
+			continue
+		}
 		if !entry.IsDir() || !validID.MatchString(entry.Name()) {
 			continue
 		}
-		if err := recoverArtifactFiles(filepath.Join(artifacts, entry.Name())); err != nil {
+		if err := withArtifactLock(context.Background(), artifacts, entry.Name(), func() error {
+			return recoverArtifactFiles(filepath.Join(artifacts, entry.Name()))
+		}); err != nil {
 			return nil, fmt.Errorf("recover artifact %s: %w", entry.Name(), err)
 		}
 	}
@@ -116,7 +128,7 @@ func (w *Workspace) List(ctx context.Context) ([]note.Note, error) {
 		if !entry.IsDir() || !validID.MatchString(entry.Name()) {
 			continue
 		}
-		n, err := w.readNote(entry.Name())
+		n, err := w.readNote(ctx, entry.Name())
 		if errors.Is(err, errNotNote) {
 			continue
 		}
@@ -139,7 +151,7 @@ func (w *Workspace) Get(ctx context.Context, id string) (note.Note, error) {
 	if !validID.MatchString(id) {
 		return note.Note{}, note.ErrNotFound
 	}
-	n, err := w.readNote(id)
+	n, err := w.readNote(ctx, id)
 	if errors.Is(err, errNotNote) {
 		return note.Note{}, note.ErrNotFound
 	}
@@ -170,43 +182,46 @@ func (w *Workspace) Save(ctx context.Context, n note.Note) error {
 	metadata := append(data, '\n')
 
 	dir := filepath.Join(w.root, ".parchment", "artifacts", n.ID)
-	created := false
-	if err := os.Mkdir(dir, 0o700); err != nil {
-		if !errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("create note storage: %w", err)
-		}
-		info, statErr := os.Lstat(dir)
-		if statErr != nil {
-			return fmt.Errorf("inspect note storage: %w", statErr)
-		}
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return errors.New("note storage path is not a directory")
-		}
-	} else {
-		created = true
-		if err := syncDirectory(filepath.Dir(dir)); err != nil {
-			_ = os.Remove(dir)
-			return fmt.Errorf("sync note storage parent: %w", err)
-		}
-	}
-	if err := recoverArtifactFiles(dir); err != nil {
-		if created {
-			_ = os.Remove(dir)
-		}
-		return fmt.Errorf("recover note files: %w", err)
-	}
-	if err := replaceArtifactFiles(ctx, dir, []stagedArtifactFile{
-		{name: "content.md", data: []byte(n.Body)},
-		{name: metadataName, data: metadata},
-	}); err != nil {
-		if created {
-			if cleanupErr := os.Remove(dir); cleanupErr != nil {
-				return fmt.Errorf("save note files: %w (also failed to remove new artifact directory: %v)", err, cleanupErr)
+	artifactsDir := filepath.Dir(dir)
+	return withArtifactLock(ctx, artifactsDir, n.ID, func() error {
+		created := false
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			if !errors.Is(err, os.ErrExist) {
+				return fmt.Errorf("create note storage: %w", err)
+			}
+			info, statErr := os.Lstat(dir)
+			if statErr != nil {
+				return fmt.Errorf("inspect note storage: %w", statErr)
+			}
+			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				return errors.New("note storage path is not a directory")
+			}
+		} else {
+			created = true
+			if err := syncDirectory(filepath.Dir(dir)); err != nil {
+				_ = os.Remove(dir)
+				return fmt.Errorf("sync note storage parent: %w", err)
 			}
 		}
-		return fmt.Errorf("save note files: %w", err)
-	}
-	return nil
+		if err := recoverArtifactFiles(dir); err != nil {
+			if created {
+				_ = os.Remove(dir)
+			}
+			return fmt.Errorf("recover note files: %w", err)
+		}
+		if err := replaceArtifactFiles(ctx, dir, []stagedArtifactFile{
+			{name: "content.md", data: []byte(n.Body)},
+			{name: metadataName, data: metadata},
+		}); err != nil {
+			if created {
+				if cleanupErr := os.Remove(dir); cleanupErr != nil {
+					return fmt.Errorf("save note files: %w (also failed to remove new artifact directory: %v)", err, cleanupErr)
+				}
+			}
+			return fmt.Errorf("save note files: %w", err)
+		}
+		return nil
+	})
 }
 
 type stagedArtifactFile struct {
@@ -428,23 +443,71 @@ func (w *Workspace) Delete(ctx context.Context, id string) error {
 	if !validID.MatchString(id) {
 		return note.ErrNotFound
 	}
-	dir := filepath.Join(w.root, ".parchment", "artifacts", id)
-	info, err := os.Lstat(dir)
+	artifactsDir := filepath.Join(w.root, ".parchment", "artifacts")
+	return withArtifactLock(ctx, artifactsDir, id, func() error {
+		dir := filepath.Join(artifactsDir, id)
+		if err := cleanupDeletedArtifact(artifactsDir, id); err != nil {
+			return fmt.Errorf("clean up prior deletion: %w", err)
+		}
+		info, err := os.Lstat(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			return note.ErrNotFound
+		} else if err != nil {
+			return fmt.Errorf("inspect note storage: %w", err)
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("note storage path is not a directory")
+		}
+		tombstone := filepath.Join(artifactsDir, deletedArtifactPrefix+id)
+		if err := os.Rename(dir, tombstone); err != nil {
+			return fmt.Errorf("stage note deletion: %w", err)
+		}
+		if err := syncDirectory(artifactsDir); err != nil {
+			restoreErr := os.Rename(tombstone, dir)
+			if restoreErr == nil {
+				restoreErr = syncDirectory(artifactsDir)
+			}
+			return errors.Join(fmt.Errorf("sync deleted note directory: %w", err), restoreErr)
+		}
+		if err := cleanupDeletedArtifact(artifactsDir, id); err != nil {
+			slog.Warn("note deletion committed but tombstone cleanup failed", "artifact_id", id, "error", err)
+		}
+		return nil
+	})
+}
+
+func cleanupDeletedArtifact(artifactsDir, id string) error {
+	tombstone := filepath.Join(artifactsDir, deletedArtifactPrefix+id)
+	info, err := os.Lstat(tombstone)
 	if errors.Is(err, os.ErrNotExist) {
-		return note.ErrNotFound
-	} else if err != nil {
-		return fmt.Errorf("inspect note storage: %w", err)
+		return nil
+	}
+	if err != nil {
+		return err
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return errors.New("note storage path is not a directory")
+		return errors.New("deleted artifact tombstone is not a directory")
 	}
-	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("delete note: %w", err)
+	if err := os.RemoveAll(tombstone); err != nil {
+		return fmt.Errorf("remove deleted artifact tombstone: %w", err)
+	}
+	if err := syncDirectory(artifactsDir); err != nil {
+		return fmt.Errorf("sync removed artifact tombstone: %w", err)
 	}
 	return nil
 }
 
-func (w *Workspace) readNote(id string) (note.Note, error) {
+func (w *Workspace) readNote(ctx context.Context, id string) (result note.Note, resultErr error) {
+	artifactsDir := filepath.Join(w.root, ".parchment", "artifacts")
+	resultErr = withArtifactLock(ctx, artifactsDir, id, func() error {
+		var err error
+		result, err = w.readNoteUnlocked(id)
+		return err
+	})
+	return result, resultErr
+}
+
+func (w *Workspace) readNoteUnlocked(id string) (note.Note, error) {
 	dir := filepath.Join(w.root, ".parchment", "artifacts", id)
 	info, err := os.Lstat(dir)
 	if err != nil {
@@ -506,6 +569,15 @@ func (w *Workspace) readNote(id string) (note.Note, error) {
 	a.CreatedAt = a.CreatedAt.UTC()
 	a.ModifiedAt = a.ModifiedAt.UTC()
 	return note.Note{Artifact: a, Body: string(content)}, nil
+}
+
+func withArtifactLock(ctx context.Context, artifactsDir, id string, operation func() error) error {
+	unlock, err := lockArtifact(ctx, artifactsDir, id)
+	if err != nil {
+		return err
+	}
+	operationErr := operation()
+	return errors.Join(operationErr, unlock())
 }
 
 func writeAtomic(path string, data []byte, mode os.FileMode) (err error) {
