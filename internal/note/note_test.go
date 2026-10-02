@@ -29,8 +29,11 @@ func TestNoteOperationsUndoAndRedo(t *testing.T) {
 	if err := service.AddTag(ctx, created.ID, "work"); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.RemoveTag(ctx, created.ID, "work"); err != nil {
+	if err := service.RemoveTag(ctx, created.ID, " work "); err != nil {
 		t.Fatal(err)
+	}
+	if err := service.RemoveTag(ctx, created.ID, "   "); err == nil {
+		t.Fatal("empty tag removal succeeded")
 	}
 	if _, err := service.Rename(ctx, created.ID, "Renamed"); err != nil {
 		t.Fatal(err)

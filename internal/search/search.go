@@ -14,6 +14,9 @@ func Notes(ctx context.Context, repository note.Repository, query string) ([]not
 	if err != nil {
 		return nil, err
 	}
+	sort.SliceStable(notes, func(i, j int) bool {
+		return notes[i].ModifiedAt.After(notes[j].ModifiedAt)
+	})
 	query = strings.ToLower(strings.TrimSpace(query))
 	if query == "" {
 		return notes, nil
@@ -37,8 +40,5 @@ func Notes(ctx context.Context, repository note.Repository, query string) ([]not
 			results = append(results, n)
 		}
 	}
-	sort.SliceStable(results, func(i, j int) bool {
-		return results[i].ModifiedAt.After(results[j].ModifiedAt)
-	})
 	return results, nil
 }

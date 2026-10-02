@@ -72,14 +72,19 @@ func TestPendingSaveCancellationKeepsEditorOpen(t *testing.T) {
 
 	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	model = *updated.(*Model)
-	if command != nil || model.mode != editing || model.pending {
+	if command != nil || model.mode != editing || !model.pending {
 		t.Fatalf("cancelled save state: command=%v mode=%d pending=%t", command, model.mode, model.pending)
 	}
 	if err := opCtx.Err(); err == nil {
 		t.Fatal("Ctrl+C did not cancel the pending save")
 	}
-	if !strings.Contains(model.status, "unsaved changes remain") {
+	if !strings.Contains(model.status, "Cancelling save") {
 		t.Fatalf("status = %q", model.status)
+	}
+	updated, _ = model.Update(noteSavedMsg{err: context.Canceled})
+	model = *updated.(*Model)
+	if model.pending || model.mode != editing || !strings.Contains(model.status, "unsaved changes remain") {
+		t.Fatalf("completed cancelled save state: pending=%t mode=%d status=%q", model.pending, model.mode, model.status)
 	}
 }
 
@@ -151,6 +156,7 @@ func TestReloadPreservesActiveSearch(t *testing.T) {
 	model := NewModel(service, ws, "test", ws.Root())
 	model.searchActive = true
 	model.searchQuery = "needle"
+	model.errMessage = "previous failure"
 
 	result := model.loadNotes()().(searchCompletedMsg)
 	if result.err != nil {
@@ -158,5 +164,10 @@ func TestReloadPreservesActiveSearch(t *testing.T) {
 	}
 	if len(result.notes) != 1 || result.notes[0].Title != "Matching note" {
 		t.Fatalf("reload results = %+v, want active query preserved", result.notes)
+	}
+	updated, _ := model.Update(searchCompletedMsg{notes: result.notes})
+	model = *updated.(*Model)
+	if model.errMessage != "" {
+		t.Fatalf("successful reload retained old error: %q", model.errMessage)
 	}
 }

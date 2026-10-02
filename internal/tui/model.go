@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -74,6 +75,8 @@ type Model struct {
 	searchActive        bool
 	theme               theme
 	pending             bool
+	canUndo             bool
+	canRedo             bool
 	status              string
 	errMessage          string
 	newOperationContext func() (context.Context, context.CancelFunc)
@@ -98,7 +101,7 @@ func NewModel(service *note.Service, repository note.Repository, workspaceName, 
 	return Model{
 		service: service, repository: repository, workspaceName: workspaceName, workspacePath: workspacePath,
 		titleInput: title, bodyInput: body, searchInput: searchField, preview: preview,
-		pending: true,
+		pending: true, canUndo: service.CanUndo(), canRedo: service.CanRedo(),
 		newOperationContext: func() (context.Context, context.CancelFunc) {
 			return context.WithCancel(context.Background())
 		},
@@ -127,29 +130,40 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.errMessage = msg.err.Error()
 		} else {
+			m.errMessage = ""
 			m.notes = msg.notes
 			m.clampSelection()
 			m.resizePreview()
 		}
+		m.refreshHistoryAvailability()
 	case searchCompletedMsg:
 		m.finishOperation()
 		m.pending = false
 		if msg.err != nil {
 			m.errMessage = msg.err.Error()
 		} else {
+			m.errMessage = ""
 			m.notes = msg.notes
 			m.selected = 0
 			m.clampSelection()
 			m.resizePreview()
 			m.status = fmt.Sprintf("Search: %s  ·  Esc clears (%d results)", m.searchQuery, len(m.notes))
 		}
+		m.refreshHistoryAvailability()
 	case noteSavedMsg:
 		m.finishOperation()
 		if msg.err != nil {
 			m.pending = false
-			m.errMessage = msg.err.Error()
+			if errors.Is(msg.err, context.Canceled) {
+				m.errMessage = ""
+				m.status = "Save cancelled; unsaved changes remain"
+			} else {
+				m.errMessage = msg.err.Error()
+			}
+			m.refreshHistoryAvailability()
 			return m, nil
 		}
+		m.refreshHistoryAvailability()
 		m.mode = browsing
 		m.creating = false
 		m.errMessage = ""
@@ -161,8 +175,10 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.pending = false
 			m.confirmDelete = false
 			m.errMessage = msg.err.Error()
+			m.refreshHistoryAvailability()
 			return m, nil
 		}
+		m.refreshHistoryAvailability()
 		m.confirmDelete = false
 		m.errMessage = ""
 		m.status = "Note deleted"
@@ -172,8 +188,10 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.pending = false
 			m.errMessage = msg.err.Error()
+			m.refreshHistoryAvailability()
 			return m, nil
 		}
+		m.refreshHistoryAvailability()
 		m.errMessage = ""
 		m.status = msg.description
 		return m, m.loadNotes()
@@ -191,8 +209,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.cancelOperation()
 			}
 			if m.mode == editing {
-				m.pending = false
-				m.status = "Save cancelled; unsaved changes remain"
+				m.status = "Cancelling save…"
 				return m, nil
 			}
 			return m, tea.Quit
@@ -472,12 +489,13 @@ func (m Model) viewWide(header string) string {
 
 func (m Model) statusLine() string {
 	undo, redo := "undo unavailable", "redo unavailable"
-	if m.service.CanUndo() {
+	if m.canUndo {
 		undo = "undo available"
 	}
-	if m.service.CanRedo() {
+	if m.canRedo {
 		redo = "redo available"
 	}
+
 	message := m.status
 	if m.errMessage != "" {
 		message = "Error: " + m.errMessage
@@ -489,6 +507,11 @@ func (m Model) statusLine() string {
 		message = "Ready"
 	}
 	return "\n" + message + "  ·  " + undo + "  ·  " + redo
+}
+
+func (m *Model) refreshHistoryAvailability() {
+	m.canUndo = m.service.CanUndo()
+	m.canRedo = m.service.CanRedo()
 }
 
 func (m *Model) startCreate() {
@@ -537,6 +560,7 @@ func (m *Model) deleteNote(id string) tea.Cmd {
 }
 
 func (m *Model) loadNotes() tea.Cmd {
+	m.pending = true
 	if m.searchActive {
 		return m.searchNotes(m.searchQuery)
 	}
@@ -548,6 +572,7 @@ func (m *Model) loadNotes() tea.Cmd {
 }
 
 func (m *Model) searchNotes(query string) tea.Cmd {
+	m.pending = true
 	ctx := m.startOperation()
 	return func() tea.Msg {
 		notes, err := search.Notes(ctx, m.repository, query)

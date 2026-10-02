@@ -9,12 +9,16 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/note"
 )
 
-const metadataName = "metadata.json"
+const (
+	metadataName    = "metadata.json"
+	transactionName = ".parchment-transaction.json"
+)
 
 var validID = regexp.MustCompile(`^[a-f0-9]{32}$`)
 var errNotNote = errors.New("artifact is not a note")
@@ -31,7 +35,7 @@ func Init(path string) error {
 	if err != nil {
 		return fmt.Errorf("resolve workspace path: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Join(abs, ".parchment", "artifacts"), 0o700); err != nil {
+	if err := ensureWorkspaceDirectories(abs); err != nil {
 		return fmt.Errorf("create workspace: %w", err)
 	}
 	configPath := filepath.Join(abs, "parchment.toml")
@@ -49,8 +53,21 @@ func Open(path string) (*Workspace, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace path: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Join(abs, ".parchment", "artifacts"), 0o700); err != nil {
+	if err := ensureWorkspaceDirectories(abs); err != nil {
 		return nil, fmt.Errorf("open workspace: %w", err)
+	}
+	artifacts := filepath.Join(abs, ".parchment", "artifacts")
+	entries, err := os.ReadDir(artifacts)
+	if err != nil {
+		return nil, fmt.Errorf("list artifacts: %w", err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !validID.MatchString(entry.Name()) {
+			continue
+		}
+		if err := recoverArtifactFiles(filepath.Join(artifacts, entry.Name())); err != nil {
+			return nil, fmt.Errorf("recover artifact %s: %w", entry.Name(), err)
+		}
 	}
 	return &Workspace{root: abs}, nil
 }
@@ -158,15 +175,25 @@ func (w *Workspace) Save(ctx context.Context, n note.Note) error {
 		if !errors.Is(err, os.ErrExist) {
 			return fmt.Errorf("create note storage: %w", err)
 		}
-		info, statErr := os.Stat(dir)
+		info, statErr := os.Lstat(dir)
 		if statErr != nil {
 			return fmt.Errorf("inspect note storage: %w", statErr)
 		}
-		if !info.IsDir() {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return errors.New("note storage path is not a directory")
 		}
 	} else {
 		created = true
+		if err := syncDirectory(filepath.Dir(dir)); err != nil {
+			_ = os.Remove(dir)
+			return fmt.Errorf("sync note storage parent: %w", err)
+		}
+	}
+	if err := recoverArtifactFiles(dir); err != nil {
+		if created {
+			_ = os.Remove(dir)
+		}
+		return fmt.Errorf("recover note files: %w", err)
 	}
 	if err := replaceArtifactFiles(ctx, dir, []stagedArtifactFile{
 		{name: "content.md", data: []byte(n.Body)},
@@ -186,12 +213,22 @@ type stagedArtifactFile struct {
 	name string
 	data []byte
 	temp string
-	old  string
-	had  bool
-	done bool
+}
+
+type transactionFile struct {
+	Name   string `json:"name"`
+	Backup string `json:"backup,omitempty"`
+	HadOld bool   `json:"had_old"`
 }
 
 func replaceArtifactFiles(ctx context.Context, dir string, files []stagedArtifactFile) error {
+	transaction := make([]transactionFile, len(files))
+	journalCreated := false
+	defer func() {
+		if !journalCreated {
+			cleanupTransactionBackups(dir, transaction)
+		}
+	}()
 	for i := range files {
 		if err := ctx.Err(); err != nil {
 			cleanupStagedFiles(files)
@@ -203,74 +240,52 @@ func replaceArtifactFiles(ctx context.Context, dir string, files []stagedArtifac
 			return err
 		}
 		files[i].temp = temp
-	}
-
-	for i := range files {
-		if err := ctx.Err(); err != nil {
-			restoreErr := restoreArtifactFiles(dir, files[:i])
-			cleanupStagedFiles(files)
-			return errors.Join(err, restoreErr)
-		}
 		target := filepath.Join(dir, files[i].name)
 		info, err := os.Lstat(target)
 		if errors.Is(err, os.ErrNotExist) {
+			transaction[i] = transactionFile{Name: files[i].name}
 			continue
 		}
 		if err != nil {
-			restoreErr := restoreArtifactFiles(dir, files[:i])
 			cleanupStagedFiles(files)
-			return errors.Join(err, restoreErr)
+			return err
 		}
 		if !info.Mode().IsRegular() {
-			restoreErr := restoreArtifactFiles(dir, files[:i])
 			cleanupStagedFiles(files)
-			return errors.Join(fmt.Errorf("%s is not a regular file", files[i].name), restoreErr)
+			return fmt.Errorf("%s is not a regular file", files[i].name)
 		}
-		backup, err := os.CreateTemp(dir, ".parchment-backup-*")
+		old, err := os.ReadFile(target)
 		if err != nil {
-			restoreErr := restoreArtifactFiles(dir, files[:i])
 			cleanupStagedFiles(files)
-			return errors.Join(err, restoreErr)
+			return err
 		}
-		files[i].old = backup.Name()
-		if err := backup.Close(); err != nil {
-			restoreErr := restoreArtifactFiles(dir, files[:i])
+		backup, err := stageFile(dir, old)
+		if err != nil {
 			cleanupStagedFiles(files)
-			return errors.Join(err, restoreErr)
+			return err
 		}
-		if err := os.Remove(files[i].old); err != nil {
-			restoreErr := restoreArtifactFiles(dir, files[:i])
-			cleanupStagedFiles(files)
-			return errors.Join(err, restoreErr)
-		}
-		if err := os.Rename(target, files[i].old); err != nil {
-			files[i].old = ""
-			restoreErr := restoreArtifactFiles(dir, files[:i])
-			cleanupStagedFiles(files)
-			return errors.Join(err, restoreErr)
-		}
-		files[i].had = true
+		transaction[i] = transactionFile{Name: files[i].name, Backup: filepath.Base(backup), HadOld: true}
 	}
 
-	rollback := func(cause error) error {
-		var removeErr error
-		for i := len(files) - 1; i >= 0; i-- {
-			if files[i].done {
-				if err := os.Remove(filepath.Join(dir, files[i].name)); err != nil && !errors.Is(err, os.ErrNotExist) {
-					removeErr = errors.Join(removeErr, err)
-				}
-				files[i].done = false
-			}
-		}
-		restoreErr := restoreArtifactFiles(dir, files)
+	journal, err := json.Marshal(transaction)
+	if err != nil {
 		cleanupStagedFiles(files)
-		rollbackErr := errors.Join(removeErr, restoreErr)
-		if rollbackErr != nil {
-			return fmt.Errorf("%w (also failed to restore previous note files: %v)", cause, rollbackErr)
-		}
-		return cause
+		return fmt.Errorf("encode note transaction: %w", err)
 	}
-
+	if err := writeAtomic(filepath.Join(dir, transactionName), append(journal, '\n'), 0o600); err != nil {
+		cleanupStagedFiles(files)
+		if _, statErr := os.Lstat(filepath.Join(dir, transactionName)); statErr == nil {
+			journalCreated = true
+			return errors.Join(fmt.Errorf("write note transaction: %w", err), recoverArtifactFiles(dir))
+		}
+		return fmt.Errorf("write note transaction: %w", err)
+	}
+	journalCreated = true
+	rollback := func(cause error) error {
+		recoveryErr := recoverArtifactFiles(dir)
+		cleanupStagedFiles(files)
+		return errors.Join(cause, recoveryErr)
+	}
 	for i := range files {
 		if err := ctx.Err(); err != nil {
 			return rollback(err)
@@ -279,33 +294,86 @@ func replaceArtifactFiles(ctx context.Context, dir string, files []stagedArtifac
 			return rollback(err)
 		}
 		files[i].temp = ""
-		files[i].done = true
 	}
-	for i := range files {
-		if files[i].old != "" {
-			_ = os.Remove(files[i].old)
-			files[i].old = ""
+	if err := syncDirectory(dir); err != nil {
+		return rollback(err)
+	}
+	if err := os.Remove(filepath.Join(dir, transactionName)); err != nil {
+		return rollback(err)
+	}
+	if err := syncDirectory(dir); err != nil {
+		if journalErr := writeAtomic(filepath.Join(dir, transactionName), append(journal, '\n'), 0o600); journalErr != nil {
+			return fmt.Errorf("sync note transaction removal: %w (also failed to restore transaction journal: %v)", err, journalErr)
 		}
+		return rollback(err)
 	}
+	cleanupTransactionBackups(dir, transaction)
 	cleanupStagedFiles(files)
 	return nil
 }
 
-func restoreArtifactFiles(dir string, files []stagedArtifactFile) error {
-	var restoreErr error
-	for i := len(files) - 1; i >= 0; i-- {
-		if !files[i].had {
-			continue
+func recoverArtifactFiles(dir string) error {
+	path := filepath.Join(dir, transactionName)
+	if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() {
+		return errors.New("note transaction journal is not a regular file")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var transaction []transactionFile
+	if err := json.Unmarshal(data, &transaction); err != nil {
+		return fmt.Errorf("decode note transaction: %w", err)
+	}
+	for _, file := range transaction {
+		if file.Name != "content.md" && file.Name != metadataName {
+			return fmt.Errorf("invalid note transaction target %q", file.Name)
 		}
-		target := filepath.Join(dir, files[i].name)
-		if err := os.Rename(files[i].old, target); err != nil {
-			restoreErr = errors.Join(restoreErr, fmt.Errorf("restore %s: %w", files[i].name, err))
-		} else {
-			files[i].old = ""
-			files[i].had = false
+		target := filepath.Join(dir, file.Name)
+		if file.HadOld {
+			if filepath.Base(file.Backup) != file.Backup || !strings.HasPrefix(file.Backup, ".parchment-stage-") {
+				return fmt.Errorf("invalid note transaction backup %q", file.Backup)
+			}
+			backupPath := filepath.Join(dir, file.Backup)
+			backupInfo, err := os.Lstat(backupPath)
+			if err != nil {
+				return fmt.Errorf("inspect backup for %s: %w", file.Name, err)
+			}
+			if !backupInfo.Mode().IsRegular() {
+				return fmt.Errorf("backup for %s is not a regular file", file.Name)
+			}
+			old, err := os.ReadFile(backupPath)
+			if err != nil {
+				return fmt.Errorf("read backup for %s: %w", file.Name, err)
+			}
+			restore, err := stageFile(dir, old)
+			if err != nil {
+				return fmt.Errorf("stage restore for %s: %w", file.Name, err)
+			}
+			if err := os.Rename(restore, target); err != nil {
+				_ = os.Remove(restore)
+				return fmt.Errorf("restore %s: %w", file.Name, err)
+			}
+		} else if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove uncommitted %s: %w", file.Name, err)
 		}
 	}
-	return restoreErr
+	if err := syncDirectory(dir); err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := syncDirectory(dir); err != nil {
+		return err
+	}
+	cleanupTransactionBackups(dir, transaction)
+	return nil
 }
 
 func stageFile(dir string, data []byte) (string, error) {
@@ -341,8 +409,13 @@ func cleanupStagedFiles(files []stagedArtifactFile) {
 		if file.temp != "" {
 			_ = os.Remove(file.temp)
 		}
-		if file.old != "" && !file.had {
-			_ = os.Remove(file.old)
+	}
+}
+
+func cleanupTransactionBackups(dir string, transaction []transactionFile) {
+	for _, file := range transaction {
+		if file.Backup != "" {
+			_ = os.Remove(filepath.Join(dir, file.Backup))
 		}
 	}
 }
@@ -356,10 +429,14 @@ func (w *Workspace) Delete(ctx context.Context, id string) error {
 		return note.ErrNotFound
 	}
 	dir := filepath.Join(w.root, ".parchment", "artifacts", id)
-	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+	info, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
 		return note.ErrNotFound
 	} else if err != nil {
 		return fmt.Errorf("inspect note storage: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("note storage path is not a directory")
 	}
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("delete note: %w", err)
@@ -369,7 +446,28 @@ func (w *Workspace) Delete(ctx context.Context, id string) error {
 
 func (w *Workspace) readNote(id string) (note.Note, error) {
 	dir := filepath.Join(w.root, ".parchment", "artifacts", id)
-	metadata, err := os.Open(filepath.Join(dir, metadataName))
+	info, err := os.Lstat(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return note.Note{}, fmt.Errorf("%w: %s", errNoMetadata, id)
+		}
+		return note.Note{}, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return note.Note{}, errors.New("note storage path is not a directory")
+	}
+	metadataPath := filepath.Join(dir, metadataName)
+	metadataInfo, err := os.Lstat(metadataPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return note.Note{}, fmt.Errorf("%w: %s", errNoMetadata, id)
+		}
+		return note.Note{}, err
+	}
+	if !metadataInfo.Mode().IsRegular() {
+		return note.Note{}, fmt.Errorf("note metadata %s is not a regular file", id)
+	}
+	metadata, err := os.Open(metadataPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return note.Note{}, fmt.Errorf("%w: %s", errNoMetadata, id)
@@ -393,7 +491,15 @@ func (w *Workspace) readNote(id string) (note.Note, error) {
 	if a.Location != filepath.ToSlash(filepath.Join(".parchment", "artifacts", id, "content.md")) {
 		return note.Note{}, fmt.Errorf("invalid note metadata for %s", id)
 	}
-	content, err := os.ReadFile(filepath.Join(dir, "content.md"))
+	contentPath := filepath.Join(dir, "content.md")
+	contentInfo, err := os.Lstat(contentPath)
+	if err != nil {
+		return note.Note{}, fmt.Errorf("inspect note content %s: %w", id, err)
+	}
+	if !contentInfo.Mode().IsRegular() {
+		return note.Note{}, fmt.Errorf("note content %s is not a regular file", id)
+	}
+	content, err := os.ReadFile(contentPath)
 	if err != nil {
 		return note.Note{}, fmt.Errorf("read note content %s: %w", id, err)
 	}
@@ -432,6 +538,40 @@ func writeAtomic(path string, data []byte, mode os.FileMode) (err error) {
 	}
 	if err := os.Rename(temp, path); err != nil {
 		return err
+	}
+	return syncDirectory(dir)
+}
+
+func syncDirectory(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+func ensureWorkspaceDirectories(root string) error {
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return err
+	}
+	private := filepath.Join(root, ".parchment")
+	if err := ensureDirectory(private); err != nil {
+		return err
+	}
+	return ensureDirectory(filepath.Join(private, "artifacts"))
+}
+
+func ensureDirectory(path string) error {
+	if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is not a directory", path)
 	}
 	return nil
 }

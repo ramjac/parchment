@@ -37,4 +37,11 @@ func TestNotesOrdersResultsByModificationTime(t *testing.T) {
 	if len(results) != 2 || results[0].ID != first.ID || results[1].ID != second.ID {
 		t.Fatalf("search result order = %+v, want most recently modified first", results)
 	}
+	all, err := search.Notes(ctx, ws, " \t ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 || all[0].ID != first.ID || all[1].ID != second.ID {
+		t.Fatalf("blank-query order = %+v, want most recently modified first", all)
+	}
 }

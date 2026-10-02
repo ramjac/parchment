@@ -144,6 +144,10 @@ func (s *Service) AddTag(ctx context.Context, id, tag string) error {
 
 // RemoveTag removes a tag from a note.
 func (s *Service) RemoveTag(ctx context.Context, id, tag string) error {
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
+		return errors.New("tag is required")
+	}
 	before, err := s.repository.Get(ctx, id)
 	if err != nil {
 		return err

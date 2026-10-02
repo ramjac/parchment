@@ -173,6 +173,102 @@ func TestFailedCreateDoesNotLeaveArtifactDirectory(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsSymlinkedWorkspaceStorage(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".parchment"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, ".parchment", "artifacts")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(root); err == nil {
+		t.Fatal("opened workspace with symlinked artifact storage")
+	}
+}
+
+func TestSaveRejectsSymlinkedArtifactDirectory(t *testing.T) {
+	root := t.TempDir()
+	ws, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := "0123456789abcdef0123456789abcdef"
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, ".parchment", "artifacts", id)); err != nil {
+		t.Fatal(err)
+	}
+	n := note.Note{Artifact: artifact.Artifact{
+		ID: id, Kind: artifact.NoteKind, Title: "Symlink",
+		CreatedAt: time.Now().UTC(), ModifiedAt: time.Now().UTC(), FormatVersion: artifact.FormatVersion,
+		Location: ".parchment/artifacts/" + id + "/content.md",
+	}}
+	if err := ws.Save(context.Background(), n); err == nil {
+		t.Fatal("saved note through symlinked artifact directory")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "content.md")); !os.IsNotExist(err) {
+		t.Fatalf("save wrote outside workspace: %v", err)
+	}
+}
+
+func TestOpenRecoversInterruptedArtifactReplacement(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := note.NewService(ws, 10).Create(ctx, "Original", "original body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, ".parchment", "artifacts", created.ID)
+	metadata, err := os.ReadFile(filepath.Join(dir, metadataName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, "content.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadataBackup, err := stageFile(dir, metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contentBackup, err := stageFile(dir, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction, err := json.Marshal([]transactionFile{
+		{Name: "content.md", Backup: filepath.Base(contentBackup), HadOld: true},
+		{Name: metadataName, Backup: filepath.Base(metadataBackup), HadOld: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "content.md"), []byte("partial replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, metadataName), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, transactionName), transaction, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := reopened.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Title != created.Title || loaded.Body != created.Body {
+		t.Fatalf("recovered note = %+v, want original note", loaded)
+	}
+}
+
 func TestNoteRepositoryIgnoresOtherArtifactKinds(t *testing.T) {
 	ws, err := Open(t.TempDir())
 	if err != nil {
