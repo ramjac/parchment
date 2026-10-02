@@ -10,7 +10,11 @@ import (
 
 func TestNoteOperationsUndoAndRedo(t *testing.T) {
 	ctx := context.Background()
-	ws, err := workspace.Open(t.TempDir())
+	root := t.TempDir()
+	if err := workspace.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := workspace.Open(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +97,11 @@ func TestNoteOperationsUndoAndRedo(t *testing.T) {
 
 func TestNoOpUpdateDoesNotCreateHistory(t *testing.T) {
 	ctx := context.Background()
-	ws, err := workspace.Open(t.TempDir())
+	root := t.TempDir()
+	if err := workspace.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := workspace.Open(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,5 +124,36 @@ func TestNoOpUpdateDoesNotCreateHistory(t *testing.T) {
 	}
 	if _, err := service.Get(ctx, n.ID); err == nil {
 		t.Fatal("no-op update unexpectedly replaced creation history")
+	}
+}
+
+func TestUndoRedoTreatsEmptySlicesAsEquivalentToNil(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	if err := workspace.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := workspace.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := note.NewService(ws, 10)
+	created, err := service.Create(ctx, "Title", "before")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.Tags = []string{}
+	created.Links = []string{}
+	if err := ws.Save(ctx, created); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Update(ctx, created.ID, "Title", "after"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Undo(ctx); err != nil {
+		t.Fatalf("undo failed after persistence normalized empty slices: %v", err)
+	}
+	if _, err := service.Redo(ctx); err != nil {
+		t.Fatalf("redo failed after persistence normalized empty slices: %v", err)
 	}
 }

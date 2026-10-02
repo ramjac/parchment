@@ -17,6 +17,18 @@ import (
 	"example.com/parchment/internal/search"
 )
 
+func openTestWorkspace(t *testing.T, root string) *Workspace {
+	t.Helper()
+	if err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ws
+}
+
 func TestWorkspacePersistsInspectableNotesAndStableIDs(t *testing.T) {
 	root := t.TempDir()
 	if err := Init(root); err != nil {
@@ -76,21 +88,25 @@ func TestWorkspacePersistsInspectableNotesAndStableIDs(t *testing.T) {
 }
 
 func TestWorkspaceRejectsUnsafeIDsAndLocations(t *testing.T) {
-	ws, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := openTestWorkspace(t, t.TempDir())
 	if _, err := ws.Get(context.Background(), "../outside"); err != note.ErrNotFound {
 		t.Fatalf("unsafe ID error = %v, want ErrNotFound", err)
 	}
 }
 
+func TestOpenRejectsUninitializedDirectoryWithoutCreatingStorage(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Open(root); err == nil {
+		t.Fatal("opened an uninitialized directory")
+	}
+	if _, err := os.Lstat(filepath.Join(root, ".parchment")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Open created workspace storage: %v", err)
+	}
+}
+
 func TestWorkspaceReportsMissingNoteContent(t *testing.T) {
 	root := t.TempDir()
-	ws, err := Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := openTestWorkspace(t, root)
 	created, err := note.NewService(ws, 10).Create(context.Background(), "Incomplete note", "body")
 	if err != nil {
 		t.Fatal(err)
@@ -110,10 +126,7 @@ func TestWorkspaceReportsMissingNoteContent(t *testing.T) {
 func TestSaveFailurePreservesExistingArtifact(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
-	ws, err := Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := openTestWorkspace(t, root)
 	service := note.NewService(ws, 10)
 	created, err := service.Create(ctx, "Existing", "original body")
 	if err != nil {
@@ -157,10 +170,7 @@ func TestSaveFailurePreservesExistingArtifact(t *testing.T) {
 
 func TestFailedCreateDoesNotLeaveArtifactDirectory(t *testing.T) {
 	root := t.TempDir()
-	ws, err := Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := openTestWorkspace(t, root)
 	n := note.Note{Artifact: artifact.Artifact{
 		ID: "0123456789abcdef0123456789abcdef", Kind: artifact.NoteKind, Title: "Invalid time",
 		CreatedAt:  time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC),
@@ -178,7 +188,10 @@ func TestFailedCreateDoesNotLeaveArtifactDirectory(t *testing.T) {
 
 func TestOpenRejectsSymlinkedWorkspaceStorage(t *testing.T) {
 	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, ".parchment"), 0o700); err != nil {
+	if err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, ".parchment", "artifacts")); err != nil {
 		t.Fatal(err)
 	}
 	outside := t.TempDir()
@@ -192,10 +205,7 @@ func TestOpenRejectsSymlinkedWorkspaceStorage(t *testing.T) {
 
 func TestSaveRejectsSymlinkedArtifactDirectory(t *testing.T) {
 	root := t.TempDir()
-	ws, err := Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := openTestWorkspace(t, root)
 	id := "0123456789abcdef0123456789abcdef"
 	outside := t.TempDir()
 	if err := os.Symlink(outside, filepath.Join(root, ".parchment", "artifacts", id)); err != nil {
@@ -217,10 +227,7 @@ func TestSaveRejectsSymlinkedArtifactDirectory(t *testing.T) {
 func TestConcurrentSavesKeepArtifactFilesConsistent(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
-	firstWorkspace, err := Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	firstWorkspace := openTestWorkspace(t, root)
 	secondWorkspace, err := Open(root)
 	if err != nil {
 		t.Fatal(err)
@@ -293,10 +300,7 @@ func TestArtifactLockWaitsAndHonorsCancellation(t *testing.T) {
 func TestOpenRecoversInterruptedArtifactReplacement(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
-	ws, err := Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := openTestWorkspace(t, root)
 	created, err := note.NewService(ws, 10).Create(ctx, "Original", "original body")
 	if err != nil {
 		t.Fatal(err)
@@ -351,10 +355,7 @@ func TestOpenRecoversInterruptedArtifactReplacement(t *testing.T) {
 func TestOpenFinishesInterruptedArtifactDeletion(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
-	ws, err := Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := openTestWorkspace(t, root)
 	created, err := note.NewService(ws, 10).Create(ctx, "Deleted", "body")
 	if err != nil {
 		t.Fatal(err)
@@ -379,10 +380,7 @@ func TestOpenFinishesInterruptedArtifactDeletion(t *testing.T) {
 }
 
 func TestNoteRepositoryIgnoresOtherArtifactKinds(t *testing.T) {
-	ws, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := openTestWorkspace(t, t.TempDir())
 	id := "0123456789abcdef0123456789abcdef"
 	dir := filepath.Join(ws.Root(), ".parchment", "artifacts", id)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

@@ -229,7 +229,7 @@ func (o noteOperation) transition(ctx context.Context, expected, target *Note) e
 		if err != nil {
 			return err
 		}
-		if !reflect.DeepEqual(current, *expected) {
+		if !notesEqual(current, *expected) {
 			return fmt.Errorf("note %s changed since this operation was recorded", id)
 		}
 	}
@@ -237,6 +237,22 @@ func (o noteOperation) transition(ctx context.Context, expected, target *Note) e
 		return o.repository.Delete(ctx, id)
 	}
 	return o.repository.Save(ctx, *target)
+}
+
+func notesEqual(left, right Note) bool {
+	if len(left.Tags) == 0 {
+		left.Tags = nil
+	}
+	if len(right.Tags) == 0 {
+		right.Tags = nil
+	}
+	if len(left.Links) == 0 {
+		left.Links = nil
+	}
+	if len(right.Links) == 0 {
+		right.Links = nil
+	}
+	return reflect.DeepEqual(left, right)
 }
 
 // ErrNotFound indicates that the requested note does not exist.

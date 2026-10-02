@@ -49,16 +49,31 @@ func Init(path string) error {
 	return writeAtomic(configPath, []byte("version = 1\n\n[workspace]\ndiscovery = \"parents\"\n"), 0o600)
 }
 
-// Open returns a workspace, creating its private artifact storage directory.
+// Open returns an initialized workspace without creating workspace directories.
 func Open(path string) (*Workspace, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace path: %w", err)
 	}
-	if err := ensureWorkspaceDirectories(abs); err != nil {
+	configPath := filepath.Join(abs, "parchment.toml")
+	configInfo, err := os.Lstat(configPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("open workspace: %s is not initialized (run `parchment init`)", abs)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect workspace config: %w", err)
+	}
+	if !configInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("open workspace: %s is not a regular file", configPath)
+	}
+	private := filepath.Join(abs, ".parchment")
+	if err := ensureExistingDirectory(private); err != nil {
 		return nil, fmt.Errorf("open workspace: %w", err)
 	}
-	artifacts := filepath.Join(abs, ".parchment", "artifacts")
+	artifacts := filepath.Join(private, "artifacts")
+	if err := ensureExistingDirectory(artifacts); err != nil {
+		return nil, fmt.Errorf("open workspace: %w", err)
+	}
 	entries, err := os.ReadDir(artifacts)
 	if err != nil {
 		return nil, fmt.Errorf("list artifacts: %w", err)
@@ -638,6 +653,17 @@ func ensureDirectory(path string) error {
 	if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 		return err
 	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is not a directory", path)
+	}
+	return nil
+}
+
+func ensureExistingDirectory(path string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return err

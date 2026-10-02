@@ -12,7 +12,11 @@ import (
 
 func TestNotesOrdersResultsByModificationTime(t *testing.T) {
 	ctx := context.Background()
-	ws, err := workspace.Open(t.TempDir())
+	root := t.TempDir()
+	if err := workspace.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := workspace.Open(root)
 	if err != nil {
 		t.Fatal(err)
 	}

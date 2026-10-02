@@ -14,18 +14,20 @@ import (
 )
 
 func TestResponsiveMinimumAndHelpModal(t *testing.T) {
-	ws, err := workspace.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := openTestWorkspace(t)
 	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 30, Height: 8})
-	model = *updated.(*Model)
-	updated, _ = model.Update(notesLoadedMsg{})
 	model = *updated.(*Model)
 	if view := model.View(); !strings.Contains(view, "too small") || !strings.Contains(view, "press q") {
 		t.Fatalf("small terminal view = %q", view)
 	}
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	model = *updated.(*Model)
+	if command == nil {
+		t.Fatal("q in minimum-size mode did not request quit")
+	}
+	updated, _ = model.Update(notesLoadedMsg{})
+	model = *updated.(*Model)
 	updated, _ = model.Update(tea.WindowSizeMsg{Width: 90, Height: 24})
 	model = *updated.(*Model)
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
@@ -37,11 +39,21 @@ func TestResponsiveMinimumAndHelpModal(t *testing.T) {
 	}
 }
 
-func TestPendingCtrlCCancelsOperationAndQuits(t *testing.T) {
-	ws, err := workspace.Open(t.TempDir())
+func openTestWorkspace(t *testing.T) *workspace.Workspace {
+	t.Helper()
+	root := t.TempDir()
+	if err := workspace.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := workspace.Open(root)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return ws
+}
+
+func TestPendingCtrlCCancelsOperationAndQuits(t *testing.T) {
+	ws := openTestWorkspace(t)
 	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())
 	opCtx, cancel := context.WithCancel(context.Background())
 	model.pending = true
@@ -60,10 +72,7 @@ func TestPendingCtrlCCancelsOperationAndQuits(t *testing.T) {
 }
 
 func TestPendingSaveCancellationKeepsEditorOpen(t *testing.T) {
-	ws, err := workspace.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := openTestWorkspace(t)
 	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())
 	opCtx, cancel := context.WithCancel(context.Background())
 	model.mode = editing
@@ -89,10 +98,7 @@ func TestPendingSaveCancellationKeepsEditorOpen(t *testing.T) {
 }
 
 func TestNarrowListKeepsSelectedNoteVisible(t *testing.T) {
-	ws, err := workspace.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := openTestWorkspace(t)
 	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())
 	model.width, model.height, model.selected = 50, 12, 15
 	for i := range 30 {
@@ -110,10 +116,7 @@ func TestNarrowListKeepsSelectedNoteVisible(t *testing.T) {
 }
 
 func TestPreviewCanScrollInWideLayout(t *testing.T) {
-	ws, err := workspace.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := openTestWorkspace(t)
 	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 16})
 	model = *updated.(*Model)
@@ -142,10 +145,7 @@ func TestPreviewCanScrollInWideLayout(t *testing.T) {
 
 func TestReloadPreservesActiveSearch(t *testing.T) {
 	ctx := context.Background()
-	ws, err := workspace.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := openTestWorkspace(t)
 	service := note.NewService(ws, 10)
 	if _, err := service.Create(ctx, "Matching note", "needle"); err != nil {
 		t.Fatal(err)
