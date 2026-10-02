@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"sort"
 	"strings"
 
 	"example.com/parchment/internal/note"
@@ -36,5 +37,8 @@ func Notes(ctx context.Context, repository note.Repository, query string) ([]not
 			results = append(results, n)
 		}
 	}
+	sort.SliceStable(results, func(i, j int) bool {
+		return results[i].ModifiedAt.After(results[j].ModifiedAt)
+	})
 	return results, nil
 }

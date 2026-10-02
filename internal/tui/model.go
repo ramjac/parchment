@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -50,30 +51,33 @@ type theme struct {
 
 // Model coordinates the interactive notes screen and owns only UI state.
 type Model struct {
-	service       *note.Service
-	repository    note.Repository
-	workspaceName string
-	workspacePath string
-	notes         []note.Note
-	selected      int
-	width         int
-	height        int
-	mode          mode
-	showPreview   bool
-	confirmDelete bool
-	editingID     string
-	creating      bool
-	originalTitle string
-	originalBody  string
-	titleInput    textinput.Model
-	bodyInput     textarea.Model
-	searchInput   textinput.Model
-	searchQuery   string
-	searchActive  bool
-	theme         theme
-	pending       bool
-	status        string
-	errMessage    string
+	service             *note.Service
+	repository          note.Repository
+	workspaceName       string
+	workspacePath       string
+	notes               []note.Note
+	selected            int
+	width               int
+	height              int
+	mode                mode
+	showPreview         bool
+	confirmDelete       bool
+	editingID           string
+	creating            bool
+	originalTitle       string
+	originalBody        string
+	titleInput          textinput.Model
+	bodyInput           textarea.Model
+	searchInput         textinput.Model
+	preview             viewport.Model
+	searchQuery         string
+	searchActive        bool
+	theme               theme
+	pending             bool
+	status              string
+	errMessage          string
+	newOperationContext func() (context.Context, context.CancelFunc)
+	cancelOperation     context.CancelFunc
 }
 
 // NewModel creates the interactive notes model for a workspace.
@@ -90,10 +94,14 @@ func NewModel(service *note.Service, repository note.Repository, workspaceName, 
 	searchField.Prompt = "/ "
 	searchField.Placeholder = "Search notes"
 	searchField.CharLimit = 200
+	preview := viewport.New(0, 0)
 	return Model{
 		service: service, repository: repository, workspaceName: workspaceName, workspacePath: workspacePath,
-		titleInput: title, bodyInput: body, searchInput: searchField,
+		titleInput: title, bodyInput: body, searchInput: searchField, preview: preview,
 		pending: true,
+		newOperationContext: func() (context.Context, context.CancelFunc) {
+			return context.WithCancel(context.Background())
+		},
 		theme: theme{
 			primary: lipgloss.AdaptiveColor{Light: "#4b3f72", Dark: "#c4b5fd"},
 			border:  lipgloss.AdaptiveColor{Light: "#b8b4c7", Dark: "#55516a"},
@@ -102,25 +110,29 @@ func NewModel(service *note.Service, repository note.Repository, workspaceName, 
 }
 
 // Init loads the initial note list.
-func (m Model) Init() tea.Cmd {
+func (m *Model) Init() tea.Cmd {
 	return m.loadNotes()
 }
 
 // Update applies a terminal message to the notes screen.
-func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.resizeEditors()
+		m.resizePreview()
 	case notesLoadedMsg:
+		m.finishOperation()
 		m.pending = false
 		if msg.err != nil {
 			m.errMessage = msg.err.Error()
 		} else {
 			m.notes = msg.notes
 			m.clampSelection()
+			m.resizePreview()
 		}
 	case searchCompletedMsg:
+		m.finishOperation()
 		m.pending = false
 		if msg.err != nil {
 			m.errMessage = msg.err.Error()
@@ -128,9 +140,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.notes = msg.notes
 			m.selected = 0
 			m.clampSelection()
+			m.resizePreview()
 			m.status = fmt.Sprintf("Search: %s  ·  Esc clears (%d results)", m.searchQuery, len(m.notes))
 		}
 	case noteSavedMsg:
+		m.finishOperation()
 		if msg.err != nil {
 			m.pending = false
 			m.errMessage = msg.err.Error()
@@ -142,6 +156,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "Saved “" + msg.note.Title + "”"
 		return m, m.loadNotes()
 	case noteDeletedMsg:
+		m.finishOperation()
 		if msg.err != nil {
 			m.pending = false
 			m.confirmDelete = false
@@ -153,6 +168,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "Note deleted"
 		return m, m.loadNotes()
 	case historyChangedMsg:
+		m.finishOperation()
 		if msg.err != nil {
 			m.pending = false
 			m.errMessage = msg.err.Error()
@@ -167,9 +183,20 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	if m.pending {
+		if key == "ctrl+c" || key == "q" {
+			if m.cancelOperation != nil {
+				m.cancelOperation()
+			}
+			if m.mode == editing {
+				m.pending = false
+				m.status = "Save cancelled; unsaved changes remain"
+				return m, nil
+			}
+			return m, tea.Quit
+		}
 		m.status = "Please wait for the current operation to finish"
 		return m, nil
 	}
@@ -251,6 +278,13 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.searchInput, _ = m.searchInput.Update(msg)
 		return m, nil
 	}
+	if m.showPreview {
+		switch key {
+		case "up", "k", "down", "j", "pgup", "pgdown", "home", "end":
+			m.preview, _ = m.preview.Update(msg)
+			return m, nil
+		}
+	}
 	if key == "q" {
 		return m, tea.Quit
 	}
@@ -285,30 +319,36 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "u", "ctrl+z":
 		m.pending = true
+		ctx := m.startOperation()
 		return m, func() tea.Msg {
-			description, err := m.service.Undo(context.Background())
+			description, err := m.service.Undo(ctx)
 			return historyChangedMsg{description: "Undid " + strings.ToLower(description), err: err}
 		}
 	case "ctrl+r":
 		m.pending = true
+		ctx := m.startOperation()
 		return m, func() tea.Msg {
-			description, err := m.service.Redo(context.Background())
+			description, err := m.service.Redo(ctx)
 			return historyChangedMsg{description: "Redid " + strings.ToLower(description), err: err}
 		}
 	case "up", "k":
-		if m.selected > 0 {
+		if !m.showPreview && m.selected > 0 {
 			m.selected--
+			m.resizePreview()
 		}
 	case "down", "j":
-		if m.selected+1 < len(m.notes) {
+		if !m.showPreview && m.selected+1 < len(m.notes) {
 			m.selected++
+			m.resizePreview()
 		}
 	case "enter":
 		m.showPreview = true
+		m.resizePreview()
 	case "left":
 		m.showPreview = false
 	case "right":
 		m.showPreview = true
+		m.resizePreview()
 	}
 	return m, nil
 }
@@ -326,8 +366,7 @@ func (m Model) View() string {
 			state += " • unsaved"
 		}
 		content := header + "\n" + state + "  ·  Tab switches fields  ·  Ctrl+S saves  ·  Esc cancels\n\n" +
-			m.titleInput.View() + "\n\n" + m.bodyInput.View() + "\n\n" +
-			"Ctrl+Z undo  Ctrl+R redo"
+			m.titleInput.View() + "\n\n" + m.bodyInput.View()
 		return content + m.statusLine()
 	}
 	if m.mode == searching {
@@ -337,7 +376,8 @@ func (m Model) View() string {
 		return header + "\n\n" +
 			"Notes\n\n" +
 			"↑/↓ or j/k  Select note\n" +
-			"Enter        Open preview\n" +
+			"Enter        Open/focus preview\n" +
+			"↑/↓          Scroll preview when focused\n" +
 			"n            New note\n" +
 			"e            Edit note\n" +
 			"d            Delete note (confirmation required)\n" +
@@ -353,16 +393,27 @@ func (m Model) View() string {
 
 func (m Model) viewNarrow(header string) string {
 	if m.showPreview {
-		if n, ok := m.selectedNote(); ok {
-			return header + "\n" + preview(n) + "\n\nEsc returns to notes" + m.statusLine()
+		if _, ok := m.selectedNote(); ok {
+			return header + "\n" + m.preview.View() + "\n\n↑/↓ scroll  ·  Esc returns to notes" + m.statusLine()
 		}
 	}
 	var b strings.Builder
-	b.WriteString(header + "\n\nNotes\n")
+	visible := m.height - 8
+	if visible < 1 {
+		visible = 1
+	}
+	start := visibleWindowStart(len(m.notes), m.selected, visible)
+	end := min(start+visible, len(m.notes))
+	if len(m.notes) == 0 {
+		b.WriteString(header + "\n\nNotes\n")
+	} else {
+		b.WriteString(fmt.Sprintf("%s\n\nNotes (%d-%d of %d)\n", header, start+1, end, len(m.notes)))
+	}
 	if len(m.notes) == 0 {
 		b.WriteString("  No notes yet. Press n to create one.\n")
 	}
-	for i, n := range m.notes {
+	for i, n := range m.notes[start:end] {
+		i += start
 		marker := "  "
 		if i == m.selected {
 			marker = "> "
@@ -382,12 +433,19 @@ func (m Model) viewWide(header string) string {
 	if previewWidth < 30 {
 		previewWidth = 30
 	}
+	visible := (m.height - 9) / 2
+	if visible < 1 {
+		visible = 1
+	}
+	start := visibleWindowStart(len(m.notes), m.selected, visible)
+	end := min(start+visible, len(m.notes))
 	var list strings.Builder
 	list.WriteString("Notes\n")
 	if len(m.notes) == 0 {
 		list.WriteString("\nNo notes yet.\nPress n to create one.")
 	}
-	for i, n := range m.notes {
+	for i, n := range m.notes[start:end] {
+		i += start
 		marker := "  "
 		if i == m.selected {
 			marker = "› "
@@ -400,12 +458,15 @@ func (m Model) viewWide(header string) string {
 	listPane := lipgloss.NewStyle().Width(listWidth).Height(m.height-5).Border(lipgloss.NormalBorder()).
 		BorderForeground(m.theme.border).Padding(0, 1).Render(list.String())
 	content := "Select a note to preview its Markdown."
-	if n, ok := m.selectedNote(); ok {
-		content = preview(n)
+	if _, ok := m.selectedNote(); ok {
+		content = m.preview.View()
 	}
 	previewPane := lipgloss.NewStyle().Width(previewWidth).Height(m.height-5).Border(lipgloss.NormalBorder()).
 		BorderForeground(m.theme.border).Padding(0, 1).Render(content)
-	footer := "↑/↓ select  Enter preview  n new  e edit  d delete  / search  ? help  q quit"
+	footer := "↑/↓ select  Enter focus preview  n new  e edit  d delete  / search  ? help  q quit"
+	if m.showPreview {
+		footer = "↑/↓ scroll preview  Esc return to list  n new  e edit  d delete  / search  ? help  q quit"
+	}
 	return header + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, listPane, previewPane) + "\n" + footer + m.statusLine()
 }
 
@@ -453,38 +514,93 @@ func (m *Model) startEdit(n note.Note) {
 	m.status, m.errMessage = "", ""
 }
 
-func (m Model) saveNote() tea.Cmd {
+func (m *Model) saveNote() tea.Cmd {
 	title, body, id, create := strings.TrimSpace(m.titleInput.Value()), m.bodyInput.Value(), m.editingID, m.creating
+	ctx := m.startOperation()
 	return func() tea.Msg {
 		var n note.Note
 		var err error
 		if create {
-			n, err = m.service.Create(context.Background(), title, body)
+			n, err = m.service.Create(ctx, title, body)
 		} else {
-			n, err = m.service.Update(context.Background(), id, title, body)
+			n, err = m.service.Update(ctx, id, title, body)
 		}
 		return noteSavedMsg{note: n, err: err}
 	}
 }
 
-func (m Model) deleteNote(id string) tea.Cmd {
+func (m *Model) deleteNote(id string) tea.Cmd {
+	ctx := m.startOperation()
 	return func() tea.Msg {
-		return noteDeletedMsg{err: m.service.Delete(context.Background(), id)}
+		return noteDeletedMsg{err: m.service.Delete(ctx, id)}
 	}
 }
 
-func (m Model) loadNotes() tea.Cmd {
+func (m *Model) loadNotes() tea.Cmd {
+	if m.searchActive {
+		return m.searchNotes(m.searchQuery)
+	}
+	ctx := m.startOperation()
 	return func() tea.Msg {
-		notes, err := m.service.List(context.Background())
+		notes, err := m.service.List(ctx)
 		return notesLoadedMsg{notes: notes, err: err}
 	}
 }
 
-func (m Model) searchNotes(query string) tea.Cmd {
+func (m *Model) searchNotes(query string) tea.Cmd {
+	ctx := m.startOperation()
 	return func() tea.Msg {
-		notes, err := search.Notes(context.Background(), m.repository, query)
+		notes, err := search.Notes(ctx, m.repository, query)
 		return searchCompletedMsg{notes: notes, err: err}
 	}
+}
+
+func (m *Model) startOperation() context.Context {
+	ctx, cancel := m.newOperationContext()
+	m.cancelOperation = cancel
+	return ctx
+}
+
+func (m *Model) finishOperation() {
+	if m.cancelOperation != nil {
+		m.cancelOperation()
+		m.cancelOperation = nil
+	}
+}
+
+func (m *Model) resizePreview() {
+	width, height := m.width-4, m.height-7
+	if m.width >= 80 {
+		width = m.width - m.width/3 - 8
+		height = m.height - 9
+	}
+	if width < 1 {
+		width = 1
+	}
+	if height < 1 {
+		height = 1
+	}
+	m.preview.Width, m.preview.Height = width, height
+	if n, ok := m.selectedNote(); ok {
+		m.preview.SetContent(preview(n))
+	} else {
+		m.preview.SetContent("")
+	}
+	m.preview.GotoTop()
+}
+
+func visibleWindowStart(total, selected, visible int) int {
+	if total <= visible {
+		return 0
+	}
+	start := selected - visible/2
+	if start < 0 {
+		return 0
+	}
+	if end := start + visible; end > total {
+		return total - visible
+	}
+	return start
 }
 
 func (m *Model) resizeEditors() {
@@ -533,7 +649,11 @@ func preview(n note.Note) string {
 
 // Run starts the full-screen terminal application.
 func Run(ctx context.Context, service *note.Service, repository note.Repository, workspaceName, workspacePath string) error {
-	program := tea.NewProgram(NewModel(service, repository, workspaceName, workspacePath), tea.WithAltScreen(), tea.WithContext(ctx))
+	model := NewModel(service, repository, workspaceName, workspacePath)
+	model.newOperationContext = func() (context.Context, context.CancelFunc) {
+		return context.WithCancel(ctx)
+	}
+	program := tea.NewProgram(&model, tea.WithAltScreen(), tea.WithContext(ctx))
 	_, err := program.Run()
 	return err
 }

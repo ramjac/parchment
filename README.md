@@ -72,29 +72,56 @@ format = "text"
 destination = ""
 ```
 
-The effective setting precedence is command-specific flags, persistent CLI
-flags, environment variables, workspace TOML, user TOML, then built-in
-defaults. Workspace selection accepts `--workspace` and `PARCHMENT_WORKSPACE`.
-The currently supported environment overrides are `PARCHMENT_EDITOR`,
-`PARCHMENT_THEME`, `PARCHMENT_UNDO_LIMIT`, `PARCHMENT_LOG_LEVEL`, and
-`PARCHMENT_LOG_FORMAT`.
+Settings are merged from built-in defaults, user TOML, workspace TOML, then
+environment overrides. Workspace selection accepts `--workspace` and
+`PARCHMENT_WORKSPACE`; user configuration can also set a workspace path and
+parent-directory discovery behavior. `PARCHMENT_UNDO_LIMIT` overrides the
+configured undo limit. Editor, theme, logging, and backup settings are parsed
+but are not yet connected to runtime behavior, and their environment
+variables currently have no effect.
 
 ## Interactive notes
 
 Run `parchment tui` from a terminal. Use arrow keys or `j`/`k` to select notes,
 `Enter` to preview, `n` to create, `e` to edit, `/` to search, `Enter` to submit
 a search, `Esc` to clear search, `d` to request deletion, `?` for help, and `q`
-to quit. `Ctrl+C` exits from the notes screen; in the editor it cancels a clean
-edit but will not abandon unsaved changes. In the editor, `Tab` switches between
-title and Markdown, `Ctrl+S` saves, and `Esc` discards the edit. Deletion
-requires an explicit `y`; `n` or `Esc` cancels. `u`/`Ctrl+Z` undo and `Ctrl+R`
-redo. Narrow and very small terminals use a simpler layout and a minimum-size
-message; quit remains available. Preview is plain text rather than rendered
-Markdown, so canonical Markdown is never confused with presentation.
+to quit. `Ctrl+C` exits from the notes screen and cancels an operation in
+progress; in the editor it cancels a clean edit but will not abandon unsaved
+changes. Ctrl+C during a save cancels that operation and leaves the editor open.
+In the editor, `Tab` switches between title and Markdown, `Ctrl+S` saves, and
+`Esc` discards the edit. Deletion requires an explicit `y`; `n` or `Esc`
+cancels. In the notes list, `u`/`Ctrl+Z` undo and `Ctrl+R` redo; these bindings
+do not apply while editing. Use `Enter` to focus the preview in wide layouts
+and `↑`/`↓` to scroll it; in narrow layouts, `Enter` opens the preview, `↑`/`↓`
+scroll, and `Esc` returns to the notes list. Narrow and very small terminals use
+a simpler layout and a minimum-size message; quit remains available. Preview is
+plain text rather than rendered Markdown, so canonical Markdown is never
+confused with presentation.
 
 Undo and redo cover note creation, edits, title changes, tag changes, and
 deletion. The bounded history is in memory for the current process and does
 not survive a restart.
+
+## Future work
+
+This repository currently implements the notes slice. The broader suite is
+planned to add:
+
+- Working document, spreadsheet, presentation, and basic image-editing
+  features using the shared workspace and artifact metadata.
+- Shared artifact navigation and organization, including links and
+  attachments, plus import and export.
+- Backup operations and optional provider integrations. Any future Perkeep
+  integration should remain optional and decoupled from core workspace logic;
+  there is no custom synchronization protocol planned.
+- A more complete interactive shell across artifact types, including
+  contextual navigation and richer focus/key-binding behavior. Markdown
+  rendering may be added as a presentation-only preview; Markdown remains the
+  canonical note content.
+- Runtime support for the currently parsed editor, theme, logging, and backup
+  configuration settings.
+- Persistent undo/redo, if introduced, with explicit storage and migration
+  semantics. History currently lasts only for the running process.
 
 ## Development
 

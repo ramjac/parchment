@@ -18,6 +18,7 @@ const metadataName = "metadata.json"
 
 var validID = regexp.MustCompile(`^[a-f0-9]{32}$`)
 var errNotNote = errors.New("artifact is not a note")
+var errNoMetadata = errors.New("artifact metadata not found")
 
 // Workspace is the local filesystem-backed artifact store for one workspace.
 type Workspace struct {
@@ -102,7 +103,7 @@ func (w *Workspace) List(ctx context.Context) ([]note.Note, error) {
 		if errors.Is(err, errNotNote) {
 			continue
 		}
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, errNoMetadata) {
 			continue
 		}
 		if err != nil {
@@ -125,7 +126,7 @@ func (w *Workspace) Get(ctx context.Context, id string) (note.Note, error) {
 	if errors.Is(err, errNotNote) {
 		return note.Note{}, note.ErrNotFound
 	}
-	if errors.Is(err, os.ErrNotExist) {
+	if errors.Is(err, errNoMetadata) {
 		return note.Note{}, note.ErrNotFound
 	}
 	return n, err
@@ -142,35 +143,208 @@ func (w *Workspace) Save(ctx context.Context, n note.Note) error {
 	if err := n.Artifact.Validate(); err != nil {
 		return err
 	}
-	dir := filepath.Join(w.root, ".parchment", "artifacts", n.ID)
-	_, statErr := os.Stat(dir)
-	created := errors.Is(statErr, os.ErrNotExist)
-	if statErr != nil && !created {
-		return fmt.Errorf("inspect note storage: %w", statErr)
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create note storage: %w", err)
-	}
 	if n.Location != filepath.ToSlash(filepath.Join(".parchment", "artifacts", n.ID, "content.md")) {
-		if created {
-			_ = os.RemoveAll(dir)
-		}
 		return errors.New("invalid note content location")
-	}
-	if err := writeAtomic(filepath.Join(dir, "content.md"), []byte(n.Body), 0o600); err != nil {
-		if created {
-			_ = os.RemoveAll(dir)
-		}
-		return fmt.Errorf("write note content: %w", err)
 	}
 	data, err := json.MarshalIndent(n.Artifact, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode note metadata: %w", err)
 	}
-	if err := writeAtomic(filepath.Join(dir, metadataName), append(data, '\n'), 0o600); err != nil {
-		return fmt.Errorf("write note metadata: %w", err)
+	metadata := append(data, '\n')
+
+	dir := filepath.Join(w.root, ".parchment", "artifacts", n.ID)
+	created := false
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("create note storage: %w", err)
+		}
+		info, statErr := os.Stat(dir)
+		if statErr != nil {
+			return fmt.Errorf("inspect note storage: %w", statErr)
+		}
+		if !info.IsDir() {
+			return errors.New("note storage path is not a directory")
+		}
+	} else {
+		created = true
+	}
+	if err := replaceArtifactFiles(ctx, dir, []stagedArtifactFile{
+		{name: "content.md", data: []byte(n.Body)},
+		{name: metadataName, data: metadata},
+	}); err != nil {
+		if created {
+			if cleanupErr := os.Remove(dir); cleanupErr != nil {
+				return fmt.Errorf("save note files: %w (also failed to remove new artifact directory: %v)", err, cleanupErr)
+			}
+		}
+		return fmt.Errorf("save note files: %w", err)
 	}
 	return nil
+}
+
+type stagedArtifactFile struct {
+	name string
+	data []byte
+	temp string
+	old  string
+	had  bool
+	done bool
+}
+
+func replaceArtifactFiles(ctx context.Context, dir string, files []stagedArtifactFile) error {
+	for i := range files {
+		if err := ctx.Err(); err != nil {
+			cleanupStagedFiles(files)
+			return err
+		}
+		temp, err := stageFile(dir, files[i].data)
+		if err != nil {
+			cleanupStagedFiles(files)
+			return err
+		}
+		files[i].temp = temp
+	}
+
+	for i := range files {
+		if err := ctx.Err(); err != nil {
+			restoreErr := restoreArtifactFiles(dir, files[:i])
+			cleanupStagedFiles(files)
+			return errors.Join(err, restoreErr)
+		}
+		target := filepath.Join(dir, files[i].name)
+		info, err := os.Lstat(target)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			restoreErr := restoreArtifactFiles(dir, files[:i])
+			cleanupStagedFiles(files)
+			return errors.Join(err, restoreErr)
+		}
+		if !info.Mode().IsRegular() {
+			restoreErr := restoreArtifactFiles(dir, files[:i])
+			cleanupStagedFiles(files)
+			return errors.Join(fmt.Errorf("%s is not a regular file", files[i].name), restoreErr)
+		}
+		backup, err := os.CreateTemp(dir, ".parchment-backup-*")
+		if err != nil {
+			restoreErr := restoreArtifactFiles(dir, files[:i])
+			cleanupStagedFiles(files)
+			return errors.Join(err, restoreErr)
+		}
+		files[i].old = backup.Name()
+		if err := backup.Close(); err != nil {
+			restoreErr := restoreArtifactFiles(dir, files[:i])
+			cleanupStagedFiles(files)
+			return errors.Join(err, restoreErr)
+		}
+		if err := os.Remove(files[i].old); err != nil {
+			restoreErr := restoreArtifactFiles(dir, files[:i])
+			cleanupStagedFiles(files)
+			return errors.Join(err, restoreErr)
+		}
+		if err := os.Rename(target, files[i].old); err != nil {
+			files[i].old = ""
+			restoreErr := restoreArtifactFiles(dir, files[:i])
+			cleanupStagedFiles(files)
+			return errors.Join(err, restoreErr)
+		}
+		files[i].had = true
+	}
+
+	rollback := func(cause error) error {
+		var removeErr error
+		for i := len(files) - 1; i >= 0; i-- {
+			if files[i].done {
+				if err := os.Remove(filepath.Join(dir, files[i].name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+					removeErr = errors.Join(removeErr, err)
+				}
+				files[i].done = false
+			}
+		}
+		restoreErr := restoreArtifactFiles(dir, files)
+		cleanupStagedFiles(files)
+		rollbackErr := errors.Join(removeErr, restoreErr)
+		if rollbackErr != nil {
+			return fmt.Errorf("%w (also failed to restore previous note files: %v)", cause, rollbackErr)
+		}
+		return cause
+	}
+
+	for i := range files {
+		if err := ctx.Err(); err != nil {
+			return rollback(err)
+		}
+		if err := os.Rename(files[i].temp, filepath.Join(dir, files[i].name)); err != nil {
+			return rollback(err)
+		}
+		files[i].temp = ""
+		files[i].done = true
+	}
+	for i := range files {
+		if files[i].old != "" {
+			_ = os.Remove(files[i].old)
+			files[i].old = ""
+		}
+	}
+	cleanupStagedFiles(files)
+	return nil
+}
+
+func restoreArtifactFiles(dir string, files []stagedArtifactFile) error {
+	var restoreErr error
+	for i := len(files) - 1; i >= 0; i-- {
+		if !files[i].had {
+			continue
+		}
+		target := filepath.Join(dir, files[i].name)
+		if err := os.Rename(files[i].old, target); err != nil {
+			restoreErr = errors.Join(restoreErr, fmt.Errorf("restore %s: %w", files[i].name, err))
+		} else {
+			files[i].old = ""
+			files[i].had = false
+		}
+	}
+	return restoreErr
+}
+
+func stageFile(dir string, data []byte) (string, error) {
+	file, err := os.CreateTemp(dir, ".parchment-stage-*")
+	if err != nil {
+		return "", err
+	}
+	temp := file.Name()
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		_ = os.Remove(temp)
+		return "", err
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		_ = os.Remove(temp)
+		return "", err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		_ = os.Remove(temp)
+		return "", err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(temp)
+		return "", err
+	}
+	return temp, nil
+}
+
+func cleanupStagedFiles(files []stagedArtifactFile) {
+	for _, file := range files {
+		if file.temp != "" {
+			_ = os.Remove(file.temp)
+		}
+		if file.old != "" && !file.had {
+			_ = os.Remove(file.old)
+		}
+	}
 }
 
 // Delete permanently removes the artifact directory; callers may retain a snapshot for undo.
@@ -197,6 +371,9 @@ func (w *Workspace) readNote(id string) (note.Note, error) {
 	dir := filepath.Join(w.root, ".parchment", "artifacts", id)
 	metadata, err := os.Open(filepath.Join(dir, metadataName))
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return note.Note{}, fmt.Errorf("%w: %s", errNoMetadata, id)
+		}
 		return note.Note{}, err
 	}
 	defer metadata.Close()
