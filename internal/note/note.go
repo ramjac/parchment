@@ -1,0 +1,245 @@
+package note
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"reflect"
+	"sort"
+	"strings"
+	"time"
+
+	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/history"
+)
+
+// Note is a Markdown artifact with the shared workspace metadata envelope.
+type Note struct {
+	artifact.Artifact
+	Body string `json:"-"`
+}
+
+// Repository is the persistence boundary required by note operations.
+type Repository interface {
+	List(context.Context) ([]Note, error)
+	Get(context.Context, string) (Note, error)
+	Save(context.Context, Note) error
+	Delete(context.Context, string) error
+}
+
+// Service applies note operations and records successful changes in history.
+type Service struct {
+	repository Repository
+	history    *history.Stack
+	now        func() time.Time
+}
+
+// NewService returns a note service backed by the given repository.
+func NewService(repository Repository, undoLimit int) *Service {
+	return &Service{repository: repository, history: history.New(undoLimit), now: func() time.Time { return time.Now().UTC() }}
+}
+
+// List returns notes ordered by most recently modified first.
+func (s *Service) List(ctx context.Context) ([]Note, error) {
+	notes, err := s.repository.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sortNotes(notes)
+	return notes, nil
+}
+
+// Get loads one note by its stable artifact ID.
+func (s *Service) Get(ctx context.Context, id string) (Note, error) {
+	return s.repository.Get(ctx, id)
+}
+
+// Create adds a note and returns its stable artifact envelope.
+func (s *Service) Create(ctx context.Context, title, body string) (Note, error) {
+	if strings.TrimSpace(title) == "" {
+		return Note{}, errors.New("note title is required")
+	}
+	idBytes := make([]byte, 16)
+	if _, err := rand.Read(idBytes); err != nil {
+		return Note{}, fmt.Errorf("generate note ID: %w", err)
+	}
+	now := s.now().UTC()
+	n := Note{Artifact: artifact.Artifact{
+		ID: hex.EncodeToString(idBytes), Kind: artifact.NoteKind, Title: strings.TrimSpace(title),
+		CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
+		Location: ".parchment/artifacts/" + hex.EncodeToString(idBytes) + "/content.md",
+	}, Body: body}
+	if err := s.change(ctx, nil, &n, "Create note"); err != nil {
+		return Note{}, err
+	}
+	return n, nil
+}
+
+// Update saves a note's title and Markdown body as one undoable change.
+func (s *Service) Update(ctx context.Context, id, title, body string) (Note, error) {
+	before, err := s.repository.Get(ctx, id)
+	if err != nil {
+		return Note{}, err
+	}
+	if strings.TrimSpace(title) == "" {
+		return Note{}, errors.New("note title is required")
+	}
+	title = strings.TrimSpace(title)
+	if before.Title == title && before.Body == body {
+		return before, nil
+	}
+	after := before
+	after.Title = title
+	after.Body = body
+	after.ModifiedAt = s.now().UTC()
+	if err := s.change(ctx, &before, &after, "Edit note"); err != nil {
+		return Note{}, err
+	}
+	return after, nil
+}
+
+// Rename changes a note's title without changing its ID.
+func (s *Service) Rename(ctx context.Context, id, title string) (Note, error) {
+	before, err := s.repository.Get(ctx, id)
+	if err != nil {
+		return Note{}, err
+	}
+	if strings.TrimSpace(title) == "" {
+		return Note{}, errors.New("note title is required")
+	}
+	after := before
+	after.Title = strings.TrimSpace(title)
+	after.ModifiedAt = s.now().UTC()
+	if before.Title == after.Title {
+		return before, nil
+	}
+	if err := s.change(ctx, &before, &after, "Rename note"); err != nil {
+		return Note{}, err
+	}
+	return after, nil
+}
+
+// AddTag adds a unique tag to a note.
+func (s *Service) AddTag(ctx context.Context, id, tag string) error {
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
+		return errors.New("tag is required")
+	}
+	before, err := s.repository.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	for _, existing := range before.Tags {
+		if existing == tag {
+			return nil
+		}
+	}
+	after := before
+	after.Tags = append(append([]string(nil), before.Tags...), tag)
+	after.ModifiedAt = s.now().UTC()
+	return s.change(ctx, &before, &after, "Add tag")
+}
+
+// RemoveTag removes a tag from a note.
+func (s *Service) RemoveTag(ctx context.Context, id, tag string) error {
+	before, err := s.repository.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	after := before
+	after.Tags = nil
+	for _, existing := range before.Tags {
+		if existing != tag {
+			after.Tags = append(after.Tags, existing)
+		}
+	}
+	if len(after.Tags) == len(before.Tags) {
+		return nil
+	}
+	after.ModifiedAt = s.now().UTC()
+	return s.change(ctx, &before, &after, "Remove tag")
+}
+
+// Delete removes a note and records enough information to restore it.
+func (s *Service) Delete(ctx context.Context, id string) error {
+	before, err := s.repository.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	return s.change(ctx, &before, nil, "Delete note")
+}
+
+// Undo reverses the most recent note change.
+func (s *Service) Undo(ctx context.Context) (string, error) { return s.history.Undo(ctx) }
+
+// Redo reapplies the most recently undone note change.
+func (s *Service) Redo(ctx context.Context) (string, error) { return s.history.Redo(ctx) }
+
+// CanUndo reports whether an undo operation is available.
+func (s *Service) CanUndo() bool { return s.history.CanUndo() }
+
+// CanRedo reports whether a redo operation is available.
+func (s *Service) CanRedo() bool { return s.history.CanRedo() }
+
+func (s *Service) change(ctx context.Context, before, after *Note, description string) error {
+	return s.history.Execute(ctx, noteOperation{repository: s.repository, before: before, after: after, description: description})
+}
+
+type noteOperation struct {
+	repository  Repository
+	before      *Note
+	after       *Note
+	description string
+}
+
+func (o noteOperation) Apply(ctx context.Context) error {
+	return o.transition(ctx, o.before, o.after)
+}
+
+func (o noteOperation) Undo(ctx context.Context) error {
+	return o.transition(ctx, o.after, o.before)
+}
+
+func (o noteOperation) Description() string { return o.description }
+
+func (o noteOperation) transition(ctx context.Context, expected, target *Note) error {
+	id := ""
+	if o.before != nil {
+		id = o.before.ID
+	} else if o.after != nil {
+		id = o.after.ID
+	} else {
+		return errors.New("note operation has no artifact")
+	}
+	current, err := o.repository.Get(ctx, id)
+	if expected == nil {
+		if err == nil {
+			return fmt.Errorf("note %s already exists", id)
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return err
+		}
+	} else {
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(current, *expected) {
+			return fmt.Errorf("note %s changed since this operation was recorded", id)
+		}
+	}
+	if target == nil {
+		return o.repository.Delete(ctx, id)
+	}
+	return o.repository.Save(ctx, *target)
+}
+
+// ErrNotFound indicates that the requested note does not exist.
+var ErrNotFound = errors.New("note not found")
+
+func sortNotes(notes []Note) {
+	sort.SliceStable(notes, func(i, j int) bool {
+		return notes[i].ModifiedAt.After(notes[j].ModifiedAt)
+	})
+}
