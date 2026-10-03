@@ -83,6 +83,24 @@ func (s *Service) Update(ctx context.Context, id, title, body string) (Note, err
 	return s.UpdateFields(ctx, id, &title, &body)
 }
 
+// UpdateExpected applies an edit only if the note still matches its snapshot.
+func (s *Service) UpdateExpected(ctx context.Context, expected Note, title, body string) (Note, error) {
+	if strings.TrimSpace(title) == "" {
+		return Note{}, errors.New("note title is required")
+	}
+	after := expected
+	after.Title = strings.TrimSpace(title)
+	after.Body = body
+	if after.Title == expected.Title && after.Body == expected.Body {
+		return expected, nil
+	}
+	after.ModifiedAt = s.now().UTC()
+	if err := s.change(ctx, &expected, &after, "Edit note"); err != nil {
+		return Note{}, err
+	}
+	return after, nil
+}
+
 // UpdateFields changes only the supplied title and body fields from one
 // repository snapshot, so omitted fields cannot overwrite concurrent updates.
 func (s *Service) UpdateFields(ctx context.Context, id string, title, body *string) (Note, error) {
@@ -97,21 +115,7 @@ func (s *Service) UpdateFields(ctx context.Context, id string, title, body *stri
 	if body != nil {
 		nextBody = *body
 	}
-	if strings.TrimSpace(nextTitle) == "" {
-		return Note{}, errors.New("note title is required")
-	}
-	nextTitle = strings.TrimSpace(nextTitle)
-	if before.Title == nextTitle && before.Body == nextBody {
-		return before, nil
-	}
-	after := before
-	after.Title = nextTitle
-	after.Body = nextBody
-	after.ModifiedAt = s.now().UTC()
-	if err := s.change(ctx, &before, &after, "Edit note"); err != nil {
-		return Note{}, err
-	}
-	return after, nil
+	return s.UpdateExpected(ctx, before, nextTitle, nextBody)
 }
 
 // Rename changes a note's title without changing its ID.

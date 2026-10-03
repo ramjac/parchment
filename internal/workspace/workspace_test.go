@@ -527,7 +527,7 @@ func TestRecoveryRejectsUnexpectedBackupBeforeMutatingFiles(t *testing.T) {
 	}
 }
 
-func TestOpenFinishesInterruptedArtifactDeletion(t *testing.T) {
+func TestOpenRestoresAmbiguousLegacyArtifactDeletion(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	ws := openTestWorkspace(t, root)
@@ -546,8 +546,8 @@ func TestOpenFinishesInterruptedArtifactDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reopened.Get(ctx, created.ID); !errors.Is(err, note.ErrNotFound) {
-		t.Fatalf("deleted note lookup error = %v, want note not found", err)
+	if _, err := reopened.Get(ctx, created.ID); err != nil {
+		t.Fatalf("ambiguous legacy deletion did not restore note: %v", err)
 	}
 	if _, err := os.Lstat(tombstone); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("deletion tombstone remains: %v", err)
@@ -582,6 +582,47 @@ func TestOpenRestoresPendingArtifactDeletion(t *testing.T) {
 	}
 	if _, err := os.Lstat(tombstone); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("pending tombstone remains: %v", err)
+	}
+}
+
+func TestOpenRecoversDeletionFromDurableIntent(t *testing.T) {
+	for _, state := range []string{"pending", "committed"} {
+		t.Run(state, func(t *testing.T) {
+			ctx := context.Background()
+			root := t.TempDir()
+			ws := openTestWorkspace(t, root)
+			created, err := note.NewService(ws, 10).Create(ctx, "Recovery", "body")
+			if err != nil {
+				t.Fatal(err)
+			}
+			artifactsDir := filepath.Join(root, ".parchment", "artifacts")
+			dir := filepath.Join(artifactsDir, created.ID)
+			tombstone := filepath.Join(artifactsDir, pendingArtifactPrefix+created.ID)
+			if err := os.Rename(dir, tombstone); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeArtifactDeletionIntent(artifactsDir, artifactDeletionIntent{ID: created.ID, State: state}); err != nil {
+				t.Fatal(err)
+			}
+
+			reopened, err := Open(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = reopened.Get(ctx, created.ID)
+			if state == "pending" && err != nil {
+				t.Fatalf("pending intent did not restore note: %v", err)
+			}
+			if state == "committed" && !errors.Is(err, note.ErrNotFound) {
+				t.Fatalf("committed intent lookup error = %v, want note not found", err)
+			}
+			if _, err := os.Lstat(filepath.Join(artifactsDir, deleteIntentPrefix+created.ID)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("deletion intent remains: %v", err)
+			}
+			if _, err := os.Lstat(tombstone); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("deletion tombstone remains: %v", err)
+			}
+		})
 	}
 }
 

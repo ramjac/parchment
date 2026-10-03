@@ -65,6 +65,7 @@ type Model struct {
 	showPreview         bool
 	confirmDelete       bool
 	editingID           string
+	editingSnapshot     note.Note
 	creating            bool
 	originalTitle       string
 	originalBody        string
@@ -536,6 +537,7 @@ func (m *Model) refreshHistoryAvailability() {
 func (m *Model) startCreate() {
 	m.mode, m.creating = editing, true
 	m.editingID = ""
+	m.editingSnapshot = note.Note{}
 	m.originalTitle, m.originalBody = "", ""
 	m.titleInput.SetValue("")
 	m.bodyInput.SetValue("")
@@ -554,6 +556,7 @@ func (m *Model) startEdit(n note.Note) bool {
 	}
 	m.mode, m.creating = editing, false
 	m.editingID = n.ID
+	m.editingSnapshot = n
 	m.originalTitle, m.originalBody = n.Title, n.Body
 	m.titleInput.Focus()
 	m.bodyInput.Blur()
@@ -563,7 +566,7 @@ func (m *Model) startEdit(n note.Note) bool {
 }
 
 func (m *Model) saveNote() tea.Cmd {
-	title, body, id, create := strings.TrimSpace(m.titleInput.Value()), m.bodyInput.Value(), m.editingID, m.creating
+	title, body, id, create, expected := strings.TrimSpace(m.titleInput.Value()), m.bodyInput.Value(), m.editingID, m.creating, m.editingSnapshot
 	ctx := m.startOperation()
 	return func() tea.Msg {
 		var n note.Note
@@ -571,7 +574,8 @@ func (m *Model) saveNote() tea.Cmd {
 		if create {
 			n, err = m.service.Create(ctx, title, body)
 		} else {
-			n, err = m.service.Update(ctx, id, title, body)
+			expected.ID = id
+			n, err = m.service.UpdateExpected(ctx, expected, title, body)
 		}
 		return noteSavedMsg{note: n, err: err}
 	}

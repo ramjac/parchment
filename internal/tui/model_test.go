@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -204,6 +205,51 @@ func TestEditRefusesNotesThatEditorWouldNormalize(t *testing.T) {
 				t.Fatal("test note was representable and should have entered the editor")
 			}
 		})
+	}
+}
+
+func TestEditSaveRejectsConcurrentExternalChange(t *testing.T) {
+	ctx := context.Background()
+	ws := openTestWorkspace(t)
+	service := note.NewService(ws, 10)
+	created, err := service.Create(ctx, "Original title", "Original body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(service, ws, "test", ws.Root())
+	model.pending = false
+	model.notes = []note.Note{created}
+	model.width, model.height = 100, 20
+	if !model.startEdit(created) {
+		t.Fatal("could not start editing note")
+	}
+	model.bodyInput.SetValue("Edited body")
+
+	external := created
+	external.Title = "Changed outside TUI"
+	external.ModifiedAt = external.ModifiedAt.Add(time.Second)
+	if err := ws.Save(ctx, external); err != nil {
+		t.Fatal(err)
+	}
+
+	result := model.saveNote()().(noteSavedMsg)
+	if result.err == nil {
+		t.Fatal("save succeeded despite external modification")
+	}
+	if !strings.Contains(result.err.Error(), "changed since this operation") {
+		t.Fatalf("save error = %v, want snapshot conflict", result.err)
+	}
+	updated, _ := model.Update(result)
+	model = *updated.(*Model)
+	if model.mode != editing || model.errMessage == "" {
+		t.Fatalf("conflicted save did not keep the editor open and show an error: mode=%v error=%q", model.mode, model.errMessage)
+	}
+	current, err := ws.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Title != external.Title || current.Body != created.Body {
+		t.Fatalf("stale editor overwrote external update: %+v", current)
 	}
 }
 
