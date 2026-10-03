@@ -433,11 +433,17 @@ func recoverArtifactFiles(dir string) error {
 		if file.Name != "content.md" && file.Name != metadataName {
 			return fmt.Errorf("invalid note transaction target %q", file.Name)
 		}
-		target := filepath.Join(dir, file.Name)
 		if file.HadOld {
 			if filepath.Base(file.Backup) != file.Backup || !strings.HasPrefix(file.Backup, ".parchment-stage-") {
 				return fmt.Errorf("invalid note transaction backup %q", file.Backup)
 			}
+		} else if file.Backup != "" {
+			return fmt.Errorf("unexpected backup for new %s", file.Name)
+		}
+	}
+	for _, file := range transaction {
+		target := filepath.Join(dir, file.Name)
+		if file.HadOld {
 			backupPath := filepath.Join(dir, file.Backup)
 			backupInfo, err := os.Lstat(backupPath)
 			if err != nil {

@@ -80,20 +80,33 @@ func (s *Service) Create(ctx context.Context, title, body string) (Note, error) 
 
 // Update saves a note's title and Markdown body as one undoable change.
 func (s *Service) Update(ctx context.Context, id, title, body string) (Note, error) {
+	return s.UpdateFields(ctx, id, &title, &body)
+}
+
+// UpdateFields changes only the supplied title and body fields from one
+// repository snapshot, so omitted fields cannot overwrite concurrent updates.
+func (s *Service) UpdateFields(ctx context.Context, id string, title, body *string) (Note, error) {
 	before, err := s.repository.Get(ctx, id)
 	if err != nil {
 		return Note{}, err
 	}
-	if strings.TrimSpace(title) == "" {
+	nextTitle, nextBody := before.Title, before.Body
+	if title != nil {
+		nextTitle = *title
+	}
+	if body != nil {
+		nextBody = *body
+	}
+	if strings.TrimSpace(nextTitle) == "" {
 		return Note{}, errors.New("note title is required")
 	}
-	title = strings.TrimSpace(title)
-	if before.Title == title && before.Body == body {
+	nextTitle = strings.TrimSpace(nextTitle)
+	if before.Title == nextTitle && before.Body == nextBody {
 		return before, nil
 	}
 	after := before
-	after.Title = title
-	after.Body = body
+	after.Title = nextTitle
+	after.Body = nextBody
 	after.ModifiedAt = s.now().UTC()
 	if err := s.change(ctx, &before, &after, "Edit note"); err != nil {
 		return Note{}, err

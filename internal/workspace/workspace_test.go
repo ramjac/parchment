@@ -466,6 +466,52 @@ func TestOpenRecoversInterruptedArtifactReplacement(t *testing.T) {
 	}
 }
 
+func TestRecoveryRejectsUnexpectedBackupBeforeMutatingFiles(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	created, err := note.NewService(ws, 10).Create(ctx, "Original", "original body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, ".parchment", "artifacts", created.ID)
+	backup, err := stageFile(dir, []byte("original body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "content.md"), []byte("partial content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(root, "victim")
+	if err := os.WriteFile(victim, []byte("must remain"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := json.Marshal([]transactionFile{
+		{Name: "content.md", Backup: filepath.Base(backup), HadOld: true},
+		{Name: metadataName, Backup: "../../../../victim", HadOld: false},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, transactionName), journal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := recoverArtifactFiles(dir); err == nil {
+		t.Fatal("recovery accepted a backup for an entry without an old file")
+	}
+	content, err := os.ReadFile(filepath.Join(dir, "content.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "partial content" {
+		t.Fatalf("recovery mutated files before validating journal: %q", content)
+	}
+	if data, err := os.ReadFile(victim); err != nil || string(data) != "must remain" {
+		t.Fatalf("unexpected external file change: content=%q err=%v", data, err)
+	}
+}
+
 func TestOpenFinishesInterruptedArtifactDeletion(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

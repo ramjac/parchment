@@ -123,19 +123,16 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			n, err := service.Get(cmd.Context(), args[0])
-			if err != nil {
-				return err
-			}
 			title, _ := cmd.Flags().GetString("title")
 			body, _ := cmd.Flags().GetString("body")
-			if !cmd.Flags().Changed("title") {
-				title = n.Title
+			var titleValue, bodyValue *string
+			if cmd.Flags().Changed("title") {
+				titleValue = &title
 			}
-			if !cmd.Flags().Changed("body") {
-				body = n.Body
+			if cmd.Flags().Changed("body") {
+				bodyValue = &body
 			}
-			_, err = service.Update(cmd.Context(), n.ID, title, body)
+			_, err = service.UpdateFields(cmd.Context(), args[0], titleValue, bodyValue)
 			return err
 		},
 	}

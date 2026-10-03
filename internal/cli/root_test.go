@@ -86,6 +86,7 @@ func TestCLIListAndSearchEscapeTerminalFields(t *testing.T) {
 		err := cmd.Execute()
 		return stdout.String(), err
 	}
+
 	if _, err := run("init"); err != nil {
 		t.Fatal(err)
 	}
@@ -118,5 +119,52 @@ func TestCLIListAndSearchEscapeTerminalFields(t *testing.T) {
 	}
 	if !strings.Contains(searchResults, strconv.Quote(title)) {
 		t.Fatalf("search output did not quote title: %q", searchResults)
+	}
+}
+
+func TestCLIEditChangesOnlySpecifiedFields(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", home)
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("PARCHMENT_WORKSPACE", "")
+	t.Setenv("PARCHMENT_UNDO_LIMIT", "100")
+	root := t.TempDir()
+	run := func(args ...string) (string, error) {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		cmd := New(&stdout, &stderr)
+		cmd.SetArgs(append([]string{"--workspace", root}, args...))
+		err := cmd.Execute()
+		return stdout.String(), err
+	}
+	if _, err := run("init"); err != nil {
+		t.Fatal(err)
+	}
+	created, err := run("note", "create", "Original title", "--body", "Original body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := strings.TrimSpace(created)
+	if _, err := run("note", "edit", id, "--title", "New title"); err != nil {
+		t.Fatal(err)
+	}
+	shown, err := run("note", "show", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(shown, "# New title") || !strings.Contains(shown, "Original body") {
+		t.Fatalf("title-only edit changed unspecified body: %q", shown)
+	}
+	if _, err := run("note", "edit", id, "--body", "New body"); err != nil {
+		t.Fatal(err)
+	}
+	shown, err = run("note", "show", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(shown, "# New title") || !strings.Contains(shown, "New body") {
+		t.Fatalf("body-only edit changed unspecified title: %q", shown)
 	}
 }
