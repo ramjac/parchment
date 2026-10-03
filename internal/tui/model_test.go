@@ -134,6 +134,42 @@ func TestNarrowListKeepsSelectedNoteVisible(t *testing.T) {
 	}
 }
 
+func TestViewSanitizesTerminalControlSequences(t *testing.T) {
+	ws := openTestWorkspace(t)
+	model := NewModel(note.NewService(ws, 10), ws, "workspace\x1b[2Jname", "/tmp/workspace\x1b]52;c;payload\a")
+	model.width, model.height = 100, 20
+	model.notes = []note.Note{{
+		Artifact: artifact.Artifact{
+			Title: "Title\x1b[2J",
+			Tags:  []string{"tag\x07"},
+		},
+		Body: "Body\x1b]52;c;payload\a\nnext line",
+	}}
+	model.resizePreview()
+
+	view := model.View()
+	for _, unsafe := range []string{
+		"\x1b[2J",
+		"\x1b]52;",
+		"\x07",
+	} {
+		if strings.Contains(view, unsafe) {
+			t.Errorf("view contains terminal control sequence %q: %q", unsafe, view)
+		}
+	}
+	if !strings.Contains(view, "�[2J") || !strings.Contains(view, "�]52;") {
+		t.Fatalf("view did not visibly sanitize workspace and note strings: %q", view)
+	}
+
+	model.mode = editing
+	model.titleInput.SetValue("Edited\x1b[2J")
+	model.bodyInput.SetValue("Edited body\x1b]52;c;payload\a")
+	view = model.View()
+	if strings.Contains(view, "\x1b[2J") || strings.Contains(view, "\x1b]52;") {
+		t.Fatalf("editor view contains pasted terminal controls: %q", view)
+	}
+}
+
 func TestPreviewCanScrollInWideLayout(t *testing.T) {
 	ws := openTestWorkspace(t)
 	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())

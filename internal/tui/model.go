@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -382,18 +383,24 @@ func (m Model) View() string {
 		return "parchment — terminal too small (minimum 40×10)\nResize the terminal, or press q to quit."
 	}
 	header := lipgloss.NewStyle().Bold(true).Foreground(m.theme.primary).
-		Render("parchment  ·  " + m.workspaceName + "  ·  " + m.workspacePath)
+		Render("parchment  ·  " + sanitizeTerminalLine(m.workspaceName) + "  ·  " + sanitizeTerminalLine(m.workspacePath))
 	if m.mode == editing {
 		state := "Editing"
 		if m.dirty() {
 			state += " • unsaved"
 		}
+		titleInput := m.titleInput
+		titleInput.SetValue(sanitizeTerminalLine(titleInput.Value()))
+		bodyInput := m.bodyInput
+		bodyInput.SetValue(sanitizeTerminalText(bodyInput.Value()))
 		content := header + "\n" + state + "  ·  Tab switches fields  ·  Ctrl+S saves  ·  Esc cancels\n\n" +
-			m.titleInput.View() + "\n\n" + m.bodyInput.View()
+			titleInput.View() + "\n\n" + bodyInput.View()
 		return content + m.statusLine()
 	}
 	if m.mode == searching {
-		header += "\n" + m.searchInput.View() + "  (Esc clears search)"
+		searchInput := m.searchInput
+		searchInput.SetValue(sanitizeTerminalLine(searchInput.Value()))
+		header += "\n" + searchInput.View() + "  (Esc clears search)"
 	}
 	if m.status == "help" {
 		return header + "\n\n" +
@@ -441,7 +448,7 @@ func (m Model) viewNarrow(header string) string {
 		if i == m.selected {
 			marker = "> "
 		}
-		fmt.Fprintf(&b, "%s%s\n", marker, n.Title)
+		fmt.Fprintf(&b, "%s%s\n", marker, sanitizeTerminalLine(n.Title))
 	}
 	b.WriteString("\nEnter preview  ·  n new  ·  / search  ·  ? help")
 	return b.String() + m.statusLine()
@@ -473,9 +480,13 @@ func (m Model) viewWide(header string) string {
 		if i == m.selected {
 			marker = "› "
 		}
-		fmt.Fprintf(&list, "%s%s\n", marker, n.Title)
+		fmt.Fprintf(&list, "%s%s\n", marker, sanitizeTerminalLine(n.Title))
 		if i == m.selected && len(n.Tags) > 0 {
-			fmt.Fprintf(&list, "  #%s\n", strings.Join(n.Tags, " #"))
+			tags := make([]string, len(n.Tags))
+			for j, tag := range n.Tags {
+				tags[j] = sanitizeTerminalLine(tag)
+			}
+			fmt.Fprintf(&list, "  #%s\n", strings.Join(tags, " #"))
 		}
 	}
 	listPane := lipgloss.NewStyle().Width(listWidth).Height(m.height-5).Border(lipgloss.NormalBorder()).
@@ -512,7 +523,7 @@ func (m Model) statusLine() string {
 	if message == "" {
 		message = "Ready"
 	}
-	return "\n" + message + "  ·  " + undo + "  ·  " + redo
+	return "\n" + sanitizeTerminalLine(message) + "  ·  " + undo + "  ·  " + redo
 }
 
 func (m *Model) refreshHistoryAvailability() {
@@ -670,12 +681,34 @@ func (m Model) dirty() bool {
 
 func preview(n note.Note) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# %s\n", n.Title)
+	fmt.Fprintf(&b, "# %s\n", sanitizeTerminalLine(n.Title))
 	if len(n.Tags) > 0 {
-		fmt.Fprintf(&b, "\nTags: #%s\n", strings.Join(n.Tags, " #"))
+		tags := make([]string, len(n.Tags))
+		for i, tag := range n.Tags {
+			tags[i] = sanitizeTerminalLine(tag)
+		}
+		fmt.Fprintf(&b, "\nTags: #%s\n", strings.Join(tags, " #"))
 	}
-	fmt.Fprintf(&b, "\n%s", n.Body)
+	fmt.Fprintf(&b, "\n%s", sanitizeTerminalText(n.Body))
 	return b.String()
+}
+
+func sanitizeTerminalLine(value string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '�'
+		}
+		return r
+	}, value)
+}
+
+func sanitizeTerminalText(value string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) && r != '\n' {
+			return '�'
+		}
+		return r
+	}, value)
 }
 
 // Run starts the full-screen terminal application.
