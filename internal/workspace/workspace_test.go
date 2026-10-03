@@ -162,6 +162,59 @@ func TestTransitionPreventsConcurrentLostUpdates(t *testing.T) {
 	}
 }
 
+func TestTransitionDoesNotOverwriteOccupiedArtifactIDs(t *testing.T) {
+	ctx := context.Background()
+	ws := openTestWorkspace(t, t.TempDir())
+	id := "0123456789abcdef0123456789abcdef"
+	dir := filepath.Join(ws.Root(), ".parchment", "artifacts", id)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	metadata := artifact.Artifact{
+		ID: id, Kind: artifact.DocumentKind, Title: "Other artifact",
+		CreatedAt: time.Now().UTC(), ModifiedAt: time.Now().UTC(),
+		FormatVersion: artifact.FormatVersion, Location: "documents/" + id,
+	}
+	original, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadataPath := filepath.Join(dir, metadataName)
+	if err := os.WriteFile(metadataPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := note.Note{Artifact: artifact.Artifact{
+		ID: id, Kind: artifact.NoteKind, Title: "Overwriting note",
+		CreatedAt: time.Now().UTC(), ModifiedAt: time.Now().UTC(),
+		FormatVersion: artifact.FormatVersion,
+		Location:      ".parchment/artifacts/" + id + "/content.md",
+	}}
+	if err := ws.Transition(ctx, id, nil, &target); err == nil {
+		t.Fatal("transition overwrote a non-note artifact")
+	}
+	after, err := os.ReadFile(metadataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(original) {
+		t.Fatalf("non-note metadata changed: %s", after)
+	}
+
+	missingMetadataID := "abcdef0123456789abcdef0123456789"
+	missingMetadataDir := filepath.Join(ws.Root(), ".parchment", "artifacts", missingMetadataID)
+	if err := os.Mkdir(missingMetadataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target.ID = missingMetadataID
+	target.Location = ".parchment/artifacts/" + missingMetadataID + "/content.md"
+	if err := ws.Transition(ctx, missingMetadataID, nil, &target); err == nil {
+		t.Fatal("transition claimed artifact directory with missing metadata")
+	}
+	if _, err := os.Lstat(filepath.Join(missingMetadataDir, metadataName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("transition wrote into occupied directory: %v", err)
+	}
+}
+
 func TestWorkspaceReportsMissingNoteContent(t *testing.T) {
 	root := t.TempDir()
 	ws := openTestWorkspace(t, root)

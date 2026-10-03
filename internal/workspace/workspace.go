@@ -199,21 +199,27 @@ func (w *Workspace) Transition(ctx context.Context, id string, expected, target 
 	}
 	artifactsDir := filepath.Join(w.root, ".parchment", "artifacts")
 	return withArtifactLock(ctx, artifactsDir, id, func() error {
+		dir := filepath.Join(artifactsDir, id)
+		_, dirErr := os.Lstat(dir)
+		if errors.Is(dirErr, os.ErrNotExist) {
+			if expected == nil && target != nil {
+				return w.saveLocked(ctx, *target)
+			}
+			return note.ErrNotFound
+		}
+		if dirErr != nil {
+			return fmt.Errorf("inspect artifact storage: %w", dirErr)
+		}
 		current, err := w.readNoteUnlocked(id)
 		if errors.Is(err, errNotNote) || errors.Is(err, errNoMetadata) {
-			err = note.ErrNotFound
+			return fmt.Errorf("artifact ID %s is occupied by a non-note artifact", id)
+		}
+		if err != nil {
+			return err
 		}
 		if expected == nil {
-			if err == nil {
-				return fmt.Errorf("note %s already exists", id)
-			}
-			if !errors.Is(err, note.ErrNotFound) {
-				return err
-			}
+			return fmt.Errorf("note %s already exists", id)
 		} else {
-			if err != nil {
-				return err
-			}
 			if !note.Equal(current, *expected) {
 				return fmt.Errorf("note %s changed since this operation was recorded", id)
 			}

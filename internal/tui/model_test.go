@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -68,6 +69,24 @@ func TestPendingCtrlCCancelsOperationAndQuits(t *testing.T) {
 	}
 	if _, ok := updated.(*Model); !ok {
 		t.Fatalf("updated model has type %T", updated)
+	}
+}
+
+func TestMinimumSizeQuitCancelsPendingOperation(t *testing.T) {
+	ws := openTestWorkspace(t)
+	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())
+	opCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	model.pending = true
+	model.cancelOperation = cancel
+	model.width, model.height = 30, 8
+
+	_, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if command == nil {
+		t.Fatal("q in minimum-size mode did not request quit")
+	}
+	if !errors.Is(opCtx.Err(), context.Canceled) {
+		t.Fatalf("pending operation context error = %v, want context canceled", opCtx.Err())
 	}
 }
 

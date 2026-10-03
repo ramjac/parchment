@@ -204,6 +204,9 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	if (m.width < 40 || m.height < 10) && key == "q" {
+		if m.cancelOperation != nil {
+			m.cancelOperation()
+		}
 		return m, tea.Quit
 	}
 	if m.pending {
