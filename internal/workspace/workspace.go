@@ -19,6 +19,7 @@ import (
 const (
 	metadataName          = "metadata.json"
 	transactionName       = ".parchment-transaction.json"
+	pendingArtifactPrefix = ".parchment-pending-delete-"
 	deletedArtifactPrefix = ".parchment-deleted-"
 )
 
@@ -97,9 +98,17 @@ func Open(path string) (*Workspace, error) {
 		return nil, fmt.Errorf("list artifacts: %w", err)
 	}
 	for _, entry := range entries {
+		if id := strings.TrimPrefix(entry.Name(), pendingArtifactPrefix); id != entry.Name() && validID.MatchString(id) {
+			if err := withArtifactLock(context.Background(), artifacts, id, func() error {
+				return restorePendingArtifact(artifacts, id)
+			}); err != nil {
+				return nil, fmt.Errorf("restore interrupted deletion of artifact %s: %w", id, err)
+			}
+			continue
+		}
 		if id := strings.TrimPrefix(entry.Name(), deletedArtifactPrefix); id != entry.Name() && validID.MatchString(id) {
 			if err := withArtifactLock(context.Background(), artifacts, id, func() error {
-				return cleanupDeletedArtifact(artifacts, id)
+				return removeArtifactTombstone(artifacts, deletedArtifactPrefix, id)
 			}); err != nil {
 				return nil, fmt.Errorf("finish deletion of artifact %s: %w", id, err)
 			}
@@ -553,7 +562,10 @@ func (w *Workspace) Delete(ctx context.Context, id string) error {
 
 func (w *Workspace) deleteLocked(artifactsDir, id string) error {
 	dir := filepath.Join(artifactsDir, id)
-	if err := cleanupDeletedArtifact(artifactsDir, id); err != nil {
+	if err := restorePendingArtifact(artifactsDir, id); err != nil {
+		return fmt.Errorf("restore prior deletion: %w", err)
+	}
+	if err := removeArtifactTombstone(artifactsDir, deletedArtifactPrefix, id); err != nil {
 		return fmt.Errorf("clean up prior deletion: %w", err)
 	}
 	info, err := os.Lstat(dir)
@@ -571,7 +583,7 @@ func (w *Workspace) deleteLocked(artifactsDir, id string) error {
 		}
 		return fmt.Errorf("validate note before deletion: %w", err)
 	}
-	tombstone := filepath.Join(artifactsDir, deletedArtifactPrefix+id)
+	tombstone := filepath.Join(artifactsDir, pendingArtifactPrefix+id)
 	if err := os.Rename(dir, tombstone); err != nil {
 		return fmt.Errorf("stage note deletion: %w", err)
 	}
@@ -580,16 +592,57 @@ func (w *Workspace) deleteLocked(artifactsDir, id string) error {
 		if restoreErr == nil {
 			restoreErr = syncDirectory(artifactsDir)
 		}
+		if restoreErr != nil {
+			restoreErr = errors.Join(restoreErr, fmt.Errorf("pending note deletion remains recoverable at %s", tombstone))
+		}
 		return errors.Join(fmt.Errorf("sync deleted note directory: %w", err), restoreErr)
 	}
-	if err := cleanupDeletedArtifact(artifactsDir, id); err != nil {
+	committedTombstone := filepath.Join(artifactsDir, deletedArtifactPrefix+id)
+	if err := os.Rename(tombstone, committedTombstone); err != nil {
+		return fmt.Errorf("commit note deletion: %w (note remains recoverable at %s)", err, tombstone)
+	}
+	if err := syncDirectory(artifactsDir); err != nil {
+		restoreErr := os.Rename(committedTombstone, tombstone)
+		if restoreErr == nil {
+			restoreErr = syncDirectory(artifactsDir)
+		}
+		if restoreErr != nil {
+			restoreErr = errors.Join(restoreErr, fmt.Errorf("pending note deletion remains recoverable at %s", committedTombstone))
+		}
+		return errors.Join(fmt.Errorf("sync committed note deletion: %w", err), restoreErr)
+	}
+	if err := removeArtifactTombstone(artifactsDir, deletedArtifactPrefix, id); err != nil {
 		slog.Warn("note deletion committed but tombstone cleanup failed", "artifact_id", id, "error", err)
 	}
 	return nil
 }
 
-func cleanupDeletedArtifact(artifactsDir, id string) error {
-	tombstone := filepath.Join(artifactsDir, deletedArtifactPrefix+id)
+func restorePendingArtifact(artifactsDir, id string) error {
+	tombstone := filepath.Join(artifactsDir, pendingArtifactPrefix+id)
+	info, err := os.Lstat(tombstone)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("pending artifact tombstone is not a directory")
+	}
+	dir := filepath.Join(artifactsDir, id)
+	if _, err := os.Lstat(dir); err == nil {
+		return fmt.Errorf("cannot restore pending artifact %s because its original path is occupied", id)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Rename(tombstone, dir); err != nil {
+		return fmt.Errorf("restore pending artifact: %w", err)
+	}
+	return syncDirectory(artifactsDir)
+}
+
+func removeArtifactTombstone(artifactsDir, prefix, id string) error {
+	tombstone := filepath.Join(artifactsDir, prefix+id)
 	info, err := os.Lstat(tombstone)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil

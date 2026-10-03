@@ -554,6 +554,37 @@ func TestOpenFinishesInterruptedArtifactDeletion(t *testing.T) {
 	}
 }
 
+func TestOpenRestoresPendingArtifactDeletion(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	created, err := note.NewService(ws, 10).Create(ctx, "Restored", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactsDir := filepath.Join(root, ".parchment", "artifacts")
+	dir := filepath.Join(artifactsDir, created.ID)
+	tombstone := filepath.Join(artifactsDir, pendingArtifactPrefix+created.ID)
+	if err := os.Rename(dir, tombstone); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := reopened.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Open did not restore pending note deletion: %v", err)
+	}
+	if loaded.Title != created.Title || loaded.Body != created.Body {
+		t.Fatalf("restored note = %+v, want %+v", loaded, created)
+	}
+	if _, err := os.Lstat(tombstone); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending tombstone remains: %v", err)
+	}
+}
+
 func TestNoteRepositoryIgnoresOtherArtifactKinds(t *testing.T) {
 	ws := openTestWorkspace(t, t.TempDir())
 	id := "0123456789abcdef0123456789abcdef"
