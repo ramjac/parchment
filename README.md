@@ -122,6 +122,7 @@ planned to add:
   configuration settings.
 - Persistent undo/redo, if introduced, with explicit storage and migration
   semantics. History currently lasts only for the running process.
+- Make the default directory for storing Parchment artifacts a non-hidden folder and also make the default directory path configurable. Generally assume that Parchment artifacts might be read by other applications; especially text file and markdown interpreters.
 
 ## Development
 
