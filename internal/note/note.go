@@ -206,7 +206,19 @@ func (s *Service) CanUndo() bool { return s.history.CanUndo() }
 func (s *Service) CanRedo() bool { return s.history.CanRedo() }
 
 func (s *Service) change(ctx context.Context, before, after *Note, description string) error {
-	return s.history.Execute(ctx, noteOperation{repository: s.repository, before: before, after: after, description: description})
+	return s.history.Execute(ctx, noteOperation{
+		repository: s.repository, before: cloneNote(before), after: cloneNote(after), description: description,
+	})
+}
+
+func cloneNote(n *Note) *Note {
+	if n == nil {
+		return nil
+	}
+	clone := *n
+	clone.Tags = append([]string(nil), n.Tags...)
+	clone.Links = append([]string(nil), n.Links...)
+	return &clone
 }
 
 type noteOperation struct {

@@ -94,6 +94,92 @@ func TestWorkspaceRejectsUnsafeIDsAndLocations(t *testing.T) {
 	}
 }
 
+func TestFindSkipsArtifactDirectoriesWithoutWorkspaceMarker(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "workspace")
+	if err := Init(parent); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(parent, "nested")
+	if err := os.MkdirAll(filepath.Join(nested, ".parchment", "artifacts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	found, err := Find(nested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found != parent {
+		t.Fatalf("Find = %q, want initialized parent %q", found, parent)
+	}
+}
+
+type cancelOnErrContext struct {
+	context.Context
+	cancelAt int
+	calls    int
+}
+
+func (c *cancelOnErrContext) Err() error {
+	c.calls++
+	if c.calls >= c.cancelAt {
+		return context.Canceled
+	}
+	return nil
+}
+
+func TestDeleteCancellationRollsBackStagedDeletion(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	created, err := note.NewService(ws, 10).Create(ctx, "Keep", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactsDir := filepath.Join(root, ".parchment", "artifacts")
+	cancelCtx := &cancelOnErrContext{Context: ctx, cancelAt: 4}
+
+	err = ws.deleteLocked(cancelCtx, artifactsDir, created.ID)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("delete error = %v, want cancellation", err)
+	}
+	if _, err := ws.Get(ctx, created.ID); err != nil {
+		t.Fatalf("cancelled delete removed note: %v", err)
+	}
+	for _, name := range []string{pendingArtifactPrefix + created.ID, deleteIntentPrefix + created.ID} {
+		if _, err := os.Lstat(filepath.Join(artifactsDir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("cancelled deletion left %s: %v", name, err)
+		}
+	}
+}
+
+func TestDeleteRecoversCommittedIntentBeforeRedoingDeletion(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	created, err := note.NewService(ws, 10).Create(ctx, "Redo", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactsDir := filepath.Join(root, ".parchment", "artifacts")
+	tombstone := filepath.Join(artifactsDir, pendingArtifactPrefix+created.ID)
+	if err := os.Rename(filepath.Join(artifactsDir, created.ID), tombstone); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeArtifactDeletionIntent(artifactsDir, artifactDeletionIntent{ID: created.ID, State: "committed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Save(ctx, created); err != nil {
+		t.Fatalf("restore note as if undo had recreated it: %v", err)
+	}
+
+	if err := ws.deleteLocked(ctx, artifactsDir, created.ID); err != nil {
+		t.Fatalf("redo deletion did not recover previous committed intent: %v", err)
+	}
+	if _, err := ws.Get(ctx, created.ID); !errors.Is(err, note.ErrNotFound) {
+		t.Fatalf("note after redo deletion = %v, want not found", err)
+	}
+}
+
 func TestInitRejectsNonRegularWorkspaceMarker(t *testing.T) {
 	t.Run("directory", func(t *testing.T) {
 		root := t.TempDir()

@@ -153,13 +153,10 @@ func Find(start string) (string, error) {
 		return "", fmt.Errorf("resolve current directory: %w", err)
 	}
 	for {
-		if _, err := os.Stat(filepath.Join(current, "parchment.toml")); err == nil {
+		if err := ValidateMarker(current); err == nil {
 			return current, nil
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return "", err
-		}
-		if _, err := os.Stat(filepath.Join(current, ".parchment", "artifacts")); err == nil {
-			return current, nil
 		}
 		parent := filepath.Dir(current)
 		if parent == current {
@@ -260,7 +257,7 @@ func (w *Workspace) Transition(ctx context.Context, id string, expected, target 
 			}
 		}
 		if target == nil {
-			return w.deleteLocked(artifactsDir, id)
+			return w.deleteLocked(ctx, artifactsDir, id)
 		}
 		return w.saveLocked(ctx, *target)
 	})
@@ -570,12 +567,23 @@ func (w *Workspace) Delete(ctx context.Context, id string) error {
 	}
 	artifactsDir := filepath.Join(w.root, ".parchment", "artifacts")
 	return withArtifactLock(ctx, artifactsDir, id, func() error {
-		return w.deleteLocked(artifactsDir, id)
+		return w.deleteLocked(ctx, artifactsDir, id)
 	})
 }
 
-func (w *Workspace) deleteLocked(artifactsDir, id string) error {
+func (w *Workspace) deleteLocked(ctx context.Context, artifactsDir, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	dir := filepath.Join(artifactsDir, id)
+	intentPath := filepath.Join(artifactsDir, deleteIntentPrefix+id)
+	if _, err := os.Lstat(intentPath); err == nil {
+		if err := recoverArtifactDeletion(artifactsDir, id); err != nil {
+			return fmt.Errorf("recover prior deletion: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect prior deletion intent: %w", err)
+	}
 	if err := restorePendingArtifact(artifactsDir, id); err != nil {
 		return fmt.Errorf("restore prior deletion: %w", err)
 	}
@@ -601,37 +609,27 @@ func (w *Workspace) deleteLocked(artifactsDir, id string) error {
 	if err := writeArtifactDeletionIntent(artifactsDir, artifactDeletionIntent{ID: id, State: "pending"}); err != nil {
 		return fmt.Errorf("record deletion intent: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return errors.Join(err, removeArtifactDeletionIntent(artifactsDir, id))
+	}
 	if err := os.Rename(dir, tombstone); err != nil {
-		_ = removeArtifactDeletionIntent(artifactsDir, id)
-		return fmt.Errorf("stage note deletion: %w", err)
+		return errors.Join(fmt.Errorf("stage note deletion: %w", err), removeArtifactDeletionIntent(artifactsDir, id))
+	}
+	if err := ctx.Err(); err != nil {
+		return errors.Join(err, rollbackPendingArtifactDeletion(artifactsDir, id))
 	}
 	if err := syncDirectory(artifactsDir); err != nil {
-		restoreErr := os.Rename(tombstone, dir)
-		if restoreErr == nil {
-			restoreErr = syncDirectory(artifactsDir)
-		}
-		if restoreErr != nil {
-			restoreErr = errors.Join(restoreErr, fmt.Errorf("pending note deletion remains recoverable at %s", tombstone))
-		} else if intentErr := removeArtifactDeletionIntent(artifactsDir, id); intentErr != nil {
-			restoreErr = errors.Join(restoreErr, fmt.Errorf("remove restored deletion intent: %w", intentErr))
-		}
-		return errors.Join(fmt.Errorf("sync deleted note directory: %w", err), restoreErr)
+		return errors.Join(fmt.Errorf("sync deleted note directory: %w", err), rollbackPendingArtifactDeletion(artifactsDir, id))
+	}
+	if err := ctx.Err(); err != nil {
+		return errors.Join(err, rollbackPendingArtifactDeletion(artifactsDir, id))
 	}
 	if err := writeArtifactDeletionIntent(artifactsDir, artifactDeletionIntent{ID: id, State: "committed"}); err != nil {
 		intent, readErr := readArtifactDeletionIntent(artifactsDir, id)
 		if readErr == nil && intent.State == "committed" {
 			slog.Warn("deletion intent committed despite directory sync error", "artifact_id", id, "error", err)
 		} else {
-			restoreErr := os.Rename(tombstone, dir)
-			if restoreErr == nil {
-				restoreErr = syncDirectory(artifactsDir)
-			}
-			if restoreErr != nil {
-				restoreErr = errors.Join(restoreErr, fmt.Errorf("pending note deletion remains recoverable at %s", tombstone))
-			} else if intentErr := removeArtifactDeletionIntent(artifactsDir, id); intentErr != nil {
-				restoreErr = errors.Join(restoreErr, fmt.Errorf("remove restored deletion intent: %w", intentErr))
-			}
-			return errors.Join(fmt.Errorf("commit note deletion: %w", err), readErr, restoreErr)
+			return errors.Join(fmt.Errorf("commit note deletion: %w", err), readErr, rollbackPendingArtifactDeletion(artifactsDir, id))
 		}
 	}
 	if err := removeArtifactTombstone(artifactsDir, pendingArtifactPrefix, id); err != nil {
@@ -640,6 +638,22 @@ func (w *Workspace) deleteLocked(artifactsDir, id string) error {
 	}
 	if err := removeArtifactDeletionIntent(artifactsDir, id); err != nil {
 		slog.Warn("note deletion committed but intent cleanup failed", "artifact_id", id, "error", err)
+	}
+	return nil
+}
+
+func rollbackPendingArtifactDeletion(artifactsDir, id string) error {
+	tombstone := filepath.Join(artifactsDir, pendingArtifactPrefix+id)
+	dir := filepath.Join(artifactsDir, id)
+	restoreErr := os.Rename(tombstone, dir)
+	if restoreErr == nil {
+		restoreErr = syncDirectory(artifactsDir)
+	}
+	if restoreErr != nil {
+		return errors.Join(restoreErr, fmt.Errorf("pending note deletion remains recoverable at %s", tombstone))
+	}
+	if intentErr := removeArtifactDeletionIntent(artifactsDir, id); intentErr != nil {
+		return fmt.Errorf("remove restored deletion intent: %w", intentErr)
 	}
 	return nil
 }

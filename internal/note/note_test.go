@@ -157,3 +157,43 @@ func TestUndoRedoTreatsEmptySlicesAsEquivalentToNil(t *testing.T) {
 		t.Fatalf("redo failed after persistence normalized empty slices: %v", err)
 	}
 }
+
+func TestHistorySnapshotsDoNotAliasReturnedNoteSlices(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	if err := workspace.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := workspace.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := note.NewService(ws, 10)
+	created, err := service.Create(ctx, "Before", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.Tags = []string{"work"}
+	created.Links = []string{"related"}
+	if err := ws.Save(ctx, created); err != nil {
+		t.Fatal(err)
+	}
+
+	renamed, err := service.Rename(ctx, created.ID, "After")
+	if err != nil {
+		t.Fatal(err)
+	}
+	renamed.Tags[0] = "mutated"
+	renamed.Links[0] = "mutated"
+
+	if _, err := service.Undo(ctx); err != nil {
+		t.Fatalf("undo failed after mutating returned slices: %v", err)
+	}
+	restored, err := service.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Title != "Before" || restored.Tags[0] != "work" || restored.Links[0] != "related" {
+		t.Fatalf("undo restored mutated history snapshot: %+v", restored)
+	}
+}
