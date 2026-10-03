@@ -123,6 +123,7 @@ planned to add:
 - Persistent undo/redo, if introduced, with explicit storage and migration
   semantics. History currently lasts only for the running process.
 - Make the default directory for storing Parchment artifacts a non-hidden folder and also make the default directory path configurable. Generally assume that Parchment artifacts might be read by other applications; especially text file and markdown interpreters.
+- Background auto-save and recovery from auto-save so that in the event Parchment crashes or is force closed, any changes since the last save can be optionally recovered.
 
 ## Development
 
