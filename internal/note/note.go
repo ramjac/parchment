@@ -27,6 +27,7 @@ type Repository interface {
 	Get(context.Context, string) (Note, error)
 	Save(context.Context, Note) error
 	Delete(context.Context, string) error
+	Transition(context.Context, string, *Note, *Note) error
 }
 
 // Service applies note operations and records successful changes in history.
@@ -217,29 +218,11 @@ func (o noteOperation) transition(ctx context.Context, expected, target *Note) e
 	} else {
 		return errors.New("note operation has no artifact")
 	}
-	current, err := o.repository.Get(ctx, id)
-	if expected == nil {
-		if err == nil {
-			return fmt.Errorf("note %s already exists", id)
-		}
-		if !errors.Is(err, ErrNotFound) {
-			return err
-		}
-	} else {
-		if err != nil {
-			return err
-		}
-		if !notesEqual(current, *expected) {
-			return fmt.Errorf("note %s changed since this operation was recorded", id)
-		}
-	}
-	if target == nil {
-		return o.repository.Delete(ctx, id)
-	}
-	return o.repository.Save(ctx, *target)
+	return o.repository.Transition(ctx, id, expected, target)
 }
 
-func notesEqual(left, right Note) bool {
+// Equal reports whether two notes have the same persisted value.
+func Equal(left, right Note) bool {
 	if len(left.Tags) == 0 {
 		left.Tags = nil
 	}

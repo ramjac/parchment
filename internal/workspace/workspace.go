@@ -37,14 +37,20 @@ func Init(path string) error {
 	if err != nil {
 		return fmt.Errorf("resolve workspace path: %w", err)
 	}
-	if err := ensureWorkspaceDirectories(abs); err != nil {
-		return fmt.Errorf("create workspace: %w", err)
-	}
 	configPath := filepath.Join(abs, "parchment.toml")
-	if _, err := os.Stat(configPath); err == nil {
+	if info, err := os.Lstat(configPath); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("workspace config path %s is not a regular file", configPath)
+		}
+		if err := ensureWorkspaceDirectories(abs); err != nil {
+			return fmt.Errorf("create workspace: %w", err)
+		}
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("check workspace config: %w", err)
+	}
+	if err := ensureWorkspaceDirectories(abs); err != nil {
+		return fmt.Errorf("create workspace: %w", err)
 	}
 	return writeAtomic(configPath, []byte("version = 1\n\n[workspace]\ndiscovery = \"parents\"\n"), 0o600)
 }
@@ -176,11 +182,63 @@ func (w *Workspace) Get(ctx context.Context, id string) (note.Note, error) {
 	return n, err
 }
 
+// Transition applies a note update only if its current value matches expected.
+// A nil expected value means the note must not exist; a nil target deletes it.
+func (w *Workspace) Transition(ctx context.Context, id string, expected, target *note.Note) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !validID.MatchString(id) {
+		return note.ErrNotFound
+	}
+	if expected != nil && expected.ID != id {
+		return errors.New("expected note ID does not match transition ID")
+	}
+	if target != nil && target.ID != id {
+		return errors.New("target note ID does not match transition ID")
+	}
+	artifactsDir := filepath.Join(w.root, ".parchment", "artifacts")
+	return withArtifactLock(ctx, artifactsDir, id, func() error {
+		current, err := w.readNoteUnlocked(id)
+		if errors.Is(err, errNotNote) || errors.Is(err, errNoMetadata) {
+			err = note.ErrNotFound
+		}
+		if expected == nil {
+			if err == nil {
+				return fmt.Errorf("note %s already exists", id)
+			}
+			if !errors.Is(err, note.ErrNotFound) {
+				return err
+			}
+		} else {
+			if err != nil {
+				return err
+			}
+			if !note.Equal(current, *expected) {
+				return fmt.Errorf("note %s changed since this operation was recorded", id)
+			}
+		}
+		if target == nil {
+			return w.deleteLocked(artifactsDir, id)
+		}
+		return w.saveLocked(ctx, *target)
+	})
+}
+
 // Save persists note Markdown and its common artifact metadata.
 func (w *Workspace) Save(ctx context.Context, n note.Note) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if !validID.MatchString(n.ID) {
+		return errors.New("invalid note artifact")
+	}
+	return withArtifactLock(ctx, filepath.Join(w.root, ".parchment", "artifacts"), n.ID, func() error {
+		return w.saveLocked(ctx, n)
+	})
+}
+
+func (w *Workspace) saveLocked(ctx context.Context, n note.Note) error {
 	if !validID.MatchString(n.ID) || n.Kind != artifact.NoteKind {
 		return errors.New("invalid note artifact")
 	}
@@ -197,46 +255,43 @@ func (w *Workspace) Save(ctx context.Context, n note.Note) error {
 	metadata := append(data, '\n')
 
 	dir := filepath.Join(w.root, ".parchment", "artifacts", n.ID)
-	artifactsDir := filepath.Dir(dir)
-	return withArtifactLock(ctx, artifactsDir, n.ID, func() error {
-		created := false
-		if err := os.Mkdir(dir, 0o700); err != nil {
-			if !errors.Is(err, os.ErrExist) {
-				return fmt.Errorf("create note storage: %w", err)
-			}
-			info, statErr := os.Lstat(dir)
-			if statErr != nil {
-				return fmt.Errorf("inspect note storage: %w", statErr)
-			}
-			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-				return errors.New("note storage path is not a directory")
-			}
-		} else {
-			created = true
-			if err := syncDirectory(filepath.Dir(dir)); err != nil {
-				_ = os.Remove(dir)
-				return fmt.Errorf("sync note storage parent: %w", err)
+	created := false
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("create note storage: %w", err)
+		}
+		info, statErr := os.Lstat(dir)
+		if statErr != nil {
+			return fmt.Errorf("inspect note storage: %w", statErr)
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("note storage path is not a directory")
+		}
+	} else {
+		created = true
+		if err := syncDirectory(filepath.Dir(dir)); err != nil {
+			_ = os.Remove(dir)
+			return fmt.Errorf("sync note storage parent: %w", err)
+		}
+	}
+	if err := recoverArtifactFiles(dir); err != nil {
+		if created {
+			_ = os.Remove(dir)
+		}
+		return fmt.Errorf("recover note files: %w", err)
+	}
+	if err := replaceArtifactFiles(ctx, dir, []stagedArtifactFile{
+		{name: "content.md", data: []byte(n.Body)},
+		{name: metadataName, data: metadata},
+	}); err != nil {
+		if created {
+			if cleanupErr := os.Remove(dir); cleanupErr != nil {
+				return fmt.Errorf("save note files: %w (also failed to remove new artifact directory: %v)", err, cleanupErr)
 			}
 		}
-		if err := recoverArtifactFiles(dir); err != nil {
-			if created {
-				_ = os.Remove(dir)
-			}
-			return fmt.Errorf("recover note files: %w", err)
-		}
-		if err := replaceArtifactFiles(ctx, dir, []stagedArtifactFile{
-			{name: "content.md", data: []byte(n.Body)},
-			{name: metadataName, data: metadata},
-		}); err != nil {
-			if created {
-				if cleanupErr := os.Remove(dir); cleanupErr != nil {
-					return fmt.Errorf("save note files: %w (also failed to remove new artifact directory: %v)", err, cleanupErr)
-				}
-			}
-			return fmt.Errorf("save note files: %w", err)
-		}
-		return nil
-	})
+		return fmt.Errorf("save note files: %w", err)
+	}
+	return nil
 }
 
 type stagedArtifactFile struct {
@@ -460,35 +515,39 @@ func (w *Workspace) Delete(ctx context.Context, id string) error {
 	}
 	artifactsDir := filepath.Join(w.root, ".parchment", "artifacts")
 	return withArtifactLock(ctx, artifactsDir, id, func() error {
-		dir := filepath.Join(artifactsDir, id)
-		if err := cleanupDeletedArtifact(artifactsDir, id); err != nil {
-			return fmt.Errorf("clean up prior deletion: %w", err)
-		}
-		info, err := os.Lstat(dir)
-		if errors.Is(err, os.ErrNotExist) {
-			return note.ErrNotFound
-		} else if err != nil {
-			return fmt.Errorf("inspect note storage: %w", err)
-		}
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return errors.New("note storage path is not a directory")
-		}
-		tombstone := filepath.Join(artifactsDir, deletedArtifactPrefix+id)
-		if err := os.Rename(dir, tombstone); err != nil {
-			return fmt.Errorf("stage note deletion: %w", err)
-		}
-		if err := syncDirectory(artifactsDir); err != nil {
-			restoreErr := os.Rename(tombstone, dir)
-			if restoreErr == nil {
-				restoreErr = syncDirectory(artifactsDir)
-			}
-			return errors.Join(fmt.Errorf("sync deleted note directory: %w", err), restoreErr)
-		}
-		if err := cleanupDeletedArtifact(artifactsDir, id); err != nil {
-			slog.Warn("note deletion committed but tombstone cleanup failed", "artifact_id", id, "error", err)
-		}
-		return nil
+		return w.deleteLocked(artifactsDir, id)
 	})
+}
+
+func (w *Workspace) deleteLocked(artifactsDir, id string) error {
+	dir := filepath.Join(artifactsDir, id)
+	if err := cleanupDeletedArtifact(artifactsDir, id); err != nil {
+		return fmt.Errorf("clean up prior deletion: %w", err)
+	}
+	info, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return note.ErrNotFound
+	} else if err != nil {
+		return fmt.Errorf("inspect note storage: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("note storage path is not a directory")
+	}
+	tombstone := filepath.Join(artifactsDir, deletedArtifactPrefix+id)
+	if err := os.Rename(dir, tombstone); err != nil {
+		return fmt.Errorf("stage note deletion: %w", err)
+	}
+	if err := syncDirectory(artifactsDir); err != nil {
+		restoreErr := os.Rename(tombstone, dir)
+		if restoreErr == nil {
+			restoreErr = syncDirectory(artifactsDir)
+		}
+		return errors.Join(fmt.Errorf("sync deleted note directory: %w", err), restoreErr)
+	}
+	if err := cleanupDeletedArtifact(artifactsDir, id); err != nil {
+		slog.Warn("note deletion committed but tombstone cleanup failed", "artifact_id", id, "error", err)
+	}
+	return nil
 }
 
 func cleanupDeletedArtifact(artifactsDir, id string) error {

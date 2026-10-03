@@ -94,6 +94,31 @@ func TestWorkspaceRejectsUnsafeIDsAndLocations(t *testing.T) {
 	}
 }
 
+func TestInitRejectsNonRegularWorkspaceMarker(t *testing.T) {
+	t.Run("directory", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.Mkdir(filepath.Join(root, "parchment.toml"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := Init(root); err == nil {
+			t.Fatal("Init accepted a directory as the workspace marker")
+		}
+	})
+	t.Run("symlink", func(t *testing.T) {
+		root := t.TempDir()
+		target := filepath.Join(t.TempDir(), "config")
+		if err := os.WriteFile(target, []byte("version = 1\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(root, "parchment.toml")); err != nil {
+			t.Skipf("symlink creation unavailable: %v", err)
+		}
+		if err := Init(root); err == nil {
+			t.Fatal("Init accepted a symlink as the workspace marker")
+		}
+	})
+}
+
 func TestOpenRejectsUninitializedDirectoryWithoutCreatingStorage(t *testing.T) {
 	root := t.TempDir()
 	if _, err := Open(root); err == nil {
@@ -101,6 +126,39 @@ func TestOpenRejectsUninitializedDirectoryWithoutCreatingStorage(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(root, ".parchment")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Open created workspace storage: %v", err)
+	}
+}
+
+func TestTransitionPreventsConcurrentLostUpdates(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	first := openTestWorkspace(t, root)
+	second, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := note.NewService(first, 10).Create(ctx, "Initial", "Initial")
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets := []note.Note{created, created}
+	targets[0].Title, targets[0].Body = "First update", "First update"
+	targets[1].Title, targets[1].Body = "Second update", "Second update"
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	go func() {
+		<-start
+		errs <- first.Transition(ctx, created.ID, &created, &targets[0])
+	}()
+	go func() {
+		<-start
+		errs <- second.Transition(ctx, created.ID, &created, &targets[1])
+	}()
+	close(start)
+	firstErr, secondErr := <-errs, <-errs
+	if (firstErr == nil) == (secondErr == nil) {
+		t.Fatalf("transition results = %v, %v; want exactly one success", firstErr, secondErr)
 	}
 }
 
