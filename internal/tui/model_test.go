@@ -170,6 +170,43 @@ func TestViewSanitizesTerminalControlSequences(t *testing.T) {
 	}
 }
 
+func TestEditRefusesNotesThatEditorWouldNormalize(t *testing.T) {
+	cases := []struct {
+		name  string
+		title string
+		body  string
+	}{
+		{name: "long title", title: strings.Repeat("x", 201), body: "body"},
+		{name: "tab in body", title: "Title", body: "before\tafter"},
+		{name: "control in body", title: "Title", body: "before\x1b[2Jafter"},
+		{name: "oversized body", title: "Title", body: strings.Repeat("x", 1_000_001)},
+		{name: "too many body lines", title: "Title", body: strings.Repeat("x\n", 10_000) + "last"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := openTestWorkspace(t)
+			model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())
+			model.width, model.height = 100, 20
+			model.pending = false
+			model.notes = []note.Note{{
+				Artifact: artifact.Artifact{ID: "id", Title: tc.title},
+				Body:     tc.body,
+			}}
+			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+			model = *updated.(*Model)
+			if model.mode != browsing {
+				t.Fatalf("lossy note opened for editing; mode=%d", model.mode)
+			}
+			if model.errMessage == "" {
+				t.Fatal("refused edit did not explain why")
+			}
+			if model.titleInput.Value() == tc.title && model.bodyInput.Value() == tc.body {
+				t.Fatal("test note was representable and should have entered the editor")
+			}
+		})
+	}
+}
+
 func TestPreviewCanScrollInWideLayout(t *testing.T) {
 	ws := openTestWorkspace(t)
 	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())

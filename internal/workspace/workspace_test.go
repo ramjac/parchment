@@ -189,6 +189,9 @@ func TestTransitionDoesNotOverwriteOccupiedArtifactIDs(t *testing.T) {
 		FormatVersion: artifact.FormatVersion,
 		Location:      ".parchment/artifacts/" + id + "/content.md",
 	}}
+	if err := ws.Save(ctx, target); err == nil {
+		t.Fatal("Save overwrote a non-note artifact")
+	}
 	if err := ws.Transition(ctx, id, nil, &target); err == nil {
 		t.Fatal("transition overwrote a non-note artifact")
 	}

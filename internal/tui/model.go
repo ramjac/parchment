@@ -334,7 +334,9 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.titleInput.Focus()
 	case "e":
 		if n, ok := m.selectedNote(); ok {
-			m.startEdit(n)
+			if !m.startEdit(n) {
+				return m, nil
+			}
 			return m, m.titleInput.Focus()
 		}
 	case "d":
@@ -542,16 +544,22 @@ func (m *Model) startCreate() {
 	m.status, m.errMessage = "", ""
 }
 
-func (m *Model) startEdit(n note.Note) {
+func (m *Model) startEdit(n note.Note) bool {
+	m.titleInput.SetValue(n.Title)
+	m.bodyInput.SetValue(n.Body)
+	if m.titleInput.Value() != n.Title || m.bodyInput.Value() != n.Body {
+		m.errMessage = "This note exceeds editor limits or contains text the editor cannot preserve; edit it outside the TUI"
+		m.status = ""
+		return false
+	}
 	m.mode, m.creating = editing, false
 	m.editingID = n.ID
 	m.originalTitle, m.originalBody = n.Title, n.Body
-	m.titleInput.SetValue(n.Title)
-	m.bodyInput.SetValue(n.Body)
 	m.titleInput.Focus()
 	m.bodyInput.Blur()
 	m.resizeEditors()
 	m.status, m.errMessage = "", ""
+	return true
 }
 
 func (m *Model) saveNote() tea.Cmd {

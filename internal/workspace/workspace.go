@@ -286,6 +286,14 @@ func (w *Workspace) saveLocked(ctx context.Context, n note.Note) error {
 		}
 		return fmt.Errorf("recover note files: %w", err)
 	}
+	if !created {
+		if _, err := w.readNoteUnlocked(n.ID); err != nil {
+			if errors.Is(err, errNotNote) || errors.Is(err, errNoMetadata) {
+				return fmt.Errorf("artifact ID %s is occupied by a non-note artifact", n.ID)
+			}
+			return fmt.Errorf("inspect existing note before save: %w", err)
+		}
+	}
 	if err := replaceArtifactFiles(ctx, dir, []stagedArtifactFile{
 		{name: "content.md", data: []byte(n.Body)},
 		{name: metadataName, data: metadata},
@@ -692,15 +700,6 @@ func writeAtomic(path string, data []byte, mode os.FileMode) (err error) {
 		return err
 	}
 	return syncDirectory(dir)
-}
-
-func syncDirectory(path string) error {
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
 }
 
 func ensureWorkspaceDirectories(root string) error {
