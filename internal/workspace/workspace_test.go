@@ -626,6 +626,47 @@ func TestOpenRecoversDeletionFromDurableIntent(t *testing.T) {
 	}
 }
 
+func TestOpenKeepsCommittedDeletionIntentWhenTombstoneCleanupFails(t *testing.T) {
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	created, err := note.NewService(ws, 10).Create(context.Background(), "Committed", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactsDir := filepath.Join(root, ".parchment", "artifacts")
+	tombstone := filepath.Join(artifactsDir, pendingArtifactPrefix+created.ID)
+	if err := os.Rename(filepath.Join(artifactsDir, created.ID), tombstone); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeArtifactDeletionIntent(artifactsDir, artifactDeletionIntent{ID: created.ID, State: "committed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(tombstone); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tombstone, []byte("invalid tombstone"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Open(root); err == nil {
+		t.Fatal("Open succeeded despite invalid committed tombstone")
+	}
+	intentPath := filepath.Join(artifactsDir, deleteIntentPrefix+created.ID)
+	if _, err := os.Stat(intentPath); err != nil {
+		t.Fatalf("failed cleanup discarded committed deletion intent: %v", err)
+	}
+
+	if err := os.Remove(tombstone); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(root); err != nil {
+		t.Fatalf("Open did not retry committed deletion cleanup: %v", err)
+	}
+	if _, err := os.Stat(intentPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("committed deletion intent remains after successful retry: %v", err)
+	}
+}
+
 func TestNoteRepositoryIgnoresOtherArtifactKinds(t *testing.T) {
 	ws := openTestWorkspace(t, t.TempDir())
 	id := "0123456789abcdef0123456789abcdef"

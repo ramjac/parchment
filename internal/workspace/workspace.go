@@ -636,6 +636,7 @@ func (w *Workspace) deleteLocked(artifactsDir, id string) error {
 	}
 	if err := removeArtifactTombstone(artifactsDir, pendingArtifactPrefix, id); err != nil {
 		slog.Warn("note deletion committed but tombstone cleanup failed", "artifact_id", id, "error", err)
+		return nil
 	}
 	if err := removeArtifactDeletionIntent(artifactsDir, id); err != nil {
 		slog.Warn("note deletion committed but intent cleanup failed", "artifact_id", id, "error", err)
