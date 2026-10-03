@@ -259,6 +259,9 @@ func open(cmd *cobra.Command) (*workspace.Workspace, *note.Service, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := workspace.ValidateMarker(abs); err != nil {
+		return nil, nil, err
+	}
 	settings, err := config.Load(userPath, filepath.Join(abs, "parchment.toml"))
 	if err != nil {
 		return nil, nil, err

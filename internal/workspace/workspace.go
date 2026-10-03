@@ -55,22 +55,34 @@ func Init(path string) error {
 	return writeAtomic(configPath, []byte("version = 1\n\n[workspace]\ndiscovery = \"parents\"\n"), 0o600)
 }
 
+// ValidateMarker checks the workspace config marker without following links.
+func ValidateMarker(path string) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve workspace path: %w", err)
+	}
+	configPath := filepath.Join(abs, "parchment.toml")
+	info, err := os.Lstat(configPath)
+	if err != nil {
+		return fmt.Errorf("inspect workspace config: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("workspace config path %s is not a regular file", configPath)
+	}
+	return nil
+}
+
 // Open returns an initialized workspace without creating workspace directories.
 func Open(path string) (*Workspace, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace path: %w", err)
 	}
-	configPath := filepath.Join(abs, "parchment.toml")
-	configInfo, err := os.Lstat(configPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("open workspace: %s is not initialized (run `parchment init`)", abs)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("inspect workspace config: %w", err)
-	}
-	if !configInfo.Mode().IsRegular() {
-		return nil, fmt.Errorf("open workspace: %s is not a regular file", configPath)
+	if err := ValidateMarker(abs); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("open workspace: %s is not initialized (run `parchment init`)", abs)
+		}
+		return nil, fmt.Errorf("open workspace: %w", err)
 	}
 	private := filepath.Join(abs, ".parchment")
 	if err := ensureExistingDirectory(private); err != nil {

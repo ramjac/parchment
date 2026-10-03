@@ -218,6 +218,21 @@ func TestTransitionDoesNotOverwriteOccupiedArtifactIDs(t *testing.T) {
 	}
 }
 
+func TestValidateMarkerRejectsSymlinkWithoutFollowingIt(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(t.TempDir(), "config")
+	if err := os.WriteFile(target, []byte("version = 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(root, "parchment.toml")
+	if err := os.Symlink(target, marker); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	if err := ValidateMarker(root); err == nil {
+		t.Fatal("ValidateMarker accepted a symlink")
+	}
+}
+
 func TestWorkspaceReportsMissingNoteContent(t *testing.T) {
 	root := t.TempDir()
 	ws := openTestWorkspace(t, root)

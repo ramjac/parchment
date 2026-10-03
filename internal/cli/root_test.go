@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -139,6 +140,7 @@ func TestCLIEditChangesOnlySpecifiedFields(t *testing.T) {
 		err := cmd.Execute()
 		return stdout.String(), err
 	}
+
 	if _, err := run("init"); err != nil {
 		t.Fatal(err)
 	}
@@ -166,5 +168,30 @@ func TestCLIEditChangesOnlySpecifiedFields(t *testing.T) {
 	}
 	if !strings.Contains(shown, "# New title") || !strings.Contains(shown, "New body") {
 		t.Fatalf("body-only edit changed unspecified title: %q", shown)
+	}
+}
+
+func TestOpenRejectsSymlinkedWorkspaceConfigBeforeParsing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", home)
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("PARCHMENT_WORKSPACE", "")
+	t.Setenv("PARCHMENT_UNDO_LIMIT", "100")
+	root := t.TempDir()
+	target := filepath.Join(t.TempDir(), "config")
+	if err := os.WriteFile(target, []byte("not valid TOML = ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "parchment.toml")); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd := New(&stdout, &stderr)
+	cmd.SetArgs([]string{"--workspace", root, "note", "list"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("CLI error = %v, want non-regular marker error before TOML parsing", err)
 	}
 }
