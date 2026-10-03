@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -25,6 +26,7 @@ func TestWorkspaceAndNoteCLI(t *testing.T) {
 		err := cmd.Execute()
 		return stdout.String(), err
 	}
+
 	if output, err := run("init"); err != nil {
 		t.Fatalf("init: %v (%s)", err, output)
 	}
@@ -64,5 +66,57 @@ func TestWorkspaceAndNoteCLI(t *testing.T) {
 	}
 	if _, err := os.Stat(root + "/.parchment/artifacts/" + id); !os.IsNotExist(err) {
 		t.Fatalf("deleted artifact storage exists: %v", err)
+	}
+}
+
+func TestCLIListAndSearchEscapeTerminalFields(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", home)
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("PARCHMENT_WORKSPACE", "")
+	t.Setenv("PARCHMENT_UNDO_LIMIT", "100")
+	root := t.TempDir()
+	run := func(args ...string) (string, error) {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		cmd := New(&stdout, &stderr)
+		cmd.SetArgs(append([]string{"--workspace", root}, args...))
+		err := cmd.Execute()
+		return stdout.String(), err
+	}
+	if _, err := run("init"); err != nil {
+		t.Fatal(err)
+	}
+	title := "unsafe\n\x1b[2Jtitle needle"
+	created, err := run("note", "create", title)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := strings.TrimSpace(created)
+	if _, err := run("note", "add", id, "unsafe\n\x1b]52;c;payload\a"); err != nil {
+		t.Fatal(err)
+	}
+
+	listing, err := run("note", "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsAny(listing, "\x1b\a") || strings.Count(listing, "\n") != 1 {
+		t.Fatalf("list output contains raw controls or forged rows: %q", listing)
+	}
+	if !strings.Contains(listing, strconv.Quote(title)) {
+		t.Fatalf("list output did not quote title: %q", listing)
+	}
+	searchResults, err := run("search", "needle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsAny(searchResults, "\x1b\a") || strings.Count(searchResults, "\n") != 1 {
+		t.Fatalf("search output contains raw controls or forged rows: %q", searchResults)
+	}
+	if !strings.Contains(searchResults, strconv.Quote(title)) {
+		t.Fatalf("search output did not quote title: %q", searchResults)
 	}
 }

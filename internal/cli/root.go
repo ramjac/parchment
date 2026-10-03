@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -75,7 +76,7 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 				return err
 			}
 			for _, n := range notes {
-				if _, err := fmt.Fprintf(streams.out, "%s\t%s\t%s\n", n.ID, n.Title, strings.Join(n.Tags, ", ")); err != nil {
+				if _, err := fmt.Fprintf(streams.out, "%s\t%s\t%s\n", n.ID, strconv.Quote(n.Title), quoteFields(n.Tags)); err != nil {
 					return err
 				}
 			}
@@ -183,7 +184,7 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 				return err
 			}
 			for _, n := range results {
-				if _, err := fmt.Fprintf(streams.out, "%s\t%s\n", n.ID, n.Title); err != nil {
+				if _, err := fmt.Fprintf(streams.out, "%s\t%s\n", n.ID, strconv.Quote(n.Title)); err != nil {
 					return err
 				}
 			}
@@ -201,6 +202,14 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 		},
 	})
 	return root
+}
+
+func quoteFields(values []string) string {
+	quoted := make([]string, len(values))
+	for i, value := range values {
+		quoted[i] = strconv.Quote(value)
+	}
+	return strings.Join(quoted, ", ")
 }
 
 func tagCommand(action string) *cobra.Command {

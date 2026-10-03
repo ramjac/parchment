@@ -547,6 +547,12 @@ func (w *Workspace) deleteLocked(artifactsDir, id string) error {
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("note storage path is not a directory")
 	}
+	if _, err := w.readNoteUnlocked(id); err != nil {
+		if errors.Is(err, errNotNote) || errors.Is(err, errNoMetadata) {
+			return fmt.Errorf("artifact ID %s is occupied by a non-note artifact", id)
+		}
+		return fmt.Errorf("validate note before deletion: %w", err)
+	}
 	tombstone := filepath.Join(artifactsDir, deletedArtifactPrefix+id)
 	if err := os.Rename(dir, tombstone); err != nil {
 		return fmt.Errorf("stage note deletion: %w", err)

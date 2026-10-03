@@ -520,4 +520,10 @@ func TestNoteRepositoryIgnoresOtherArtifactKinds(t *testing.T) {
 	if len(notes) != 0 {
 		t.Fatalf("note list included non-note artifacts: %+v", notes)
 	}
+	if err := ws.Delete(context.Background(), id); err == nil {
+		t.Fatal("Delete removed a non-note artifact")
+	}
+	if _, err := os.Stat(filepath.Join(dir, metadataName)); err != nil {
+		t.Fatalf("Delete changed non-note artifact metadata: %v", err)
+	}
 }
