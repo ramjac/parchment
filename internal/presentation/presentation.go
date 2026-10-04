@@ -341,7 +341,7 @@ func Parse(source string) (Deck, error) {
 }
 
 func isIndentedCode(line string) bool {
-	return strings.HasPrefix(line, "\t") || strings.HasPrefix(line, "    ")
+	return hasFourSpaceFenceIndent(line)
 }
 
 func markdownFence(line string) string {

@@ -176,6 +176,22 @@ func TestIndentedCodeFenceInListContinuationIsNotAnOpener(t *testing.T) {
 	}
 }
 
+func TestMixedSpaceTabIndentationIsIndentedCode(t *testing.T) {
+	source := "# Mixed indentation\n\n## Example\n\n \t## code, not a slide\n \t# code, not a title\n \t```go\n \t## still code\n \t```\n"
+	deck, err := Parse(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deck.Slides) != 1 {
+		t.Fatalf("parsed %d slides, want 1", len(deck.Slides))
+	}
+	for _, want := range []string{" \t## code, not a slide", " \t# code, not a title", " \t```go", " \t## still code", " \t```"} {
+		if !strings.Contains(deck.Slides[0].Body, want) {
+			t.Errorf("slide body missing %q:\n%s", want, deck.Slides[0].Body)
+		}
+	}
+}
+
 func TestExcessListIndentationDoesNotOpenFence(t *testing.T) {
 	source := "# Indented list fence\n\n## Example\n\n-     ```go\n"
 	deck, err := Parse(source)

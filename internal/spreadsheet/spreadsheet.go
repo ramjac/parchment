@@ -275,6 +275,9 @@ func Normalize(book *Spreadsheet) error {
 	if book.Kind != artifact.SpreadsheetKind {
 		return errors.New("artifact is not a spreadsheet")
 	}
+	if !utf8.ValidString(book.Title) {
+		return errors.New("spreadsheet title must be valid UTF-8")
+	}
 	book.CreatedAt = book.CreatedAt.UTC()
 	book.ModifiedAt = book.ModifiedAt.UTC()
 	if len(book.Sheets) == 0 || len(book.Sheets) > MaxSheets {
