@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/history"
@@ -290,6 +291,9 @@ func validArtifactID(id string) bool {
 }
 
 func validateSnapshot(s ChangeSnapshot) error {
+	if !utf8.ValidString(s.Title) || !utf8.ValidString(s.Body) {
+		return errors.New("document snapshot text must be valid UTF-8")
+	}
 	if strings.TrimSpace(s.Title) == "" {
 		return errors.New("title is required")
 	}
@@ -523,6 +527,9 @@ func (s *Service) apply(ctx context.Context, expected Document, description stri
 // references, so the artifact directory holds only images in use.
 func normalize(d *Document) error {
 	d.Title = strings.TrimSpace(d.Title)
+	if !utf8.ValidString(d.Title) || !utf8.ValidString(d.Body) {
+		return errors.New("document title and body must be valid UTF-8")
+	}
 	if d.Title == "" {
 		return errors.New("document title is required")
 	}

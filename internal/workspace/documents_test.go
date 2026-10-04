@@ -450,6 +450,53 @@ func TestDocumentChangesPersistAndResolveAtomically(t *testing.T) {
 	}
 }
 
+func TestDocumentProposalsRejectInvalidUTF8Snapshots(t *testing.T) {
+	ctx := context.Background()
+	ws := openTestWorkspace(t, t.TempDir())
+	service := document.NewService(ws, 10)
+	created, err := service.Create(ctx, document.Draft{Title: "Draft", Body: "original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := string([]byte{0xff})
+	for _, test := range []struct {
+		name   string
+		before document.Document
+		draft  document.Draft
+	}{
+		{
+			name:   "invalid title",
+			before: created,
+			draft:  document.Draft{Title: "Revised" + invalid, Body: "proposed", Layout: created.Layout},
+		},
+		{
+			name:   "invalid body",
+			before: created,
+			draft:  document.Draft{Title: "Revised", Body: "proposed" + invalid, Layout: created.Layout},
+		},
+		{
+			name: "invalid original snapshot",
+			before: func() document.Document {
+				copy := created
+				copy.Body += invalid
+				return copy
+			}(),
+			draft: document.Draft{Title: "Revised", Body: "proposed", Layout: created.Layout},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := service.Propose(ctx, test.before, "Review text", test.draft); err == nil ||
+				!strings.Contains(err.Error(), "valid UTF-8") {
+				t.Fatalf("proposal with invalid snapshot text returned %v", err)
+			}
+		})
+	}
+	changes, err := service.Changes(ctx, created.ID)
+	if err != nil || len(changes) != 0 {
+		t.Fatalf("invalid proposals persisted changes: %+v, %v", changes, err)
+	}
+}
+
 func TestUndoDocumentDeleteRestoresChangeHistory(t *testing.T) {
 	ctx := context.Background()
 	ws := openTestWorkspace(t, t.TempDir())

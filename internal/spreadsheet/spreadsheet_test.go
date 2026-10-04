@@ -57,6 +57,14 @@ func TestNormalizeRejectsNamesThatSheetIndexTreatsAsEqual(t *testing.T) {
 	}
 }
 
+func TestNormalizeRejectsInvalidUTF8SheetNames(t *testing.T) {
+	book := formulaChain(0)
+	book.Sheets[0].Name = string([]byte{0xff})
+	if err := Normalize(&book); err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
+		t.Fatalf("invalid UTF-8 sheet name returned %v", err)
+	}
+}
+
 func TestFormulaArithmeticReferencesAndCycles(t *testing.T) {
 	book := Spreadsheet{
 		Artifact: artifact.Artifact{

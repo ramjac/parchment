@@ -91,6 +91,14 @@ func TestEncodeDecodeSinglePresentationFile(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidUTF8Source(t *testing.T) {
+	item := testPresentation()
+	item.Source = "# Demo\n\n## Slide\n" + string([]byte{0xff})
+	if err := Validate(item); err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
+		t.Fatalf("invalid presentation source returned %v", err)
+	}
+}
+
 func TestParserRejectsInvalidSlideStructure(t *testing.T) {
 	for _, source := range []string{
 		"Missing title\n\n## Slide\n",

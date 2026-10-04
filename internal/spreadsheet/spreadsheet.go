@@ -284,6 +284,9 @@ func Normalize(book *Spreadsheet) error {
 	for i := range book.Sheets {
 		sheet := &book.Sheets[i]
 		sheet.Name = strings.TrimSpace(sheet.Name)
+		if !utf8.ValidString(sheet.Name) {
+			return errors.New("sheet names must be valid UTF-8")
+		}
 		duplicate := false
 		for _, name := range names {
 			if strings.EqualFold(name, sheet.Name) {

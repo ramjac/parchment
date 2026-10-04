@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/artifactfile"
@@ -432,6 +433,9 @@ func Validate(item Presentation) error {
 	}
 	if item.Version != FileVersion {
 		return fmt.Errorf("unsupported presentation version %d", item.Version)
+	}
+	if !utf8.ValidString(item.Source) {
+		return errors.New("presentation source must be valid UTF-8")
 	}
 	deck, err := Parse(item.Source)
 	if err != nil {
