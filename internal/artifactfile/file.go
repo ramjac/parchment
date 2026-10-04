@@ -137,7 +137,11 @@ func ReadMetadata(data []byte) (artifact.Artifact, error) {
 	if len(data) > MaxFileSize {
 		return artifact.Artifact{}, fmt.Errorf("artifact file is larger than %d MiB", MaxFileSize>>20)
 	}
-	item, _, err := readMetadata(string(data))
+	source := string(data)
+	item, _, err := readMetadata(source)
+	if err != nil && isLegacyMetadataExample(source) {
+		return artifact.Artifact{}, fmt.Errorf("%w: it must be the first Markdown block", ErrMetadataMissing)
+	}
 	return item, err
 }
 
@@ -200,7 +204,18 @@ func ReadMetadataFrom(input io.Reader) (artifact.Artifact, error) {
 			if openingLineIncomplete {
 				openingLineIncomplete = false
 			} else if isFenceClose(line, block.marker[:1], len(block.marker)) {
-				return ReadMetadata([]byte(prefix.String()))
+				item, _, metadataErr := readMetadata(prefix.String())
+				if metadataErr == nil {
+					return item, nil
+				}
+				continuation, probeErr := hasEnvelopeContinuationFrom(reader, &consumed)
+				if probeErr != nil {
+					return artifact.Artifact{}, fmt.Errorf("inspect artifact format: %w", probeErr)
+				}
+				if !continuation {
+					return artifact.Artifact{}, fmt.Errorf("%w: it must be the first Markdown block", ErrMetadataMissing)
+				}
+				return artifact.Artifact{}, metadataErr
 			}
 		}
 		if err != nil {
@@ -209,6 +224,78 @@ func ReadMetadataFrom(input io.Reader) (artifact.Artifact, error) {
 			}
 			return artifact.Artifact{}, fmt.Errorf("read Parchment metadata: %w", err)
 		}
+	}
+}
+
+func isLegacyMetadataExample(source string) bool {
+	start := 0
+	for start < len(source) {
+		line, end := nextLine(source, start)
+		if !isBlankLine(line) {
+			break
+		}
+		start = end
+	}
+	if start == len(source) {
+		return false
+	}
+	line, _ := nextLine(source, start)
+	block, ok := parseOpening(line)
+	if !ok || block.name != metadataBlock {
+		return false
+	}
+	_, after, err := readBlock(source, start, block)
+	return err == nil && !hasEnvelopeContinuation(source, after)
+}
+
+func hasEnvelopeContinuation(source string, offset int) bool {
+	for offset < len(source) {
+		line, next := nextLine(source, offset)
+		offset = next
+		if isBlankLine(line) {
+			continue
+		}
+		if strings.TrimSpace(line) == bodyBoundary {
+			return true
+		}
+		block, ok := parseOpening(line)
+		return ok && strings.HasPrefix(block.name, "parchment-")
+	}
+	return false
+}
+
+func hasEnvelopeContinuationFrom(reader *bufio.Reader, consumed *int64) (bool, error) {
+	var lineBuffer strings.Builder
+	for {
+		lineBytes, err := reader.ReadSlice('\n')
+		*consumed += int64(len(lineBytes))
+		if *consumed > MaxFileSize {
+			return false, fmt.Errorf("artifact metadata is larger than %d MiB", MaxFileSize>>20)
+		}
+		lineBuffer.Write(lineBytes)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			if isBlankLine(lineBuffer.String()) {
+				lineBuffer.Reset()
+				continue
+			}
+			return false, nil
+		}
+		line := lineBuffer.String()
+		if isBlankLine(line) {
+			lineBuffer.Reset()
+			if errors.Is(err, io.EOF) {
+				return false, nil
+			}
+			if err != nil {
+				return false, err
+			}
+			continue
+		}
+		if strings.TrimSpace(line) == bodyBoundary {
+			return true, nil
+		}
+		block, ok := parseOpening(line)
+		return ok && strings.HasPrefix(block.name, "parchment-"), nil
 	}
 }
 

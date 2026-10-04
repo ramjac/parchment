@@ -1013,3 +1013,58 @@ func TestArtifactListsCheckKindBeforeReadingBodies(t *testing.T) {
 		})
 	}
 }
+
+func TestLegacyNoteMayBeginWithMetadataFenceExample(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	id := "0123456789abcdef0123456789abcdef"
+	dir := filepath.Join(root, ".parchment", "artifacts", id)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	metadata := artifact.Artifact{
+		ID: id, Kind: artifact.NoteKind, Title: "Legacy",
+		CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
+		Location: filepath.ToSlash(filepath.Join(".parchment", "artifacts", id, "content.md")),
+	}
+	metadataBytes, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "```parchment-meta\n{}\n```\n\nLegacy Markdown body\n"
+	if err := os.WriteFile(filepath.Join(dir, "metadata.json"), metadataBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "content.md"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := ws.Get(ctx, id)
+	if err != nil || loaded.Body != body {
+		t.Fatalf("legacy note = %+v, %v", loaded, err)
+	}
+	notes, err := ws.List(ctx)
+	if err != nil || len(notes) != 1 || notes[0].Body != body {
+		t.Fatalf("legacy note list = %+v, %v", notes, err)
+	}
+	for _, list := range []func(context.Context) error{
+		func(ctx context.Context) error {
+			_, err := ws.ListDocuments(ctx)
+			return err
+		},
+		func(ctx context.Context) error {
+			_, err := ws.ListPresentations(ctx)
+			return err
+		},
+		func(ctx context.Context) error {
+			_, err := ws.ListSpreadsheets(ctx)
+			return err
+		},
+	} {
+		if err := list(ctx); err != nil {
+			t.Fatalf("unrelated artifact list rejected the legacy note: %v", err)
+		}
+	}
+}

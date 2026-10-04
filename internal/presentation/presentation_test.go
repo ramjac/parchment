@@ -116,18 +116,28 @@ func TestLongerMarkdownFenceCannotCloseOnShorterFence(t *testing.T) {
 }
 
 func TestParseFencedCodeOpenedAfterListMarker(t *testing.T) {
-	source := "# Code talk\n\n## Example\n\n- ~~~go\n  ## not a slide\n  ~~~\n\n## After\n\nDone.\n"
-	deck, err := Parse(source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(deck.Slides) != 2 {
-		t.Fatalf("parsed %d slides, want 2", len(deck.Slides))
-	}
-	for _, want := range []string{"- ~~~go", "## not a slide", "  ~~~"} {
-		if !strings.Contains(deck.Slides[0].Body, want) {
-			t.Errorf("first slide body missing %q:\n%s", want, deck.Slides[0].Body)
-		}
+	for _, test := range []struct {
+		name, fence, code, close string
+	}{
+		{"bullet", "- ~~~go", "  ## not a slide", "  ~~~"},
+		{"ordered", "10. ~~~go", "    ## not a slide", "    ~~~"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := "# Code talk\n\n## Example\n\n" + test.fence + "\n" +
+				test.code + "\n" + test.close + "\n\n## After\n\nDone.\n"
+			deck, err := Parse(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(deck.Slides) != 2 {
+				t.Fatalf("parsed %d slides, want 2", len(deck.Slides))
+			}
+			for _, want := range []string{test.fence, "## not a slide", test.close} {
+				if !strings.Contains(deck.Slides[0].Body, want) {
+					t.Errorf("first slide body missing %q:\n%s", want, deck.Slides[0].Body)
+				}
+			}
+		})
 	}
 }
 

@@ -54,7 +54,7 @@ func TestReadMetadataDistinguishesMissingFromInvalidEnvelope(t *testing.T) {
 	if _, err := ReadMetadata([]byte("# Plain Markdown\n")); !errors.Is(err, ErrMetadataMissing) {
 		t.Fatalf("missing metadata error = %v", err)
 	}
-	if _, err := ReadMetadata([]byte("```parchment-meta\nnot JSON\n```\n")); err == nil ||
+	if _, err := ReadMetadata([]byte("```parchment-meta\nnot JSON\n```\n\n<!-- parchment-body -->\nbody\n")); err == nil ||
 		errors.Is(err, ErrMetadataMissing) {
 		t.Fatalf("invalid metadata error = %v", err)
 	}
@@ -77,6 +77,39 @@ func TestReadMetadataDistinguishesMissingFromInvalidEnvelope(t *testing.T) {
 	file, err := Decode(padded)
 	if err != nil || file.Body != "body" {
 		t.Fatalf("decoded artifact after leading blank lines = %+v, %v", file, err)
+	}
+}
+
+func TestReadMetadataRecognizesLegacyMetadataFenceExamples(t *testing.T) {
+	source := "```parchment-meta\n{}\n```\n\nLegacy Markdown body\n"
+	for _, read := range []func([]byte) (artifact.Artifact, error){
+		ReadMetadata,
+		func(data []byte) (artifact.Artifact, error) {
+			return ReadMetadataFrom(bytes.NewReader(data))
+		},
+	} {
+		if _, err := read([]byte(source)); !errors.Is(err, ErrMetadataMissing) {
+			t.Fatalf("legacy metadata example error = %v", err)
+		}
+	}
+}
+
+func TestReadMetadataRejectsCorruptEmbeddedMetadata(t *testing.T) {
+	for _, continuation := range []string{
+		"<!-- parchment-body -->\nbody\n",
+		"```parchment-document\n{}\n```\n\n<!-- parchment-body -->\nbody\n",
+	} {
+		source := "```parchment-meta\n{}\n```\n\n" + continuation
+		for _, read := range []func([]byte) (artifact.Artifact, error){
+			ReadMetadata,
+			func(data []byte) (artifact.Artifact, error) {
+				return ReadMetadataFrom(bytes.NewReader(data))
+			},
+		} {
+			if _, err := read([]byte(source)); err == nil || errors.Is(err, ErrMetadataMissing) {
+				t.Fatalf("corrupt embedded metadata error = %v", err)
+			}
+		}
 	}
 }
 

@@ -166,6 +166,8 @@ func Parse(source string) (Deck, error) {
 	lineNumber := 0
 	inFence := false
 	fenceMarker := ""
+	fenceListIndent := 0
+	listIndent := 0
 	var current *Slide
 	var header, body, notes strings.Builder
 	flush := func() {
@@ -186,16 +188,41 @@ func Parse(source string) (Deck, error) {
 			line = strings.TrimPrefix(line, "\uFEFF")
 			trimmed = strings.TrimSpace(line)
 		}
+		listContent, itemIndent, isListItem := listItemContent(line)
 		marker := markdownFence(trimmed)
-		if marker == "" && !inFence && !isIndentedCode(line) {
-			marker = markdownFenceAfterListMarker(line)
+		markerIndent := 0
+		if inFence && fenceListIndent > 0 {
+			if trimmed != "" && leadingSpaces(line) < fenceListIndent {
+				inFence, fenceMarker, fenceListIndent = false, "", 0
+			} else if isListItem {
+				marker = ""
+			} else if leadingSpaces(line) >= fenceListIndent {
+				marker = markdownFence(strings.TrimSpace(line[fenceListIndent:]))
+				markerIndent = fenceListIndent
+			} else {
+				marker = ""
+			}
 		}
-		if marker != "" && !isIndentedCode(line) {
+		if !inFence {
+			if isListItem {
+				listIndent = itemIndent
+				marker, markerIndent = markdownFence(strings.TrimSpace(listContent)), itemIndent
+			} else if trimmed != "" && leadingSpaces(line) < listIndent {
+				listIndent = 0
+			}
+			if !isListItem && listIndent > 0 && leadingSpaces(line) >= listIndent {
+				marker = markdownFence(strings.TrimSpace(line[listIndent:]))
+				markerIndent = listIndent
+			} else if !isListItem && marker == "" && !isIndentedCode(line) {
+				marker = markdownFence(trimmed)
+			}
+		}
+		if marker != "" && (!isIndentedCode(line) || markerIndent > 0) {
 			if !inFence {
-				inFence, fenceMarker = true, marker
+				inFence, fenceMarker, fenceListIndent = true, marker, markerIndent
 			} else if marker[0] == fenceMarker[0] && len(marker) >= len(fenceMarker) &&
 				strings.TrimSpace(trimmed[len(marker):]) == "" {
-				inFence, fenceMarker = false, ""
+				inFence, fenceMarker, fenceListIndent = false, "", 0
 			}
 			if current != nil {
 				body.WriteString(line + "\n")
@@ -294,13 +321,13 @@ func markdownFence(line string) string {
 	return line[:i]
 }
 
-func markdownFenceAfterListMarker(line string) string {
+func listItemContent(line string) (string, int, bool) {
 	indent := 0
 	for indent < len(line) && indent < 4 && line[indent] == ' ' {
 		indent++
 	}
 	if indent > 3 || indent == len(line) {
-		return ""
+		return "", 0, false
 	}
 	end := indent
 	if line[end] == '-' || line[end] == '+' || line[end] == '*' {
@@ -311,18 +338,26 @@ func markdownFenceAfterListMarker(line string) string {
 			end++
 		}
 		if end == digits || end == len(line) || line[end] != '.' && line[end] != ')' {
-			return ""
+			return "", 0, false
 		}
 		end++
 	}
 	if end == len(line) || line[end] != ' ' && line[end] != '\t' {
-		return ""
+		return "", 0, false
 	}
 	end++
 	for end < len(line) && (line[end] == ' ' || line[end] == '\t') {
 		end++
 	}
-	return markdownFence(strings.TrimSpace(line[end:]))
+	return line[end:], end, true
+}
+
+func leadingSpaces(line string) int {
+	indent := 0
+	for indent < len(line) && line[indent] == ' ' {
+		indent++
+	}
+	return indent
 }
 
 func stripAnchor(title string) string {
