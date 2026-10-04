@@ -46,6 +46,17 @@ func TestSingleFileWorkbookEncodesMetadataCellsAndFormulas(t *testing.T) {
 	}
 }
 
+func TestNormalizeRejectsNamesThatSheetIndexTreatsAsEqual(t *testing.T) {
+	book := formulaChain(0)
+	book.Sheets = []Sheet{
+		{Name: "Σ", Rows: [][]Cell{{{Value: "first"}}}},
+		{Name: "ς", Rows: [][]Cell{{{Value: "second"}}}},
+	}
+	if err := Normalize(&book); err == nil {
+		t.Fatal("sheet names equivalent under EqualFold were accepted")
+	}
+}
+
 func TestFormulaArithmeticReferencesAndCycles(t *testing.T) {
 	book := Spreadsheet{
 		Artifact: artifact.Artifact{

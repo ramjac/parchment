@@ -279,14 +279,21 @@ func Normalize(book *Spreadsheet) error {
 	if len(book.Sheets) == 0 || len(book.Sheets) > MaxSheets {
 		return fmt.Errorf("spreadsheet must have between 1 and %d sheets", MaxSheets)
 	}
-	names := map[string]bool{}
+	var names []string
 	for i := range book.Sheets {
 		sheet := &book.Sheets[i]
 		sheet.Name = strings.TrimSpace(sheet.Name)
-		if sheet.Name == "" || len(sheet.Name) > 128 || names[strings.ToLower(sheet.Name)] {
+		duplicate := false
+		for _, name := range names {
+			if strings.EqualFold(name, sheet.Name) {
+				duplicate = true
+				break
+			}
+		}
+		if sheet.Name == "" || len(sheet.Name) > 128 || duplicate {
 			return errors.New("sheet names must be non-empty, at most 128 characters, and unique")
 		}
-		names[strings.ToLower(sheet.Name)] = true
+		names = append(names, sheet.Name)
 		if len(sheet.Rows) == 0 {
 			sheet.Rows = [][]Cell{{{}}}
 		}

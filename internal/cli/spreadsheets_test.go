@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"example.com/parchment/internal/spreadsheet"
 )
 
 func TestSpreadsheetCLIFormulasAndGridOperations(t *testing.T) {
@@ -20,6 +22,7 @@ func TestSpreadsheetCLIFormulasAndGridOperations(t *testing.T) {
 	if err := os.WriteFile(input, []byte("Item,Count\nApples,4\nOranges,3\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+
 	run := func(args ...string) (string, error) {
 		t.Helper()
 		var stdout, stderr bytes.Buffer
@@ -79,5 +82,24 @@ func TestSpreadsheetCLIFormulasAndGridOperations(t *testing.T) {
 	must("spreadsheet", "delete", id, "--yes")
 	if out := must("spreadsheet", "list"); strings.Contains(out, id) {
 		t.Fatalf("deleted spreadsheet still listed: %q", out)
+	}
+}
+
+func TestReadSpreadsheetCSVEnforcesInputAndDimensionLimits(t *testing.T) {
+	if _, err := readSpreadsheetCSV(strings.NewReader(strings.Repeat("x\n", spreadsheet.MaxRows+1)), 1<<20); err == nil ||
+		!strings.Contains(err.Error(), "rows") {
+		t.Fatalf("excess CSV rows returned %v", err)
+	}
+	if _, err := readSpreadsheetCSV(strings.NewReader(strings.Repeat(",", spreadsheet.MaxColumns)), 1<<20); err == nil ||
+		!strings.Contains(err.Error(), "columns") {
+		t.Fatalf("excess CSV columns returned %v", err)
+	}
+	if _, err := readSpreadsheetCSV(strings.NewReader("123456789"), 8); err == nil ||
+		!strings.Contains(err.Error(), "larger than 8 bytes") {
+		t.Fatalf("oversized CSV input returned %v", err)
+	}
+	rows, err := readSpreadsheetCSV(strings.NewReader("A,B\n1,2\n"), 1024)
+	if err != nil || len(rows) != 2 || rows[1][1].Value != "2" {
+		t.Fatalf("valid CSV rows = %+v, %v", rows, err)
 	}
 }
