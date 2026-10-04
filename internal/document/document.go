@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -19,13 +20,14 @@ import (
 // ErrNotFound indicates that the requested document does not exist.
 var ErrNotFound = errors.New("document not found")
 
-// Document is a multi-page artifact. Its canonical content is Markdown, with
-// page layout and embedded images stored beside it in the artifact directory.
+// Document is a multi-page artifact. Its canonical Markdown file also stores
+// page layout and embedded images in a hidden payload block.
 type Document struct {
 	artifact.Artifact
 	Body   string
 	Layout Layout
 	Images []Image
+	Blocks map[string]json.RawMessage `json:"-"`
 }
 
 // Draft is the editable part of a document.
@@ -404,7 +406,7 @@ func (s *Service) SetLayout(ctx context.Context, id string, layout Layout) (Docu
 }
 
 // AddImage embeds an image and appends it to the end of the body. It returns
-// the updated document and the embedded image's file name.
+// the updated document and the embedded image's stable name.
 func (s *Service) AddImage(ctx context.Context, id, alt string, data []byte) (Document, string, error) {
 	img, err := NewImage(data)
 	if err != nil {
@@ -559,6 +561,12 @@ func cloneDocument(d *Document) *Document {
 	clone.Images = make([]Image, len(d.Images))
 	for i, img := range d.Images {
 		clone.Images[i] = Image{Name: img.Name, Data: append([]byte(nil), img.Data...)}
+	}
+	if d.Blocks != nil {
+		clone.Blocks = make(map[string]json.RawMessage, len(d.Blocks))
+		for name, payload := range d.Blocks {
+			clone.Blocks[name] = append(json.RawMessage(nil), payload...)
+		}
 	}
 	return &clone
 }

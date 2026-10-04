@@ -1,3 +1,17 @@
+```parchment-meta
+{
+  "id": "10000000000000000000000000000001",
+  "kind": "note",
+  "title": "Trail observations",
+  "created_at": "2026-01-15T09:00:00Z",
+  "modified_at": "2026-01-15T09:00:00Z",
+  "format_version": 1,
+  "location": ".parchment/artifacts/10000000000000000000000000000001/content.md"
+}
+```
+
+<!-- parchment-body -->
+
 # Trail observations
 
 The north path is dry and easy to follow. A narrow stream crosses the lower

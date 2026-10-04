@@ -3,6 +3,7 @@ package spreadsheet
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,10 +15,11 @@ func TestSingleFileWorkbookEncodesMetadataCellsAndFormulas(t *testing.T) {
 		Artifact: artifact.Artifact{
 			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.SpreadsheetKind,
 			Title: "Budget", FormatVersion: artifact.FormatVersion,
-			Location:  ".parchment/artifacts/0123456789abcdef0123456789abcdef/spreadsheet.json",
+			Location:  ".parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
 			CreatedAt: fixedTime, ModifiedAt: fixedTime,
 		},
 		Version: FileVersion,
+		Body:    "# Budget\n\nA visible Markdown description.",
 		Sheets: []Sheet{{Name: "Sheet1", Rows: [][]Cell{
 			{{Value: "Income"}, {Value: "125"}, {Formula: "=B1*2"}},
 			{{Value: "Total"}, {}, {Formula: "=(B1+C1)/3"}},
@@ -27,8 +29,9 @@ func TestSingleFileWorkbookEncodesMetadataCellsAndFormulas(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data[:1]) != "{" {
-		t.Fatalf("workbook is not a readable JSON document: %q", data[:min(len(data), 100)])
+	if !strings.HasPrefix(string(data), "```parchment-meta\n") ||
+		!strings.Contains(string(data), "```parchment-spreadsheet\n") {
+		t.Fatalf("workbook is not a Markdown artifact: %q", data[:min(len(data), 200)])
 	}
 	decoded, err := Decode(data)
 	if err != nil {
@@ -48,7 +51,7 @@ func TestFormulaArithmeticReferencesAndCycles(t *testing.T) {
 		Artifact: artifact.Artifact{
 			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.SpreadsheetKind,
 			Title: "Formula test", FormatVersion: artifact.FormatVersion,
-			Location:  ".parchment/artifacts/0123456789abcdef0123456789abcdef/spreadsheet.json",
+			Location:  ".parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
 			CreatedAt: fixedTime, ModifiedAt: fixedTime,
 		},
 		Version: FileVersion,

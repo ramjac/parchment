@@ -1,29 +1,26 @@
 # Artifact examples
 
-These files show Parchment's canonical, inspectable artifact formats where
-available. `budget.spreadsheet.json` is a complete workbook artifact, including
-its metadata and formulas; it is not CSV. `image.png` is embedded in the
-document. Standalone image artifact editing is not implemented yet.
+Each sample is a complete Markdown artifact file. A leading
+`parchment-meta` code block contains shared metadata; the document, spreadsheet,
+and embedded image data is kept in hidden Parchment code blocks. The body
+remains ordinary Markdown after the `<!-- parchment-body -->` separator.
 
-From the repository root, run:
+Copy the sample files into a workspace:
 
 ```sh
 workspace=./example-workspace
 parchment init "$workspace"
-
-parchment --workspace "$workspace" note create "Field notes" \
-  --body "$(cat examples/note.md)"
-document_id=$(parchment --workspace "$workspace" document create "Project brief" \
-  --body-file examples/document.md)
-parchment --workspace "$workspace" document image "$document_id" examples/image.png
-spreadsheet_id=0123456789abcdef0123456789abcdef
-mkdir -m 700 -p "$workspace/.parchment/artifacts/$spreadsheet_id"
-cp examples/budget.spreadsheet.json \
-  "$workspace/.parchment/artifacts/$spreadsheet_id/spreadsheet.json"
-chmod 600 "$workspace/.parchment/artifacts/$spreadsheet_id/spreadsheet.json"
-parchment --workspace "$workspace" spreadsheet cell "$spreadsheet_id" D2
-parchment --workspace "$workspace" presentation create "Product Update" \
-  --body-file examples/presentation.md
+for id in 10000000000000000000000000000001 \
+          20000000000000000000000000000002 \
+          30000000000000000000000000000003 \
+          40000000000000000000000000000004; do
+  mkdir -m 700 -p "$workspace/.parchment/artifacts/$id"
+done
+cp examples/note.md "$workspace/.parchment/artifacts/10000000000000000000000000000001/content.md"
+cp examples/document.md "$workspace/.parchment/artifacts/20000000000000000000000000000002/content.md"
+cp examples/budget.md "$workspace/.parchment/artifacts/30000000000000000000000000000003/content.md"
+cp examples/presentation.md "$workspace/.parchment/artifacts/40000000000000000000000000000004/content.md"
+chmod 600 "$workspace"/.parchment/artifacts/*/content.md
 ```
 
 Inspect each artifact type in the sample workspace with:
@@ -35,4 +32,12 @@ parchment --workspace ./example-workspace spreadsheet list
 parchment --workspace ./example-workspace presentation list
 ```
 
-The document's embedded image is stored alongside its Markdown content.
+Try the spreadsheet formula and document print preview:
+
+```sh
+parchment --workspace ./example-workspace spreadsheet cell 30000000000000000000000000000003 D2
+parchment --workspace ./example-workspace document print 20000000000000000000000000000002
+```
+
+The garden illustration is embedded in the document's hidden JSON payload as
+base64, so the artifact is still one Markdown file.

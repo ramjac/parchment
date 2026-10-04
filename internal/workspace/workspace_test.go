@@ -13,9 +13,15 @@ import (
 	"time"
 
 	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/artifactfile"
+	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/note"
+	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/search"
+	"example.com/parchment/internal/spreadsheet"
 )
+
+const testExtensionBlock = "parchment-extension"
 
 func openTestWorkspace(t *testing.T, root string) *Workspace {
 	t.Helper()
@@ -27,6 +33,108 @@ func openTestWorkspace(t *testing.T, root string) *Workspace {
 		t.Fatal(err)
 	}
 	return ws
+}
+
+func addTestPayloadBlock(t *testing.T, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := artifactfile.Decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks := make(map[string]any, len(file.Blocks)+1)
+	for name, payload := range file.Blocks {
+		blocks[name] = payload
+	}
+	blocks[testExtensionBlock] = json.RawMessage(`{"value":"preserved"}`)
+	data, err = artifactfile.Encode(file.Artifact, file.Body, blocks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func requireTestPayloadBlock(t *testing.T, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := artifactfile.Decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var block struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(file.Blocks[testExtensionBlock], &block); err != nil {
+		t.Fatal(err)
+	}
+	if block.Value != "preserved" {
+		t.Fatalf("extension block = %s", file.Blocks[testExtensionBlock])
+	}
+}
+
+func TestArtifactEditsPreserveAdditionalPayloadBlocks(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	contentPath := func(id string) string {
+		return filepath.Join(root, ".parchment", "artifacts", id, "content.md")
+	}
+
+	notes := note.NewService(ws, 10)
+	n, err := notes.Create(ctx, "Note", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addTestPayloadBlock(t, contentPath(n.ID))
+	if _, err := notes.Rename(ctx, n.ID, "Renamed note"); err != nil {
+		t.Fatal(err)
+	}
+	requireTestPayloadBlock(t, contentPath(n.ID))
+
+	documents := document.NewService(ws, 10)
+	d, err := documents.Create(ctx, document.Draft{Title: "Document", Body: "body"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addTestPayloadBlock(t, contentPath(d.ID))
+	if _, err := documents.Rename(ctx, d.ID, "Renamed document"); err != nil {
+		t.Fatal(err)
+	}
+	requireTestPayloadBlock(t, contentPath(d.ID))
+
+	sheets := spreadsheet.NewService(ws, 10)
+	book, err := sheets.Create(ctx, "Workbook", [][]spreadsheet.Cell{{{Value: "before"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addTestPayloadBlock(t, contentPath(book.ID))
+	if _, err := sheets.SetCell(ctx, book.ID, 1, 1, spreadsheet.Cell{Value: "after"}); err != nil {
+		t.Fatal(err)
+	}
+	requireTestPayloadBlock(t, contentPath(book.ID))
+
+	decks := presentation.NewService(ws, 10)
+	deck, err := decks.Create(ctx, "Presentation", "# Presentation\n\n## Slide 1\n\nbefore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addTestPayloadBlock(t, contentPath(deck.ID))
+	current, err := decks.Get(ctx, deck.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decks.Update(ctx, current, "# Presentation\n\n## Slide 1\n\nafter"); err != nil {
+		t.Fatal(err)
+	}
+	requireTestPayloadBlock(t, contentPath(deck.ID))
 }
 
 func TestWorkspacePersistsInspectableNotesAndStableIDs(t *testing.T) {
@@ -47,12 +155,18 @@ func TestWorkspacePersistsInspectableNotesAndStableIDs(t *testing.T) {
 		t.Fatalf("unexpected artifact metadata: %+v", created.Artifact)
 	}
 	contentPath := filepath.Join(root, filepath.FromSlash(created.Location))
+	artifactDir := filepath.Dir(contentPath)
+	entries, err := os.ReadDir(artifactDir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "content.md" {
+		t.Fatalf("note artifact files = %v, %v", entries, err)
+	}
 	content, err := os.ReadFile(contentPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(content) != "Visit the museum" {
-		t.Fatalf("content = %q", content)
+	file, err := artifactfile.Decode(content)
+	if err != nil || file.Artifact.Title != "Trip ideas" || file.Body != "Visit the museum" {
+		t.Fatalf("decoded artifact file = %+v, %v", file, err)
 	}
 	if err := service.AddTag(context.Background(), created.ID, "travel"); err != nil {
 		t.Fatal(err)
@@ -259,14 +373,15 @@ func TestTransitionDoesNotOverwriteOccupiedArtifactIDs(t *testing.T) {
 	metadata := artifact.Artifact{
 		ID: id, Kind: artifact.DocumentKind, Title: "Other artifact",
 		CreatedAt: time.Now().UTC(), ModifiedAt: time.Now().UTC(),
-		FormatVersion: artifact.FormatVersion, Location: "documents/" + id,
+		FormatVersion: artifact.FormatVersion,
+		Location:      ".parchment/artifacts/" + id + "/content.md",
 	}
-	original, err := json.Marshal(metadata)
+	original, err := artifactfile.Encode(metadata, "other artifact", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	metadataPath := filepath.Join(dir, metadataName)
-	if err := os.WriteFile(metadataPath, original, 0o600); err != nil {
+	contentPath := filepath.Join(dir, "content.md")
+	if err := os.WriteFile(contentPath, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	target := note.Note{Artifact: artifact.Artifact{
@@ -281,7 +396,7 @@ func TestTransitionDoesNotOverwriteOccupiedArtifactIDs(t *testing.T) {
 	if err := ws.Transition(ctx, id, nil, &target); err == nil {
 		t.Fatal("transition overwrote a non-note artifact")
 	}
-	after, err := os.ReadFile(metadataPath)
+	after, err := os.ReadFile(contentPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,17 +404,17 @@ func TestTransitionDoesNotOverwriteOccupiedArtifactIDs(t *testing.T) {
 		t.Fatalf("non-note metadata changed: %s", after)
 	}
 
-	missingMetadataID := "abcdef0123456789abcdef0123456789"
-	missingMetadataDir := filepath.Join(ws.Root(), ".parchment", "artifacts", missingMetadataID)
-	if err := os.Mkdir(missingMetadataDir, 0o700); err != nil {
+	occupiedID := "abcdef0123456789abcdef0123456789"
+	occupiedDir := filepath.Join(ws.Root(), ".parchment", "artifacts", occupiedID)
+	if err := os.Mkdir(occupiedDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	target.ID = missingMetadataID
-	target.Location = ".parchment/artifacts/" + missingMetadataID + "/content.md"
-	if err := ws.Transition(ctx, missingMetadataID, nil, &target); err == nil {
-		t.Fatal("transition claimed artifact directory with missing metadata")
+	target.ID = occupiedID
+	target.Location = ".parchment/artifacts/" + occupiedID + "/content.md"
+	if err := ws.Transition(ctx, occupiedID, nil, &target); err == nil {
+		t.Fatal("transition claimed an occupied artifact directory")
 	}
-	if _, err := os.Lstat(filepath.Join(missingMetadataDir, metadataName)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Lstat(filepath.Join(occupiedDir, "content.md")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("transition wrote into occupied directory: %v", err)
 	}
 }
@@ -327,6 +442,9 @@ func TestWorkspaceReportsMissingNoteContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.Remove(filepath.Join(root, filepath.FromSlash(created.Location))); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(created.Location)), []byte("# invalid"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -362,24 +480,20 @@ func TestSaveFailurePreservesExistingArtifact(t *testing.T) {
 		t.Fatalf("failed save changed artifact: %+v", loaded)
 	}
 
-	metadataPath := filepath.Join(root, ".parchment", "artifacts", created.ID, metadataName)
-	if err := os.Remove(metadataPath); err != nil {
+	contentPath := filepath.Join(root, filepath.FromSlash(created.Location))
+	if err := os.Remove(contentPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(metadataPath, 0o700); err != nil {
+	if err := os.Mkdir(contentPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	invalid = created
 	invalid.Body = "second replacement"
 	if err := ws.Save(ctx, invalid); err == nil {
-		t.Fatal("save succeeded when metadata destination was a directory")
+		t.Fatal("save succeeded when artifact destination was a directory")
 	}
-	content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(created.Location)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(content) != created.Body {
-		t.Fatalf("failed save changed content to %q", content)
+	if info, err := os.Stat(contentPath); err != nil || !info.IsDir() {
+		t.Fatalf("failed save changed artifact destination: %v, %v", info, err)
 	}
 }
 
@@ -521,15 +635,7 @@ func TestOpenRecoversInterruptedArtifactReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(root, ".parchment", "artifacts", created.ID)
-	metadata, err := os.ReadFile(filepath.Join(dir, metadataName))
-	if err != nil {
-		t.Fatal(err)
-	}
 	content, err := os.ReadFile(filepath.Join(dir, "content.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	metadataBackup, err := stageFile(dir, metadata)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -539,15 +645,11 @@ func TestOpenRecoversInterruptedArtifactReplacement(t *testing.T) {
 	}
 	transaction, err := json.Marshal([]transactionFile{
 		{Name: "content.md", Backup: filepath.Base(contentBackup), HadOld: true},
-		{Name: metadataName, Backup: filepath.Base(metadataBackup), HadOld: true},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "content.md"), []byte("partial replacement"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, metadataName), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, transactionName), transaction, 0o600); err != nil {
@@ -589,7 +691,7 @@ func TestRecoveryRejectsUnexpectedBackupBeforeMutatingFiles(t *testing.T) {
 	}
 	journal, err := json.Marshal([]transactionFile{
 		{Name: "content.md", Backup: filepath.Base(backup), HadOld: true},
-		{Name: metadataName, Backup: "../../../../victim", HadOld: false},
+		{Name: "unexpected.md", Backup: "../../../../victim", HadOld: false},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -764,13 +866,14 @@ func TestNoteRepositoryIgnoresOtherArtifactKinds(t *testing.T) {
 		ID: id, Kind: artifact.DocumentKind, Title: "Future document",
 		CreatedAt:     time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC),
 		ModifiedAt:    time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC),
-		FormatVersion: artifact.FormatVersion, Location: "documents/" + id + ".md",
+		FormatVersion: artifact.FormatVersion,
+		Location:      ".parchment/artifacts/" + id + "/content.md",
 	}
-	data, err := json.Marshal(metadata)
+	data, err := artifactfile.Encode(metadata, "future document", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, metadataName), data, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "content.md"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	notes, err := ws.List(context.Background())
@@ -783,7 +886,7 @@ func TestNoteRepositoryIgnoresOtherArtifactKinds(t *testing.T) {
 	if err := ws.Delete(context.Background(), id); err == nil {
 		t.Fatal("Delete removed a non-note artifact")
 	}
-	if _, err := os.Stat(filepath.Join(dir, metadataName)); err != nil {
-		t.Fatalf("Delete changed non-note artifact metadata: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, "content.md")); err != nil {
+		t.Fatalf("Delete changed non-note artifact file: %v", err)
 	}
 }

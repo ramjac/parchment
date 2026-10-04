@@ -2,7 +2,6 @@ package presentation
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/artifactfile"
 	"example.com/parchment/internal/history"
 )
 
@@ -41,11 +41,11 @@ type Presentation struct {
 	artifact.Artifact
 	Version int
 	Source  string
+	Blocks  map[string]json.RawMessage `json:"-"`
 }
 
-type fileHeader struct {
-	Version  int               `json:"version"`
-	Artifact artifact.Artifact `json:"artifact"`
+type fileContent struct {
+	Version int `json:"version"`
 }
 
 // Repository persists presentations as single-file artifacts.
@@ -109,7 +109,7 @@ func (s *Service) Create(ctx context.Context, title, source string) (Presentatio
 		Artifact: artifact.Artifact{
 			ID: id, Kind: artifact.PresentationKind, Title: title,
 			CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
-			Location: ".parchment/artifacts/" + id + "/presentation.md",
+			Location: ".parchment/artifacts/" + id + "/content.md",
 		},
 		Version: FileVersion, Source: source,
 	}
@@ -159,6 +159,7 @@ func (s *Service) Redo(ctx context.Context) (string, error) { return s.history.R
 // syntax: an H1 title, H2 slide headings, H3 subsections, // comments, and
 // : speaker-note lines. Markdown text is preserved for the view layer.
 func Parse(source string) (Deck, error) {
+	source = artifactfile.StripPrivateBlocks(source)
 	var deck Deck
 	scanner := bufio.NewScanner(strings.NewReader(source))
 	scanner.Buffer(make([]byte, 4096), 4<<20)
@@ -315,39 +316,43 @@ func Validate(item Presentation) error {
 	return nil
 }
 
-// Encode writes a self-contained Markdown file with metadata in an HTML comment.
+// Encode writes a self-contained Markdown file with a leading metadata block.
 func Encode(item Presentation) ([]byte, error) {
 	if err := Validate(item); err != nil {
 		return nil, err
 	}
-	header, err := json.Marshal(fileHeader{Version: FileVersion, Artifact: item.Artifact})
-	if err != nil {
-		return nil, fmt.Errorf("encode presentation metadata: %w", err)
+	blocks := make(map[string]any, len(item.Blocks)+1)
+	for name, payload := range item.Blocks {
+		blocks[name] = payload
 	}
-	var data bytes.Buffer
-	data.WriteString("<!-- parchment: ")
-	data.Write(header)
-	data.WriteString(" -->\n")
-	data.WriteString(item.Source)
-	return data.Bytes(), nil
+	blocks["parchment-presentation"] = fileContent{Version: item.Version}
+	return artifactfile.Encode(item.Artifact, item.Source, blocks)
 }
 
 // Decode reads metadata and Markdown from a single presentation file.
 func Decode(data []byte) (Presentation, error) {
-	line, source, ok := bytes.Cut(data, []byte{'\n'})
-	line = bytes.TrimSuffix(line, []byte{'\r'})
-	if !ok || !bytes.HasPrefix(line, []byte("<!-- parchment: ")) || !bytes.HasSuffix(line, []byte(" -->")) {
-		return Presentation{}, errors.New("presentation metadata comment is missing or malformed")
+	file, err := artifactfile.Decode(data)
+	if err != nil {
+		return Presentation{}, fmt.Errorf("decode presentation file: %w", err)
 	}
-	headerData := bytes.TrimSuffix(bytes.TrimPrefix(line, []byte("<!-- parchment: ")), []byte(" -->"))
-	var header fileHeader
-	if err := json.Unmarshal(headerData, &header); err != nil {
-		return Presentation{}, fmt.Errorf("decode presentation metadata: %w", err)
+	if file.Artifact.Kind != artifact.PresentationKind {
+		return Presentation{}, ErrNotFound
 	}
-	if header.Version != FileVersion {
-		return Presentation{}, fmt.Errorf("unsupported presentation file version %d", header.Version)
+	content, ok := file.Blocks["parchment-presentation"]
+	if !ok {
+		return Presentation{}, errors.New("presentation data block is missing")
 	}
-	item := Presentation{Artifact: header.Artifact, Version: header.Version, Source: string(source)}
+	var payload fileContent
+	if err := json.Unmarshal(content, &payload); err != nil {
+		return Presentation{}, fmt.Errorf("decode presentation data: %w", err)
+	}
+	if payload.Version != FileVersion {
+		return Presentation{}, fmt.Errorf("unsupported presentation file version %d", payload.Version)
+	}
+	item := Presentation{
+		Artifact: file.Artifact, Version: payload.Version, Source: file.Body,
+		Blocks: cloneBlocksExcept(file.Blocks, "parchment-presentation"),
+	}
 	item.CreatedAt = item.CreatedAt.UTC()
 	item.ModifiedAt = item.ModifiedAt.UTC()
 	if err := Validate(item); err != nil {
@@ -378,7 +383,33 @@ func Preview(deck Deck) string {
 func clonePresentation(item Presentation) Presentation {
 	item.Tags = append([]string(nil), item.Tags...)
 	item.Links = append([]string(nil), item.Links...)
+	item.Blocks = cloneBlocks(item.Blocks)
 	return item
+}
+
+func cloneBlocks(blocks map[string]json.RawMessage) map[string]json.RawMessage {
+	return cloneBlocksExcept(blocks)
+}
+
+func cloneBlocksExcept(blocks map[string]json.RawMessage, excluded ...string) map[string]json.RawMessage {
+	if len(blocks) == 0 {
+		return nil
+	}
+	exclude := make(map[string]bool, len(excluded))
+	for _, name := range excluded {
+		exclude[name] = true
+	}
+	clone := make(map[string]json.RawMessage, len(blocks))
+	for name, payload := range blocks {
+		if exclude[name] {
+			continue
+		}
+		clone[name] = append(json.RawMessage(nil), payload...)
+	}
+	if len(clone) == 0 {
+		return nil
+	}
+	return clone
 }
 
 func Equal(left, right Presentation) bool { return reflect.DeepEqual(left, right) }

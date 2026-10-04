@@ -8,7 +8,7 @@ import (
 	"unicode/utf8"
 )
 
-// LayoutVersion is the supported layout.json format version.
+// LayoutVersion is the supported document layout format version.
 const LayoutVersion = 1
 
 // Supported page sizes, orientations, and page-number placements.
@@ -55,7 +55,7 @@ type Margins struct {
 }
 
 // Layout describes how a document is paginated for printing. It is persisted
-// separately from the Markdown body so the body stays readable everywhere.
+// in the document's hidden Markdown payload block.
 //
 // Header and Footer hold up to three "|"-separated parts: one part is left
 // aligned, two are left and right, and three are left, center, and right.
