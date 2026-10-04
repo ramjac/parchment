@@ -51,7 +51,7 @@ func TestNotesOrdersResultsByModificationTime(t *testing.T) {
 	}
 }
 
-func TestDocumentsMatchTitleBodyAndTags(t *testing.T) {
+func TestDocumentsMatchTitleAndBody(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	if err := workspace.Init(root); err != nil {
@@ -62,11 +62,8 @@ func TestDocumentsMatchTitleBodyAndTags(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := document.NewService(ws, 10)
-	d, err := service.Create(ctx, document.Draft{Title: "Budget", Body: "Alpha PLAN"})
+	_, err = service.Create(ctx, document.Draft{Title: "Budget", Body: "Alpha PLAN"})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := service.AddTag(ctx, d.ID, "finance"); err != nil {
 		t.Fatal(err)
 	}
 	for _, query := range []string{"plan"} {

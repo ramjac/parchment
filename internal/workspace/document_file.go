@@ -273,8 +273,6 @@ func (f *DocumentFile) saveLocked(target document.Document, changes []document.C
 }
 
 func cloneStandaloneDocument(d document.Document) document.Document {
-	d.Tags = append([]string(nil), d.Tags...)
-	d.Links = append([]string(nil), d.Links...)
 	images := make([]document.Image, len(d.Images))
 	for i, img := range d.Images {
 		images[i] = document.Image{Name: img.Name, Data: append([]byte(nil), img.Data...)}

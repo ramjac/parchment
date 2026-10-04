@@ -366,8 +366,6 @@ func cloneRows(rows [][]Cell) [][]Cell {
 }
 
 func cloneSpreadsheet(book Spreadsheet) Spreadsheet {
-	book.Tags = append([]string(nil), book.Tags...)
-	book.Links = append([]string(nil), book.Links...)
 	book.Blocks = cloneBlocks(book.Blocks)
 	book.Sheets = append([]Sheet(nil), book.Sheets...)
 	for i := range book.Sheets {
@@ -441,18 +439,6 @@ func (o spreadsheetOperation) transition(ctx context.Context, expected, target *
 // Equal reports whether two spreadsheets have the same persisted value.
 func Equal(left, right Spreadsheet) bool {
 	left.Title, right.Title = "", ""
-	if len(left.Tags) == 0 {
-		left.Tags = nil
-	}
-	if len(right.Tags) == 0 {
-		right.Tags = nil
-	}
-	if len(left.Links) == 0 {
-		left.Links = nil
-	}
-	if len(right.Links) == 0 {
-		right.Links = nil
-	}
 	return reflect.DeepEqual(left, right)
 }
 

@@ -418,14 +418,3 @@ func TestMetadataBlockIsInspectable(t *testing.T) {
 		t.Fatalf("embedded metadata = %+v", file.Artifact)
 	}
 }
-
-func TestEqualTreatsEmptyMetadataSlicesAsNil(t *testing.T) {
-	left := testPresentation()
-	right := left
-	right.Title = "different filename"
-	right.Tags = []string{}
-	right.Links = []string{}
-	if !Equal(left, right) {
-		t.Fatal("empty tags and links should equal nil slices")
-	}
-}

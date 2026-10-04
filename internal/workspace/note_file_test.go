@@ -96,3 +96,34 @@ func TestStandaloneNoteRejectsExternalChanges(t *testing.T) {
 		t.Fatalf("external edit error = %v", err)
 	}
 }
+
+func TestStandaloneNoteSaveUpdatesTheOpenNote(t *testing.T) {
+	sample, err := os.ReadFile("../../examples/note.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "note.md")
+	if err := os.WriteFile(path, sample, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repository, err := OpenNoteFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := repository.List(context.Background())
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("list = %v, %v", listed, err)
+	}
+	item := listed[0]
+	item.Body = "# Saved\n"
+	if err := repository.Save(context.Background(), item); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if file, err := artifactfile.Decode(data); err != nil || file.Body != item.Body {
+		t.Fatalf("saved file = %+v, %v", file, err)
+	}
+}

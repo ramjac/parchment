@@ -84,3 +84,11 @@ func TestArtifactValidationRequiresIDPrefixForKind(t *testing.T) {
 		})
 	}
 }
+
+func TestValidIDRejectsSignedPayloads(t *testing.T) {
+	for _, id := range []string{"n-1", "n+1", "n 1", "nA", "n1_"} {
+		if ValidID(id) {
+			t.Errorf("ValidID(%q) = true", id)
+		}
+	}
+}

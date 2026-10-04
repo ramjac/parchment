@@ -620,13 +620,6 @@ func (m Model) viewWide(header string) string {
 			marker = "› "
 		}
 		fmt.Fprintf(&list, "%s%s\n", marker, sanitizeTerminalLine(n.Title))
-		if i == m.selected && len(n.Tags) > 0 {
-			tags := make([]string, len(n.Tags))
-			for j, tag := range n.Tags {
-				tags[j] = sanitizeTerminalLine(tag)
-			}
-			fmt.Fprintf(&list, "  #%s\n", strings.Join(tags, " #"))
-		}
 	}
 	listPane := lipgloss.NewStyle().Width(listWidth).Height(m.height-5).Border(lipgloss.NormalBorder()).
 		BorderForeground(m.theme.border).Padding(0, 1).Render(list.String())
@@ -853,13 +846,6 @@ func (m Model) dirty() bool {
 func preview(n note.Note) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\n", sanitizeTerminalLine(n.Title))
-	if len(n.Tags) > 0 {
-		tags := make([]string, len(n.Tags))
-		for i, tag := range n.Tags {
-			tags[i] = sanitizeTerminalLine(tag)
-		}
-		fmt.Fprintf(&b, "\nTags: #%s\n", strings.Join(tags, " #"))
-	}
 	fmt.Fprintf(&b, "\n%s", sanitizeTerminalText(artifactfile.StripPrivateBlocks(n.Body)))
 	return b.String()
 }

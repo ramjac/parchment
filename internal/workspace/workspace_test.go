@@ -206,9 +206,6 @@ func TestWorkspacePersistsInspectableNotesAndStableIDs(t *testing.T) {
 	if err != nil || file.Body != "Visit the museum" {
 		t.Fatalf("decoded artifact file = %+v, %v", file, err)
 	}
-	if err := service.AddTag(context.Background(), created.ID, "travel"); err != nil {
-		t.Fatal(err)
-	}
 	current, err := service.Get(context.Background(), created.ID)
 	if err != nil {
 		t.Fatal(err)

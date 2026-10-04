@@ -57,6 +57,11 @@ func ValidID(id string) bool {
 		return false
 	}
 	payload := id[1:]
+	for i := 0; i < len(payload); i++ {
+		if c := payload[i]; (c < '0' || c > '9') && (c < 'a' || c > 'z') {
+			return false
+		}
+	}
 	if len(payload) > 1 && payload[0] == '0' {
 		return false
 	}
@@ -72,7 +77,7 @@ func ValidIDForKind(id string, kind Kind) bool {
 
 // Artifact contains runtime metadata shared by every artifact type. The
 // artifact-file envelope persists only kind, timestamps, and format version;
-// identity, title, location, tags, and links are runtime or derived values.
+// identity, title, and location are runtime or derived values.
 type Artifact struct {
 	ID            string    `json:"id"`
 	Kind          Kind      `json:"kind"`
@@ -81,8 +86,6 @@ type Artifact struct {
 	ModifiedAt    time.Time `json:"modified_at"`
 	FormatVersion int       `json:"format_version"`
 	Location      string    `json:"location"`
-	Tags          []string  `json:"tags,omitempty"`
-	Links         []string  `json:"links,omitempty"`
 }
 
 // Validate checks the common metadata required for a persisted artifact.

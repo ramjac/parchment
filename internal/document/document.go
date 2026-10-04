@@ -411,43 +411,6 @@ func (s *Service) AddImage(ctx context.Context, id, alt string, data []byte) (Do
 	return updated, img.Name, err
 }
 
-// AddTag adds a unique tag to a document.
-func (s *Service) AddTag(ctx context.Context, id, tag string) error {
-	tag = strings.TrimSpace(tag)
-	if tag == "" {
-		return errors.New("tag is required")
-	}
-	_, err := s.Modify(ctx, id, "Add tag", func(d *Document) error {
-		for _, existing := range d.Tags {
-			if existing == tag {
-				return nil
-			}
-		}
-		d.Tags = append(d.Tags, tag)
-		return nil
-	})
-	return err
-}
-
-// RemoveTag removes a tag from a document.
-func (s *Service) RemoveTag(ctx context.Context, id, tag string) error {
-	tag = strings.TrimSpace(tag)
-	if tag == "" {
-		return errors.New("tag is required")
-	}
-	_, err := s.Modify(ctx, id, "Remove tag", func(d *Document) error {
-		kept := d.Tags[:0:0]
-		for _, existing := range d.Tags {
-			if existing != tag {
-				kept = append(kept, existing)
-			}
-		}
-		d.Tags = kept
-		return nil
-	})
-	return err
-}
-
 // Delete removes a document and records enough information to restore it.
 func (s *Service) Delete(ctx context.Context, id string) error {
 	before, err := s.repository.GetDocument(ctx, id)
@@ -555,8 +518,6 @@ func cloneDocument(d *Document) *Document {
 		return nil
 	}
 	clone := *d
-	clone.Tags = append([]string(nil), d.Tags...)
-	clone.Links = append([]string(nil), d.Links...)
 	clone.Images = make([]Image, len(d.Images))
 	for i, img := range d.Images {
 		clone.Images[i] = Image{Name: img.Name, Data: append([]byte(nil), img.Data...)}
@@ -654,18 +615,6 @@ func (o documentOperation) transition(ctx context.Context, expected, target *Doc
 // Equal reports whether two documents have the same persisted value.
 func Equal(left, right Document) bool {
 	left.Title, right.Title = "", ""
-	if len(left.Tags) == 0 {
-		left.Tags = nil
-	}
-	if len(right.Tags) == 0 {
-		right.Tags = nil
-	}
-	if len(left.Links) == 0 {
-		left.Links = nil
-	}
-	if len(right.Links) == 0 {
-		right.Links = nil
-	}
 	if len(left.Images) != len(right.Images) {
 		return false
 	}

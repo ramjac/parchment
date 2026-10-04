@@ -595,15 +595,6 @@ func TestDocumentServiceValidatesInput(t *testing.T) {
 	if _, _, err := docs.AddImage(ctx, created.ID, "", []byte("junk")); err == nil {
 		t.Fatal("junk image was accepted")
 	}
-	if err := docs.AddTag(ctx, created.ID, "draft"); err != nil {
-		t.Fatal(err)
-	}
-	if err := docs.AddTag(ctx, created.ID, "draft"); err != nil {
-		t.Fatal(err)
-	}
-	if err := docs.RemoveTag(ctx, created.ID, "draft"); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := docs.Get(ctx, strings.Repeat("0", 32)); err != document.ErrNotFound {
 		t.Fatalf("missing document error = %v", err)
 	}

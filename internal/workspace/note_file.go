@@ -93,7 +93,10 @@ func (f *NoteFile) Get(ctx context.Context, id string) (note.Note, error) {
 }
 
 func (f *NoteFile) Save(ctx context.Context, item note.Note) error {
-	return f.Transition(ctx, item.ID, nil, &item)
+	f.mu.Lock()
+	current := f.item
+	f.mu.Unlock()
+	return f.Transition(ctx, item.ID, &current, &item)
 }
 
 func (f *NoteFile) Delete(context.Context, string) error {

@@ -91,51 +91,6 @@ func (s *Service) UpdateExpected(ctx context.Context, expected Note, title, body
 	return after, nil
 }
 
-// AddTag adds a unique tag to a note.
-func (s *Service) AddTag(ctx context.Context, id, tag string) error {
-	tag = strings.TrimSpace(tag)
-	if tag == "" {
-		return errors.New("tag is required")
-	}
-	before, err := s.repository.Get(ctx, id)
-	if err != nil {
-		return err
-	}
-	for _, existing := range before.Tags {
-		if existing == tag {
-			return nil
-		}
-	}
-	after := before
-	after.Tags = append(append([]string(nil), before.Tags...), tag)
-	after.ModifiedAt = s.now().UTC()
-	return s.change(ctx, &before, &after, "Add tag")
-}
-
-// RemoveTag removes a tag from a note.
-func (s *Service) RemoveTag(ctx context.Context, id, tag string) error {
-	tag = strings.TrimSpace(tag)
-	if tag == "" {
-		return errors.New("tag is required")
-	}
-	before, err := s.repository.Get(ctx, id)
-	if err != nil {
-		return err
-	}
-	after := before
-	after.Tags = nil
-	for _, existing := range before.Tags {
-		if existing != tag {
-			after.Tags = append(after.Tags, existing)
-		}
-	}
-	if len(after.Tags) == len(before.Tags) {
-		return nil
-	}
-	after.ModifiedAt = s.now().UTC()
-	return s.change(ctx, &before, &after, "Remove tag")
-}
-
 // Delete removes a note and records enough information to restore it.
 func (s *Service) Delete(ctx context.Context, id string) error {
 	before, err := s.repository.Get(ctx, id)
@@ -168,8 +123,6 @@ func cloneNote(n *Note) *Note {
 		return nil
 	}
 	clone := *n
-	clone.Tags = append([]string(nil), n.Tags...)
-	clone.Links = append([]string(nil), n.Links...)
 	clone.Blocks = cloneBlocks(n.Blocks)
 	return &clone
 }
@@ -217,18 +170,6 @@ func (o noteOperation) transition(ctx context.Context, expected, target *Note) e
 // Equal reports whether two notes have the same persisted value.
 func Equal(left, right Note) bool {
 	left.Title, right.Title = "", ""
-	if len(left.Tags) == 0 {
-		left.Tags = nil
-	}
-	if len(right.Tags) == 0 {
-		right.Tags = nil
-	}
-	if len(left.Links) == 0 {
-		left.Links = nil
-	}
-	if len(right.Links) == 0 {
-		right.Links = nil
-	}
 	return reflect.DeepEqual(left, right)
 }
 

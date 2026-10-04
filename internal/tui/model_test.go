@@ -241,7 +241,6 @@ func TestViewSanitizesTerminalControlSequences(t *testing.T) {
 	model.notes = []note.Note{{
 		Artifact: artifact.Artifact{
 			Title: "Title\x1b[2J",
-			Tags:  []string{"tag\x07"},
 		},
 		Body: "Body\x1b]52;c;payload\a\nnext line",
 	}}

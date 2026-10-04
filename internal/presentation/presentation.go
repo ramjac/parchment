@@ -512,8 +512,6 @@ func Preview(deck Deck) string {
 }
 
 func clonePresentation(item Presentation) Presentation {
-	item.Tags = append([]string(nil), item.Tags...)
-	item.Links = append([]string(nil), item.Links...)
 	item.Blocks = cloneBlocks(item.Blocks)
 	return item
 }
@@ -545,18 +543,6 @@ func cloneBlocksExcept(blocks map[string]json.RawMessage, excluded ...string) ma
 
 func Equal(left, right Presentation) bool {
 	left.Title, right.Title = "", ""
-	if len(left.Tags) == 0 {
-		left.Tags = nil
-	}
-	if len(right.Tags) == 0 {
-		right.Tags = nil
-	}
-	if len(left.Links) == 0 {
-		left.Links = nil
-	}
-	if len(right.Links) == 0 {
-		right.Links = nil
-	}
 	return reflect.DeepEqual(left, right)
 }
 

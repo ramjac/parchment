@@ -23,15 +23,6 @@ func TestNoteOperationsUndoAndRedo(t *testing.T) {
 	if updated.Body != "final" {
 		t.Fatalf("body = %q", updated.Body)
 	}
-	if err := service.AddTag(ctx, created.ID, "work"); err != nil {
-		t.Fatal(err)
-	}
-	if err := service.RemoveTag(ctx, created.ID, " work "); err != nil {
-		t.Fatal(err)
-	}
-	if err := service.RemoveTag(ctx, created.ID, "   "); err == nil {
-		t.Fatal("empty tag removal succeeded")
-	}
 	if err := service.Delete(ctx, created.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -47,18 +38,6 @@ func TestNoteOperationsUndoAndRedo(t *testing.T) {
 	}
 	if restored.Body != "final" {
 		t.Fatalf("undo of deletion restored body = %q, want final", restored.Body)
-	}
-	for range 2 {
-		if _, err := service.Undo(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
-	restored, err = service.Get(ctx, created.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(restored.Tags) != 0 {
-		t.Fatalf("undo tag changes left tags: %v", restored.Tags)
 	}
 	if _, err := service.Undo(ctx); err != nil {
 		t.Fatal(err)
@@ -107,68 +86,6 @@ func TestNoOpUpdateDoesNotCreateHistory(t *testing.T) {
 	}
 	if _, err := service.Get(ctx, n.ID); err == nil {
 		t.Fatal("no-op update unexpectedly replaced creation history")
-	}
-}
-
-func TestUndoRedoTreatsEmptySlicesAsEquivalentToNil(t *testing.T) {
-	ctx := context.Background()
-	repository := newMemoryRepository()
-	service := note.NewService(repository, 10)
-	created, err := service.Create(ctx, "Title", "before")
-	if err != nil {
-		t.Fatal(err)
-	}
-	created.Tags = []string{}
-	created.Links = []string{}
-	if err := repository.Save(ctx, created); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.UpdateExpected(ctx, created, "Title", "after"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.Undo(ctx); err != nil {
-		t.Fatalf("undo failed after persistence normalized empty slices: %v", err)
-	}
-	if _, err := service.Redo(ctx); err != nil {
-		t.Fatalf("redo failed after persistence normalized empty slices: %v", err)
-	}
-}
-
-func TestHistorySnapshotsDoNotAliasReturnedNoteSlices(t *testing.T) {
-	ctx := context.Background()
-	repository := newMemoryRepository()
-	service := note.NewService(repository, 10)
-	created, err := service.Create(ctx, "Before", "body")
-	if err != nil {
-		t.Fatal(err)
-	}
-	created.Tags = []string{"work"}
-	created.Links = []string{"related"}
-	if err := repository.Save(ctx, created); err != nil {
-		t.Fatal(err)
-	}
-	created, err = service.Get(ctx, created.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	updated, err := service.UpdateExpected(ctx, created, "After", "changed")
-	if err != nil {
-		t.Fatal(err)
-	}
-	updated.Tags[0] = "mutated"
-	updated.Links[0] = "mutated"
-
-	if _, err := service.Undo(ctx); err != nil {
-		t.Fatalf("undo failed after mutating returned slices: %v", err)
-	}
-	restored, err := service.Get(ctx, created.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if restored.Title != "Before" || restored.Body != "body" ||
-		restored.Tags[0] != "work" || restored.Links[0] != "related" {
-		t.Fatalf("undo restored mutated history snapshot: %+v", restored)
 	}
 }
 
@@ -272,7 +189,5 @@ func (r *memoryRepository) Transition(ctx context.Context, id string, expected, 
 }
 
 func cloneNote(item note.Note) note.Note {
-	item.Tags = append([]string(nil), item.Tags...)
-	item.Links = append([]string(nil), item.Links...)
 	return item
 }

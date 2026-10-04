@@ -146,8 +146,6 @@ func (f *PresentationFile) TransitionPresentation(
 }
 
 func clonePresentationFileItem(item presentation.Presentation) presentation.Presentation {
-	item.Tags = append([]string(nil), item.Tags...)
-	item.Links = append([]string(nil), item.Links...)
 	if item.Blocks != nil {
 		clone := make(map[string]json.RawMessage, len(item.Blocks))
 		for name, payload := range item.Blocks {

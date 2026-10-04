@@ -225,25 +225,6 @@ func formulaChain(formulas int) Spreadsheet {
 	}
 }
 
-func TestEqualTreatsEmptyMetadataSlicesAsNil(t *testing.T) {
-	left := Spreadsheet{
-		Artifact: artifact.Artifact{
-			ID: "s12345", Kind: artifact.SpreadsheetKind,
-			Title: "Metadata", FormatVersion: artifact.FormatVersion,
-			Location:  "parchment/artifacts/s12345/content.md",
-			CreatedAt: fixedTime, ModifiedAt: fixedTime,
-		},
-		Version: FileVersion, Sheets: []Sheet{{Name: "Sheet1", Rows: [][]Cell{{{Value: "1"}}}}},
-	}
-	right := left
-	right.Title = "different filename"
-	right.Tags = []string{}
-	right.Links = []string{}
-	if !Equal(left, right) {
-		t.Fatal("empty tags and links should equal nil slices")
-	}
-}
-
 var fixedTime = mustTime()
 
 func mustTime() time.Time { return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) }
