@@ -8,10 +8,11 @@ import (
 	"path/filepath"
 
 	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/artifactfile"
 	"example.com/parchment/internal/presentation"
 )
 
-const presentationName = "presentation.md"
+const presentationName = "content.md"
 
 // ListPresentations implements the presentation repository interface.
 func (w *Workspace) ListPresentations(ctx context.Context) ([]presentation.Presentation, error) {
@@ -191,12 +192,22 @@ func (w *Workspace) readPresentationUnlocked(id string) (presentation.Presentati
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return presentation.Presentation{}, errors.New("presentation storage path is not a directory")
 	}
-	data, err := readRegularFile(filepath.Join(dir, presentationName), 32<<20)
+	data, err := readRegularFile(filepath.Join(dir, presentationName), artifactfile.MaxFileSize)
 	if errors.Is(err, os.ErrNotExist) {
 		return presentation.Presentation{}, presentation.ErrNotFound
 	}
 	if err != nil {
 		return presentation.Presentation{}, fmt.Errorf("read presentation %s: %w", id, err)
+	}
+	metadata, err := artifactfile.ReadMetadata(data)
+	if err != nil {
+		return presentation.Presentation{}, fmt.Errorf("read presentation metadata %s: %w", id, err)
+	}
+	if metadata.ID != id {
+		return presentation.Presentation{}, fmt.Errorf("invalid presentation metadata for %s", id)
+	}
+	if metadata.Kind != artifact.PresentationKind {
+		return presentation.Presentation{}, presentation.ErrNotFound
 	}
 	item, err := presentation.Decode(data)
 	if err != nil {

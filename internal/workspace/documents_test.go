@@ -3,6 +3,7 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"image"
 	"image/png"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"example.com/parchment/internal/artifactfile"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/note"
 )
@@ -43,20 +45,21 @@ func TestDocumentsPersistInspectablyAndCoexistWithNotes(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(root, ".parchment", "artifacts", created.ID)
-	for _, name := range []string{"content.md", "metadata.json", "layout.json"} {
-		info, err := os.Stat(filepath.Join(dir, name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if info.Mode().Perm() != 0o600 {
-			t.Fatalf("%s mode = %v", name, info.Mode().Perm())
-		}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "content.md" {
+		t.Fatalf("document artifact files = %v, %v", entries, err)
 	}
-	if body, _ := os.ReadFile(filepath.Join(dir, "content.md")); string(body) != "# Report\n\nText" {
-		t.Fatalf("content.md = %q", body)
+	content, err := os.ReadFile(filepath.Join(dir, "content.md"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if meta, _ := os.ReadFile(filepath.Join(dir, "metadata.json")); !strings.Contains(string(meta), `"kind": "document"`) {
-		t.Fatalf("metadata = %s", meta)
+	if !strings.HasPrefix(string(content), "```parchment-meta\n") ||
+		!strings.Contains(string(content), "```parchment-document\n") ||
+		!strings.Contains(string(content), "# Report\n\nText") {
+		t.Fatalf("content.md does not contain the complete document: %s", content)
+	}
+	if info, err := os.Stat(filepath.Join(dir, "content.md")); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("document file permissions = %v, %v", info, err)
 	}
 
 	got, err := docs.Get(ctx, created.ID)
@@ -79,16 +82,13 @@ func TestDocumentsPersistInspectablyAndCoexistWithNotes(t *testing.T) {
 	}
 }
 
-func TestDocumentWithoutLayoutFileUsesDefaults(t *testing.T) {
+func TestDocumentPersistsDefaultLayoutInMarkdownArtifact(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	ws := openTestWorkspace(t, root)
 	docs := document.NewService(ws, 10)
 	created, err := docs.Create(ctx, document.Draft{Title: "Plain", Body: "x"})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(filepath.Join(root, ".parchment", "artifacts", created.ID, "layout.json")); err != nil {
 		t.Fatal(err)
 	}
 	got, err := docs.Get(ctx, created.ID)
@@ -115,8 +115,9 @@ func TestDocumentImagesUndoRedoAndCleanup(t *testing.T) {
 	if !strings.Contains(withImage.Body, "![Chart]("+name+")") || len(withImage.Images) != 1 {
 		t.Fatalf("document after image = %+v", withImage)
 	}
-	if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
-		t.Fatal(err)
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "content.md" {
+		t.Fatalf("image was not embedded in the Markdown artifact: %v, %v", entries, err)
 	}
 	listed, _ := docs.List(ctx)
 	if len(listed[0].Images) != 0 {
@@ -126,8 +127,9 @@ func TestDocumentImagesUndoRedoAndCleanup(t *testing.T) {
 	if _, err := docs.Undo(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
-		t.Fatalf("image file remained after undo: %v", err)
+	undone, err := docs.Get(ctx, created.ID)
+	if err != nil || len(undone.Images) != 0 {
+		t.Fatalf("image remained after undo: %+v, %v", undone.Images, err)
 	}
 	if _, err := docs.Redo(ctx); err != nil {
 		t.Fatal(err)
@@ -212,10 +214,9 @@ func TestDocumentChangesPersistAndResolveAtomically(t *testing.T) {
 		t.Fatal("a second pending proposal was accepted")
 	}
 
-	changePath := filepath.Join(root, ".parchment", "artifacts", created.ID, "changes.json")
-	changeData, err := os.ReadFile(changePath)
+	changeData, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(created.Location)))
 	if err != nil || !strings.Contains(string(changeData), `"body": "proposed"`) {
-		t.Fatalf("proposal was not stored as readable JSON: %s, %v", changeData, err)
+		t.Fatalf("proposal was not stored in the Markdown artifact: %s, %v", changeData, err)
 	}
 	reopened := document.NewService(ws, 10)
 	persisted, err := reopened.GetChange(ctx, created.ID, proposal.ID)
@@ -385,12 +386,29 @@ func TestCorruptOrRenamedWorkspaceImageIsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, name, err := docs.AddImage(ctx, created.ID, "Chart", testPNG(t, 30))
+	_, _, err = docs.AddImage(ctx, created.ID, "Chart", testPNG(t, 30))
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(root, ".parchment", "artifacts", created.ID, name)
-	if err := os.WriteFile(path, testPNG(t, 31), 0o600); err != nil {
+	path := filepath.Join(root, filepath.FromSlash(created.Location))
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := artifactfile.Decode(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload documentFileData
+	if err := json.Unmarshal(file.Blocks[documentDataBlock], &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload.Images[0].Data = testPNG(t, 31)
+	content, err = artifactfile.Encode(file.Artifact, file.Body, map[string]any{documentDataBlock: payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := docs.Get(ctx, created.ID); err == nil {
@@ -419,8 +437,8 @@ func TestImageWithMarkdownTitleSurvivesUnrelatedEdits(t *testing.T) {
 	if _, err := docs.Rename(ctx, saved.ID, "Renamed"); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(root, ".parchment", "artifacts", created.ID, name)
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("linked image was deleted: %v", err)
+	persisted, err := docs.Get(ctx, created.ID)
+	if err != nil || len(persisted.Images) != 1 || persisted.Images[0].Name != name {
+		t.Fatalf("linked image was not preserved: %+v, %v", persisted.Images, err)
 	}
 }

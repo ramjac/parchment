@@ -23,10 +23,10 @@ func TestSpreadsheetIsSingleInspectableFileWithMetadataAndUndo(t *testing.T) {
 	}
 	dir := filepath.Join(root, ".parchment", "artifacts", created.ID)
 	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) != 1 || entries[0].Name() != "spreadsheet.json" {
+	if err != nil || len(entries) != 1 || entries[0].Name() != "content.md" {
 		t.Fatalf("spreadsheet artifact files = %v, %v", entries, err)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "spreadsheet.json"))
+	data, err := os.ReadFile(filepath.Join(dir, "content.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestSpreadsheetIsSingleInspectableFileWithMetadataAndUndo(t *testing.T) {
 	if err != nil || decoded.Title != "Simple" || decoded.Sheets[0].Rows[1][0].Value != "Book" {
 		t.Fatalf("decoded workbook = %+v, %v", decoded, err)
 	}
-	if info, err := os.Stat(filepath.Join(dir, "spreadsheet.json")); err != nil || info.Mode().Perm() != 0o600 {
+	if info, err := os.Stat(filepath.Join(dir, "content.md")); err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("spreadsheet file permissions = %v, %v", info, err)
 	}
 

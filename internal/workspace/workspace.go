@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -13,11 +12,11 @@ import (
 	"strings"
 
 	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/artifactfile"
 	"example.com/parchment/internal/note"
 )
 
 const (
-	metadataName          = "metadata.json"
 	transactionName       = ".parchment-transaction.json"
 	deleteIntentPrefix    = ".parchment-delete-intent-"
 	pendingArtifactPrefix = ".parchment-pending-delete-"
@@ -286,11 +285,10 @@ func (w *Workspace) saveLocked(ctx context.Context, n note.Note) error {
 	if n.Location != filepath.ToSlash(filepath.Join(".parchment", "artifacts", n.ID, "content.md")) {
 		return errors.New("invalid note content location")
 	}
-	data, err := json.MarshalIndent(n.Artifact, "", "  ")
+	data, err := artifactfile.Encode(n.Artifact, n.Body, nil)
 	if err != nil {
-		return fmt.Errorf("encode note metadata: %w", err)
+		return fmt.Errorf("encode note artifact: %w", err)
 	}
-	metadata := append(data, '\n')
 
 	dir := filepath.Join(w.root, ".parchment", "artifacts", n.ID)
 	created := false
@@ -326,10 +324,7 @@ func (w *Workspace) saveLocked(ctx context.Context, n note.Note) error {
 			return fmt.Errorf("inspect existing note before save: %w", err)
 		}
 	}
-	if err := replaceArtifactFiles(ctx, dir, []stagedArtifactFile{
-		{name: "content.md", data: []byte(n.Body)},
-		{name: metadataName, data: metadata},
-	}); err != nil {
+	if err := replaceArtifactFiles(ctx, dir, []stagedArtifactFile{{name: "content.md", data: data}}); err != nil {
 		if created {
 			if cleanupErr := os.Remove(dir); cleanupErr != nil {
 				return fmt.Errorf("save note files: %w (also failed to remove new artifact directory: %v)", err, cleanupErr)
@@ -797,32 +792,28 @@ func (w *Workspace) readNoteUnlocked(id string) (note.Note, error) {
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return note.Note{}, errors.New("note storage path is not a directory")
 	}
-	metadataPath := filepath.Join(dir, metadataName)
-	metadataInfo, err := os.Lstat(metadataPath)
+	content, err := readRegularFile(filepath.Join(dir, "content.md"), artifactfile.MaxFileSize)
+	if errors.Is(err, os.ErrNotExist) {
+		return note.Note{}, fmt.Errorf("%w: %s", errNoMetadata, id)
+	}
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return note.Note{}, fmt.Errorf("%w: %s", errNoMetadata, id)
-		}
-		return note.Note{}, err
+		return note.Note{}, fmt.Errorf("read note artifact %s: %w", id, err)
 	}
-	if !metadataInfo.Mode().IsRegular() {
-		return note.Note{}, fmt.Errorf("note metadata %s is not a regular file", id)
-	}
-	metadata, err := os.Open(metadataPath)
+	metadata, err := artifactfile.ReadMetadata(content)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return note.Note{}, fmt.Errorf("%w: %s", errNoMetadata, id)
-		}
-		return note.Note{}, err
+		return note.Note{}, fmt.Errorf("read note metadata %s: %w", id, err)
 	}
-	defer metadata.Close()
-	var a artifact.Artifact
-	if err := json.NewDecoder(io.LimitReader(metadata, 1<<20)).Decode(&a); err != nil {
-		return note.Note{}, fmt.Errorf("decode artifact metadata %s: %w", id, err)
+	if metadata.ID != id {
+		return note.Note{}, fmt.Errorf("invalid note metadata for %s", id)
 	}
-	if err := a.Validate(); err != nil {
-		return note.Note{}, fmt.Errorf("validate artifact metadata %s: %w", id, err)
+	if metadata.Kind != artifact.NoteKind {
+		return note.Note{}, errNotNote
 	}
+	file, err := artifactfile.Decode(content)
+	if err != nil {
+		return note.Note{}, fmt.Errorf("decode note artifact %s: %w", id, err)
+	}
+	a := file.Artifact
 	if a.ID != id {
 		return note.Note{}, fmt.Errorf("invalid note metadata for %s", id)
 	}
@@ -832,21 +823,9 @@ func (w *Workspace) readNoteUnlocked(id string) (note.Note, error) {
 	if a.Location != filepath.ToSlash(filepath.Join(".parchment", "artifacts", id, "content.md")) {
 		return note.Note{}, fmt.Errorf("invalid note metadata for %s", id)
 	}
-	contentPath := filepath.Join(dir, "content.md")
-	contentInfo, err := os.Lstat(contentPath)
-	if err != nil {
-		return note.Note{}, fmt.Errorf("inspect note content %s: %w", id, err)
-	}
-	if !contentInfo.Mode().IsRegular() {
-		return note.Note{}, fmt.Errorf("note content %s is not a regular file", id)
-	}
-	content, err := os.ReadFile(contentPath)
-	if err != nil {
-		return note.Note{}, fmt.Errorf("read note content %s: %w", id, err)
-	}
 	a.CreatedAt = a.CreatedAt.UTC()
 	a.ModifiedAt = a.ModifiedAt.UTC()
-	return note.Note{Artifact: a, Body: string(content)}, nil
+	return note.Note{Artifact: a, Body: file.Body}, nil
 }
 
 func withArtifactLock(ctx context.Context, artifactsDir, id string, operation func() error) error {

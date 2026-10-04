@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/artifactfile"
 	"example.com/parchment/internal/history"
 )
 
@@ -44,6 +45,12 @@ type Spreadsheet struct {
 	artifact.Artifact `json:"artifact"`
 	Version           int     `json:"version"`
 	Sheets            []Sheet `json:"sheets"`
+	Body              string  `json:"-"`
+}
+
+type fileContent struct {
+	Version int     `json:"version"`
+	Sheets  []Sheet `json:"sheets"`
 }
 
 // Repository persists spreadsheets as individual artifacts.
@@ -97,7 +104,7 @@ func (s *Service) Create(ctx context.Context, title string, rows [][]Cell) (Spre
 		Artifact: artifact.Artifact{
 			ID: id, Kind: artifact.SpreadsheetKind, Title: title,
 			CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
-			Location: ".parchment/artifacts/" + id + "/spreadsheet.json",
+			Location: ".parchment/artifacts/" + id + "/content.md",
 		},
 		Version: FileVersion, Sheets: []Sheet{{Name: "Sheet1", Rows: cloneRows(rows)}},
 	}
@@ -397,25 +404,40 @@ func Equal(left, right Spreadsheet) bool {
 	return reflect.DeepEqual(left, right)
 }
 
-// Encode serializes the complete workbook as one human-readable JSON file.
+// Encode serializes the workbook as one Markdown artifact with a hidden
+// parchment-spreadsheet JSON block.
 func Encode(book Spreadsheet) ([]byte, error) {
 	book = cloneSpreadsheet(book)
 	if err := Normalize(&book); err != nil {
 		return nil, err
 	}
-	data, err := json.MarshalIndent(book, "", "  ")
+	content, err := json.MarshalIndent(fileContent{Version: book.Version, Sheets: book.Sheets}, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encode spreadsheet: %w", err)
 	}
-	return append(data, '\n'), nil
+	return artifactfile.Encode(book.Artifact, book.Body, map[string]any{
+		"parchment-spreadsheet": json.RawMessage(content),
+	})
 }
 
-// Decode parses and validates a complete workbook file.
+// Decode parses and validates a Markdown workbook artifact.
 func Decode(data []byte) (Spreadsheet, error) {
-	var book Spreadsheet
-	if err := json.Unmarshal(data, &book); err != nil {
-		return Spreadsheet{}, fmt.Errorf("decode spreadsheet JSON: %w", err)
+	file, err := artifactfile.Decode(data)
+	if err != nil {
+		return Spreadsheet{}, fmt.Errorf("decode spreadsheet file: %w", err)
 	}
+	if file.Artifact.Kind != artifact.SpreadsheetKind {
+		return Spreadsheet{}, ErrNotFound
+	}
+	content, ok := file.Blocks["parchment-spreadsheet"]
+	if !ok {
+		return Spreadsheet{}, errors.New("spreadsheet payload block is missing")
+	}
+	var payload fileContent
+	if err := json.Unmarshal(content, &payload); err != nil {
+		return Spreadsheet{}, fmt.Errorf("decode spreadsheet payload: %w", err)
+	}
+	book := Spreadsheet{Artifact: file.Artifact, Version: payload.Version, Sheets: payload.Sheets, Body: file.Body}
 	if err := Normalize(&book); err != nil {
 		return Spreadsheet{}, fmt.Errorf("validate spreadsheet: %w", err)
 	}

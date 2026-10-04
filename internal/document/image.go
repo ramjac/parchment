@@ -16,7 +16,7 @@ import (
 // MaxImageBytes bounds one embedded image.
 const MaxImageBytes = 10 << 20
 
-// ImageNamePattern matches the managed file names for embedded images. The
+// ImageNamePattern matches the stable names for embedded images. The
 // name is derived from the image content, so identical images share a file.
 const ImageNamePattern = `image-[a-f0-9]{16}\.(?:png|jpg|gif)`
 
@@ -25,16 +25,16 @@ var (
 	imageReferenceRE = regexp.MustCompile(ImageNamePattern)
 )
 
-// Image is an embedded image stored beside the document's Markdown.
+// Image is an embedded image stored in the document's Markdown payload.
 type Image struct {
 	Name string
 	Data []byte
 }
 
-// IsImageName reports whether name is a managed embedded image file name.
+// IsImageName reports whether name is a valid embedded image name.
 func IsImageName(name string) bool { return imageNameRE.MatchString(name) }
 
-// NewImage validates PNG, JPEG, or GIF data and derives its stable file name.
+// NewImage validates PNG, JPEG, or GIF data and derives its stable embedded name.
 func NewImage(data []byte) (Image, error) {
 	if len(data) == 0 {
 		return Image{}, errors.New("image is empty")

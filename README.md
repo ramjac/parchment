@@ -44,11 +44,12 @@ from the workspace; there is no search index or daemon.
 
 The workspace is an ordinary directory. `parchment.toml` contains versioned
 workspace configuration; artifacts live under
-`.parchment/artifacts/<stable-id>/`. Notes and documents store a `metadata.json`
-envelope separately from canonical `content.md`; spreadsheet workbooks are
-self-contained JSON text files with their shared metadata embedded in the same
-file. Metadata timestamps are UTC RFC 3339 values. Artifacts remain readable
-and editable with ordinary filesystem tools. Copying, archiving, or versioning
+`.parchment/artifacts/<stable-id>/content.md`. Every supported artifact is one
+Markdown file. It begins with a `parchment-meta` fenced code block containing
+the shared metadata as JSON. Structured artifact data uses additional
+`parchment-<thing>` JSON code blocks before the visible Markdown body. Parchment
+renderers hide these reserved blocks while ordinary Markdown remains readable.
+Metadata timestamps are UTC RFC 3339 values. Copying, archiving, or versioning
 the workspace with standard tools is sufficient for a local backup.
 
 Initial artifact metadata recognizes the `note`, `document`, `spreadsheet`,
@@ -57,14 +58,12 @@ presentations have application behavior; image editing is not yet implemented.
 
 ### Documents
 
-Documents are a separate feature from notes, stored the same way but with
-multi-page printing in mind. A document artifact directory contains
-`metadata.json` (kind `document`), the canonical Markdown `content.md`, an
-optional `layout.json` (page size, orientation, margins in millimeters, column
-count, header, footer, page-number placement), and any embedded images as
-`image-<hash>.png|jpg|gif`, referenced from the Markdown with ordinary image
-links. Page and section breaks are HTML comments so other Markdown tools ignore
-them: `<!-- parchment:page-break -->` and
+Documents are a separate feature from notes, with multi-page printing in mind.
+The visible body is canonical Markdown. A hidden `parchment-document` JSON
+block stores page layout, embedded image bytes, and proposal history in the
+same `content.md` artifact file. Embedded image references use ordinary
+Markdown links. Page and section breaks are HTML comments so other Markdown
+tools ignore them: `<!-- parchment:page-break -->` and
 `<!-- parchment:section-break columns=2 [continuous] -->`. Headers and footers
 are `left|center|right` text with `{title}`, `{page}`, and `{pages}` tokens.
 
@@ -93,8 +92,8 @@ parchment document review <id> "$change"
 parchment document accept <id> "$change"
 ```
 
-Proposal history is stored as inspectable JSON in each document's
-`.parchment/artifacts/<id>/changes.json`. In the interactive shell, press
+Proposal history is stored as inspectable JSON in each document's hidden
+`parchment-document` block. In the interactive shell, press
 `Tab` on the notes screen to switch to documents (and back). Press `c` on a
 selected document to record a proposed edit, `v` to browse its changes, then
 `Enter` to review and `a` or `r` to accept or reject a pending proposal. The
@@ -111,13 +110,14 @@ undo and redo like notes.
 
 ### Spreadsheets
 
-Spreadsheets are stored as one editable text file per workbook:
-`.parchment/artifacts/<id>/spreadsheet.json`. The versioned file contains
-shared artifact metadata, named sheets, two-dimensional cell arrays, and
-explicit literal or formula cells. This keeps the workbook self-contained and
-avoids formulas being inferred from arbitrary text. CSV files can initialize a
-workbook; CSV cells are imported as literal text. A new workbook starts with
-`Sheet1`; additional sheets can be created with `spreadsheet add-sheet`.
+Spreadsheets are stored as one Markdown file per workbook:
+`.parchment/artifacts/<id>/content.md`. The hidden `parchment-spreadsheet`
+JSON block contains the versioned workbook data, named sheets, two-dimensional
+cell arrays, and explicit literal or formula cells. This keeps the workbook
+self-contained and avoids formulas being inferred from arbitrary text. CSV
+files can initialize a workbook; CSV cells are imported as literal text. A new
+workbook starts with `Sheet1`; additional sheets can be created with
+`spreadsheet add-sheet`.
 
 ```sh
 parchment spreadsheet create "Budget" --csv-file budget.csv
@@ -135,15 +135,15 @@ nested dependencies or parentheses. Rows and columns can be inserted with
 `spreadsheet insert-row` and `spreadsheet insert-column`; formula references
 shift with inserted rows and columns. Spreadsheet edits can be undone and
 redone through the service API while its process is running; the CLI is
-stateless across invocations. The JSON workbook is Parchment's canonical
-format, not a CSV file that third-party spreadsheet applications can open
-directly.
+stateless across invocations. The Markdown file with its JSON data block is
+Parchment's canonical format, not a CSV file that third-party spreadsheet
+applications can open directly.
 
 ### Presentations
 
 A presentation is stored as one Markdown text file at
-`.parchment/artifacts/<id>/presentation.md`. A leading HTML comment embeds the
-versioned shared artifact metadata; the rest is editable Markdown. The initial
+`.parchment/artifacts/<id>/content.md`. Its leading `parchment-meta` block
+embeds the shared artifact metadata; the rest is editable Markdown. The initial
 syntax follows Go present's Markdown conventions: `#` gives the deck title,
 `##` begins a slide, `###` adds a subsection, `//` begins an ignored comment,
 and `: ` begins a speaker-note line. Speaker notes and comments remain in the
@@ -175,10 +175,10 @@ embedded media and Go present command directives are not implemented.
 
 ## Examples
 
-The [`examples/`](examples/) directory contains starter content for notes,
-documents, spreadsheets, presentations, and images. Its README shows how to
-create those artifacts in a sample workspace. The image is embedded in the
-document because standalone image editing is not implemented yet.
+The [`examples/`](examples/) directory contains complete Markdown artifact
+files for notes, documents, spreadsheets, and presentations. Its README shows
+how to copy them into a sample workspace; the document's image data is embedded
+in its hidden payload.
 
 ## Configuration
 
@@ -253,9 +253,6 @@ The broader suite is planned to add:
   configuration settings.
 - Persistent undo/redo, if introduced, with explicit storage and migration
   semantics. History currently lasts only for the running process.
-- Rework note and document storage into single human-readable artifact files
-  containing their metadata, content, comments or annotations, and change
-  tracking, consistent with the spreadsheet format.
 - Make the default directory for storing Parchment artifacts a non-hidden folder and also make the default directory path configurable. Generally assume that Parchment artifacts might be read by other applications; especially text file and markdown interpreters.
 - Background auto-save and recovery from auto-save so that in the event Parchment crashes or is force closed, any changes since the last save can be optionally recovered.
 

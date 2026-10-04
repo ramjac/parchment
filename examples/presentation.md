@@ -1,3 +1,21 @@
+```parchment-meta
+{
+  "id": "40000000000000000000000000000004",
+  "kind": "presentation",
+  "title": "Product Update",
+  "created_at": "2026-01-15T09:00:00Z",
+  "modified_at": "2026-01-15T09:00:00Z",
+  "format_version": 1,
+  "location": ".parchment/artifacts/40000000000000000000000000000004/content.md"
+}
+```
+
+```parchment-presentation
+{
+  "version": 1
+}
+```
+
 # Product Update
 
 Parchment team

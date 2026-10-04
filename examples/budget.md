@@ -1,13 +1,17 @@
+```parchment-meta
 {
-  "artifact": {
-    "id": "0123456789abcdef0123456789abcdef",
-    "kind": "spreadsheet",
-    "title": "Monthly budget",
-    "created_at": "2026-01-15T09:00:00Z",
-    "modified_at": "2026-01-15T09:00:00Z",
-    "format_version": 1,
-    "location": ".parchment/artifacts/0123456789abcdef0123456789abcdef/spreadsheet.json"
-  },
+  "id": "30000000000000000000000000000003",
+  "kind": "spreadsheet",
+  "title": "Monthly budget",
+  "created_at": "2026-01-15T09:00:00Z",
+  "modified_at": "2026-01-15T09:00:00Z",
+  "format_version": 1,
+  "location": ".parchment/artifacts/30000000000000000000000000000003/content.md"
+}
+```
+
+```parchment-spreadsheet
+{
   "version": 1,
   "sheets": [
     {
@@ -47,3 +51,8 @@
     }
   ]
 }
+```
+
+# Monthly budget
+
+The variance column is calculated from planned and actual spending.

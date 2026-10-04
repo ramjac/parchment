@@ -20,10 +20,10 @@ func TestPresentationPersistsAsOneReadableFile(t *testing.T) {
 	}
 	dir := filepath.Join(root, ".parchment", "artifacts", created.ID)
 	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) != 1 || entries[0].Name() != "presentation.md" {
+	if err != nil || len(entries) != 1 || entries[0].Name() != "content.md" {
 		t.Fatalf("presentation artifact files = %v, %v", entries, err)
 	}
-	info, err := os.Stat(filepath.Join(dir, "presentation.md"))
+	info, err := os.Stat(filepath.Join(dir, "content.md"))
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("presentation permissions = %v, %v", info, err)
 	}

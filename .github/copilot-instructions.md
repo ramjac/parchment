@@ -24,11 +24,12 @@ the CLI, TUI, and storage implementation. `internal/history` provides bounded,
 in-memory undo/redo for successful service changes.
 
 An initialized workspace stores versioned `parchment.toml` at its root and
-artifacts under `.parchment/artifacts/<id>/`. `internal/artifact` defines the
-metadata shared by artifact kinds. Existing notes and documents currently keep
-metadata and content in separate files; spreadsheets use a self-contained
-workbook file. `internal/search` searches notes directly through the
-repository, without an index or background process.
+artifacts under `.parchment/artifacts/<id>/content.md`. Each artifact file is
+Markdown and begins with a `parchment-meta` fenced code block containing its
+shared metadata as JSON. Kind-specific structured data uses `parchment-<thing>`
+JSON code blocks; renderers hide these reserved blocks. `internal/artifact`
+defines the metadata shared by artifact kinds. `internal/search` searches notes
+directly through the repository, without an index or background process.
 
 ## Repository-specific conventions
 
@@ -53,24 +54,22 @@ repository, without an index or background process.
   introduce a universal child-component interface until multiple real
   components need it.
 - Persist artifact IDs as 32-character lowercase hex strings. An artifact's
-  `Location` must be its canonical workspace-relative file path. Existing notes
-  currently use `.parchment/artifacts/<id>/content.md` until the planned
-  single-file format rework.
+  `Location` must be `.parchment/artifacts/<id>/content.md`.
 - Generally, persist each artifact as one human-readable file. Keep its shared
   metadata, content, comments or annotations, and change-tracking data together
   so a text editor can inspect the complete artifact without opening sidecars.
-  The expected exception is separate autosave/recovery data used to restore
-  unsaved work. Do not add other per-artifact sidecar files for new formats.
-  Reworking the existing split note/document formats into this shape is planned
-  future work; this pre-release repository has no released user data requiring
-  migration compatibility.
-- Use the artifact's canonical file as its `Location` for new artifact formats.
-  Workspace writes use a temporary file followed by sync and rename; preserve
+  Store metadata in the first `parchment-meta` fenced JSON block, followed by
+  kind-specific `parchment-<thing>` blocks for structured data. The expected
+  exception is separate autosave/recovery data used to restore unsaved work.
+  Do not add other per-artifact sidecar files.
+- Workspace writes use a temporary file followed by sync and rename; preserve
   the restrictive file and directory permissions used by the workspace
   package.
 - Keep Markdown as canonical note content; rendered Markdown belongs to the
   view layer and must never replace persisted content. Keep import/export
   formats separate from domain models.
+- Hide fenced blocks whose info string begins with `parchment-` when rendering
+  Markdown, while preserving ordinary code fences and all canonical source.
 - Artifact timestamps are UTC. Config files are versioned TOML (`version = 1`);
   the user config is loaded before workspace config, with environment
   overrides applied afterward. Workspace selection also supports the

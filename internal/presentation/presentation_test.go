@@ -2,13 +2,13 @@ package presentation
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/artifactfile"
 )
 
 func TestParseMarkdownSlidesNotesCommentsAndCodeFences(t *testing.T) {
@@ -76,7 +76,7 @@ func TestEncodeDecodeSinglePresentationFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(data), "<!-- parchment: ") || !strings.Contains(string(data), "\n# Demo\n") {
+	if !strings.HasPrefix(string(data), "```parchment-meta\n") || !strings.Contains(string(data), "\n# Demo\n") {
 		t.Fatalf("encoded file must contain metadata and editable Markdown: %s", data)
 	}
 	if strings.Contains(string(data), "separate") {
@@ -159,7 +159,7 @@ func testPresentation() Presentation {
 			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.PresentationKind,
 			Title: "Demo", CreatedAt: testNow, ModifiedAt: testNow,
 			FormatVersion: artifact.FormatVersion,
-			Location:      ".parchment/artifacts/0123456789abcdef0123456789abcdef/presentation.md",
+			Location:      ".parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
 		},
 		Version: FileVersion, Source: "# Demo\n\n## Slide 1\n\nHello.\n",
 	}
@@ -201,19 +201,16 @@ func (r *memoryRepository) TransitionPresentation(_ context.Context, id string, 
 	return nil
 }
 
-func TestMetadataJSONIsInspectable(t *testing.T) {
+func TestMetadataBlockIsInspectable(t *testing.T) {
 	data, err := Encode(testPresentation())
 	if err != nil {
 		t.Fatal(err)
 	}
-	line, _, _ := strings.Cut(string(data), "\n")
-	const prefix = "<!-- parchment: "
-	header := strings.TrimSuffix(strings.TrimPrefix(line, prefix), " -->")
-	var decoded fileHeader
-	if err := json.Unmarshal([]byte(header), &decoded); err != nil {
+	file, err := artifactfile.Decode(data)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if decoded.Artifact.Title != "Demo" || decoded.Version != FileVersion {
-		t.Fatalf("embedded metadata = %+v", decoded)
+	if file.Artifact.Title != "Demo" || file.Artifact.Kind != artifact.PresentationKind {
+		t.Fatalf("embedded metadata = %+v", file.Artifact)
 	}
 }
