@@ -1,10 +1,9 @@
 # Artifact examples
 
-These files are starter content for the artifact commands; Parchment creates
-the actual artifacts, including their metadata, in the workspace. The
-spreadsheet CSV is imported as literal values, then a formula is added with the
-CLI. `image.png` is embedded in the document. Standalone image artifact
-editing is not implemented yet.
+These files show Parchment's canonical, inspectable artifact formats where
+available. `budget.spreadsheet.json` is a complete workbook artifact, including
+its metadata and formulas; it is not CSV. `image.png` is embedded in the
+document. Standalone image artifact editing is not implemented yet.
 
 From the repository root, run:
 
@@ -17,9 +16,12 @@ parchment --workspace "$workspace" note create "Field notes" \
 document_id=$(parchment --workspace "$workspace" document create "Project brief" \
   --body-file examples/document.md)
 parchment --workspace "$workspace" document image "$document_id" examples/image.png
-spreadsheet_id=$(parchment --workspace "$workspace" spreadsheet create "Monthly budget" \
-  --csv-file examples/budget.csv)
-parchment --workspace "$workspace" spreadsheet cell "$spreadsheet_id" D2 '=B2-C2' --formula
+spreadsheet_id=0123456789abcdef0123456789abcdef
+mkdir -m 700 -p "$workspace/.parchment/artifacts/$spreadsheet_id"
+cp examples/budget.spreadsheet.json \
+  "$workspace/.parchment/artifacts/$spreadsheet_id/spreadsheet.json"
+chmod 600 "$workspace/.parchment/artifacts/$spreadsheet_id/spreadsheet.json"
+parchment --workspace "$workspace" spreadsheet cell "$spreadsheet_id" D2
 parchment --workspace "$workspace" presentation create "Product Update" \
   --body-file examples/presentation.md
 ```
