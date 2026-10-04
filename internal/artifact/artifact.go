@@ -65,6 +65,12 @@ func ValidID(id string) bool {
 	return ok && value.BitLen() <= 128 && value.Text(36) == payload
 }
 
+// ValidIDForKind reports whether id is valid and uses kind's required prefix.
+func ValidIDForKind(id string, kind Kind) bool {
+	prefix, ok := idPrefixes[kind]
+	return ok && ValidID(id) && id[0] == prefix
+}
+
 // Artifact contains metadata shared by every workspace artifact type.
 type Artifact struct {
 	ID            string    `json:"id"`
@@ -80,12 +86,12 @@ type Artifact struct {
 
 // Validate checks the common metadata required for a persisted artifact.
 func (a Artifact) Validate() error {
-	if !ValidID(a.ID) {
-		return errors.New("artifact ID is invalid")
-	}
 	if a.Kind != NoteKind && a.Kind != DocumentKind && a.Kind != SpreadsheetKind &&
 		a.Kind != PresentationKind && a.Kind != ImageKind {
 		return fmt.Errorf("unsupported artifact kind %q", a.Kind)
+	}
+	if !ValidIDForKind(a.ID, a.Kind) {
+		return errors.New("artifact ID is invalid for its kind")
 	}
 	if strings.TrimSpace(a.Title) == "" {
 		return errors.New("artifact title is required")

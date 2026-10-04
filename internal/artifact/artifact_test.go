@@ -1,6 +1,9 @@
 package artifact
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestNewIDUsesCompactKindPrefixedEncoding(t *testing.T) {
 	kinds := []struct {
@@ -49,5 +52,35 @@ func TestValidIDRejectsMalformedValues(t *testing.T) {
 		if !ValidID(id) {
 			t.Errorf("ValidID(%q) = false", id)
 		}
+	}
+}
+
+func TestArtifactValidationRequiresIDPrefixForKind(t *testing.T) {
+	now := time.Now().UTC()
+	for _, test := range []struct {
+		kind Kind
+		id   string
+		ok   bool
+	}{
+		{NoteKind, "n1", true},
+		{DocumentKind, "d1", true},
+		{SpreadsheetKind, "s1", true},
+		{PresentationKind, "p1", true},
+		{ImageKind, "i1", true},
+		{DocumentKind, "n1", false},
+		{NoteKind, "d1", false},
+		{Kind("unknown"), "n1", false},
+	} {
+		t.Run(string(test.kind)+"/"+test.id, func(t *testing.T) {
+			a := Artifact{
+				ID: test.id, Kind: test.kind, Title: "Example",
+				CreatedAt: now, ModifiedAt: now,
+				FormatVersion: FormatVersion, Location: "parchment/artifacts/" + test.id + "/content.md",
+			}
+			err := a.Validate()
+			if (err == nil) != test.ok {
+				t.Fatalf("Artifact.Validate() error = %v, want valid=%t", err, test.ok)
+			}
+		})
 	}
 }

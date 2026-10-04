@@ -111,7 +111,7 @@ func OpenWithArtifactDir(path, artifactDir string) (*Workspace, error) {
 	}
 	ws := &Workspace{root: abs, artifactDir: normalized}
 	artifacts := ws.artifactsRoot()
-	if err := ensureExistingWorkspaceRelativeDirectory(abs, normalized); err != nil {
+	if err := ensureWorkspaceRelativeDirectory(abs, normalized); err != nil {
 		return nil, fmt.Errorf("open workspace: %w", err)
 	}
 	entries, err := os.ReadDir(artifacts)
@@ -962,17 +962,6 @@ func ensureWorkspaceRelativeDirectory(root, relative string) error {
 	for _, component := range strings.Split(filepath.FromSlash(relative), string(filepath.Separator)) {
 		current = filepath.Join(current, component)
 		if err := ensureDirectory(current); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func ensureExistingWorkspaceRelativeDirectory(root, relative string) error {
-	current := root
-	for _, component := range strings.Split(filepath.FromSlash(relative), string(filepath.Separator)) {
-		current = filepath.Join(current, component)
-		if err := ensureExistingDirectory(current); err != nil {
 			return err
 		}
 	}

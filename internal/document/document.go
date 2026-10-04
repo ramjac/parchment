@@ -247,7 +247,7 @@ var ErrChangeNotFound = errors.New("document change not found")
 
 // Validate checks the persisted shape and consistency of a proposed change.
 func (c Change) Validate() error {
-	if !validChangeID(c.ID) || !artifact.ValidID(c.DocumentID) {
+	if !validChangeID(c.ID) || !artifact.ValidIDForKind(c.DocumentID, artifact.DocumentKind) {
 		return errors.New("document change ID or artifact ID is invalid")
 	}
 	if strings.TrimSpace(c.Description) == "" || c.CreatedAt.IsZero() {

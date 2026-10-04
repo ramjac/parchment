@@ -227,7 +227,7 @@ func TestWorkspacePersistsInspectableNotesAndStableIDs(t *testing.T) {
 
 func TestWorkspaceUsesConfiguredArtifactDirectory(t *testing.T) {
 	root := t.TempDir()
-	if err := InitWithArtifactDir(root, "shared/notes"); err != nil {
+	if err := Init(root); err != nil {
 		t.Fatal(err)
 	}
 	ws, err := OpenWithArtifactDir(root, "shared/notes")
@@ -411,7 +411,7 @@ func TestTransitionPreventsConcurrentLostUpdates(t *testing.T) {
 func TestTransitionDoesNotOverwriteOccupiedArtifactIDs(t *testing.T) {
 	ctx := context.Background()
 	ws := openTestWorkspace(t, t.TempDir())
-	id := "n12345"
+	id := "d12345"
 	dir := filepath.Join(ws.Root(), "parchment", "artifacts", id)
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
