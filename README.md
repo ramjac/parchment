@@ -283,6 +283,11 @@ The broader suite is planned to add:
   configuration settings.
 - Persistent undo/redo, if introduced, with explicit storage and migration
   semantics. History currently lasts only for the running process.
+- Make a plan for importing and exporting to/from common document file formats. Acknowledge that this will be a "lossy" process in the sense that Parchment doesn't support many of the features of those formats like multiple fonts, exact image/object positioning, et cetera.
+	- Export ODF file format
+	- Export to DOCX file format
+	- Import from ODF file format
+	- Import from DOCX file format
 - Basic image-editing features using the shared workspace and artifact metadata.
 
 ## Development
