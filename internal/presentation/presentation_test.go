@@ -168,6 +168,17 @@ func TestIndentedCodeFenceInListContinuationIsNotAnOpener(t *testing.T) {
 	}
 }
 
+func TestExcessListIndentationDoesNotOpenFence(t *testing.T) {
+	source := "# Indented list fence\n\n## Example\n\n-     ```go\n"
+	deck, err := Parse(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deck.Slides) != 1 || !strings.Contains(deck.Slides[0].Body, "-     ```go") {
+		t.Fatalf("excess list indentation was not preserved as code: %+v", deck)
+	}
+}
+
 func TestParseFencedCodeInDeeplyIndentedNestedList(t *testing.T) {
 	source := "# Nested lists\n\n## Example\n\n- Parent\n    - ```go\n      fmt.Println(\"nested\")\n      ```\n"
 	deck, err := Parse(source)

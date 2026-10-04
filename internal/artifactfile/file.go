@@ -630,6 +630,19 @@ func updateListContainers(lists []listContainer, line string, blockquotes int) [
 		}
 		return append(lists, listContainer{blockquotes: blockquotes, indent: indent})
 	}
+	for i := len(lists) - 1; i >= 0; i-- {
+		container := lists[i]
+		if container.blockquotes != blockquotes || leadingSpaces(line) < container.indent {
+			continue
+		}
+		if _, nestedIndent, ok := stripListMarker(stripIndent(line, container.indent)); ok {
+			lists = lists[:i+1]
+			return append(lists, listContainer{
+				blockquotes: blockquotes,
+				indent:      container.indent + nestedIndent,
+			})
+		}
+	}
 	leading := leadingSpaces(line)
 	for len(lists) > 0 && lists[len(lists)-1].blockquotes == blockquotes &&
 		lists[len(lists)-1].indent > leading {

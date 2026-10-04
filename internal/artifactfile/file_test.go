@@ -368,6 +368,22 @@ func TestStripPrivateBlocksRecognizesFencesOnListContinuations(t *testing.T) {
 	}
 }
 
+func TestStripPrivateBlocksRecognizesNestedListFences(t *testing.T) {
+	markdown := "- Parent\n    - Child\n      ```parchment-nested-secret\n      nested-hidden\n      ```\n" +
+		"    - Ordinary\n      ```go\n      ```parchment-nested-example\n      nested-visible\n      ```\n"
+	got := StripPrivateBlocks(markdown)
+	for _, hidden := range []string{"parchment-nested-secret", "nested-hidden"} {
+		if strings.Contains(got, hidden) {
+			t.Fatalf("nested reserved block leaked %q: %q", hidden, got)
+		}
+	}
+	for _, visible := range []string{"- Parent", "    - Ordinary", "```go", "parchment-nested-example", "nested-visible"} {
+		if !strings.Contains(got, visible) {
+			t.Fatalf("ordinary nested code block lost %q: %q", visible, got)
+		}
+	}
+}
+
 func TestStripPrivateBlocksPreservesListFenceStateAcrossBlankLines(t *testing.T) {
 	markdown := "- ````go\n  code before\n\n  ```parchment-example\n  visible example\n  ```\n  ````\n"
 	got := StripPrivateBlocks(markdown)

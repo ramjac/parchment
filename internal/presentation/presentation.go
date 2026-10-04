@@ -224,7 +224,11 @@ func Parse(source string) (Deck, error) {
 					listIndents = listIndents[:len(listIndents)-1]
 				}
 				listIndents = append(listIndents, itemIndent)
-				marker, markerIndent = markdownFence(strings.TrimSpace(listContent)), itemIndent
+				if !hasFourSpaceFenceIndent(listContent) {
+					marker, markerIndent = markdownFence(strings.TrimSpace(listContent)), itemIndent
+				} else {
+					marker = ""
+				}
 			} else if trimmed != "" {
 				for len(listIndents) > 0 && leadingSpaces(line) < listIndents[len(listIndents)-1] {
 					listIndents = listIndents[:len(listIndents)-1]
@@ -382,9 +386,6 @@ func listItemContent(line string, parentIndent int) (string, int, bool) {
 		return "", 0, false
 	}
 	end++
-	for end < len(line) && (line[end] == ' ' || line[end] == '\t') {
-		end++
-	}
 	return line[end:], end, true
 }
 
