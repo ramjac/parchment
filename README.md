@@ -75,6 +75,10 @@ parchment document create "Report" --body-file report.md --columns 2 --footer "{
 parchment document print <id> | lpr
 ```
 
+Document font selection, when implemented, applies only to printer-oriented
+rendering. It cannot change the font used by the TUI or terminal previews,
+which use the font configured in the user's terminal emulator.
+
 Document commands (`parchment document`, alias `doc`): `list`, `create`,
 `show`, `edit`, `rename`, `tag-add`, `tag-remove`, `layout`, `page-break`,
 `section-break`, `image`, `print`, `search`, `propose`, `changes`, `review`,
@@ -172,6 +176,8 @@ Use `presentation create <title> --body-file slides.md` to add a deck,
 `presentation edit <id> --body-file slides.md` replaces the Markdown source.
 The parser preserves Markdown for later rendering but does not yet render it;
 embedded media and Go present command directives are not implemented.
+Presentation font selection, when implemented, applies only to rendered output,
+never to terminal previews.
 
 ## Examples
 

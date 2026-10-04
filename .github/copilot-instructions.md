@@ -77,6 +77,9 @@ process.
 - Keep Markdown as canonical note content; rendered Markdown belongs to the
   view layer and must never replace persisted content. Keep import/export
   formats separate from domain models.
+- Documents and presentations may select fonts for printer-oriented rendering
+  only. Do not apply artifact font settings to terminal output: TUI and terminal
+  previews use the font configured by the user's terminal emulator.
 - Hide fenced blocks whose info string begins with `parchment-` when rendering
   Markdown, while preserving ordinary code fences and all canonical source.
   Currently, the artifact parser reads structured blocks only when grouped
