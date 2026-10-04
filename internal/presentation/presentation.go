@@ -188,6 +188,10 @@ func Parse(source string) (Deck, error) {
 			line = strings.TrimPrefix(line, "\uFEFF")
 			trimmed = strings.TrimSpace(line)
 		}
+		if deck.Title == "" && trimmed != "" &&
+			(isIndentedCode(line) || !strings.HasPrefix(trimmed, "# ")) {
+			return Deck{}, fmt.Errorf("line %d: presentation must begin with a '# Title' heading", lineNumber)
+		}
 		listContent, itemIndent, isListItem := listItemContent(line)
 		marker := markdownFence(trimmed)
 		markerIndent := 0

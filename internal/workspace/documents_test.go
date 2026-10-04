@@ -221,6 +221,108 @@ func TestDocumentImagesUndoRedoAndCleanup(t *testing.T) {
 	}
 }
 
+func TestLegacyDocumentExampleMetadataDoesNotReplaceSidecar(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	docs := document.NewService(ws, 10)
+	created, err := docs.Create(ctx, document.Draft{Title: "Legacy document", Body: "Original body"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, ".parchment", "artifacts", created.ID)
+	example := created.Artifact
+	example.ID = "abcdef0123456789abcdef0123456789"
+	example.Location = filepath.ToSlash(filepath.Join(".parchment", "artifacts", example.ID, "content.md"))
+	example.Title = "Embedded example"
+	metadata, err := json.MarshalIndent(example, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exampleBody := "```parchment-meta\n" + string(metadata) + "\n```\n\n" +
+		"<!-- parchment-body -->\n# Example document\n\n## Slide\n\nExample body\n"
+	sidecar, err := json.Marshal(created.Artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout, err := json.Marshal(created.Layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{
+		"content.md": []byte(exampleBody), "metadata.json": sidecar, "layout.json": layout,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	loaded, err := docs.Get(ctx, created.ID)
+	if err != nil || loaded.Title != created.Title || loaded.Body != exampleBody {
+		t.Fatalf("legacy document with embedded example = %+v, %v", loaded, err)
+	}
+	listed, err := docs.List(ctx)
+	if err != nil || len(listed) != 1 || listed[0].Body != exampleBody {
+		t.Fatalf("legacy document list with embedded example = %+v, %v", listed, err)
+	}
+	markedExample, err := artifactfile.Encode(example, "marked example body", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "content.md"), markedExample, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := docs.Get(ctx, created.ID); err == nil {
+		t.Fatal("marked embedded metadata fell back to the legacy sidecar")
+	}
+}
+
+func TestSavingLegacyDocumentRemovesManagedSidecarsAndImages(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	docs := document.NewService(ws, 10)
+	created, err := docs.Create(ctx, document.Draft{Title: "Legacy document", Body: "Old body"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, ".parchment", "artifacts", created.ID)
+	image, err := document.NewImage(testPNG(t, 77))
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := json.Marshal(created.Artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout, err := json.Marshal(created.Layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{
+		"content.md": []byte("Old body"), "metadata.json": metadata,
+		"layout.json": layout, image.Name: image.Data,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	loaded, err := docs.Get(ctx, created.ID)
+	if err != nil || len(loaded.Images) != 1 {
+		t.Fatalf("legacy document image = %+v, %v", loaded.Images, err)
+	}
+	if _, err := docs.Save(ctx, loaded, document.Draft{
+		Title: loaded.Title, Body: "Updated body", Layout: loaded.Layout,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"metadata.json", "layout.json", image.Name} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("legacy sidecar %q remains after save: %v", name, err)
+		}
+	}
+}
+
 func TestDocumentSaveDetectsConcurrentChange(t *testing.T) {
 	ctx := context.Background()
 	ws := openTestWorkspace(t, t.TempDir())

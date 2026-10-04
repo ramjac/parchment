@@ -1033,8 +1033,16 @@ func TestLegacyNoteMayBeginWithMetadataFenceExample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := "```parchment-meta\n" + string(metadataBytes) + "\n```\n\n" +
-		"```parchment-note\n{\"legacy\":true}\n```\n\nLegacy Markdown body\n"
+	example := metadata
+	example.ID = "abcdef0123456789abcdef0123456789"
+	example.Title = "Embedded example"
+	example.Location = filepath.ToSlash(filepath.Join(".parchment", "artifacts", example.ID, "content.md"))
+	exampleBytes, err := json.MarshalIndent(example, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "```parchment-meta\n" + string(exampleBytes) + "\n```\n\n" +
+		"```parchment-note\n{\"legacy\":true}\n```\n\n<!-- parchment-body -->\nLegacy Markdown body\n"
 	if err := os.WriteFile(filepath.Join(dir, "metadata.json"), metadataBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}

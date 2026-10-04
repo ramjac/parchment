@@ -97,6 +97,8 @@ func TestParserRejectsInvalidSlideStructure(t *testing.T) {
 		"# No slides\n",
 		"# Title\n\n## \n",
 		"# Title\n\n## Slide\n```go\nunclosed",
+		"```go\ncode before title\n```\n\n# Title\n\n## Slide\nBody\n",
+		"    # Indented heading\n\n# Title\n\n## Slide\nBody\n",
 	} {
 		if _, err := Parse(source); err == nil {
 			t.Errorf("Parse(%q) accepted invalid source", source)

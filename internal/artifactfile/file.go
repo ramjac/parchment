@@ -152,6 +152,53 @@ func ReadMetadata(data []byte) (artifact.Artifact, error) {
 	return item, err
 }
 
+// HasFormatMarker reports whether data begins with the current single-file
+// artifact metadata marker.
+func HasFormatMarker(data []byte) bool {
+	return metadataHasFormatMarker(string(data))
+}
+
+// HasFormatMarkerFrom inspects only the leading metadata block for its format
+// marker.
+func HasFormatMarkerFrom(input io.Reader) (bool, error) {
+	reader := bufio.NewReader(io.LimitReader(input, MaxFileSize+1))
+	var prefix strings.Builder
+	var consumed int64
+	var block opening
+	haveBlock := false
+	for {
+		line, err := reader.ReadString('\n')
+		consumed += int64(len(line))
+		if consumed > MaxFileSize {
+			return false, fmt.Errorf("artifact metadata is larger than %d MiB", MaxFileSize>>20)
+		}
+		if !haveBlock {
+			if isBlankLine(line) {
+				prefix.WriteString(line)
+			} else {
+				var ok bool
+				block, ok = parseOpening(line)
+				if !ok || block.name != metadataBlock {
+					return false, nil
+				}
+				haveBlock = true
+				prefix.WriteString(line)
+			}
+		} else {
+			prefix.WriteString(line)
+			if isFenceClose(line, block.marker[:1], len(block.marker)) {
+				return metadataHasFormatMarker(prefix.String()), nil
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return false, nil
+			}
+			return false, fmt.Errorf("read Parchment metadata marker: %w", err)
+		}
+	}
+}
+
 // ReadMetadataFrom reads only the leading metadata block from an artifact
 // stream, without loading its structured payloads or Markdown body.
 func ReadMetadataFrom(input io.Reader) (artifact.Artifact, error) {

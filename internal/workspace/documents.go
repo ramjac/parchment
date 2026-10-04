@@ -457,6 +457,34 @@ func (w *Workspace) saveDocumentLockedWithChanges(ctx context.Context, d documen
 		}
 		return fmt.Errorf("save document files: %w", err)
 	}
+	if err := cleanupLegacyDocumentFiles(dir); err != nil {
+		return fmt.Errorf("clean up legacy document files: %w", err)
+	}
+	return nil
+}
+
+func cleanupLegacyDocumentFiles(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	removed := false
+	for _, entry := range entries {
+		switch entry.Name() {
+		case "metadata.json", "layout.json", "changes.json":
+		default:
+			if !document.IsImageName(entry.Name()) {
+				continue
+			}
+		}
+		if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove %s: %w", entry.Name(), err)
+		}
+		removed = true
+	}
+	if removed {
+		return syncDirectory(dir)
+	}
 	return nil
 }
 
@@ -545,6 +573,11 @@ func (w *Workspace) readDocumentFileUnlocked(id string, withImages bool) (docume
 		return w.readLegacyDocumentFileUnlocked(id, dir, content, withImages, err)
 	}
 	if metadata.ID != id {
+		if !artifactfile.HasFormatMarker(content) {
+			return w.readLegacyDocumentFileUnlocked(
+				id, dir, content, withImages, fmt.Errorf("invalid document metadata for %s", id),
+			)
+		}
 		return document.Document{}, nil, fmt.Errorf("invalid document metadata for %s", id)
 	}
 	if metadata.Kind != artifact.DocumentKind {
@@ -705,13 +738,28 @@ func readRegularFile(path string, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-func readArtifactMetadata(path string) (artifact.Artifact, error) {
+func readArtifactMetadata(path string) (artifact.Artifact, bool, error) {
 	file, err := openRegularFile(path)
 	if err != nil {
-		return artifact.Artifact{}, err
+		return artifact.Artifact{}, false, err
+	}
+	item, err := artifactfile.ReadMetadataFrom(file)
+	if closeErr := file.Close(); err == nil && closeErr != nil {
+		return artifact.Artifact{}, false, closeErr
+	}
+	if err != nil {
+		return artifact.Artifact{}, false, err
+	}
+	file, err = openRegularFile(path)
+	if err != nil {
+		return artifact.Artifact{}, false, err
 	}
 	defer file.Close()
-	return artifactfile.ReadMetadataFrom(file)
+	marked, err := artifactfile.HasFormatMarkerFrom(file)
+	if err != nil {
+		return artifact.Artifact{}, false, err
+	}
+	return item, marked, nil
 }
 
 func openRegularFile(path string) (*os.File, error) {
