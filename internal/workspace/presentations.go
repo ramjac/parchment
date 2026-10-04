@@ -209,7 +209,7 @@ func (w *Workspace) readPresentationUnlocked(id string) (presentation.Presentati
 	if err != nil {
 		return presentation.Presentation{}, fmt.Errorf("read presentation %s: %w", id, err)
 	}
-	metadata, err := artifactfile.ReadMetadata(data)
+	metadata, err := artifactfile.ReadMetadataEnvelope(data)
 	if err != nil {
 		if errors.Is(err, artifactfile.ErrMetadataMissing) {
 			legacy, legacyErr := readLegacyArtifactMetadata(dir, id)

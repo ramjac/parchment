@@ -1110,3 +1110,70 @@ func TestLegacyNoteMayBeginWithMetadataFenceExample(t *testing.T) {
 		}
 	}
 }
+
+func TestSeparatorFreeEnvelopesLoadAndListForEveryArtifactKind(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	notes := note.NewService(ws, 10)
+	docs := document.NewService(ws, 10)
+	decks := presentation.NewService(ws, 10)
+	books := spreadsheet.NewService(ws, 10)
+
+	n, err := notes.Create(ctx, "Separator-free note", "Note body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := docs.Create(ctx, document.Draft{Title: "Separator-free document", Body: "Document body"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := decks.Create(ctx, "Separator-free presentation", "# Separator-free presentation\n\n## Slide\n\nPresentation body\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := books.Create(ctx, "Separator-free spreadsheet", [][]spreadsheet.Cell{{{Value: "cell"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []artifact.Artifact{n.Artifact, d.Artifact, p.Artifact, b.Artifact} {
+		path := filepath.Join(root, filepath.FromSlash(item.Location))
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := strings.Replace(string(data), "  \"parchment_format\": \"parchment-single-file-v1\",\n", "", 1)
+		if source == string(data) {
+			t.Fatalf("format marker missing from %s", path)
+		}
+		source = strings.Replace(source, "<!-- parchment-body -->\n", "", 1)
+		if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := notes.Get(ctx, n.ID); err != nil {
+		t.Fatalf("load separator-free note: %v", err)
+	}
+	if _, err := docs.Get(ctx, d.ID); err != nil {
+		t.Fatalf("load separator-free document: %v", err)
+	}
+	if _, err := decks.Get(ctx, p.ID); err != nil {
+		t.Fatalf("load separator-free presentation: %v", err)
+	}
+	if _, err := books.Get(ctx, b.ID); err != nil {
+		t.Fatalf("load separator-free spreadsheet: %v", err)
+	}
+	if items, err := notes.List(ctx); err != nil || len(items) != 1 {
+		t.Fatalf("list separator-free notes = %d, %v", len(items), err)
+	}
+	if items, err := docs.List(ctx); err != nil || len(items) != 1 {
+		t.Fatalf("list separator-free documents = %d, %v", len(items), err)
+	}
+	if items, err := decks.List(ctx); err != nil || len(items) != 1 {
+		t.Fatalf("list separator-free presentations = %d, %v", len(items), err)
+	}
+	if items, err := books.List(ctx); err != nil || len(items) != 1 {
+		t.Fatalf("list separator-free spreadsheets = %d, %v", len(items), err)
+	}
+}

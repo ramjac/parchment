@@ -209,7 +209,7 @@ func (w *Workspace) readSpreadsheetUnlocked(id string) (spreadsheet.Spreadsheet,
 	if err != nil {
 		return spreadsheet.Spreadsheet{}, fmt.Errorf("read spreadsheet %s: %w", id, err)
 	}
-	metadata, err := artifactfile.ReadMetadata(data)
+	metadata, err := artifactfile.ReadMetadataEnvelope(data)
 	if err != nil {
 		if errors.Is(err, artifactfile.ErrMetadataMissing) {
 			legacy, legacyErr := readLegacyArtifactMetadata(dir, id)

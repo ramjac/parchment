@@ -224,16 +224,16 @@ func (w *Workspace) readArtifactMetadataUnlocked(id string) (artifact.Artifact, 
 
 	metadata, marked, err := readArtifactMetadata(filepath.Join(dir, "content.md"))
 	if err == nil {
-		if metadata.ID != id {
-			if !marked {
-				legacy, legacyErr := readLegacyArtifactMetadata(dir, id)
-				if legacyErr == nil {
-					return legacy, nil
-				}
-				if !errors.Is(legacyErr, os.ErrNotExist) {
-					return artifact.Artifact{}, fmt.Errorf("read legacy artifact metadata %s: %w", id, legacyErr)
-				}
+		if !marked {
+			legacy, legacyErr := readLegacyArtifactMetadata(dir, id)
+			if legacyErr == nil {
+				return legacy, nil
 			}
+			if !errors.Is(legacyErr, os.ErrNotExist) {
+				return artifact.Artifact{}, fmt.Errorf("read legacy artifact metadata %s: %w", id, legacyErr)
+			}
+		}
+		if metadata.ID != id {
 			return artifact.Artifact{}, fmt.Errorf("invalid artifact metadata for %s", id)
 		}
 		return metadata, nil
@@ -887,11 +887,7 @@ func (w *Workspace) readNoteUnlocked(id string) (note.Note, error) {
 	if err != nil {
 		return note.Note{}, fmt.Errorf("read note artifact %s: %w", id, err)
 	}
-	metadata, err := artifactfile.ReadMetadata(content)
-	if err != nil {
-		if !errors.Is(err, artifactfile.ErrMetadataMissing) {
-			return note.Note{}, fmt.Errorf("read note metadata %s: %w", id, err)
-		}
+	if !artifactfile.HasFormatMarker(content) {
 		a, legacyErr := readLegacyArtifactMetadata(dir, id)
 		if legacyErr == nil {
 			if a.Kind != artifact.NoteKind {
@@ -904,23 +900,12 @@ func (w *Workspace) readNoteUnlocked(id string) (note.Note, error) {
 		if !errors.Is(legacyErr, os.ErrNotExist) {
 			return note.Note{}, fmt.Errorf("read legacy note metadata %s: %w", id, legacyErr)
 		}
+	}
+	metadata, err := artifactfile.ReadMetadataEnvelope(content)
+	if err != nil {
 		return note.Note{}, fmt.Errorf("read note metadata %s: %w", id, err)
 	}
 	if metadata.ID != id {
-		if !artifactfile.HasFormatMarker(content) {
-			a, legacyErr := readLegacyArtifactMetadata(dir, id)
-			if legacyErr == nil {
-				if a.Kind != artifact.NoteKind {
-					return note.Note{}, errNotNote
-				}
-				a.CreatedAt = a.CreatedAt.UTC()
-				a.ModifiedAt = a.ModifiedAt.UTC()
-				return note.Note{Artifact: a, Body: string(content)}, nil
-			}
-			if !errors.Is(legacyErr, os.ErrNotExist) {
-				return note.Note{}, fmt.Errorf("read legacy note metadata %s: %w", id, legacyErr)
-			}
-		}
 		return note.Note{}, fmt.Errorf("invalid note metadata for %s", id)
 	}
 	if metadata.Kind != artifact.NoteKind {

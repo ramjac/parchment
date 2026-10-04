@@ -693,6 +693,13 @@ func TestInvalidEmbeddedMetadataDoesNotFallBackToLegacySidecars(t *testing.T) {
 	}
 	write(filepath.Join(noteDir, "metadata.json"), noteMetadata)
 	corruptMetadata(noteContentPath)
+	corruptedNote, err := os.ReadFile(noteContentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !artifactfile.HasFormatMarker(corruptedNote) {
+		t.Fatalf("corrupted note lost its single-file format marker: %q", corruptedNote[:min(len(corruptedNote), 240)])
+	}
 	if _, err := notes.Get(ctx, legacyNote.ID); err == nil {
 		t.Fatal("malformed note metadata fell back to the stale sidecar")
 	}

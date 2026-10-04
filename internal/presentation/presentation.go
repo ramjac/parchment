@@ -221,6 +221,7 @@ func Parse(source string) (Deck, error) {
 				marker = markdownFence(trimmed)
 			}
 		}
+		listContinuation := !isListItem && listIndent > 0 && leadingSpaces(line) >= listIndent
 		if marker != "" && (!isIndentedCode(line) || markerIndent > 0) {
 			if !inFence {
 				inFence, fenceMarker, fenceListIndent = true, marker, markerIndent
@@ -251,14 +252,15 @@ func Parse(source string) (Deck, error) {
 			}
 			continue
 		}
-		if strings.HasPrefix(trimmed, "# ") {
+		if strings.HasPrefix(trimmed, "# ") && !listContinuation {
 			if deck.Title != "" || current != nil {
 				return Deck{}, fmt.Errorf("line %d: only one top-level presentation title is allowed", lineNumber)
 			}
 			deck.Title = strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))
 			continue
 		}
-		if strings.HasPrefix(trimmed, "## ") && !strings.HasPrefix(trimmed, "### ") {
+		if strings.HasPrefix(trimmed, "## ") && !strings.HasPrefix(trimmed, "### ") &&
+			!listContinuation {
 			flush()
 			title := strings.TrimSpace(strings.TrimPrefix(trimmed, "## "))
 			title = stripAnchor(title)

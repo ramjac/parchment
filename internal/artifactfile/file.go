@@ -146,7 +146,21 @@ func ReadMetadata(data []byte) (artifact.Artifact, error) {
 	}
 	source := string(data)
 	item, _, err := readMetadata(source)
-	if isLegacyMetadataExample(source) && !metadataHasFormatMarker(source) {
+	if (err != nil || !metadataHasFormatMarker(source)) && isLegacyMetadataExample(source) {
+		return artifact.Artifact{}, fmt.Errorf("%w: it must be the first Markdown block", ErrMetadataMissing)
+	}
+	return item, err
+}
+
+// ReadMetadataEnvelope reads the leading metadata of a single-file artifact,
+// including older envelopes that omit a body separator.
+func ReadMetadataEnvelope(data []byte) (artifact.Artifact, error) {
+	if len(data) > MaxFileSize {
+		return artifact.Artifact{}, fmt.Errorf("artifact file is larger than %d MiB", MaxFileSize>>20)
+	}
+	source := string(data)
+	item, _, err := readMetadata(source)
+	if err != nil && isLegacyMetadataExample(source) && !metadataHasFormatMarker(source) {
 		return artifact.Artifact{}, fmt.Errorf("%w: it must be the first Markdown block", ErrMetadataMissing)
 	}
 	return item, err
@@ -202,6 +216,16 @@ func HasFormatMarkerFrom(input io.Reader) (bool, error) {
 // ReadMetadataFrom reads only the leading metadata block from an artifact
 // stream, without loading its structured payloads or Markdown body.
 func ReadMetadataFrom(input io.Reader) (artifact.Artifact, error) {
+	return readMetadataFrom(input, false)
+}
+
+// ReadMetadataEnvelopeFrom reads leading metadata while also accepting
+// separator-free single-file artifact envelopes.
+func ReadMetadataEnvelopeFrom(input io.Reader) (artifact.Artifact, error) {
+	return readMetadataFrom(input, true)
+}
+
+func readMetadataFrom(input io.Reader, allowSeparatorFree bool) (artifact.Artifact, error) {
 	reader := bufio.NewReader(io.LimitReader(input, MaxFileSize+1))
 	var prefix strings.Builder
 	var lineBuffer strings.Builder
@@ -228,7 +252,7 @@ func ReadMetadataFrom(input io.Reader) (artifact.Artifact, error) {
 				block, haveBlock = parseOpening(line)
 				if !haveBlock || block.name != metadataBlock {
 					prefix.WriteString(line)
-					return ReadMetadata([]byte(prefix.String()))
+					return readMetadataBytes(prefix.String(), allowSeparatorFree)
 				}
 				openingLineIncomplete = true
 				continue
@@ -243,7 +267,7 @@ func ReadMetadataFrom(input io.Reader) (artifact.Artifact, error) {
 				block, ok = parseOpening(line)
 				if !ok || block.name != metadataBlock {
 					prefix.WriteString(line)
-					return ReadMetadata([]byte(prefix.String()))
+					return readMetadataBytes(prefix.String(), allowSeparatorFree)
 				}
 				haveBlock = true
 				prefix.WriteString(line)
@@ -260,7 +284,7 @@ func ReadMetadataFrom(input io.Reader) (artifact.Artifact, error) {
 			} else if isFenceClose(line, block.marker[:1], len(block.marker)) {
 				item, _, metadataErr := readMetadata(prefix.String())
 				if metadataErr == nil {
-					if metadataHasFormatMarker(prefix.String()) {
+					if metadataHasFormatMarker(prefix.String()) || allowSeparatorFree {
 						return item, nil
 					}
 					continuation, probeErr := hasEnvelopeContinuationFrom(reader, &consumed)
@@ -287,11 +311,22 @@ func ReadMetadataFrom(input io.Reader) (artifact.Artifact, error) {
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return ReadMetadata([]byte(prefix.String()))
+				return readMetadataBytes(prefix.String(), allowSeparatorFree)
 			}
 			return artifact.Artifact{}, fmt.Errorf("read Parchment metadata: %w", err)
 		}
 	}
+}
+
+func readMetadataBytes(source string, allowSeparatorFree bool) (artifact.Artifact, error) {
+	if allowSeparatorFree {
+		item, _, err := readMetadata(source)
+		if err != nil && isLegacyMetadataExample(source) && !metadataHasFormatMarker(source) {
+			return artifact.Artifact{}, fmt.Errorf("%w: it must be the first Markdown block", ErrMetadataMissing)
+		}
+		return item, err
+	}
+	return ReadMetadata([]byte(source))
 }
 
 func isLegacyMetadataExample(source string) bool {
@@ -336,11 +371,8 @@ func metadataHasFormatMarker(source string) bool {
 	if err != nil {
 		return false
 	}
-	var format struct {
-		Format string `json:"parchment_format"`
-	}
-	_ = json.Unmarshal(payload, &format)
-	return format.Format == envelopeFormat
+	marker := []byte(`"` + envelopeFormatField + `": "` + envelopeFormat + `"`)
+	return bytes.Contains(payload, marker)
 }
 
 func hasEnvelopeContinuation(source string, offset int) bool {

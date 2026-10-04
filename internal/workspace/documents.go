@@ -566,19 +566,25 @@ func (w *Workspace) readDocumentFileUnlocked(id string, withImages bool) (docume
 	if err != nil {
 		return document.Document{}, nil, fmt.Errorf("read document artifact %s: %w", id, err)
 	}
-	metadata, err := artifactfile.ReadMetadata(content)
-	if err != nil {
-		if !errors.Is(err, artifactfile.ErrMetadataMissing) {
-			return document.Document{}, nil, fmt.Errorf("read document metadata %s: %w", id, err)
-		}
-		return w.readLegacyDocumentFileUnlocked(id, dir, content, withImages, err)
-	}
-	if metadata.ID != id {
-		if !artifactfile.HasFormatMarker(content) {
+	if !artifactfile.HasFormatMarker(content) {
+		legacy, legacyErr := readLegacyArtifactMetadata(dir, id)
+		if legacyErr == nil {
+			if legacy.Kind != artifact.DocumentKind {
+				return document.Document{}, nil, errNotDocument
+			}
 			return w.readLegacyDocumentFileUnlocked(
-				id, dir, content, withImages, fmt.Errorf("invalid document metadata for %s", id),
+				id, dir, content, withImages, artifactfile.ErrMetadataMissing,
 			)
 		}
+		if !errors.Is(legacyErr, os.ErrNotExist) {
+			return document.Document{}, nil, fmt.Errorf("read legacy document metadata %s: %w", id, legacyErr)
+		}
+	}
+	metadata, err := artifactfile.ReadMetadataEnvelope(content)
+	if err != nil {
+		return document.Document{}, nil, fmt.Errorf("read document metadata %s: %w", id, err)
+	}
+	if metadata.ID != id {
 		return document.Document{}, nil, fmt.Errorf("invalid document metadata for %s", id)
 	}
 	if metadata.Kind != artifact.DocumentKind {
@@ -744,7 +750,7 @@ func readArtifactMetadata(path string) (artifact.Artifact, bool, error) {
 	if err != nil {
 		return artifact.Artifact{}, false, err
 	}
-	item, err := artifactfile.ReadMetadataFrom(file)
+	item, err := artifactfile.ReadMetadataEnvelopeFrom(file)
 	if closeErr := file.Close(); err == nil && closeErr != nil {
 		return artifact.Artifact{}, false, closeErr
 	}
