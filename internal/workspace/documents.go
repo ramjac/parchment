@@ -512,6 +512,16 @@ func (w *Workspace) readDocumentFileUnlocked(id string, withImages bool) (docume
 	}
 	content, err := readRegularFile(filepath.Join(dir, "content.md"), 64<<20)
 	if errors.Is(err, os.ErrNotExist) {
+		a, legacyErr := readLegacyArtifactMetadata(dir, id)
+		if legacyErr == nil {
+			if a.Kind != artifact.DocumentKind {
+				return document.Document{}, nil, errNotDocument
+			}
+			return document.Document{}, nil, fmt.Errorf("read document artifact %s: %w", id, err)
+		}
+		if !errors.Is(legacyErr, os.ErrNotExist) {
+			return document.Document{}, nil, fmt.Errorf("read legacy document metadata %s: %w", id, legacyErr)
+		}
 		return document.Document{}, nil, fmt.Errorf("%w: %s", errNoMetadata, id)
 	}
 	if err != nil {
@@ -519,6 +529,9 @@ func (w *Workspace) readDocumentFileUnlocked(id string, withImages bool) (docume
 	}
 	metadata, err := artifactfile.ReadMetadata(content)
 	if err != nil {
+		if !errors.Is(err, artifactfile.ErrMetadataMissing) {
+			return document.Document{}, nil, fmt.Errorf("read document metadata %s: %w", id, err)
+		}
 		return w.readLegacyDocumentFileUnlocked(id, dir, content, withImages, err)
 	}
 	if metadata.ID != id {

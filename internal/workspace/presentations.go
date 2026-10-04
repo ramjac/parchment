@@ -201,6 +201,15 @@ func (w *Workspace) readPresentationUnlocked(id string) (presentation.Presentati
 	}
 	metadata, err := artifactfile.ReadMetadata(data)
 	if err != nil {
+		if errors.Is(err, artifactfile.ErrMetadataMissing) {
+			legacy, legacyErr := readLegacyArtifactMetadata(dir, id)
+			if legacyErr == nil && legacy.Kind != artifact.PresentationKind {
+				return presentation.Presentation{}, presentation.ErrNotFound
+			}
+			if legacyErr != nil && !errors.Is(legacyErr, os.ErrNotExist) {
+				return presentation.Presentation{}, fmt.Errorf("read legacy presentation metadata %s: %w", id, legacyErr)
+			}
+		}
 		return presentation.Presentation{}, fmt.Errorf("read presentation metadata %s: %w", id, err)
 	}
 	if metadata.ID != id {

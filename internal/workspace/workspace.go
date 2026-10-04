@@ -798,6 +798,16 @@ func (w *Workspace) readNoteUnlocked(id string) (note.Note, error) {
 	}
 	content, err := readRegularFile(filepath.Join(dir, "content.md"), artifactfile.MaxFileSize)
 	if errors.Is(err, os.ErrNotExist) {
+		a, legacyErr := readLegacyArtifactMetadata(dir, id)
+		if legacyErr == nil {
+			if a.Kind != artifact.NoteKind {
+				return note.Note{}, errNotNote
+			}
+			return note.Note{}, fmt.Errorf("read note artifact %s: %w", id, err)
+		}
+		if !errors.Is(legacyErr, os.ErrNotExist) {
+			return note.Note{}, fmt.Errorf("read legacy note metadata %s: %w", id, legacyErr)
+		}
 		return note.Note{}, fmt.Errorf("%w: %s", errNoMetadata, id)
 	}
 	if err != nil {
@@ -805,6 +815,9 @@ func (w *Workspace) readNoteUnlocked(id string) (note.Note, error) {
 	}
 	metadata, err := artifactfile.ReadMetadata(content)
 	if err != nil {
+		if !errors.Is(err, artifactfile.ErrMetadataMissing) {
+			return note.Note{}, fmt.Errorf("read note metadata %s: %w", id, err)
+		}
 		a, legacyErr := readLegacyArtifactMetadata(dir, id)
 		if legacyErr == nil {
 			if a.Kind != artifact.NoteKind {

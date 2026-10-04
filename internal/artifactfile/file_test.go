@@ -3,6 +3,7 @@ package artifactfile
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +47,20 @@ func TestEncodeDecodePreservesMarkdownAndStructuredBlocks(t *testing.T) {
 	}
 	if payload["format"] != "example" {
 		t.Fatalf("payload = %v", payload)
+	}
+}
+
+func TestReadMetadataDistinguishesMissingFromInvalidEnvelope(t *testing.T) {
+	if _, err := ReadMetadata([]byte("# Plain Markdown\n")); !errors.Is(err, ErrMetadataMissing) {
+		t.Fatalf("missing metadata error = %v", err)
+	}
+	if _, err := ReadMetadata([]byte("```parchment-meta\nnot JSON\n```\n")); err == nil ||
+		errors.Is(err, ErrMetadataMissing) {
+		t.Fatalf("invalid metadata error = %v", err)
+	}
+	if _, err := ReadMetadata([]byte("```parchment-note\n{}\n```\n")); err == nil ||
+		errors.Is(err, ErrMetadataMissing) {
+		t.Fatalf("misordered metadata error = %v", err)
 	}
 }
 

@@ -16,6 +16,9 @@ const bodyBoundary = "<!-- parchment-body -->"
 
 const MaxFileSize = 64 << 20
 
+// ErrMetadataMissing indicates the file has no embedded Parchment metadata.
+var ErrMetadataMissing = errors.New("Parchment metadata block is missing")
+
 // File is a Markdown artifact with shared metadata and optional structured
 // payloads stored in hidden Parchment code fences.
 type File struct {
@@ -140,7 +143,10 @@ func readMetadata(source string) (artifact.Artifact, int, error) {
 	line, _ := nextLine(source, 0)
 	opening, ok := parseOpening(line)
 	if !ok || opening.name != metadataBlock {
-		return artifact.Artifact{}, 0, errors.New("Parchment metadata block must be the first Markdown block")
+		if _, info, isFence := parseFence(line); isFence && strings.HasPrefix(info, "parchment-") {
+			return artifact.Artifact{}, 0, errors.New("Parchment metadata block must be the first Markdown block")
+		}
+		return artifact.Artifact{}, 0, fmt.Errorf("%w: it must be the first Markdown block", ErrMetadataMissing)
 	}
 	metadataBytes, offset, err := readBlock(source, 0, opening)
 	if err != nil {
