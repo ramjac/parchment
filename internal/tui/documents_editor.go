@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -422,13 +423,7 @@ func (s *documentsScreen) act(action string) tea.Cmd {
 	case "quote":
 		s.linePrefix("> ")
 	}
-	if s.focus == focusToolbar {
-		if textAction(action) {
-			return s.focusBody()
-		}
-		return nil
-	}
-	if textAction(action) && s.focus == focusTitle {
+	if textAction(action) {
 		return s.focusBody()
 	}
 	return nil
@@ -495,13 +490,12 @@ func (s *documentsScreen) finishPrompt(kind promptKind, value string) tea.Cmd {
 			return nil
 		}
 		s.pending = true
-		s.startOperation()
-		return readImageCommand(value)
+		return readImageCommand(s.startOperation(), value)
 	case promptSection:
-		columns, continuous := 0, false
 		trimmed := strings.TrimSuffix(value, "c")
-		continuous = trimmed != value
-		if _, err := fmt.Sscanf(trimmed, "%d", &columns); err != nil || columns < 1 || columns > document.MaxColumns {
+		continuous := trimmed != value
+		columns, err := strconv.Atoi(trimmed)
+		if err != nil || columns < 1 || columns > document.MaxColumns {
 			s.errMessage = "Enter a column count from 1 to 4, optionally followed by c"
 			return nil
 		}
@@ -517,10 +511,16 @@ func (s *documentsScreen) moveLeft(n int) {
 	}
 }
 
-func (s *documentsScreen) insertText(text string) {
-	if s.focus == focusTitle {
-		s.focus = focusBody
+// prepareBody focuses the body widget itself, not just the focus marker, so
+// cursor movement and later typing reach the textarea.
+func (s *documentsScreen) prepareBody() {
+	if s.focus != focusBody || !s.body.Focused() {
+		s.focusBody()
 	}
+}
+
+func (s *documentsScreen) insertText(text string) {
+	s.prepareBody()
 	s.body.InsertString(text)
 }
 
@@ -532,18 +532,14 @@ func (s *documentsScreen) wrap(open, close string) {
 
 // linePrefix starts the current line with a Markdown marker.
 func (s *documentsScreen) linePrefix(prefix string) {
-	if s.focus == focusTitle {
-		s.focus = focusBody
-	}
+	s.prepareBody()
 	s.body.CursorStart()
 	s.body.InsertString(prefix)
 }
 
 // insertBlock places a block on its own paragraph.
 func (s *documentsScreen) insertBlock(text string) {
-	if s.focus == focusTitle {
-		s.focus = focusBody
-	}
+	s.prepareBody()
 	prefix := "\n\n"
 	if s.body.Value() == "" || s.body.LineInfo().ColumnOffset == 0 && s.body.LineInfo().StartColumn == 0 && s.currentLineEmpty() {
 		prefix = ""

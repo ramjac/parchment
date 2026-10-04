@@ -262,7 +262,7 @@ func normalize(d *Document) error {
 		if !referenced[img.Name] || seen[img.Name] {
 			continue
 		}
-		if err := img.validate(); err != nil {
+		if err := img.Validate(); err != nil {
 			return err
 		}
 		seen[img.Name] = true
@@ -286,7 +286,10 @@ func cloneDocument(d *Document) *Document {
 	clone := *d
 	clone.Tags = append([]string(nil), d.Tags...)
 	clone.Links = append([]string(nil), d.Links...)
-	clone.Images = append([]Image(nil), d.Images...)
+	clone.Images = make([]Image, len(d.Images))
+	for i, img := range d.Images {
+		clone.Images[i] = Image{Name: img.Name, Data: append([]byte(nil), img.Data...)}
+	}
 	return &clone
 }
 

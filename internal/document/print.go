@@ -378,6 +378,20 @@ func formatBlocks(lines []string, width int) []string {
 	return out
 }
 
+// fitPrefix bounds a line prefix to half the width so the text keeps room to
+// be readable. Indentation is dropped before the marker itself is truncated.
+func fitPrefix(prefix string, width int) string {
+	limit := max(width/2, 0)
+	if runewidth.StringWidth(prefix) <= limit {
+		return prefix
+	}
+	trimmed := strings.TrimLeft(prefix, " ")
+	if runewidth.StringWidth(trimmed) <= limit {
+		return strings.Repeat(" ", limit-runewidth.StringWidth(trimmed)) + trimmed
+	}
+	return runewidth.Truncate(trimmed, limit, "")
+}
+
 // wrap word-wraps text to width, using first and rest as line prefixes.
 func wrap(text string, width int, first, rest string) []string {
 	words := strings.Fields(text)
@@ -385,6 +399,7 @@ func wrap(text string, width int, first, rest string) []string {
 		return nil
 	}
 	var lines []string
+	first, rest = fitPrefix(first, width), fitPrefix(rest, width)
 	prefix := first
 	line := ""
 	room := func() int { return max(width-runewidth.StringWidth(prefix), 1) }

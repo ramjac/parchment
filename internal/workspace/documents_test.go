@@ -225,3 +225,50 @@ func TestDocumentServiceValidatesInput(t *testing.T) {
 		t.Fatalf("missing document error = %v", err)
 	}
 }
+
+func TestDocumentHistoryIsIndependentOfReturnedImageBytes(t *testing.T) {
+	ctx := context.Background()
+	ws := openTestWorkspace(t, t.TempDir())
+	docs := document.NewService(ws, 10)
+	created, err := docs.Create(ctx, document.Draft{Title: "Pictures"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withImage, _, err := docs.AddImage(ctx, created.ID, "Chart", testPNG(t, 120))
+	if err != nil {
+		t.Fatal(err)
+	}
+	withImage.Images[0].Data[0] ^= 0xff
+	if _, err := docs.Undo(ctx); err != nil {
+		t.Fatalf("undo after mutating returned image bytes: %v", err)
+	}
+	if _, err := docs.Redo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := docs.Get(ctx, created.ID)
+	if err != nil || len(restored.Images) != 1 || restored.Images[0].Validate() != nil {
+		t.Fatalf("redo restored modified image bytes: %+v, %v", restored, err)
+	}
+}
+
+func TestCorruptOrRenamedWorkspaceImageIsRejected(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	docs := document.NewService(ws, 10)
+	created, err := docs.Create(ctx, document.Draft{Title: "Pictures"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, name, err := docs.AddImage(ctx, created.ID, "Chart", testPNG(t, 30))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, ".parchment", "artifacts", created.ID, name)
+	if err := os.WriteFile(path, testPNG(t, 31), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := docs.Get(ctx, created.ID); err == nil {
+		t.Fatal("image whose content does not match its name was loaded")
+	}
+}

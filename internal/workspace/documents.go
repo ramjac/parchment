@@ -305,7 +305,11 @@ func readDocumentImages(dir string) ([]document.Image, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", entry.Name(), err)
 		}
-		images = append(images, document.Image{Name: entry.Name(), Data: data})
+		img := document.Image{Name: entry.Name(), Data: data}
+		if err := img.Validate(); err != nil {
+			return nil, err
+		}
+		images = append(images, img)
 	}
 	return images, nil
 }

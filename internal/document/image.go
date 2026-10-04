@@ -58,12 +58,18 @@ func imageName(data []byte, extension string) string {
 	return fmt.Sprintf("image-%x.%s", sum[:8], extension)
 }
 
-func (i Image) validate() error {
+// Validate checks that the image is a supported format within the size limit
+// and that its name is the one derived from its content.
+func (i Image) Validate() error {
 	if !IsImageName(i.Name) {
 		return fmt.Errorf("invalid image name %q", i.Name)
 	}
-	if len(i.Data) == 0 || len(i.Data) > MaxImageBytes {
-		return fmt.Errorf("image %s has an invalid size", i.Name)
+	canonical, err := NewImage(i.Data)
+	if err != nil {
+		return fmt.Errorf("image %s: %w", i.Name, err)
+	}
+	if canonical.Name != i.Name {
+		return fmt.Errorf("image %s does not match its content (expected %s)", i.Name, canonical.Name)
 	}
 	return nil
 }

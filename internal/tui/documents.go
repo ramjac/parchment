@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -216,6 +217,10 @@ func (s *documentsScreen) update(message tea.Msg) (tea.Cmd, bool) {
 	case imageLoadedMsg:
 		s.finishOperation()
 		s.pending = false
+		if errors.Is(msg.err, context.Canceled) {
+			s.errMessage, s.status = "", "Image insert cancelled"
+			return nil, false
+		}
 		if msg.err != nil {
 			s.errMessage = msg.err.Error()
 			return nil, false
@@ -246,7 +251,7 @@ func isCancelled(err error) bool {
 
 func (s *documentsScreen) updateKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	key := msg.String()
-	if (s.width < 40 || s.height < 10) && key == "q" {
+	if (s.width < 40 || s.height < 10) && key == "q" && s.mode == documentBrowsing {
 		s.cancelPending()
 		return tea.Quit, false
 	}
@@ -582,14 +587,21 @@ func imageKey(images []document.Image) string {
 	return strings.Join(names, ",")
 }
 
-// readImageCommand loads an image file off the UI goroutine.
-func readImageCommand(path string) tea.Cmd {
+// readImageCommand loads an image file off the UI goroutine. A result that
+// arrives after the operation is cancelled is discarded.
+func readImageCommand(ctx context.Context, path string) tea.Cmd {
 	return func() tea.Msg {
 		data, err := os.ReadFile(path)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return imageLoadedMsg{err: ctxErr}
+		}
 		if err != nil {
 			return imageLoadedMsg{err: err}
 		}
 		img, err := document.NewImage(data)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return imageLoadedMsg{err: ctxErr}
+		}
 		alt := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		return imageLoadedMsg{image: img, alt: alt, err: err}
 	}

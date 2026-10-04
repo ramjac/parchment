@@ -8,6 +8,8 @@ import (
 	"image/png"
 	"strings"
 	"testing"
+
+	"github.com/mattn/go-runewidth"
 )
 
 func testDocument(body string, edit func(*Layout)) Document {
@@ -290,5 +292,42 @@ func TestNewImageValidatesAndNamesByContent(t *testing.T) {
 	}
 	if !ReferencedImages("x ![a](" + first.Name + ") y")[first.Name] {
 		t.Fatal("embedded image was not detected")
+	}
+}
+
+func TestDeeplyIndentedListStaysWithinPageWidth(t *testing.T) {
+	d := testDocument(strings.Repeat(" ", 200)+"- deeply nested item text", func(l *Layout) { l.Columns = 4 })
+	pages, err := Paginate(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	geometry, _ := d.Layout.Geometry()
+	for _, page := range pages {
+		for _, line := range page.Lines {
+			if w := runewidth.StringWidth(line); w > geometry.PageCols {
+				t.Fatalf("line width %d exceeds page width %d: %q", w, geometry.PageCols, line)
+			}
+		}
+	}
+	if !strings.Contains(strings.Join(pages[0].Lines, "\n"), "deeply") {
+		t.Fatal("list text was lost")
+	}
+}
+
+func TestImageValidateRejectsMismatchedOrCorruptData(t *testing.T) {
+	img, err := NewImage(tinyPNG(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := img.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	renamed := Image{Name: "image-0000000000000000.png", Data: img.Data}
+	if renamed.Validate() == nil {
+		t.Fatal("image with a name that does not match its content was accepted")
+	}
+	corrupt := Image{Name: img.Name, Data: []byte("not an image")}
+	if corrupt.Validate() == nil {
+		t.Fatal("corrupt image data was accepted")
 	}
 }

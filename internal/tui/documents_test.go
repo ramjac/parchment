@@ -1,7 +1,11 @@
 package tui
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/png"
+	"os"
 	"strings"
 	"testing"
 
@@ -125,5 +129,83 @@ func TestDocumentsTabReturnsToNotes(t *testing.T) {
 	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
 	if m.documentsActive {
 		t.Fatal("Tab did not return to notes")
+	}
+}
+
+func TestAltFormattingFromTitleFocusesBody(t *testing.T) {
+	m, _ := newDocumentsModel(t)
+	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	typeText(t, m, "Title")
+	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b"), Alt: true})
+	typeText(t, m, "x")
+	s := m.documents
+	if !s.body.Focused() || s.titleInput.Focused() {
+		t.Fatal("formatting from the title did not focus the body")
+	}
+	if s.body.Value() != "**x**" || s.titleInput.Value() != "Title" {
+		t.Fatalf("body = %q, title = %q", s.body.Value(), s.titleInput.Value())
+	}
+}
+
+func TestSectionPromptRequiresWholeValue(t *testing.T) {
+	m, _ := newDocumentsModel(t)
+	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	s := m.documents
+	for _, value := range []string{"2junk", "2.5", "2cc", "5", "0"} {
+		s.finishPrompt(promptSection, value)
+		if s.body.Value() != "" || s.errMessage == "" {
+			t.Fatalf("section value %q accepted: body %q", value, s.body.Value())
+		}
+	}
+	s.finishPrompt(promptSection, "2c")
+	if !strings.Contains(s.body.Value(), document.SectionBreakMarkup(2, true)) {
+		t.Fatalf("valid section value rejected: %q", s.body.Value())
+	}
+}
+
+func TestSmallTerminalQDoesNotQuitEditor(t *testing.T) {
+	m, _ := newDocumentsModel(t)
+	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	typeText(t, m, "Draft")
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 30, Height: 8})
+	cmd, _ := m.documents.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if cmd != nil {
+		if _, quit := cmd().(tea.QuitMsg); quit {
+			t.Fatal("q quit the editor with unsaved changes")
+		}
+	}
+	if m.documents.mode != documentEditing {
+		t.Fatal("editor closed")
+	}
+}
+
+func TestCancelledImageLoadIsDiscarded(t *testing.T) {
+	m, _ := newDocumentsModel(t)
+	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	path := t.TempDir() + "/pixel.png"
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewGray(image.Rect(0, 0, 1, 1))); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if msg := readImageCommand(context.Background(), path)().(imageLoadedMsg); msg.err != nil {
+		t.Fatalf("valid image failed to load: %v", msg.err)
+	}
+	msg := readImageCommand(ctx, path)()
+	m.documents.pending = true
+	m.documents.update(msg)
+	if len(m.documents.images) != 0 || m.documents.body.Value() != "" || m.documents.pending {
+		t.Fatal("cancelled image load changed the document")
+	}
+	if !strings.Contains(m.documents.status, "cancelled") {
+		t.Fatalf("status = %q", m.documents.status)
 	}
 }
