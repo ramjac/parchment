@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"example.com/parchment/internal/artifactfile"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/note"
 	"example.com/parchment/internal/search"
@@ -731,7 +732,7 @@ func preview(n note.Note) string {
 		}
 		fmt.Fprintf(&b, "\nTags: #%s\n", strings.Join(tags, " #"))
 	}
-	fmt.Fprintf(&b, "\n%s", sanitizeTerminalText(n.Body))
+	fmt.Fprintf(&b, "\n%s", sanitizeTerminalText(artifactfile.StripPrivateBlocks(n.Body)))
 	return b.String()
 }
 

@@ -43,26 +43,29 @@ from the workspace; there is no search index or daemon.
 ## Storage
 
 The workspace is an ordinary directory. `parchment.toml` contains versioned
-workspace configuration; `.parchment/artifacts/<stable-id>/` contains each
-artifact's `metadata.json` envelope and canonical `content.md`. Metadata
-timestamps are UTC RFC 3339 values. Notes remain readable and editable with
-ordinary filesystem tools. Copying, archiving, or versioning the workspace
-with standard tools is sufficient for a local backup.
+workspace configuration; artifacts live under
+`.parchment/artifacts/<stable-id>/content.md`. Every supported artifact is one
+Markdown file. It begins with a `parchment-meta` fenced code block containing
+the shared metadata as JSON. Structured artifact data uses additional
+`parchment-<thing>` JSON code blocks before the visible Markdown body. The
+envelope and body are separated by a required `<!-- parchment-body -->`
+comment, so a body can safely begin with a reserved code fence. Parchment
+renderers hide these reserved blocks while ordinary Markdown remains readable.
+Metadata timestamps are UTC RFC 3339 values. Copying, archiving, or versioning
+the workspace with standard tools is sufficient for a local backup.
 
 Initial artifact metadata recognizes the `note`, `document`, `spreadsheet`,
-`presentation`, and `image` kinds. Notes and documents have application
-behavior; the other kinds are not yet implemented.
+`presentation`, and `image` kinds. Notes, documents, spreadsheets, and basic
+presentations have application behavior; image editing is not yet implemented.
 
 ### Documents
 
-Documents are a separate feature from notes, stored the same way but with
-multi-page printing in mind. A document artifact directory contains
-`metadata.json` (kind `document`), the canonical Markdown `content.md`, an
-optional `layout.json` (page size, orientation, margins in millimeters, column
-count, header, footer, page-number placement), and any embedded images as
-`image-<hash>.png|jpg|gif`, referenced from the Markdown with ordinary image
-links. Page and section breaks are HTML comments so other Markdown tools ignore
-them: `<!-- parchment:page-break -->` and
+Documents are a separate feature from notes, with multi-page printing in mind.
+The visible body is canonical Markdown. A hidden `parchment-document` JSON
+block stores page layout, embedded image bytes, and proposal history in the
+same `content.md` artifact file. Embedded image references use ordinary
+Markdown links. Page and section breaks are HTML comments so other Markdown
+tools ignore them: `<!-- parchment:page-break -->` and
 `<!-- parchment:section-break columns=2 [continuous] -->`. Headers and footers
 are `left|center|right` text with `{title}`, `{page}`, and `{pages}` tokens.
 
@@ -74,20 +77,118 @@ parchment document create "Report" --body-file report.md --columns 2 --footer "{
 parchment document print <id> | lpr
 ```
 
+Document font selection, when implemented, applies to the whole document, not
+individual sections, and only to printer-oriented rendering. It cannot change
+the font used by the TUI or terminal previews, which use the font configured
+in the user's terminal emulator.
+
 Document commands (`parchment document`, alias `doc`): `list`, `create`,
 `show`, `edit`, `rename`, `tag-add`, `tag-remove`, `layout`, `page-break`,
-`section-break`, `image`, `print`, `search`, and `delete --yes`. In the
-interactive shell, press `Tab` on the notes screen to switch to documents (and
-back). The document editor always shows a toolbar above the text with buttons
+`section-break`, `image`, `print`, `search`, `propose`, `changes`, `review`,
+`accept`, `reject`, and `delete --yes`. `propose` records a title, Markdown,
+or layout edit without changing the live document; `review` displays the
+current and proposed Markdown, and `accept` or `reject` resolves the pending
+proposal. Only one proposal may be pending per document, and a proposal cannot
+be accepted if the live document has changed since it was recorded. For
+proposals, existing embedded images can be kept or removed, but new image data
+must be added with the regular `image` command. For example:
+
+```sh
+change=$(parchment document propose <id> --body-file revised.md --description "Revise introduction")
+parchment document review <id> "$change"
+parchment document accept <id> "$change"
+```
+
+Proposal history is stored as inspectable JSON in each document's hidden
+`parchment-document` block. In the interactive shell, press
+`Tab` on the notes screen to switch to documents (and back). Press `c` on a
+selected document to record a proposed edit, `v` to browse its changes, then
+`Enter` to review and `a` or `r` to accept or reject a pending proposal. The
+document editor always shows a toolbar above the text with buttons
 for save, preview, close, text formatting (bold, italic, strikethrough, code,
 headings, lists, quote, link, rule, image) and page setup (page and section
 breaks, columns, margins, page size, orientation, header, footer, page
 numbers). Click a button, press `F2` and use the arrow keys with `Enter`, or
 use the `Alt` shortcuts (`B` bold, `I` italic, `C` code, `1`–`3` headings,
 `L`/`N` lists, `Q` quote, `K` link, `M` image, `P` page break, `S` section
-break). `F5` previews the printed
-pages and `Ctrl+S` saves. Document changes, including images, support undo
-and redo like notes.
+break). `F5` previews the printed pages and `Ctrl+S` saves (or records a
+proposal when editing a proposal). Document changes, including images, support
+undo and redo like notes.
+
+### Spreadsheets
+
+Spreadsheets are stored as one Markdown file per workbook:
+`.parchment/artifacts/<id>/content.md`. The hidden `parchment-spreadsheet`
+JSON block contains the versioned workbook data, named sheets, two-dimensional
+cell arrays, and explicit literal or formula cells. This keeps the workbook
+self-contained and avoids formulas being inferred from arbitrary text. CSV
+files can initialize a workbook; CSV cells are imported as literal text. A new
+workbook starts with `Sheet1`; additional sheets can be created with
+`spreadsheet add-sheet`.
+
+```sh
+parchment spreadsheet create "Budget" --csv-file budget.csv
+parchment spreadsheet cell <id> B2 12
+parchment spreadsheet cell <id> C2 '=B2*2' --formula
+parchment spreadsheet cell <id> C2
+parchment spreadsheet show <id>
+```
+
+Formula evaluation currently supports numeric constants, same-sheet A1 cell
+references, parentheses, unary signs, and `+`, `-`, `*`, and `/`. Empty
+referenced cells evaluate to zero. Cycles, non-numeric references, and
+division by zero are rejected. Formulas are limited to 4096 bytes and 512
+nested dependencies or parentheses. Rows and columns can be inserted with
+`spreadsheet insert-row` and `spreadsheet insert-column`; formula references
+shift with inserted rows and columns. Spreadsheet edits can be undone and
+redone through the service API while its process is running; the CLI is
+stateless across invocations. The Markdown file with its JSON data block is
+Parchment's canonical format, not a CSV file that third-party spreadsheet
+applications can open directly.
+
+### Presentations
+
+A presentation is stored as one Markdown text file at
+`.parchment/artifacts/<id>/content.md`. Its leading `parchment-meta` block
+embeds the shared artifact metadata; the rest is editable Markdown. The initial
+syntax follows Go present's Markdown conventions: `#` gives the deck title,
+`##` begins a slide, `###` adds a subsection, `//` begins an ignored comment,
+and `: ` begins a speaker-note line. Speaker notes and comments remain in the
+source but are omitted from the plain-text preview.
+
+```markdown
+# Product Update
+
+Presenter Name
+
+## What changed
+
+- Faster search
+- Local-first storage
+
+: Mention the upcoming release date.
+
+## Questions
+
+Thank you.
+```
+
+Use `presentation create <title> --body-file slides.md` to add a deck,
+`presentation show <id>` to inspect its source, and
+`presentation preview <id>` for a slide-separated plain-text preview.
+`presentation edit <id> --body-file slides.md` replaces the Markdown source.
+The parser preserves Markdown for later rendering but does not yet render it;
+embedded media and Go present command directives are not implemented.
+Presentation font selection, when implemented, applies to the whole
+presentation, not individual sections. It applies only to rendered output,
+never to terminal previews.
+
+## Examples
+
+The [`examples/`](examples/) directory contains complete Markdown artifact
+files for notes, documents, spreadsheets, and presentations. Its README shows
+how to copy them into a sample workspace; the document's image data is embedded
+in its hidden payload.
 
 ## Configuration
 
@@ -144,14 +245,33 @@ not survive a restart.
 
 ## Future work
 
-This repository currently implements notes and documents. The broader suite is
-planned to add:
+This repository currently implements notes, documents, basic spreadsheets,
+and basic Markdown presentations.
+The broader suite is planned to add:
 
-- Change tracking for documents (recording, reviewing, accepting, and
-  rejecting edits).
-- Working spreadsheet features using the shared workspace and artifact metadata.
-- Working presentation features using the shared workspace and artifact metadata.
-- Basic image-editing features using the shared workspace and artifact metadata.
+- Make the default directory for storing Parchment artifacts a non-hidden folder and also make the default directory path configurable. Generally assume that Parchment artifacts might be read by other applications; especially text file and markdown interpreters.
+- Background auto-save and recovery from auto-save so that in the event Parchment crashes or is force closed, any changes since the last save can be optionally recovered.
+- Read and work with plain Markdown files that lack Parchment metadata, without
+  adding `parchment-meta` or other `parchment-*` blocks to them. Provide an
+  explicit, opt-in "convert to Parchment artifact" operation; only that
+  conversion adds Parchment metadata and structured blocks to the file.
+- Shorter, friendlier artifact IDs and paths. The current 32-character hex IDs
+  produce long paths such as
+  `.parchment/artifacts/40000000000000000000000000000004/content.md`. Consider
+  a compact format that starts with a letter and drops the zeros between that
+  letter and the first significant digit, so artifacts don't need long runs of
+  padding zeros. Update the format and checked-in examples together; before
+  the first release, format changes do not require migration or backwards
+  compatibility.
+- Reader-friendly artifact layout. Artifacts currently place all `parchment-*`
+  blocks, including large base64-encoded images, before the visible Markdown
+  body, so someone opening the file in a text editor must scroll past them.
+  Keep `parchment-meta` as the first block, but move other structured blocks
+  to the end of the file after the body, behind a clear trailing separator.
+  This requires the artifact parser to read trailing structured blocks (it
+  currently reads them only between `parchment-meta` and the body), to keep
+  reading the existing leading layout, and to avoid treating body content as
+  structured data.
 - Shared artifact navigation and organization, including links and
   attachments, plus import and export.
 - Backup operations and optional provider integrations. Any future Perkeep
@@ -165,9 +285,7 @@ planned to add:
   configuration settings.
 - Persistent undo/redo, if introduced, with explicit storage and migration
   semantics. History currently lasts only for the running process.
-- Make the default directory for storing Parchment artifacts a non-hidden folder and also make the default directory path configurable. Generally assume that Parchment artifacts might be read by other applications; especially text file and markdown interpreters.
-- Background auto-save and recovery from auto-save so that in the event Parchment crashes or is force closed, any changes since the last save can be optionally recovered.
-- Examples directory with examples of each of the types of artifacts.
+- Basic image-editing features using the shared workspace and artifact metadata.
 
 ## Development
 

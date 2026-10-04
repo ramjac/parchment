@@ -3,6 +3,7 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"image"
 	"image/png"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"example.com/parchment/internal/artifactfile"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/note"
 )
@@ -43,20 +45,21 @@ func TestDocumentsPersistInspectablyAndCoexistWithNotes(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(root, ".parchment", "artifacts", created.ID)
-	for _, name := range []string{"content.md", "metadata.json", "layout.json"} {
-		info, err := os.Stat(filepath.Join(dir, name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if info.Mode().Perm() != 0o600 {
-			t.Fatalf("%s mode = %v", name, info.Mode().Perm())
-		}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "content.md" {
+		t.Fatalf("document artifact files = %v, %v", entries, err)
 	}
-	if body, _ := os.ReadFile(filepath.Join(dir, "content.md")); string(body) != "# Report\n\nText" {
-		t.Fatalf("content.md = %q", body)
+	content, err := os.ReadFile(filepath.Join(dir, "content.md"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if meta, _ := os.ReadFile(filepath.Join(dir, "metadata.json")); !strings.Contains(string(meta), `"kind": "document"`) {
-		t.Fatalf("metadata = %s", meta)
+	if !strings.HasPrefix(string(content), "```parchment-meta\n") ||
+		!strings.Contains(string(content), "```parchment-document\n") ||
+		!strings.Contains(string(content), "# Report\n\nText") {
+		t.Fatalf("content.md does not contain the complete document: %s", content)
+	}
+	if info, err := os.Stat(filepath.Join(dir, "content.md")); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("document file permissions = %v, %v", info, err)
 	}
 
 	got, err := docs.Get(ctx, created.ID)
@@ -79,7 +82,7 @@ func TestDocumentsPersistInspectablyAndCoexistWithNotes(t *testing.T) {
 	}
 }
 
-func TestDocumentWithoutLayoutFileUsesDefaults(t *testing.T) {
+func TestDocumentPersistsDefaultLayoutInMarkdownArtifact(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	ws := openTestWorkspace(t, root)
@@ -88,12 +91,60 @@ func TestDocumentWithoutLayoutFileUsesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(filepath.Join(root, ".parchment", "artifacts", created.ID, "layout.json")); err != nil {
-		t.Fatal(err)
-	}
 	got, err := docs.Get(ctx, created.ID)
 	if err != nil || got.Layout != document.DefaultLayout() {
 		t.Fatalf("layout = %+v, %v", got.Layout, err)
+	}
+}
+
+func TestListDocumentsDoesNotDecodeEmbeddedImages(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	service := document.NewService(ws, 10)
+	created, err := service.Create(ctx, document.Draft{Title: "Images", Body: "body"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, ".parchment", "artifacts", created.ID, "content.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := artifactfile.Decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(file.Blocks[documentDataBlock], &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload["images"] = json.RawMessage(`[{"name":"broken.png","data":"!"}]`)
+	file.Blocks[documentDataBlock], err = json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks := make(map[string]any, len(file.Blocks))
+	for name, block := range file.Blocks {
+		blocks[name] = block
+	}
+	data, err = artifactfile.Encode(file.Artifact, file.Body, blocks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := service.List(ctx)
+	if err != nil || len(listed) != 1 || len(listed[0].Images) != 0 {
+		t.Fatalf("listed documents = %+v, %v", listed, err)
+	}
+	if _, err := ws.readDocumentChangesUnlocked(created.ID); err != nil {
+		t.Fatalf("reading document changes decoded embedded image data: %v", err)
+	}
+	if _, err := service.Get(ctx, created.ID); err == nil {
+		t.Fatal("Get accepted invalid embedded image data")
 	}
 }
 
@@ -115,8 +166,9 @@ func TestDocumentImagesUndoRedoAndCleanup(t *testing.T) {
 	if !strings.Contains(withImage.Body, "![Chart]("+name+")") || len(withImage.Images) != 1 {
 		t.Fatalf("document after image = %+v", withImage)
 	}
-	if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
-		t.Fatal(err)
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "content.md" {
+		t.Fatalf("image was not embedded in the Markdown artifact: %v, %v", entries, err)
 	}
 	listed, _ := docs.List(ctx)
 	if len(listed[0].Images) != 0 {
@@ -126,8 +178,9 @@ func TestDocumentImagesUndoRedoAndCleanup(t *testing.T) {
 	if _, err := docs.Undo(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
-		t.Fatalf("image file remained after undo: %v", err)
+	undone, err := docs.Get(ctx, created.ID)
+	if err != nil || len(undone.Images) != 0 {
+		t.Fatalf("image remained after undo: %+v, %v", undone.Images, err)
 	}
 	if _, err := docs.Redo(ctx); err != nil {
 		t.Fatal(err)
@@ -183,6 +236,323 @@ func TestDocumentSaveDetectsConcurrentChange(t *testing.T) {
 	current, _ := docs.Get(ctx, created.ID)
 	if current.Title != "Renamed" || current.Body != "one" {
 		t.Fatalf("document = %+v", current)
+	}
+}
+
+func TestDocumentChangesPersistAndResolveAtomically(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	service := document.NewService(ws, 10)
+	created, err := service.Create(ctx, document.Draft{Title: "Draft", Body: "original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	proposal, err := service.Propose(ctx, created, "Revise text", document.Draft{
+		Title: "Revised", Body: "proposed", Layout: created.Layout,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := service.Get(ctx, created.ID)
+	if err != nil || live.Title != "Draft" || live.Body != "original" {
+		t.Fatalf("proposal changed the live document: %+v, %v", live, err)
+	}
+	if _, err := service.Propose(ctx, created, "Another", document.Draft{
+		Title: "Another", Body: "other", Layout: created.Layout,
+	}); err == nil {
+		t.Fatal("a second pending proposal was accepted")
+	}
+
+	changeData, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(created.Location)))
+	if err != nil || !strings.Contains(string(changeData), `"body": "proposed"`) {
+		t.Fatalf("proposal was not stored in the Markdown artifact: %s, %v", changeData, err)
+	}
+	reopened := document.NewService(ws, 10)
+	persisted, err := reopened.GetChange(ctx, created.ID, proposal.ID)
+	if err != nil || persisted.Status != document.ChangePending || persisted.After.Title != "Revised" {
+		t.Fatalf("persisted proposal = %+v, %v", persisted, err)
+	}
+	if err := reopened.Reject(ctx, created.ID, proposal.ID); err != nil {
+		t.Fatal(err)
+	}
+	rejected, err := reopened.GetChange(ctx, created.ID, proposal.ID)
+	if err != nil || rejected.Status != document.ChangeRejected || rejected.ResolvedAt == nil {
+		t.Fatalf("rejected proposal = %+v, %v", rejected, err)
+	}
+	live, err = reopened.Get(ctx, created.ID)
+	if err != nil || live.Title != "Draft" || live.Body != "original" {
+		t.Fatalf("reject changed the live document: %+v, %v", live, err)
+	}
+
+	proposal, err = reopened.Propose(ctx, created, "Accept text", document.Draft{
+		Title: "Accepted", Body: "final", Layout: created.Layout,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepting := document.NewService(ws, 10)
+	accepted, err := accepting.Accept(ctx, created.ID, proposal.ID)
+	if err != nil || accepted.Title != "Accepted" || accepted.Body != "final" {
+		t.Fatalf("accept result = %+v, %v", accepted, err)
+	}
+	status, err := accepting.GetChange(ctx, created.ID, proposal.ID)
+	if err != nil || status.Status != document.ChangeAccepted || status.ResolvedAt == nil {
+		t.Fatalf("accepted proposal = %+v, %v", status, err)
+	}
+	if _, err := accepting.Undo(ctx); err != nil {
+		t.Fatalf("undo accepted proposal: %v", err)
+	}
+	undone, err := accepting.Get(ctx, created.ID)
+	if err != nil || undone.Title != "Draft" || undone.Body != "original" {
+		t.Fatalf("document after undo = %+v, %v", undone, err)
+	}
+	if _, err := accepting.Redo(ctx); err != nil {
+		t.Fatalf("redo accepted proposal: %v", err)
+	}
+	redone, err := accepting.Get(ctx, created.ID)
+	if err != nil || redone.Title != "Accepted" || redone.Body != "final" {
+		t.Fatalf("document after redo = %+v, %v", redone, err)
+	}
+}
+
+func TestDocumentProposalsRejectInvalidUTF8Snapshots(t *testing.T) {
+	ctx := context.Background()
+	ws := openTestWorkspace(t, t.TempDir())
+	service := document.NewService(ws, 10)
+	created, err := service.Create(ctx, document.Draft{Title: "Draft", Body: "original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := string([]byte{0xff})
+	for _, test := range []struct {
+		name   string
+		before document.Document
+		draft  document.Draft
+	}{
+		{
+			name:   "invalid title",
+			before: created,
+			draft:  document.Draft{Title: "Revised" + invalid, Body: "proposed", Layout: created.Layout},
+		},
+		{
+			name:   "invalid body",
+			before: created,
+			draft:  document.Draft{Title: "Revised", Body: "proposed" + invalid, Layout: created.Layout},
+		},
+		{
+			name: "invalid original snapshot",
+			before: func() document.Document {
+				copy := created
+				copy.Body += invalid
+				return copy
+			}(),
+			draft: document.Draft{Title: "Revised", Body: "proposed", Layout: created.Layout},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := service.Propose(ctx, test.before, "Review text", test.draft); err == nil ||
+				!strings.Contains(err.Error(), "valid UTF-8") {
+				t.Fatalf("proposal with invalid snapshot text returned %v", err)
+			}
+		})
+	}
+	changes, err := service.Changes(ctx, created.ID)
+	if err != nil || len(changes) != 0 {
+		t.Fatalf("invalid proposals persisted changes: %+v, %v", changes, err)
+	}
+}
+
+func TestUndoDocumentDeleteRestoresChangeHistory(t *testing.T) {
+	ctx := context.Background()
+	ws := openTestWorkspace(t, t.TempDir())
+	service := document.NewService(ws, 10)
+	created, err := service.Create(ctx, document.Draft{Title: "Tracked", Body: "original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejected, err := service.Propose(ctx, created, "Rejected edit", document.Draft{
+		Title: "Rejected", Body: "first", Layout: created.Layout,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Reject(ctx, created.ID, rejected.ID); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := service.Propose(ctx, created, "Pending edit", document.Draft{
+		Title: "Pending", Body: "second", Layout: created.Layout,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Delete(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Undo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	changes, err := service.Changes(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 2 {
+		t.Fatalf("restored %d change records, want 2: %+v", len(changes), changes)
+	}
+	statuses := map[string]document.ChangeStatus{}
+	for _, change := range changes {
+		statuses[change.ID] = change.Status
+	}
+	if statuses[rejected.ID] != document.ChangeRejected || statuses[pending.ID] != document.ChangePending {
+		t.Fatalf("restored change statuses = %v", statuses)
+	}
+}
+
+func TestUndoRedoDocumentCreationPreservesChangeHistory(t *testing.T) {
+	ctx := context.Background()
+	ws := openTestWorkspace(t, t.TempDir())
+	service := document.NewService(ws, 10)
+	created, err := service.Create(ctx, document.Draft{Title: "Tracked", Body: "original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := service.Propose(ctx, created, "Proposed edit", document.Draft{
+		Title: "Updated", Body: "proposed", Layout: created.Layout,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Undo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Redo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	changes, err := service.Changes(ctx, created.ID)
+	if err != nil || len(changes) != 1 || changes[0].ID != proposal.ID || changes[0].Status != document.ChangePending {
+		t.Fatalf("changes after undo and redo = %+v, %v", changes, err)
+	}
+}
+
+func TestSidecarOnlyArtifactsAreNotLoaded(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	notes := note.NewService(ws, 10)
+	docs := document.NewService(ws, 10)
+
+	createdNote, err := notes.Create(ctx, "Note", "Original note body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	noteDir := filepath.Join(root, ".parchment", "artifacts", createdNote.ID)
+	noteMetadata, err := json.Marshal(createdNote.Artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(noteDir, "metadata.json"), noteMetadata, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(noteDir, "content.md"), []byte(createdNote.Body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := notes.Get(ctx, createdNote.ID); err == nil {
+		t.Fatal("loaded note stored in the sidecar format")
+	}
+
+	createdDocument, err := docs.Create(ctx, document.Draft{Title: "Document", Body: "Original document body"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	documentDir := filepath.Join(root, ".parchment", "artifacts", createdDocument.ID)
+	documentMetadata, err := json.Marshal(createdDocument.Artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout, err := json.Marshal(createdDocument.Layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{
+		"metadata.json": documentMetadata,
+		"layout.json":   layout,
+		"content.md":    []byte(createdDocument.Body),
+	} {
+		if err := os.WriteFile(filepath.Join(documentDir, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := docs.Get(ctx, createdDocument.ID); err == nil {
+		t.Fatal("loaded document stored in the sidecar format")
+	}
+}
+
+func TestProposeRejectsAStaleDocumentSnapshot(t *testing.T) {
+	ctx := context.Background()
+	ws := openTestWorkspace(t, t.TempDir())
+	service := document.NewService(ws, 10)
+	created, err := service.Create(ctx, document.Draft{Title: "Before", Body: "original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Rename(ctx, created.ID, "Concurrent edit"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Propose(ctx, created, "Stale edit", document.Draft{
+		Title: "Stale proposal", Body: "stale", Layout: created.Layout,
+	}); err == nil {
+		t.Fatal("stale document snapshot was accepted as a proposal baseline")
+	}
+	current, err := service.Get(ctx, created.ID)
+	if err != nil || current.Title != "Concurrent edit" || current.Body != "original" {
+		t.Fatalf("stale proposal changed the document: %+v, %v", current, err)
+	}
+}
+
+func TestAcceptDocumentChangeRejectsStaleProposal(t *testing.T) {
+	ctx := context.Background()
+	ws := openTestWorkspace(t, t.TempDir())
+	service := document.NewService(ws, 10)
+	created, err := service.Create(ctx, document.Draft{Title: "Shared", Body: "original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := service.Propose(ctx, created, "Proposed edit", document.Draft{
+		Title: "Proposed", Body: "proposed", Layout: created.Layout,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Rename(ctx, created.ID, "Immediate edit"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Accept(ctx, created.ID, proposal.ID); err == nil {
+		t.Fatal("stale proposal overwrote a newer document")
+	}
+	current, err := service.Get(ctx, created.ID)
+	if err != nil || current.Title != "Immediate edit" || current.Body != "original" {
+		t.Fatalf("document after stale proposal = %+v, %v", current, err)
+	}
+}
+
+func TestDocumentProposalCannotAddEmbeddedImageData(t *testing.T) {
+	ctx := context.Background()
+	ws := openTestWorkspace(t, t.TempDir())
+	service := document.NewService(ws, 10)
+	created, err := service.Create(ctx, document.Draft{Title: "Image proposal", Body: "original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	image, err := document.NewImage(testPNG(t, 44))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Propose(ctx, created, "Add image", document.Draft{
+		Title: created.Title, Body: document.ImageMarkdown("chart", image.Name),
+		Layout: created.Layout, Images: []document.Image{image},
+	}); err == nil {
+		t.Fatal("proposal accepted new embedded image data")
 	}
 }
 
@@ -260,12 +630,29 @@ func TestCorruptOrRenamedWorkspaceImageIsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, name, err := docs.AddImage(ctx, created.ID, "Chart", testPNG(t, 30))
+	_, _, err = docs.AddImage(ctx, created.ID, "Chart", testPNG(t, 30))
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(root, ".parchment", "artifacts", created.ID, name)
-	if err := os.WriteFile(path, testPNG(t, 31), 0o600); err != nil {
+	path := filepath.Join(root, filepath.FromSlash(created.Location))
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := artifactfile.Decode(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload documentFileData
+	if err := json.Unmarshal(file.Blocks[documentDataBlock], &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload.Images[0].Data = testPNG(t, 31)
+	content, err = artifactfile.Encode(file.Artifact, file.Body, map[string]any{documentDataBlock: payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := docs.Get(ctx, created.ID); err == nil {
@@ -294,8 +681,8 @@ func TestImageWithMarkdownTitleSurvivesUnrelatedEdits(t *testing.T) {
 	if _, err := docs.Rename(ctx, saved.ID, "Renamed"); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(root, ".parchment", "artifacts", created.ID, name)
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("linked image was deleted: %v", err)
+	persisted, err := docs.Get(ctx, created.ID)
+	if err != nil || len(persisted.Images) != 1 || persisted.Images[0].Name != name {
+		t.Fatalf("linked image was not preserved: %+v, %v", persisted.Images, err)
 	}
 }

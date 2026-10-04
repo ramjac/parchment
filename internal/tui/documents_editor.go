@@ -54,8 +54,12 @@ func (s *documentsScreen) marginName() string {
 // toolbarButtons lists the controls shown above the editor. Labels for page
 // settings show the current value.
 func (s *documentsScreen) toolbarButtons() []toolbarButton {
-	return []toolbarButton{
-		{"File", "Save", "save", "Ctrl+S"},
+	saveLabel, saveAction := "Save", "save"
+	if s.proposing {
+		saveLabel, saveAction = "Propose", "propose"
+	}
+	buttons := []toolbarButton{
+		{"File", saveLabel, saveAction, "Ctrl+S"},
 		{"File", "Preview", "preview", "F5"},
 		{"File", "Close", "close", "Esc"},
 		{"Text", "B", "bold", "Alt+B"},
@@ -81,6 +85,16 @@ func (s *documentsScreen) toolbarButtons() []toolbarButton {
 		{"Page", "Footer", "footer", ""},
 		{"Page", "Page #: " + s.layout.PageNumbers, "numbers-pos", ""},
 	}
+	if s.proposing {
+		kept := buttons[:0]
+		for _, button := range buttons {
+			if button.action != "image" {
+				kept = append(kept, button)
+			}
+		}
+		buttons = kept
+	}
+	return buttons
 }
 
 // buttonLayout wraps the toolbar to the available width. It is used for both
@@ -142,7 +156,7 @@ func (s *documentsScreen) toolbarView() string {
 }
 
 func (s *documentsScreen) startCreate() tea.Cmd {
-	s.creating = true
+	s.creating, s.proposing = true, false
 	s.snapshot = document.Document{}
 	s.layout = document.DefaultLayout()
 	s.images = nil
@@ -161,7 +175,7 @@ func (s *documentsScreen) startEdit(d document.Document) tea.Cmd {
 		s.status = ""
 		return nil
 	}
-	s.creating = false
+	s.creating, s.proposing = false, false
 	s.snapshot = d
 	s.layout = d.Layout
 	if s.layout == (document.Layout{}) {
@@ -185,7 +199,7 @@ func (s *documentsScreen) beginEditor(title, body string) tea.Cmd {
 }
 
 func (s *documentsScreen) stopEditing(status string) tea.Cmd {
-	s.mode, s.creating, s.prompt, s.previewing, s.discardWarning = documentBrowsing, false, promptNone, false, false
+	s.mode, s.creating, s.proposing, s.prompt, s.previewing, s.discardWarning = documentBrowsing, false, false, promptNone, false, false
 	s.status, s.errMessage = status, ""
 	return tea.DisableMouse
 }
@@ -339,8 +353,12 @@ func (s *documentsScreen) save() tea.Cmd {
 	s.pending = true
 	s.errMessage = ""
 	ctx := s.startOperation()
-	service, creating, snapshot := s.service, s.creating, s.snapshot
+	service, creating, proposing, snapshot := s.service, s.creating, s.proposing, s.snapshot
 	return func() tea.Msg {
+		if proposing {
+			change, err := service.Propose(ctx, snapshot, "TUI edit", draft)
+			return documentProposedMsg{change: change, err: err}
+		}
 		var d document.Document
 		var err error
 		if creating {
@@ -369,6 +387,14 @@ func (s *documentsScreen) act(action string) tea.Cmd {
 	switch action {
 	case "save":
 		return s.save()
+	case "propose":
+		return s.save()
+	case "image":
+		if s.proposing {
+			s.errMessage = "Embedded images cannot be added to a proposal"
+			return nil
+		}
+		return s.openPrompt(promptImage, "Image file path (PNG, JPEG, GIF): ", "")
 	case "preview":
 		s.openPreview()
 		return nil
@@ -405,8 +431,6 @@ func (s *documentsScreen) act(action string) tea.Cmd {
 		return s.openPrompt(promptFooter, "Footer (left|center|right; {title} {page} {pages}): ", s.layout.Footer)
 	case "link":
 		return s.openPrompt(promptLink, "Link URL: ", "https://")
-	case "image":
-		return s.openPrompt(promptImage, "Image file path (PNG, JPEG, GIF): ", "")
 	case "section":
 		return s.openPrompt(promptSection, "Section columns 1-4 (add c for continuous, e.g. 2c): ", fmt.Sprint(s.layout.Columns))
 	case "pagebreak":
@@ -566,10 +590,17 @@ func (s *documentsScreen) currentLineEmpty() bool {
 
 func (s *documentsScreen) editorView(header string) string {
 	state := "Editing"
+	if s.proposing {
+		state = "Proposing a change"
+	}
 	if s.dirty() {
 		state += " • unsaved"
 	}
-	state += "  ·  Tab switches Title/Body/Toolbar  ·  F2 toolbar  ·  Ctrl+S saves"
+	saveHint := "Ctrl+S saves"
+	if s.proposing {
+		saveHint = "Ctrl+S records proposal"
+	}
+	state += "  ·  Tab switches Title/Body/Toolbar  ·  F2 toolbar  ·  " + saveHint
 	if s.previewing {
 		page := ""
 		if len(s.editPages) > 0 {
