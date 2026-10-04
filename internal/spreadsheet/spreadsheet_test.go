@@ -138,6 +138,52 @@ func TestCellCoordinates(t *testing.T) {
 	}
 }
 
+func TestFormulaReferenceShiftsPreserveDecimalExponents(t *testing.T) {
+	for _, formula := range []string{"=1.e3", "=1.e+3", "=1.E-3"} {
+		if got := shiftCellReferences(formula, 1, 1); got != formula {
+			t.Errorf("shiftCellReferences(%q) = %q", formula, got)
+		}
+	}
+}
+
+func TestNormalizeRejectsDeepFormulaChainsRegardlessOfCacheOrder(t *testing.T) {
+	book := Spreadsheet{
+		Artifact: artifact.Artifact{
+			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.SpreadsheetKind,
+			Title: "Deep formulas", FormatVersion: artifact.FormatVersion,
+			Location:  ".parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+			CreatedAt: fixedTime, ModifiedAt: fixedTime,
+		},
+		Version: FileVersion,
+		Sheets:  []Sheet{{Name: "Sheet1", Rows: make([][]Cell, maxFormulaDepth+2)}},
+	}
+	book.Sheets[0].Rows[0] = []Cell{{Value: "1"}}
+	for row := 2; row <= len(book.Sheets[0].Rows); row++ {
+		book.Sheets[0].Rows[row-1] = []Cell{{Formula: "=" + CellName(row-1, 1)}}
+	}
+	if err := Normalize(&book); err == nil || !strings.Contains(err.Error(), "dependency depth") {
+		t.Fatalf("Normalize accepted an over-deep formula chain: %v", err)
+	}
+}
+
+func TestEqualTreatsEmptyMetadataSlicesAsNil(t *testing.T) {
+	left := Spreadsheet{
+		Artifact: artifact.Artifact{
+			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.SpreadsheetKind,
+			Title: "Metadata", FormatVersion: artifact.FormatVersion,
+			Location:  ".parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+			CreatedAt: fixedTime, ModifiedAt: fixedTime,
+		},
+		Version: FileVersion, Sheets: []Sheet{{Name: "Sheet1", Rows: [][]Cell{{{Value: "1"}}}}},
+	}
+	right := left
+	right.Tags = []string{}
+	right.Links = []string{}
+	if !Equal(left, right) {
+		t.Fatal("empty tags and links should equal nil slices")
+	}
+}
+
 var fixedTime = mustTime()
 
 func mustTime() time.Time { return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) }

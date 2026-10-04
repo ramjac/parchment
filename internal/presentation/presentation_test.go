@@ -115,6 +115,25 @@ func TestLongerMarkdownFenceCannotCloseOnShorterFence(t *testing.T) {
 	}
 }
 
+func TestIndentedFenceIsCodeAndHeaderFencesArePreserved(t *testing.T) {
+	source := "# Code talk\n\n```go\nsample()\n```\n\n## Example\n\n    ```\n    ## not a slide\n    ```\n\n## After\n\nDone.\n"
+	deck, err := Parse(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deck.Slides) != 2 {
+		t.Fatalf("parsed %d slides, want 2", len(deck.Slides))
+	}
+	for _, want := range []string{"```go", "sample()", "```"} {
+		if !strings.Contains(deck.Header, want) {
+			t.Errorf("header missing fenced Markdown %q:\n%s", want, deck.Header)
+		}
+	}
+	if !strings.Contains(deck.Slides[0].Body, "    ## not a slide") {
+		t.Fatalf("indented code was not retained in the slide: %q", deck.Slides[0].Body)
+	}
+}
+
 func TestUpdateUsesExpectedSnapshotAndUndoRedo(t *testing.T) {
 	ctx := context.Background()
 	repository := newMemoryRepository()
@@ -212,5 +231,15 @@ func TestMetadataBlockIsInspectable(t *testing.T) {
 	}
 	if file.Artifact.Title != "Demo" || file.Artifact.Kind != artifact.PresentationKind {
 		t.Fatalf("embedded metadata = %+v", file.Artifact)
+	}
+}
+
+func TestEqualTreatsEmptyMetadataSlicesAsNil(t *testing.T) {
+	left := testPresentation()
+	right := left
+	right.Tags = []string{}
+	right.Links = []string{}
+	if !Equal(left, right) {
+		t.Fatal("empty tags and links should equal nil slices")
 	}
 }

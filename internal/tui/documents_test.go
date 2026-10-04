@@ -3,6 +3,7 @@ package tui
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"image"
 	"image/png"
 	"os"
@@ -133,6 +134,62 @@ func TestDocumentTUIRecordsReviewsAndAcceptsProposal(t *testing.T) {
 	}
 	if len(s.changes) != 1 || s.changes[0].Status != document.ChangeAccepted {
 		t.Fatalf("accepted proposal state = %+v", s.changes)
+	}
+}
+
+func TestDocumentChangeReviewScrollsAndBoundsChangeList(t *testing.T) {
+	m, docs := newDocumentsModel(t)
+	ctx := context.Background()
+	created, err := docs.Create(ctx, document.Draft{
+		Title: "Long", Body: strings.Repeat("current line\n", 80) + "CURRENT-LAST",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	change, err := docs.Propose(ctx, created.ID, "Long proposal", document.Draft{
+		Title: "Long", Body: strings.Repeat("proposed line\n", 80) + "PROPOSED-LAST",
+		Layout: created.Layout,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.documentsActive = true
+	s := m.documents
+	s.changes, s.selectedChange, s.showChanges, s.reviewing = []document.Change{change}, 0, true, true
+	s.resize(100, 12)
+	s.setChangeReviewContent()
+	view := m.View()
+	if strings.Contains(view, "CURRENT-LAST") || strings.Contains(view, "PROPOSED-LAST") {
+		t.Fatalf("review unexpectedly showed content beyond the initial viewport:\n%s", view)
+	}
+	sawCurrent, sawProposed := false, false
+	for i := 0; i < 100 && !(sawCurrent && sawProposed); i++ {
+		drive(t, m, tea.KeyMsg{Type: tea.KeyPgDown})
+		view = m.View()
+		sawCurrent = sawCurrent || strings.Contains(view, "CURRENT-LAST")
+		sawProposed = sawProposed || strings.Contains(view, "PROPOSED-LAST")
+	}
+	if !sawCurrent || !sawProposed {
+		t.Fatalf("scrolling did not reveal both document bodies")
+	}
+	if !strings.Contains(view, "a accept") || !strings.Contains(view, "Esc return") {
+		t.Fatalf("review controls disappeared while scrolling:\n%s", view)
+	}
+	for _, label := range []string{"Header:", "Footer:", "Page numbers:"} {
+		if !strings.Contains(changeLayoutDescription(change.Before.Layout), label) {
+			t.Errorf("review omitted %q layout details", label)
+		}
+	}
+
+	s.reviewing = false
+	s.changes = make([]document.Change, 20)
+	for i := range s.changes {
+		s.changes[i].Description = fmt.Sprintf("Change %02d", i)
+	}
+	s.selectedChange = len(s.changes) - 1
+	view = s.viewChanges("header")
+	if !strings.Contains(view, "Change 19") || strings.Contains(view, "Change 00") {
+		t.Fatalf("change list was not bounded around the selection:\n%s", view)
 	}
 }
 

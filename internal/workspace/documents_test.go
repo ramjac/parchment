@@ -317,6 +317,51 @@ func TestDocumentChangesPersistAndResolveAtomically(t *testing.T) {
 	}
 }
 
+func TestUndoDocumentDeleteRestoresChangeHistory(t *testing.T) {
+	ctx := context.Background()
+	ws := openTestWorkspace(t, t.TempDir())
+	service := document.NewService(ws, 10)
+	created, err := service.Create(ctx, document.Draft{Title: "Tracked", Body: "original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejected, err := service.Propose(ctx, created.ID, "Rejected edit", document.Draft{
+		Title: "Rejected", Body: "first", Layout: created.Layout,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Reject(ctx, created.ID, rejected.ID); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := service.Propose(ctx, created.ID, "Pending edit", document.Draft{
+		Title: "Pending", Body: "second", Layout: created.Layout,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Delete(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Undo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	changes, err := service.Changes(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 2 {
+		t.Fatalf("restored %d change records, want 2: %+v", len(changes), changes)
+	}
+	statuses := map[string]document.ChangeStatus{}
+	for _, change := range changes {
+		statuses[change.ID] = change.Status
+	}
+	if statuses[rejected.ID] != document.ChangeRejected || statuses[pending.ID] != document.ChangePending {
+		t.Fatalf("restored change statuses = %v", statuses)
+	}
+}
+
 func TestAcceptDocumentChangeRejectsStaleProposal(t *testing.T) {
 	ctx := context.Background()
 	ws := openTestWorkspace(t, t.TempDir())

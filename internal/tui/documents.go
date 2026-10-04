@@ -113,6 +113,7 @@ type documentsScreen struct {
 	previewPages      []document.Page
 	previewPage       int
 	preview           viewport.Model
+	changeReview      viewport.Model
 	confirmDelete     bool
 	help              bool
 	pending           bool
@@ -162,7 +163,7 @@ func newDocumentsScreen(service *document.Service, t theme, newContext func() (c
 	prompt.CharLimit = document.MaxRunningTextLength * 2
 	return &documentsScreen{
 		service: service, theme: t, titleInput: title, body: body, promptInput: prompt,
-		preview: viewport.New(0, 0), newOperationContext: newContext,
+		preview: viewport.New(0, 0), changeReview: viewport.New(0, 0), newOperationContext: newContext,
 		canUndo: service.CanUndo(), canRedo: service.CanRedo(), layout: document.DefaultLayout(),
 	}
 }
@@ -172,6 +173,7 @@ func (s *documentsScreen) init() tea.Cmd { return s.loadDocuments() }
 func (s *documentsScreen) resize(width, height int) {
 	s.width, s.height = width, height
 	s.resizePreview()
+	s.resizeChangeReview()
 	s.layoutEditor()
 }
 
@@ -348,7 +350,7 @@ func (s *documentsScreen) updateKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 func (s *documentsScreen) updateBrowseKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	key := msg.String()
 	if s.showChanges {
-		return s.updateChangesKey(key), false
+		return s.updateChangesKey(msg), false
 	}
 	if s.confirmDelete {
 		switch key {
@@ -459,11 +461,14 @@ func (s *documentsScreen) loadChanges(id string) tea.Cmd {
 	}
 }
 
-func (s *documentsScreen) updateChangesKey(key string) tea.Cmd {
+func (s *documentsScreen) updateChangesKey(msg tea.KeyMsg) tea.Cmd {
+	key := msg.String()
 	if s.reviewing {
 		switch key {
 		case "esc", "left":
 			s.reviewing = false
+		case "up", "down", "j", "k", "pgup", "pgdown", "home", "end":
+			s.changeReview, _ = s.changeReview.Update(msg)
 		case "a", "r":
 			change, ok := s.selectedChangeValue()
 			if !ok || change.Status != document.ChangePending {
@@ -499,9 +504,31 @@ func (s *documentsScreen) updateChangesKey(key string) tea.Cmd {
 	case "enter":
 		if _, ok := s.selectedChangeValue(); ok {
 			s.reviewing = true
+			s.setChangeReviewContent()
 		}
 	}
 	return nil
+}
+
+func (s *documentsScreen) resizeChangeReview() {
+	s.changeReview.Width = max(s.width-4, 1)
+	s.changeReview.Height = max(s.height-8, 1)
+}
+
+func (s *documentsScreen) setChangeReviewContent() {
+	change, ok := s.selectedChangeValue()
+	if !ok {
+		s.changeReview.SetContent("")
+		return
+	}
+	s.changeReview.SetContent(fmt.Sprintf(
+		"%s  ·  %s  ·  %s\n\n--- Current: %s\n+++ Proposed: %s\n\nCurrent page setup:\n%s\n\nProposed page setup:\n%s\n\n--- Current Markdown ---\n%s\n\n+++ Proposed Markdown +++\n%s",
+		change.ID, change.Status, sanitizeTerminalLine(change.Description),
+		sanitizeTerminalLine(change.Before.Title), sanitizeTerminalLine(change.After.Title),
+		changeLayoutDescription(change.Before.Layout), changeLayoutDescription(change.After.Layout),
+		sanitizeTerminalText(change.Before.Body), sanitizeTerminalText(change.After.Body),
+	))
+	s.changeReview.GotoTop()
 }
 
 func (s *documentsScreen) selectedChangeValue() (document.Change, bool) {
@@ -695,22 +722,23 @@ func (s *documentsScreen) viewChanges(header string) string {
 	if s.reviewing {
 		change, ok := s.selectedChangeValue()
 		if ok {
-			fmt.Fprintf(&b, "\n%s  ·  %s  ·  %s\n\n--- Current: %s\n+++ Proposed: %s\n\nCurrent page setup: %s\nProposed page setup: %s\n\n--- Current Markdown ---\n%s\n\n+++ Proposed Markdown +++\n%s\n",
-				change.ID, change.Status, sanitizeTerminalLine(change.Description),
-				sanitizeTerminalLine(change.Before.Title), sanitizeTerminalLine(change.After.Title),
-				changeLayoutDescription(change.Before.Layout), changeLayoutDescription(change.After.Layout),
-				sanitizeTerminalText(change.Before.Body), sanitizeTerminalText(change.After.Body))
+			b.WriteString(s.changeReview.View())
+			b.WriteString("\n\n")
 			if change.Status == document.ChangePending {
-				b.WriteString("\na accept  ·  r reject  ·  Esc return")
+				b.WriteString("a accept  ·  r reject  ·  ↑/↓ scroll  ·  PgUp/PgDn  ·  Esc return")
 			} else {
-				b.WriteString("\nEsc return")
+				b.WriteString("↑/↓ scroll  ·  PgUp/PgDn  ·  Esc return")
 			}
 		}
 	} else {
 		if len(s.changes) == 0 {
 			b.WriteString("\nNo proposed or resolved changes.\n")
 		}
-		for i, change := range s.changes {
+		visible := max(s.height-8, 1)
+		start := visibleWindowStart(len(s.changes), s.selectedChange, visible)
+		end := min(start+visible, len(s.changes))
+		for i := start; i < end; i++ {
+			change := s.changes[i]
 			marker := "  "
 			if i == s.selectedChange {
 				marker = "> "
@@ -723,9 +751,11 @@ func (s *documentsScreen) viewChanges(header string) string {
 }
 
 func changeLayoutDescription(layout document.Layout) string {
-	return fmt.Sprintf("%s %s, %d columns, margins %d/%d/%d/%d mm",
+	return fmt.Sprintf("%s %s, %d columns, margins %d/%d/%d/%d mm\nHeader: %s\nFooter: %s\nPage numbers: %s",
 		layout.PageSize, layout.Orientation, layout.Columns,
-		layout.Margins.Top, layout.Margins.Right, layout.Margins.Bottom, layout.Margins.Left)
+		layout.Margins.Top, layout.Margins.Right, layout.Margins.Bottom, layout.Margins.Left,
+		sanitizeTerminalText(layout.Header), sanitizeTerminalText(layout.Footer),
+		sanitizeTerminalLine(layout.PageNumbers))
 }
 
 func (s *documentsScreen) pageLabel() string {

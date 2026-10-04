@@ -97,6 +97,20 @@ func (w *Workspace) GetDocument(ctx context.Context, id string) (document.Docume
 // matches expected. A nil expected value means the document must not exist; a
 // nil target deletes it.
 func (w *Workspace) TransitionDocument(ctx context.Context, id string, expected, target *document.Document) error {
+	return w.transitionDocument(ctx, id, expected, target, nil)
+}
+
+// TransitionDocumentWithChanges restores a document and its proposals as one
+// atomic artifact write.
+func (w *Workspace) TransitionDocumentWithChanges(
+	ctx context.Context, id string, expected, target *document.Document, changes []document.Change,
+) error {
+	return w.transitionDocument(ctx, id, expected, target, &changes)
+}
+
+func (w *Workspace) transitionDocument(
+	ctx context.Context, id string, expected, target *document.Document, changes *[]document.Change,
+) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -114,6 +128,9 @@ func (w *Workspace) TransitionDocument(ctx context.Context, id string, expected,
 		_, dirErr := os.Lstat(filepath.Join(artifactsDir, id))
 		if errors.Is(dirErr, os.ErrNotExist) {
 			if expected == nil && target != nil {
+				if changes != nil {
+					return w.saveDocumentLockedWithChanges(ctx, *target, *changes)
+				}
 				return w.saveDocumentLocked(ctx, *target)
 			}
 			return document.ErrNotFound
@@ -137,8 +154,60 @@ func (w *Workspace) TransitionDocument(ctx context.Context, id string, expected,
 		if target == nil {
 			return w.deleteArtifactLocked(ctx, artifactsDir, id, func() error { return nil })
 		}
+		if changes != nil {
+			return w.saveDocumentLockedWithChanges(ctx, *target, *changes)
+		}
 		return w.saveDocumentLocked(ctx, *target)
 	})
+}
+
+// DeleteDocument atomically captures proposal history and deletes the document.
+func (w *Workspace) DeleteDocument(ctx context.Context, id string, expected document.Document) ([]document.Change, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !validID.MatchString(id) {
+		return nil, document.ErrNotFound
+	}
+	if expected.ID != id {
+		return nil, errors.New("expected document ID does not match deletion ID")
+	}
+	artifactsDir := filepath.Join(w.root, ".parchment", "artifacts")
+	var changes []document.Change
+	err := withArtifactLock(ctx, artifactsDir, id, func() error {
+		current, err := w.readDocumentUnlocked(id, true)
+		if errors.Is(err, errNotDocument) || errors.Is(err, errNoMetadata) {
+			return document.ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if !document.Equal(current, expected) {
+			return fmt.Errorf("document %s changed since this operation was recorded", id)
+		}
+		changes, err = w.readDocumentChangesUnlocked(id)
+		if err != nil {
+			return err
+		}
+		return w.deleteArtifactLocked(ctx, artifactsDir, id, func() error {
+			deleted, err := w.readDocumentUnlocked(id, true)
+			if err != nil {
+				return err
+			}
+			if !document.Equal(deleted, expected) {
+				return fmt.Errorf("document %s changed before deletion", id)
+			}
+			currentChanges, err := w.readDocumentChangesUnlocked(id)
+			if err != nil {
+				return err
+			}
+			if !reflect.DeepEqual(currentChanges, changes) {
+				return errors.New("document proposals changed before deletion")
+			}
+			return nil
+		})
+	})
+	return changes, err
 }
 
 // ListDocumentChanges returns the persisted proposals for a document.

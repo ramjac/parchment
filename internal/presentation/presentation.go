@@ -186,7 +186,7 @@ func Parse(source string) (Deck, error) {
 			line = strings.TrimPrefix(line, "\uFEFF")
 			trimmed = strings.TrimSpace(line)
 		}
-		if marker := markdownFence(trimmed); marker != "" {
+		if marker := markdownFence(trimmed); marker != "" && !isIndentedCode(line) {
 			if !inFence {
 				inFence, fenceMarker = true, marker
 			} else if marker[0] == fenceMarker[0] && len(marker) >= len(fenceMarker) &&
@@ -195,6 +195,8 @@ func Parse(source string) (Deck, error) {
 			}
 			if current != nil {
 				body.WriteString(line + "\n")
+			} else if deck.Title != "" {
+				header.WriteString(line + "\n")
 			}
 			continue
 		}
@@ -412,7 +414,21 @@ func cloneBlocksExcept(blocks map[string]json.RawMessage, excluded ...string) ma
 	return clone
 }
 
-func Equal(left, right Presentation) bool { return reflect.DeepEqual(left, right) }
+func Equal(left, right Presentation) bool {
+	if len(left.Tags) == 0 {
+		left.Tags = nil
+	}
+	if len(right.Tags) == 0 {
+		right.Tags = nil
+	}
+	if len(left.Links) == 0 {
+		left.Links = nil
+	}
+	if len(right.Links) == 0 {
+		right.Links = nil
+	}
+	return reflect.DeepEqual(left, right)
+}
 
 func (s *Service) change(ctx context.Context, before, after *Presentation, description string) error {
 	return s.history.Execute(ctx, presentationOperation{

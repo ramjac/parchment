@@ -73,6 +73,8 @@ type Repository interface {
 	ListDocuments(context.Context) ([]Document, error)
 	GetDocument(context.Context, string) (Document, error)
 	TransitionDocument(context.Context, string, *Document, *Document) error
+	TransitionDocumentWithChanges(context.Context, string, *Document, *Document, []Change) error
+	DeleteDocument(context.Context, string, Document) ([]Change, error)
 	ListDocumentChanges(context.Context, string) ([]Change, error)
 	ProposeDocumentChange(context.Context, string, Document, Change) error
 	TransitionDocumentChange(context.Context, string, string, Change, Change, *Document, *Document) error
@@ -463,7 +465,10 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	return s.change(ctx, &before, nil, "Delete document")
+	return s.history.Execute(ctx, &documentOperation{
+		repository: s.repository, before: cloneDocument(&before), description: "Delete document",
+		captureChanges: true, restoreChanges: true,
+	})
 }
 
 // Undo reverses the most recent document change.
@@ -546,7 +551,7 @@ func normalize(d *Document) error {
 }
 
 func (s *Service) change(ctx context.Context, before, after *Document, description string) error {
-	return s.history.Execute(ctx, documentOperation{
+	return s.history.Execute(ctx, &documentOperation{
 		repository: s.repository, before: cloneDocument(before), after: cloneDocument(after), description: description,
 	})
 }
@@ -572,10 +577,13 @@ func cloneDocument(d *Document) *Document {
 }
 
 type documentOperation struct {
-	repository  Repository
-	before      *Document
-	after       *Document
-	description string
+	repository     Repository
+	before         *Document
+	after          *Document
+	description    string
+	changes        []Change
+	captureChanges bool
+	restoreChanges bool
 }
 
 type documentChangeAcceptance struct {
@@ -606,19 +614,30 @@ func (o *documentChangeAcceptance) Undo(ctx context.Context) error {
 
 func (o *documentChangeAcceptance) Description() string { return "Accept document change" }
 
-func (o documentOperation) Apply(ctx context.Context) error {
+func (o *documentOperation) Apply(ctx context.Context) error {
+	if o.captureChanges && o.before != nil && o.after == nil {
+		changes, err := o.repository.DeleteDocument(ctx, o.before.ID, *o.before)
+		if err != nil {
+			return err
+		}
+		o.changes = changes
+		return nil
+	}
 	return o.transition(ctx, o.before, o.after)
 }
 
-func (o documentOperation) Undo(ctx context.Context) error {
+func (o *documentOperation) Undo(ctx context.Context) error {
 	return o.transition(ctx, o.after, o.before)
 }
 
-func (o documentOperation) Description() string { return o.description }
+func (o *documentOperation) Description() string { return o.description }
 
 func (o documentOperation) transition(ctx context.Context, expected, target *Document) error {
 	switch {
 	case o.before != nil:
+		if o.restoreChanges && expected == nil && target != nil {
+			return o.repository.TransitionDocumentWithChanges(ctx, o.before.ID, expected, target, o.changes)
+		}
 		return o.repository.TransitionDocument(ctx, o.before.ID, expected, target)
 	case o.after != nil:
 		return o.repository.TransitionDocument(ctx, o.after.ID, expected, target)

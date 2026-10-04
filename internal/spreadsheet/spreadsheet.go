@@ -305,7 +305,10 @@ func Normalize(book *Spreadsheet) error {
 			}
 		}
 	}
-	evaluator := evaluator{book: book, visiting: make(map[cellCoordinate]bool), cache: make(map[cellCoordinate]float64)}
+	evaluator := evaluator{
+		book: book, visiting: make(map[cellCoordinate]bool),
+		cache: make(map[cellCoordinate]float64), depth: make(map[cellCoordinate]int),
+	}
 	for sheetIndex := range book.Sheets {
 		for row := range book.Sheets[sheetIndex].Rows {
 			for column, cell := range book.Sheets[sheetIndex].Rows[row] {
@@ -428,6 +431,18 @@ func (o spreadsheetOperation) transition(ctx context.Context, expected, target *
 
 // Equal reports whether two spreadsheets have the same persisted value.
 func Equal(left, right Spreadsheet) bool {
+	if len(left.Tags) == 0 {
+		left.Tags = nil
+	}
+	if len(right.Tags) == 0 {
+		right.Tags = nil
+	}
+	if len(left.Links) == 0 {
+		left.Links = nil
+	}
+	if len(right.Links) == 0 {
+		right.Links = nil
+	}
 	return reflect.DeepEqual(left, right)
 }
 
