@@ -98,6 +98,44 @@ func TestDocumentEditorHasToolbarAndSavesLayout(t *testing.T) {
 	}
 }
 
+func TestDocumentTUIRecordsReviewsAndAcceptsProposal(t *testing.T) {
+	m, docs := newDocumentsModel(t)
+	created, err := docs.Create(context.Background(), document.Draft{
+		Title: "Original", Body: "before", Layout: document.DefaultLayout(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	s := m.documents
+	if s.mode != documentEditing || !s.proposing {
+		t.Fatal("c did not open the proposal editor")
+	}
+	s.titleInput.SetValue("Proposed")
+	s.body.SetValue("after")
+	drive(t, m, tea.KeyMsg{Type: tea.KeyCtrlS})
+	if !s.showChanges || len(s.changes) != 1 || s.changes[0].Status != document.ChangePending {
+		t.Fatalf("proposal was not recorded for review: %+v", s.changes)
+	}
+	live, err := docs.Get(context.Background(), created.ID)
+	if err != nil || live.Title != "Original" || live.Body != "before" {
+		t.Fatalf("proposal modified the live document: %+v, %v", live, err)
+	}
+	drive(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if !s.reviewing || !strings.Contains(m.View(), "Proposed Markdown") {
+		t.Fatal("proposal review did not display its before/after content")
+	}
+	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	accepted, err := docs.Get(context.Background(), created.ID)
+	if err != nil || accepted.Title != "Proposed" || accepted.Body != "after" {
+		t.Fatalf("accepted document = %+v, %v", accepted, err)
+	}
+	if len(s.changes) != 1 || s.changes[0].Status != document.ChangeAccepted {
+		t.Fatalf("accepted proposal state = %+v", s.changes)
+	}
+}
+
 func TestToolbarMouseClickAndUnsavedEscape(t *testing.T) {
 	m, _ := newDocumentsModel(t)
 	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})

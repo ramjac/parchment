@@ -186,6 +186,131 @@ func TestDocumentSaveDetectsConcurrentChange(t *testing.T) {
 	}
 }
 
+func TestDocumentChangesPersistAndResolveAtomically(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	service := document.NewService(ws, 10)
+	created, err := service.Create(ctx, document.Draft{Title: "Draft", Body: "original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	proposal, err := service.Propose(ctx, created.ID, "Revise text", document.Draft{
+		Title: "Revised", Body: "proposed", Layout: created.Layout,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := service.Get(ctx, created.ID)
+	if err != nil || live.Title != "Draft" || live.Body != "original" {
+		t.Fatalf("proposal changed the live document: %+v, %v", live, err)
+	}
+	if _, err := service.Propose(ctx, created.ID, "Another", document.Draft{
+		Title: "Another", Body: "other", Layout: created.Layout,
+	}); err == nil {
+		t.Fatal("a second pending proposal was accepted")
+	}
+
+	changePath := filepath.Join(root, ".parchment", "artifacts", created.ID, "changes.json")
+	changeData, err := os.ReadFile(changePath)
+	if err != nil || !strings.Contains(string(changeData), `"body": "proposed"`) {
+		t.Fatalf("proposal was not stored as readable JSON: %s, %v", changeData, err)
+	}
+	reopened := document.NewService(ws, 10)
+	persisted, err := reopened.GetChange(ctx, created.ID, proposal.ID)
+	if err != nil || persisted.Status != document.ChangePending || persisted.After.Title != "Revised" {
+		t.Fatalf("persisted proposal = %+v, %v", persisted, err)
+	}
+	if err := reopened.Reject(ctx, created.ID, proposal.ID); err != nil {
+		t.Fatal(err)
+	}
+	rejected, err := reopened.GetChange(ctx, created.ID, proposal.ID)
+	if err != nil || rejected.Status != document.ChangeRejected || rejected.ResolvedAt == nil {
+		t.Fatalf("rejected proposal = %+v, %v", rejected, err)
+	}
+	live, err = reopened.Get(ctx, created.ID)
+	if err != nil || live.Title != "Draft" || live.Body != "original" {
+		t.Fatalf("reject changed the live document: %+v, %v", live, err)
+	}
+
+	proposal, err = reopened.Propose(ctx, created.ID, "Accept text", document.Draft{
+		Title: "Accepted", Body: "final", Layout: created.Layout,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepting := document.NewService(ws, 10)
+	accepted, err := accepting.Accept(ctx, created.ID, proposal.ID)
+	if err != nil || accepted.Title != "Accepted" || accepted.Body != "final" {
+		t.Fatalf("accept result = %+v, %v", accepted, err)
+	}
+	status, err := accepting.GetChange(ctx, created.ID, proposal.ID)
+	if err != nil || status.Status != document.ChangeAccepted || status.ResolvedAt == nil {
+		t.Fatalf("accepted proposal = %+v, %v", status, err)
+	}
+	if _, err := accepting.Undo(ctx); err != nil {
+		t.Fatalf("undo accepted proposal: %v", err)
+	}
+	undone, err := accepting.Get(ctx, created.ID)
+	if err != nil || undone.Title != "Draft" || undone.Body != "original" {
+		t.Fatalf("document after undo = %+v, %v", undone, err)
+	}
+	if _, err := accepting.Redo(ctx); err != nil {
+		t.Fatalf("redo accepted proposal: %v", err)
+	}
+	redone, err := accepting.Get(ctx, created.ID)
+	if err != nil || redone.Title != "Accepted" || redone.Body != "final" {
+		t.Fatalf("document after redo = %+v, %v", redone, err)
+	}
+}
+
+func TestAcceptDocumentChangeRejectsStaleProposal(t *testing.T) {
+	ctx := context.Background()
+	ws := openTestWorkspace(t, t.TempDir())
+	service := document.NewService(ws, 10)
+	created, err := service.Create(ctx, document.Draft{Title: "Shared", Body: "original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := service.Propose(ctx, created.ID, "Proposed edit", document.Draft{
+		Title: "Proposed", Body: "proposed", Layout: created.Layout,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Rename(ctx, created.ID, "Immediate edit"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Accept(ctx, created.ID, proposal.ID); err == nil {
+		t.Fatal("stale proposal overwrote a newer document")
+	}
+	current, err := service.Get(ctx, created.ID)
+	if err != nil || current.Title != "Immediate edit" || current.Body != "original" {
+		t.Fatalf("document after stale proposal = %+v, %v", current, err)
+	}
+}
+
+func TestDocumentProposalCannotAddEmbeddedImageData(t *testing.T) {
+	ctx := context.Background()
+	ws := openTestWorkspace(t, t.TempDir())
+	service := document.NewService(ws, 10)
+	created, err := service.Create(ctx, document.Draft{Title: "Image proposal", Body: "original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	image, err := document.NewImage(testPNG(t, 44))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Propose(ctx, created.ID, "Add image", document.Draft{
+		Title: created.Title, Body: document.ImageMarkdown("chart", image.Name),
+		Layout: created.Layout, Images: []document.Image{image},
+	}); err == nil {
+		t.Fatal("proposal accepted new embedded image data")
+	}
+}
+
 func TestDocumentServiceValidatesInput(t *testing.T) {
 	ctx := context.Background()
 	ws := openTestWorkspace(t, t.TempDir())

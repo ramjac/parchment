@@ -114,6 +114,113 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 	addBodyFlags(edit)
 	docs.AddCommand(edit)
 
+	propose := &cobra.Command{
+		Use: "propose <id>", Short: "Record a document edit for review", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, service, err := openDocuments(cmd)
+			if err != nil {
+				return err
+			}
+			current, err := service.Get(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			body, bodyChanged, err := bodyFromFlags(cmd)
+			if err != nil {
+				return err
+			}
+			title, _ := cmd.Flags().GetString("title")
+			if !cmd.Flags().Changed("title") {
+				title = current.Title
+			}
+			if !bodyChanged {
+				body = current.Body
+			}
+			layout := current.Layout
+			if err := applyLayoutFlags(cmd, &layout); err != nil {
+				return err
+			}
+			description, _ := cmd.Flags().GetString("description")
+			change, err := service.Propose(cmd.Context(), args[0], description, document.Draft{
+				Title: title, Body: body, Layout: layout,
+			})
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(streams.out, change.ID)
+			return err
+		},
+	}
+	propose.Flags().String("title", "", "proposed document title")
+	propose.Flags().String("description", "", "short description of the proposed edit")
+	addBodyFlags(propose)
+	addLayoutFlags(propose)
+	docs.AddCommand(propose)
+
+	docs.AddCommand(&cobra.Command{
+		Use: "changes <id>", Short: "List proposed and resolved document edits", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, service, err := openDocuments(cmd)
+			if err != nil {
+				return err
+			}
+			changes, err := service.Changes(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			for _, change := range changes {
+				if _, err := fmt.Fprintf(streams.out, "%s\t%s\t%s\t%s\n",
+					change.ID, change.Status, change.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+					strconv.Quote(change.Description)); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	})
+
+	docs.AddCommand(&cobra.Command{
+		Use: "review <id> <change-id>", Short: "Review a proposed document edit", Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, service, err := openDocuments(cmd)
+			if err != nil {
+				return err
+			}
+			change, err := service.GetChange(cmd.Context(), args[0], args[1])
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(streams.out,
+				"change: %s\nstatus: %s\ndescription: %s\ncreated: %s\n\n--- Current: %s\n+++ Proposed: %s\n\n--- Current page setup ---\n%s\n+++ Proposed page setup +++\n%s\n\n--- Current Markdown ---\n%s\n\n+++ Proposed Markdown +++\n%s\n",
+				change.ID, change.Status, change.Description, change.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+				change.Before.Title, change.After.Title, changeLayoutDescription(change.Before.Layout),
+				changeLayoutDescription(change.After.Layout), change.Before.Body, change.After.Body)
+			return err
+		},
+	})
+
+	docs.AddCommand(&cobra.Command{
+		Use: "accept <id> <change-id>", Short: "Accept and apply a proposed document edit", Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, service, err := openDocuments(cmd)
+			if err != nil {
+				return err
+			}
+			_, err = service.Accept(cmd.Context(), args[0], args[1])
+			return err
+		},
+	})
+	docs.AddCommand(&cobra.Command{
+		Use: "reject <id> <change-id>", Short: "Reject a proposed document edit", Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, service, err := openDocuments(cmd)
+			if err != nil {
+				return err
+			}
+			return service.Reject(cmd.Context(), args[0], args[1])
+		},
+	})
+
 	docs.AddCommand(&cobra.Command{
 		Use: "rename <id> <title>", Short: "Rename a document", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -376,4 +483,11 @@ func trimTrailingNewlines(s string) string {
 		s = s[:len(s)-1]
 	}
 	return s
+}
+
+func changeLayoutDescription(layout document.Layout) string {
+	return fmt.Sprintf("page size: %s\norientation: %s\nmargins (mm): top=%d right=%d bottom=%d left=%d\ncolumns: %d\nheader: %q\nfooter: %q\npage numbers: %s",
+		layout.PageSize, layout.Orientation, layout.Margins.Top, layout.Margins.Right,
+		layout.Margins.Bottom, layout.Margins.Left, layout.Columns, layout.Header,
+		layout.Footer, layout.PageNumbers)
 }

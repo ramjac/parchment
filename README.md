@@ -76,18 +76,36 @@ parchment document print <id> | lpr
 
 Document commands (`parchment document`, alias `doc`): `list`, `create`,
 `show`, `edit`, `rename`, `tag-add`, `tag-remove`, `layout`, `page-break`,
-`section-break`, `image`, `print`, `search`, and `delete --yes`. In the
-interactive shell, press `Tab` on the notes screen to switch to documents (and
-back). The document editor always shows a toolbar above the text with buttons
+`section-break`, `image`, `print`, `search`, `propose`, `changes`, `review`,
+`accept`, `reject`, and `delete --yes`. `propose` records a title, Markdown,
+or layout edit without changing the live document; `review` displays the
+current and proposed Markdown, and `accept` or `reject` resolves the pending
+proposal. Only one proposal may be pending per document, and a proposal cannot
+be accepted if the live document has changed since it was recorded. For
+proposals, existing embedded images can be kept or removed, but new image data
+must be added with the regular `image` command. For example:
+
+```sh
+change=$(parchment document propose <id> --body-file revised.md --description "Revise introduction")
+parchment document review <id> "$change"
+parchment document accept <id> "$change"
+```
+
+Proposal history is stored as inspectable JSON in each document's
+`.parchment/artifacts/<id>/changes.json`. In the interactive shell, press
+`Tab` on the notes screen to switch to documents (and back). Press `c` on a
+selected document to record a proposed edit, `v` to browse its changes, then
+`Enter` to review and `a` or `r` to accept or reject a pending proposal. The
+document editor always shows a toolbar above the text with buttons
 for save, preview, close, text formatting (bold, italic, strikethrough, code,
 headings, lists, quote, link, rule, image) and page setup (page and section
 breaks, columns, margins, page size, orientation, header, footer, page
 numbers). Click a button, press `F2` and use the arrow keys with `Enter`, or
 use the `Alt` shortcuts (`B` bold, `I` italic, `C` code, `1`–`3` headings,
 `L`/`N` lists, `Q` quote, `K` link, `M` image, `P` page break, `S` section
-break). `F5` previews the printed
-pages and `Ctrl+S` saves. Document changes, including images, support undo
-and redo like notes.
+break). `F5` previews the printed pages and `Ctrl+S` saves (or records a
+proposal when editing a proposal). Document changes, including images, support
+undo and redo like notes.
 
 ## Configuration
 
@@ -147,8 +165,6 @@ not survive a restart.
 This repository currently implements notes and documents. The broader suite is
 planned to add:
 
-- Change tracking for documents (recording, reviewing, accepting, and
-  rejecting edits).
 - Working spreadsheet features using the shared workspace and artifact metadata.
 - Working presentation features using the shared workspace and artifact metadata.
 - Basic image-editing features using the shared workspace and artifact metadata.

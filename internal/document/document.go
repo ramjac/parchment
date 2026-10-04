@@ -36,11 +36,44 @@ type Draft struct {
 	Images []Image
 }
 
+// ChangeSnapshot captures the editable document fields without duplicating
+// embedded image data in the change log.
+type ChangeSnapshot struct {
+	Title      string   `json:"title"`
+	Body       string   `json:"body"`
+	Layout     Layout   `json:"layout"`
+	ImageNames []string `json:"images,omitempty"`
+}
+
+type ChangeStatus string
+
+const (
+	ChangePending  ChangeStatus = "pending"
+	ChangeAccepted ChangeStatus = "accepted"
+	ChangeRejected ChangeStatus = "rejected"
+)
+
+// Change is a proposed document edit. The canonical document is unchanged
+// until the proposal is accepted.
+type Change struct {
+	ID          string         `json:"id"`
+	DocumentID  string         `json:"document_id"`
+	Description string         `json:"description"`
+	CreatedAt   time.Time      `json:"created_at"`
+	ResolvedAt  *time.Time     `json:"resolved_at,omitempty"`
+	Status      ChangeStatus   `json:"status"`
+	Before      ChangeSnapshot `json:"before"`
+	After       ChangeSnapshot `json:"after"`
+}
+
 // Repository is the persistence boundary required by document operations.
 type Repository interface {
 	ListDocuments(context.Context) ([]Document, error)
 	GetDocument(context.Context, string) (Document, error)
 	TransitionDocument(context.Context, string, *Document, *Document) error
+	ListDocumentChanges(context.Context, string) ([]Change, error)
+	ProposeDocumentChange(context.Context, string, Document, Change) error
+	TransitionDocumentChange(context.Context, string, string, Change, Change, *Document, *Document) error
 }
 
 // Service applies document operations and records successful changes in
@@ -72,6 +105,243 @@ func (s *Service) List(ctx context.Context) ([]Document, error) {
 // Get loads one document, including embedded images, by its artifact ID.
 func (s *Service) Get(ctx context.Context, id string) (Document, error) {
 	return s.repository.GetDocument(ctx, id)
+}
+
+// Propose records a title, Markdown, or layout edit for later review without
+// changing the live document. Proposals may retain or remove embedded images,
+// but cannot add or replace their data.
+func (s *Service) Propose(ctx context.Context, id, description string, draft Draft) (Change, error) {
+	before, err := s.repository.GetDocument(ctx, id)
+	if err != nil {
+		return Change{}, err
+	}
+	for _, proposedImage := range draft.Images {
+		found := false
+		for _, existingImage := range before.Images {
+			if proposedImage.Name == existingImage.Name && bytes.Equal(proposedImage.Data, existingImage.Data) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return Change{}, errors.New("proposals cannot add or replace embedded images")
+		}
+	}
+	after := cloneDocument(&before)
+	applyDraft(after, draft)
+	after.Images = before.Images
+	if err := normalize(after); err != nil {
+		return Change{}, err
+	}
+	if sameSnapshot(snapshot(before), snapshot(*after)) {
+		return Change{}, errors.New("proposed change has no document edits")
+	}
+	description = strings.TrimSpace(description)
+	if description == "" {
+		description = "Edit document"
+	}
+	idBytes := make([]byte, 16)
+	if _, err := rand.Read(idBytes); err != nil {
+		return Change{}, fmt.Errorf("generate document change ID: %w", err)
+	}
+	change := Change{
+		ID: hex.EncodeToString(idBytes), DocumentID: id, Description: description,
+		CreatedAt: s.now().UTC(), Status: ChangePending,
+		Before: snapshot(before), After: snapshot(*after),
+	}
+	if err := change.Validate(); err != nil {
+		return Change{}, err
+	}
+	if err := s.repository.ProposeDocumentChange(ctx, id, before, change); err != nil {
+		return Change{}, err
+	}
+	return change, nil
+}
+
+// Changes returns the recorded proposals for a document, newest first.
+func (s *Service) Changes(ctx context.Context, id string) ([]Change, error) {
+	changes, err := s.repository.ListDocumentChanges(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(changes, func(i, j int) bool {
+		return changes[i].CreatedAt.After(changes[j].CreatedAt)
+	})
+	return changes, nil
+}
+
+// GetChange returns one recorded proposal by ID.
+func (s *Service) GetChange(ctx context.Context, id, changeID string) (Change, error) {
+	return s.getChange(ctx, id, changeID)
+}
+
+// Accept applies a pending proposal if its original document state is still live.
+func (s *Service) Accept(ctx context.Context, id, changeID string) (Document, error) {
+	change, err := s.getChange(ctx, id, changeID)
+	if err != nil {
+		return Document{}, err
+	}
+	if change.Status != ChangePending {
+		return Document{}, errors.New("document change is not pending")
+	}
+	before, err := s.repository.GetDocument(ctx, id)
+	if err != nil {
+		return Document{}, err
+	}
+	if !sameSnapshot(snapshot(before), change.Before) {
+		return Document{}, errors.New("document changed since this proposal was recorded")
+	}
+	after := cloneDocument(&before)
+	applySnapshot(after, change.After)
+	after.ModifiedAt = s.now().UTC()
+	if err := normalize(after); err != nil {
+		return Document{}, err
+	}
+	resolved := change
+	resolved.Status = ChangeAccepted
+	now := s.now().UTC()
+	resolved.ResolvedAt = &now
+	if err := s.history.Execute(ctx, &documentChangeAcceptance{
+		repository: s.repository, changeID: changeID, beforeChange: change, afterChange: resolved,
+		before: *cloneDocument(&before), after: *cloneDocument(after),
+	}); err != nil {
+		return Document{}, err
+	}
+	return *cloneDocument(after), nil
+}
+
+// Reject marks a pending proposal as rejected without changing the document.
+func (s *Service) Reject(ctx context.Context, id, changeID string) error {
+	change, err := s.getChange(ctx, id, changeID)
+	if err != nil {
+		return err
+	}
+	if change.Status != ChangePending {
+		return errors.New("document change is not pending")
+	}
+	rejected := change
+	rejected.Status = ChangeRejected
+	now := s.now().UTC()
+	rejected.ResolvedAt = &now
+	return s.repository.TransitionDocumentChange(ctx, id, changeID, change, rejected, nil, nil)
+}
+
+func (s *Service) getChange(ctx context.Context, id, changeID string) (Change, error) {
+	changes, err := s.repository.ListDocumentChanges(ctx, id)
+	if err != nil {
+		return Change{}, err
+	}
+	for _, change := range changes {
+		if change.ID == changeID {
+			return change, nil
+		}
+	}
+	return Change{}, ErrChangeNotFound
+}
+
+// ErrChangeNotFound indicates that the requested document proposal does not exist.
+var ErrChangeNotFound = errors.New("document change not found")
+
+// Validate checks the persisted shape and consistency of a proposed change.
+func (c Change) Validate() error {
+	if !validArtifactID(c.ID) || !validArtifactID(c.DocumentID) {
+		return errors.New("document change IDs must be 32 lowercase hexadecimal characters")
+	}
+	if strings.TrimSpace(c.Description) == "" || c.CreatedAt.IsZero() {
+		return errors.New("document change description and creation time are required")
+	}
+	switch c.Status {
+	case ChangePending:
+		if c.ResolvedAt != nil {
+			return errors.New("pending document change cannot have a resolution time")
+		}
+	case ChangeAccepted, ChangeRejected:
+		if c.ResolvedAt == nil || c.ResolvedAt.IsZero() {
+			return errors.New("resolved document change requires a resolution time")
+		}
+	default:
+		return fmt.Errorf("unsupported document change status %q", c.Status)
+	}
+	if err := validateSnapshot(c.Before); err != nil {
+		return fmt.Errorf("invalid original snapshot: %w", err)
+	}
+	if err := validateSnapshot(c.After); err != nil {
+		return fmt.Errorf("invalid proposed snapshot: %w", err)
+	}
+	if sameSnapshot(c.Before, c.After) {
+		return errors.New("document change has no edits")
+	}
+	return nil
+}
+
+func validArtifactID(id string) bool {
+	if len(id) != 32 {
+		return false
+	}
+	for _, c := range id {
+		if c < '0' || c > '9' {
+			if c < 'a' || c > 'f' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func validateSnapshot(s ChangeSnapshot) error {
+	if strings.TrimSpace(s.Title) == "" {
+		return errors.New("title is required")
+	}
+	if err := s.Layout.Validate(); err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for _, name := range s.ImageNames {
+		if !IsImageName(name) || seen[name] {
+			return fmt.Errorf("invalid or duplicate image name %q", name)
+		}
+		seen[name] = true
+	}
+	return nil
+}
+
+func snapshot(d Document) ChangeSnapshot {
+	result := ChangeSnapshot{Title: d.Title, Body: d.Body, Layout: d.Layout}
+	for _, img := range d.Images {
+		result.ImageNames = append(result.ImageNames, img.Name)
+	}
+	return result
+}
+
+// ChangeSnapshotOf returns the editable state captured by a proposal.
+func ChangeSnapshotOf(d Document) ChangeSnapshot { return snapshot(d) }
+
+// ChangeSnapshotEqual reports whether two captured document states are equal.
+func ChangeSnapshotEqual(left, right ChangeSnapshot) bool { return sameSnapshot(left, right) }
+
+func sameSnapshot(left, right ChangeSnapshot) bool {
+	if len(left.ImageNames) == 0 {
+		left.ImageNames = nil
+	}
+	if len(right.ImageNames) == 0 {
+		right.ImageNames = nil
+	}
+	return reflect.DeepEqual(left, right)
+}
+
+func applySnapshot(d *Document, s ChangeSnapshot) {
+	d.Title, d.Body, d.Layout = s.Title, s.Body, s.Layout
+	wanted := make(map[string]bool, len(s.ImageNames))
+	for _, name := range s.ImageNames {
+		wanted[name] = true
+	}
+	images := d.Images[:0]
+	for _, img := range d.Images {
+		if wanted[img.Name] {
+			images = append(images, img)
+		}
+	}
+	d.Images = images
 }
 
 // Create adds a document. A zero Layout selects DefaultLayout.
@@ -299,6 +569,34 @@ type documentOperation struct {
 	after       *Document
 	description string
 }
+
+type documentChangeAcceptance struct {
+	repository   Repository
+	changeID     string
+	beforeChange Change
+	afterChange  Change
+	before       Document
+	after        Document
+	resolved     bool
+}
+
+func (o *documentChangeAcceptance) Apply(ctx context.Context) error {
+	if o.resolved {
+		return o.repository.TransitionDocument(ctx, o.before.ID, &o.before, &o.after)
+	}
+	if err := o.repository.TransitionDocumentChange(ctx, o.before.ID, o.changeID,
+		o.beforeChange, o.afterChange, &o.before, &o.after); err != nil {
+		return err
+	}
+	o.resolved = true
+	return nil
+}
+
+func (o *documentChangeAcceptance) Undo(ctx context.Context) error {
+	return o.repository.TransitionDocument(ctx, o.before.ID, &o.after, &o.before)
+}
+
+func (o *documentChangeAcceptance) Description() string { return "Accept document change" }
 
 func (o documentOperation) Apply(ctx context.Context) error {
 	return o.transition(ctx, o.before, o.after)

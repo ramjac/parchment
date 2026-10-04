@@ -61,6 +61,26 @@ func TestDocumentCLI(t *testing.T) {
 	if out := must("document", "list"); !strings.Contains(out, id) {
 		t.Fatalf("list = %q", out)
 	}
+	changeID := strings.TrimSpace(must("document", "propose", id, "--title", "Quarterly proposal", "--body", "proposed text", "--description", "Update report"))
+	if len(changeID) != 32 {
+		t.Fatalf("proposal ID = %q", changeID)
+	}
+	if out := must("document", "show", id); !strings.Contains(out, "# Quarterly\n") || !strings.Contains(out, "second page") {
+		t.Fatalf("proposal changed live content before acceptance: %q", out)
+	}
+	if out := must("document", "changes", id); !strings.Contains(out, changeID) || !strings.Contains(out, "pending") {
+		t.Fatalf("changes = %q", out)
+	}
+	if out := must("document", "review", id, changeID); !strings.Contains(out, "proposed text") || !strings.Contains(out, "second page") {
+		t.Fatalf("review = %q", out)
+	}
+	must("document", "accept", id, changeID)
+	if out := must("document", "show", id); !strings.Contains(out, "# Quarterly proposal\n") || !strings.Contains(out, "proposed text") {
+		t.Fatalf("accepted document = %q", out)
+	}
+	if _, err := run("document", "accept", id, changeID); err == nil {
+		t.Fatal("accepted proposal was accepted a second time")
+	}
 	if out := must("note", "list"); strings.Contains(out, id) {
 		t.Fatalf("document appeared in note list: %q", out)
 	}

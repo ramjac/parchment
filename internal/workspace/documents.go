@@ -8,18 +8,21 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
 )
 
 const layoutName = "layout.json"
+const changesName = "changes.json"
 
 var errNotDocument = errors.New("artifact is not a document")
 
 // validArtifactFileName lists the files an artifact transaction may touch.
 func validArtifactFileName(name string) bool {
-	return name == "content.md" || name == metadataName || name == layoutName || document.IsImageName(name)
+	return name == "content.md" || name == metadataName || name == layoutName ||
+		name == changesName || document.IsImageName(name)
 }
 
 // ListDocuments implements the document repository interface. Embedded image
@@ -123,7 +126,144 @@ func (w *Workspace) TransitionDocument(ctx context.Context, id string, expected,
 	})
 }
 
+// ListDocumentChanges returns the persisted proposals for a document.
+func (w *Workspace) ListDocumentChanges(ctx context.Context, id string) ([]document.Change, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !validID.MatchString(id) {
+		return nil, document.ErrNotFound
+	}
+	var changes []document.Change
+	err := withArtifactLock(ctx, filepath.Join(w.root, ".parchment", "artifacts"), id, func() error {
+		if _, err := w.readDocumentUnlocked(id, false); err != nil {
+			return err
+		}
+		var readErr error
+		changes, readErr = w.readDocumentChangesUnlocked(id)
+		return readErr
+	})
+	if errors.Is(err, errNotDocument) || errors.Is(err, errNoMetadata) {
+		return nil, document.ErrNotFound
+	}
+	return changes, err
+}
+
+// ProposeDocumentChange persists a proposal only if the document still matches
+// the snapshot from which the proposal was created.
+func (w *Workspace) ProposeDocumentChange(ctx context.Context, id string, expected document.Document, change document.Change) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !validID.MatchString(id) {
+		return document.ErrNotFound
+	}
+	if expected.ID != id || change.DocumentID != id {
+		return errors.New("document ID does not match proposal")
+	}
+	if err := change.Validate(); err != nil {
+		return err
+	}
+	if change.Status != document.ChangePending {
+		return errors.New("new document change must be pending")
+	}
+	artifactsDir := filepath.Join(w.root, ".parchment", "artifacts")
+	return withArtifactLock(ctx, artifactsDir, id, func() error {
+		current, err := w.readDocumentUnlocked(id, true)
+		if err != nil {
+			return err
+		}
+		if !document.Equal(current, expected) {
+			return fmt.Errorf("document %s changed since it was loaded", id)
+		}
+		if !document.ChangeSnapshotEqual(change.Before, document.ChangeSnapshotOf(current)) {
+			return errors.New("proposal original snapshot does not match the document")
+		}
+		changes, err := w.readDocumentChangesUnlocked(id)
+		if err != nil {
+			return err
+		}
+		for _, existing := range changes {
+			if existing.ID == change.ID {
+				return errors.New("document change ID already exists")
+			}
+			if existing.Status == document.ChangePending {
+				return errors.New("resolve the existing document change before proposing another")
+			}
+		}
+		changes = append(changes, change)
+		return w.writeDocumentChangesLocked(ctx, id, changes)
+	})
+}
+
+// TransitionDocumentChange resolves a proposal, optionally updating the live
+// document in the same filesystem transaction.
+func (w *Workspace) TransitionDocumentChange(
+	ctx context.Context, id, changeID string, expected, target document.Change,
+	expectedDocument, targetDocument *document.Document,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !validID.MatchString(id) || !validID.MatchString(changeID) {
+		return document.ErrChangeNotFound
+	}
+	if expected.DocumentID != id || target.DocumentID != id || expected.ID != changeID || target.ID != changeID {
+		return errors.New("document change ID does not match transition")
+	}
+	if err := target.Validate(); err != nil {
+		return err
+	}
+	artifactsDir := filepath.Join(w.root, ".parchment", "artifacts")
+	return withArtifactLock(ctx, artifactsDir, id, func() error {
+		current, err := w.readDocumentUnlocked(id, true)
+		if err != nil {
+			return err
+		}
+		changes, err := w.readDocumentChangesUnlocked(id)
+		if err != nil {
+			return err
+		}
+		index := -1
+		for i := range changes {
+			if changes[i].ID == changeID {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			return document.ErrChangeNotFound
+		}
+		if !reflect.DeepEqual(changes[index], expected) {
+			return errors.New("document change is no longer in the expected state")
+		}
+		if expected.Status != document.ChangePending ||
+			(target.Status != document.ChangeAccepted && target.Status != document.ChangeRejected) {
+			return errors.New("invalid document change transition")
+		}
+		if (expectedDocument == nil) != (targetDocument == nil) {
+			return errors.New("document transition must include both expected and target documents")
+		}
+		changes[index] = target
+		if expectedDocument == nil {
+			return w.writeDocumentChangesLocked(ctx, id, changes)
+		}
+		if expectedDocument.ID != id || targetDocument.ID != id || !document.Equal(current, *expectedDocument) {
+			return errors.New("document changed since the proposal was reviewed")
+		}
+		if !document.ChangeSnapshotEqual(target.Before, document.ChangeSnapshotOf(*expectedDocument)) ||
+			!document.ChangeSnapshotEqual(target.After, document.ChangeSnapshotOf(*targetDocument)) {
+			return errors.New("accepted document does not match the proposal")
+		}
+		return w.saveDocumentLockedWithChanges(ctx, *targetDocument, changes)
+	})
+}
+
 func (w *Workspace) saveDocumentLocked(ctx context.Context, d document.Document) error {
+	return w.saveDocumentLockedWithChanges(ctx, d, nil)
+}
+
+func (w *Workspace) saveDocumentLockedWithChanges(ctx context.Context, d document.Document, changes []document.Change) error {
 	if !validID.MatchString(d.ID) || d.Kind != artifact.DocumentKind {
 		return errors.New("invalid document artifact")
 	}
@@ -148,6 +288,13 @@ func (w *Workspace) saveDocumentLocked(ctx context.Context, d document.Document)
 		{name: "content.md", data: []byte(d.Body)},
 		{name: layoutName, data: append(layout, '\n')},
 		{name: metadataName, data: append(metadata, '\n')},
+	}
+	if changes != nil {
+		changeData, err := encodeDocumentChanges(d.ID, changes)
+		if err != nil {
+			return err
+		}
+		files = append(files, stagedArtifactFile{name: changesName, data: changeData})
 	}
 	keep := map[string]bool{}
 	for _, img := range d.Images {
@@ -202,6 +349,60 @@ func (w *Workspace) saveDocumentLocked(ctx context.Context, d document.Document)
 	}
 	removeStaleImages(dir, keep)
 	return nil
+}
+
+func (w *Workspace) readDocumentChangesUnlocked(id string) ([]document.Change, error) {
+	path := filepath.Join(w.root, ".parchment", "artifacts", id, changesName)
+	data, err := readRegularFile(path, -1)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read document changes %s: %w", id, err)
+	}
+	var changes []document.Change
+	if err := json.Unmarshal(data, &changes); err != nil {
+		return nil, fmt.Errorf("decode document changes %s: %w", id, err)
+	}
+	seen := map[string]bool{}
+	for _, change := range changes {
+		if err := change.Validate(); err != nil {
+			return nil, fmt.Errorf("validate document change %s: %w", change.ID, err)
+		}
+		if change.DocumentID != id || seen[change.ID] {
+			return nil, fmt.Errorf("invalid document change list for %s", id)
+		}
+		seen[change.ID] = true
+	}
+	return changes, nil
+}
+
+func (w *Workspace) writeDocumentChangesLocked(ctx context.Context, id string, changes []document.Change) error {
+	data, err := encodeDocumentChanges(id, changes)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(w.root, ".parchment", "artifacts", id)
+	if err := replaceArtifactFiles(ctx, dir, []stagedArtifactFile{{name: changesName, data: data}}); err != nil {
+		return fmt.Errorf("save document changes: %w", err)
+	}
+	return nil
+}
+
+func encodeDocumentChanges(id string, changes []document.Change) ([]byte, error) {
+	for _, change := range changes {
+		if change.DocumentID != id {
+			return nil, errors.New("document change belongs to a different artifact")
+		}
+		if err := change.Validate(); err != nil {
+			return nil, err
+		}
+	}
+	data, err := json.MarshalIndent(changes, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode document changes: %w", err)
+	}
+	return append(data, '\n'), nil
 }
 
 // removeStaleImages deletes managed image files that the saved document no
