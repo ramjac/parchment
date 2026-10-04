@@ -396,7 +396,21 @@ func (w *Workspace) saveLocked(ctx context.Context, n note.Note) error {
 		}
 		return fmt.Errorf("save note files: %w", err)
 	}
+	if err := cleanupLegacyNoteMetadata(dir); err != nil {
+		slog.Warn("note save committed but legacy metadata cleanup failed", "artifact_id", n.ID, "error", err)
+	}
 	return nil
+}
+
+func cleanupLegacyNoteMetadata(dir string) error {
+	path := filepath.Join(dir, "metadata.json")
+	if err := os.Remove(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	return syncDirectory(dir)
 }
 
 type stagedArtifactFile struct {

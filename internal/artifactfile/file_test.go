@@ -345,6 +345,16 @@ func TestStripPrivateBlocksRecognizesFencesOnListContinuations(t *testing.T) {
 	}
 }
 
+func TestStripPrivateBlocksPreservesListFenceStateAcrossBlankLines(t *testing.T) {
+	markdown := "- ````go\n  code before\n\n  ```parchment-example\n  visible example\n  ```\n  ````\n"
+	got := StripPrivateBlocks(markdown)
+	for _, want := range []string{"````go", "```parchment-example", "visible example", "````"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("ordinary list code fence lost %q: %q", want, got)
+		}
+	}
+}
+
 func TestStripPrivateBlocksResetsAtListContinuationExit(t *testing.T) {
 	markdown := "- Item\n\n  ```parchment-secret\n  hidden continuation\nOutside the list\n"
 	got := StripPrivateBlocks(markdown)

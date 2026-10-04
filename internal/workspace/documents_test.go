@@ -323,6 +323,34 @@ func TestSavingLegacyDocumentRemovesManagedSidecarsAndImages(t *testing.T) {
 	}
 }
 
+func TestDocumentCleanupFailureDoesNotFailCommittedSave(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	docs := document.NewService(ws, 10)
+	created, err := docs.Create(ctx, document.Draft{Title: "Committed save", Body: "Before"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, ".parchment", "artifacts", created.ID)
+	layoutPath := filepath.Join(dir, "layout.json")
+	if err := os.Mkdir(layoutPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(layoutPath, "unmanaged"), []byte("preserve"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := docs.Save(ctx, created, document.Draft{
+		Title: created.Title, Body: "After", Layout: created.Layout,
+	}); err != nil {
+		t.Fatalf("committed save reported cleanup failure: %v", err)
+	}
+	loaded, err := docs.Get(ctx, created.ID)
+	if err != nil || loaded.Body != "After" {
+		t.Fatalf("committed document = %+v, %v", loaded, err)
+	}
+}
+
 func TestDocumentSaveDetectsConcurrentChange(t *testing.T) {
 	ctx := context.Background()
 	ws := openTestWorkspace(t, t.TempDir())
@@ -651,6 +679,9 @@ func TestInvalidEmbeddedMetadataDoesNotFallBackToLegacySidecars(t *testing.T) {
 		t.Fatal(err)
 	}
 	noteContentPath := filepath.Join(noteDir, "content.md")
+	if _, err := os.Stat(filepath.Join(noteDir, "metadata.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy note metadata sidecar remains after save: %v", err)
+	}
 	noteContent, err := os.ReadFile(noteContentPath)
 	if err != nil {
 		t.Fatal(err)
@@ -660,6 +691,7 @@ func TestInvalidEmbeddedMetadataDoesNotFallBackToLegacySidecars(t *testing.T) {
 	if err != nil || migratedNote.Title != "Current note" || migratedNote.Body != legacyNote.Body {
 		t.Fatalf("migrated note after leading blank line = %+v, %v", migratedNote, err)
 	}
+	write(filepath.Join(noteDir, "metadata.json"), noteMetadata)
 	corruptMetadata(noteContentPath)
 	if _, err := notes.Get(ctx, legacyNote.ID); err == nil {
 		t.Fatal("malformed note metadata fell back to the stale sidecar")

@@ -143,6 +143,22 @@ func TestParseFencedCodeOpenedAfterListMarker(t *testing.T) {
 	}
 }
 
+func TestParseFencedCodeInDeeplyIndentedNestedList(t *testing.T) {
+	source := "# Nested lists\n\n## Example\n\n- Parent\n    - ```go\n      fmt.Println(\"nested\")\n      ```\n"
+	deck, err := Parse(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deck.Slides) != 1 {
+		t.Fatalf("parsed %d slides, want 1", len(deck.Slides))
+	}
+	for _, want := range []string{"    - ```go", "fmt.Println(\"nested\")", "      ```"} {
+		if !strings.Contains(deck.Slides[0].Body, want) {
+			t.Errorf("nested-list slide body missing %q:\n%s", want, deck.Slides[0].Body)
+		}
+	}
+}
+
 func TestIndentedFenceIsCodeAndHeaderFencesArePreserved(t *testing.T) {
 	source := "# Code talk\n\n```go\nsample()\n```\n\n## Example\n\n    ```\n    ## not a slide\n    ```\n\n## After\n\nDone.\n"
 	deck, err := Parse(source)

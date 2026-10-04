@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -458,7 +459,7 @@ func (w *Workspace) saveDocumentLockedWithChanges(ctx context.Context, d documen
 		return fmt.Errorf("save document files: %w", err)
 	}
 	if err := cleanupLegacyDocumentFiles(dir); err != nil {
-		return fmt.Errorf("clean up legacy document files: %w", err)
+		slog.Warn("document save committed but legacy file cleanup failed", "artifact_id", d.ID, "error", err)
 	}
 	return nil
 }

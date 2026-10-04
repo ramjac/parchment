@@ -192,7 +192,7 @@ func Parse(source string) (Deck, error) {
 			(isIndentedCode(line) || !strings.HasPrefix(trimmed, "# ")) {
 			return Deck{}, fmt.Errorf("line %d: presentation must begin with a '# Title' heading", lineNumber)
 		}
-		listContent, itemIndent, isListItem := listItemContent(line)
+		listContent, itemIndent, isListItem := listItemContent(line, listIndent)
 		marker := markdownFence(trimmed)
 		markerIndent := 0
 		if inFence && fenceListIndent > 0 {
@@ -325,12 +325,13 @@ func markdownFence(line string) string {
 	return line[:i]
 }
 
-func listItemContent(line string) (string, int, bool) {
+func listItemContent(line string, parentIndent int) (string, int, bool) {
+	maxIndent := 3 + parentIndent
 	indent := 0
-	for indent < len(line) && indent < 4 && line[indent] == ' ' {
+	for indent < len(line) && indent <= maxIndent && line[indent] == ' ' {
 		indent++
 	}
-	if indent > 3 || indent == len(line) {
+	if indent > maxIndent || indent == len(line) {
 		return "", 0, false
 	}
 	end := indent

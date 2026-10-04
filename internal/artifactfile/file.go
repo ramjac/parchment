@@ -667,6 +667,12 @@ func isFenceCloseInContainers(line string, containers fenceContainers, marker st
 }
 
 func fenceContainerActive(line string, containers fenceContainers) bool {
+	if containers.listIndent > 0 {
+		content, blockquotes := stripBlockquotePrefixes(line)
+		if isBlankLine(content) {
+			return blockquotes >= containers.blockquotes
+		}
+	}
 	_, blockquotes, ok := stripFenceContainers(line, containers)
 	return ok && blockquotes >= containers.blockquotes
 }

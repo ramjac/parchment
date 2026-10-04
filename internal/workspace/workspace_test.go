@@ -521,6 +521,39 @@ func TestSaveFailurePreservesExistingArtifact(t *testing.T) {
 	}
 }
 
+func TestNoteCleanupFailureDoesNotFailCommittedRename(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	service := note.NewService(ws, 10)
+	created, err := service.Create(ctx, "Before", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, ".parchment", "artifacts", created.ID)
+	metadataDir := filepath.Join(dir, "metadata.json")
+	if err := os.Mkdir(metadataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(metadataDir, "unmanaged"), []byte("preserve"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Rename(ctx, created.ID, "After"); err != nil {
+		t.Fatalf("committed rename reported cleanup failure: %v", err)
+	}
+	renamed, err := service.Get(ctx, created.ID)
+	if err != nil || renamed.Title != "After" {
+		t.Fatalf("renamed note = %+v, %v", renamed, err)
+	}
+	if _, err := service.Undo(ctx); err != nil {
+		t.Fatalf("rename was not recorded for undo: %v", err)
+	}
+	restored, err := service.Get(ctx, created.ID)
+	if err != nil || restored.Title != "Before" {
+		t.Fatalf("undo after committed rename = %+v, %v", restored, err)
+	}
+}
+
 func TestFailedCreateDoesNotLeaveArtifactDirectory(t *testing.T) {
 	root := t.TempDir()
 	ws := openTestWorkspace(t, root)
