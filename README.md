@@ -256,6 +256,7 @@ This repository currently implements notes, documents, basic spreadsheets,
 and basic Markdown presentations.
 The broader suite is planned to add:
 
+- Change basic usage expectations. Don't expect or require a parchment workspace. Expect typical usage to be a command like "parchment mydoc.md". That should open the Markdown file in the parchment TUI. If it is a parchment artifact according to a "parchment-meta" code block at the top, then the artifact specific TUI will be used. Otherwise, by default, the Notes TUI will be used.
 - Background auto-save and recovery from auto-save so that in the event Parchment crashes or is force closed, any changes since the last save can be optionally recovered.
 - Read and work with plain Markdown files that lack Parchment metadata, without
   adding `parchment-meta` or other `parchment-*` blocks to them. Provide an
