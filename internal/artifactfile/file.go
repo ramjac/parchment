@@ -371,8 +371,30 @@ func metadataHasFormatMarker(source string) bool {
 	if err != nil {
 		return false
 	}
-	marker := []byte(`"` + envelopeFormatField + `": "` + envelopeFormat + `"`)
-	return bytes.Contains(payload, marker)
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return false
+	}
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return false
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return false
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return false
+		}
+		if key == envelopeFormatField {
+			var format string
+			return json.Unmarshal(value, &format) == nil && format == envelopeFormat
+		}
+	}
+	return false
 }
 
 func hasEnvelopeContinuation(source string, offset int) bool {

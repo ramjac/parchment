@@ -650,17 +650,45 @@ func TestInvalidEmbeddedMetadataDoesNotFallBackToLegacySidecars(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	corruptMetadata := func(path string) {
+	corruptMetadata := func(path, title string) {
 		t.Helper()
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		corrupted := strings.Replace(string(data), `"title": "Current`, `"title": 42`, 1)
-		if corrupted == string(data) {
+		source := string(data)
+		corrupted := strings.Replace(source, `"title": "`+title+`"`, `"title":42`, 1)
+		if corrupted == source {
+			corrupted = strings.Replace(source, `"title":"`+title+`"`, `"title":42`, 1)
+		}
+		if corrupted == source {
 			t.Fatal("embedded metadata title was not found")
 		}
 		write(path, []byte(corrupted))
+	}
+	minifyMetadata := func(path string) {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := string(data)
+		opening := "```parchment-meta\n"
+		start := strings.Index(source, opening)
+		if start < 0 {
+			t.Fatal("embedded metadata opener was not found")
+		}
+		payloadStart := start + len(opening)
+		closing := strings.Index(source[payloadStart:], "\n```")
+		if closing < 0 {
+			t.Fatal("embedded metadata closer was not found")
+		}
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, []byte(source[payloadStart:payloadStart+closing])); err != nil {
+			t.Fatal(err)
+		}
+		source = source[:payloadStart] + compact.String() + source[payloadStart+closing:]
+		write(path, []byte(source))
 	}
 
 	notes := note.NewService(ws, 10)
@@ -692,16 +720,9 @@ func TestInvalidEmbeddedMetadataDoesNotFallBackToLegacySidecars(t *testing.T) {
 		t.Fatalf("migrated note after leading blank line = %+v, %v", migratedNote, err)
 	}
 	write(filepath.Join(noteDir, "metadata.json"), noteMetadata)
-	corruptMetadata(noteContentPath)
-	corruptedNote, err := os.ReadFile(noteContentPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !artifactfile.HasFormatMarker(corruptedNote) {
-		t.Fatalf("corrupted note lost its single-file format marker: %q", corruptedNote[:min(len(corruptedNote), 240)])
-	}
-	if _, err := notes.Get(ctx, legacyNote.ID); err == nil {
-		t.Fatal("malformed note metadata fell back to the stale sidecar")
+	minifyMetadata(noteContentPath)
+	if items, err := notes.List(ctx); err != nil || len(items) != 1 || items[0].Title != "Current note" {
+		t.Fatalf("list minified note with stale sidecar = %+v, %v", items, err)
 	}
 
 	documents := document.NewService(ws, 10)
@@ -747,6 +768,7 @@ func TestInvalidEmbeddedMetadataDoesNotFallBackToLegacySidecars(t *testing.T) {
 	}
 	write(filepath.Join(documentDir, "layout.json"), staleLayoutData)
 	write(filepath.Join(documentDir, "changes.json"), []byte("[]"))
+	write(filepath.Join(documentDir, "metadata.json"), documentMetadata)
 	documentContentPath := filepath.Join(documentDir, "content.md")
 	documentContent, err := os.ReadFile(documentContentPath)
 	if err != nil {
@@ -762,9 +784,25 @@ func TestInvalidEmbeddedMetadataDoesNotFallBackToLegacySidecars(t *testing.T) {
 	if err != nil || len(migratedChanges) != 1 || migratedChanges[0].ID != proposal.ID {
 		t.Fatalf("migrated proposal history after leading blank line = %+v, %v", migratedChanges, err)
 	}
-	corruptMetadata(documentContentPath)
+	minifyMetadata(documentContentPath)
+	if items, err := documents.List(ctx); err != nil || len(items) != 1 ||
+		items[0].Title != "Current document" || items[0].Layout != layout {
+		t.Fatalf("list minified document with stale sidecar = %+v, %v", items, err)
+	}
+	corruptMetadata(documentContentPath, "Current document")
 	if _, err := documents.Get(ctx, legacyDocument.ID); err == nil {
 		t.Fatal("malformed document metadata fell back to the stale sidecar")
+	}
+	corruptMetadata(noteContentPath, "Current note")
+	corruptedNote, err := os.ReadFile(noteContentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !artifactfile.HasFormatMarker(corruptedNote) {
+		t.Fatalf("corrupted note lost its single-file format marker: %q", corruptedNote[:min(len(corruptedNote), 240)])
+	}
+	if _, err := notes.Get(ctx, legacyNote.ID); err == nil {
+		t.Fatal("malformed note metadata fell back to the stale sidecar")
 	}
 }
 

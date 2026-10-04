@@ -272,6 +272,29 @@ func TestReadMetadataFromPreservesOversizedMetadataOpeningLine(t *testing.T) {
 	}
 }
 
+func TestFormatMarkerDetectionParsesMinifiedMetadata(t *testing.T) {
+	data, err := Encode(testArtifact(), "body", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	minified := strings.Replace(
+		string(data),
+		`"parchment_format": "parchment-single-file-v1"`,
+		`"parchment_format":"parchment-single-file-v1"`,
+		1,
+	)
+	if minified == string(data) {
+		t.Fatal("format marker was not found")
+	}
+	if !HasFormatMarker([]byte(minified)) {
+		t.Fatal("byte-based detector missed minified format marker")
+	}
+	marked, err := HasFormatMarkerFrom(strings.NewReader(minified))
+	if err != nil || !marked {
+		t.Fatalf("streaming detector = %v, %v", marked, err)
+	}
+}
+
 func TestStripPrivateBlocksPreservesOrdinaryCodeFences(t *testing.T) {
 	markdown := "before\n\n```parchment-secret\nhidden\n```\n\n```go\n```parchment-example\nvisible\n```\n```\nafter\n"
 	got := StripPrivateBlocks(markdown)

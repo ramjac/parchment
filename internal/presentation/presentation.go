@@ -207,7 +207,12 @@ func Parse(source string) (Deck, error) {
 			} else if isListItem {
 				marker = ""
 			} else if leadingSpaces(line) >= fenceListIndent {
-				marker = markdownFence(strings.TrimSpace(line[fenceListIndent:]))
+				content := line[fenceListIndent:]
+				if !hasFourSpaceFenceIndent(content) {
+					marker = markdownFence(strings.TrimSpace(content))
+				} else {
+					marker = ""
+				}
 				markerIndent = fenceListIndent
 			} else {
 				marker = ""
@@ -384,6 +389,24 @@ func leadingSpaces(line string) int {
 		indent++
 	}
 	return indent
+}
+
+func hasFourSpaceFenceIndent(line string) bool {
+	indent := 0
+	for i := 0; i < len(line); i++ {
+		switch line[i] {
+		case ' ':
+			indent++
+			if indent >= 4 {
+				return true
+			}
+		case '\t':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func stripAnchor(title string) string {

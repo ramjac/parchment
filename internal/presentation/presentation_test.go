@@ -143,6 +143,20 @@ func TestParseFencedCodeOpenedAfterListMarker(t *testing.T) {
 	}
 }
 
+func TestIndentedFenceContentDoesNotCloseListFence(t *testing.T) {
+	for _, contentIndent := range []string{"      ", "  \t"} {
+		source := "# List fence\n\n## Example\n\n- ```go\n" + contentIndent +
+			"```\n  ```\n"
+		deck, err := Parse(source)
+		if err != nil {
+			t.Fatalf("Parse with code indentation %q: %v", contentIndent, err)
+		}
+		if len(deck.Slides) != 1 || !strings.Contains(deck.Slides[0].Body, contentIndent+"```") {
+			t.Fatalf("indented fence content was lost: %+v", deck)
+		}
+	}
+}
+
 func TestParseFencedCodeInDeeplyIndentedNestedList(t *testing.T) {
 	source := "# Nested lists\n\n## Example\n\n- Parent\n    - ```go\n      fmt.Println(\"nested\")\n      ```\n"
 	deck, err := Parse(source)
