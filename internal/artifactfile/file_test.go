@@ -81,15 +81,24 @@ func TestReadMetadataDistinguishesMissingFromInvalidEnvelope(t *testing.T) {
 }
 
 func TestReadMetadataRecognizesLegacyMetadataFenceExamples(t *testing.T) {
-	source := "```parchment-meta\n{}\n```\n\nLegacy Markdown body\n"
-	for _, read := range []func([]byte) (artifact.Artifact, error){
-		ReadMetadata,
-		func(data []byte) (artifact.Artifact, error) {
-			return ReadMetadataFrom(bytes.NewReader(data))
-		},
+	validMetadata, err := json.Marshal(testArtifact())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{
+		"```parchment-meta\n{}\n```\n\nLegacy Markdown body\n",
+		"```parchment-meta\n" + string(validMetadata) + "\n```\n\n" +
+			"```parchment-note\n{\"legacy\":true}\n```\n\nLegacy Markdown body\n",
 	} {
-		if _, err := read([]byte(source)); !errors.Is(err, ErrMetadataMissing) {
-			t.Fatalf("legacy metadata example error = %v", err)
+		for _, read := range []func([]byte) (artifact.Artifact, error){
+			ReadMetadata,
+			func(data []byte) (artifact.Artifact, error) {
+				return ReadMetadataFrom(bytes.NewReader(data))
+			},
+		} {
+			if _, err := read([]byte(source)); !errors.Is(err, ErrMetadataMissing) {
+				t.Fatalf("legacy metadata example error = %v", err)
+			}
 		}
 	}
 }
@@ -333,6 +342,33 @@ func TestStripPrivateBlocksRecognizesFencesOnListContinuations(t *testing.T) {
 	}
 	if !strings.Contains(got, "    ```go\n    ```parchment-list-example\n    list-visible\n    ```") {
 		t.Fatalf("ordinary list-contained code fence was removed: %q", got)
+	}
+}
+
+func TestStripPrivateBlocksResetsAtListContinuationExit(t *testing.T) {
+	markdown := "- Item\n\n  ```parchment-secret\n  hidden continuation\nOutside the list\n"
+	got := StripPrivateBlocks(markdown)
+	if strings.Contains(got, "parchment-secret") || strings.Contains(got, "hidden continuation") {
+		t.Fatalf("list-continuation reserved fence was rendered: %q", got)
+	}
+	if !strings.Contains(got, "Outside the list") {
+		t.Fatalf("content after the list was hidden: %q", got)
+	}
+}
+
+func TestStripPrivateBlocksRecognizesNestedListBlockquoteFences(t *testing.T) {
+	markdown := "- > ```parchment-secret\n  > nested-hidden\n  > ```\n\n" +
+		"- > ```go\n  > ```parchment-example\n  > nested-visible\n  > ```\n"
+	got := StripPrivateBlocks(markdown)
+	for _, hidden := range []string{"parchment-secret", "nested-hidden"} {
+		if strings.Contains(got, hidden) {
+			t.Fatalf("nested reserved block leaked %q: %q", hidden, got)
+		}
+	}
+	for _, visible := range []string{"- > ```go", "> ```parchment-example", "> nested-visible", "> ```"} {
+		if !strings.Contains(got, visible) {
+			t.Fatalf("ordinary nested code block lost %q: %q", visible, got)
+		}
 	}
 }
 

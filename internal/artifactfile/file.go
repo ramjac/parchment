@@ -15,6 +15,8 @@ import (
 
 const metadataBlock = "parchment-meta"
 const bodyBoundary = "<!-- parchment-body -->"
+const envelopeFormat = "parchment-single-file-v1"
+const envelopeFormatField = "parchment_format"
 
 const MaxFileSize = 64 << 20
 
@@ -29,13 +31,18 @@ type File struct {
 	Blocks   map[string]json.RawMessage
 }
 
+type metadataEnvelope struct {
+	Format string `json:"parchment_format,omitempty"`
+	artifact.Artifact
+}
+
 // Encode serializes an artifact as Markdown. Payload blocks are emitted before
 // the visible body so ordinary Markdown readers can ignore them.
 func Encode(item artifact.Artifact, body string, blocks map[string]any) ([]byte, error) {
 	if err := item.Validate(); err != nil {
 		return nil, fmt.Errorf("validate artifact metadata: %w", err)
 	}
-	metadata, err := json.MarshalIndent(item, "", "  ")
+	metadata, err := json.MarshalIndent(metadataEnvelope{Format: envelopeFormat, Artifact: item}, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encode artifact metadata: %w", err)
 	}
@@ -139,7 +146,7 @@ func ReadMetadata(data []byte) (artifact.Artifact, error) {
 	}
 	source := string(data)
 	item, _, err := readMetadata(source)
-	if err != nil && isLegacyMetadataExample(source) {
+	if isLegacyMetadataExample(source) && !metadataHasFormatMarker(source) {
 		return artifact.Artifact{}, fmt.Errorf("%w: it must be the first Markdown block", ErrMetadataMissing)
 	}
 	return item, err
@@ -206,7 +213,20 @@ func ReadMetadataFrom(input io.Reader) (artifact.Artifact, error) {
 			} else if isFenceClose(line, block.marker[:1], len(block.marker)) {
 				item, _, metadataErr := readMetadata(prefix.String())
 				if metadataErr == nil {
-					return item, nil
+					if metadataHasFormatMarker(prefix.String()) {
+						return item, nil
+					}
+					continuation, probeErr := hasEnvelopeContinuationFrom(reader, &consumed)
+					if probeErr != nil {
+						return artifact.Artifact{}, fmt.Errorf("inspect artifact format: %w", probeErr)
+					}
+					if continuation {
+						return item, nil
+					}
+					return artifact.Artifact{}, fmt.Errorf("%w: it must be the first Markdown block", ErrMetadataMissing)
+				}
+				if metadataHasFormatMarker(prefix.String()) {
+					return artifact.Artifact{}, metadataErr
 				}
 				continuation, probeErr := hasEnvelopeContinuationFrom(reader, &consumed)
 				if probeErr != nil {
@@ -248,6 +268,34 @@ func isLegacyMetadataExample(source string) bool {
 	return err == nil && !hasEnvelopeContinuation(source, after)
 }
 
+func metadataHasFormatMarker(source string) bool {
+	start := 0
+	for start < len(source) {
+		line, end := nextLine(source, start)
+		if !isBlankLine(line) {
+			break
+		}
+		start = end
+	}
+	if start == len(source) {
+		return false
+	}
+	line, _ := nextLine(source, start)
+	block, ok := parseOpening(line)
+	if !ok || block.name != metadataBlock {
+		return false
+	}
+	payload, _, err := readBlock(source, start, block)
+	if err != nil {
+		return false
+	}
+	var format struct {
+		Format string `json:"parchment_format"`
+	}
+	_ = json.Unmarshal(payload, &format)
+	return format.Format == envelopeFormat
+}
+
 func hasEnvelopeContinuation(source string, offset int) bool {
 	for offset < len(source) {
 		line, next := nextLine(source, offset)
@@ -259,30 +307,28 @@ func hasEnvelopeContinuation(source string, offset int) bool {
 			return true
 		}
 		block, ok := parseOpening(line)
-		return ok && strings.HasPrefix(block.name, "parchment-")
+		if !ok || !strings.HasPrefix(block.name, "parchment-") {
+			return false
+		}
+		_, after, err := readBlock(source, offset, block)
+		if err != nil {
+			return false
+		}
+		offset = after
 	}
 	return false
 }
 
 func hasEnvelopeContinuationFrom(reader *bufio.Reader, consumed *int64) (bool, error) {
-	var lineBuffer strings.Builder
 	for {
-		lineBytes, err := reader.ReadSlice('\n')
-		*consumed += int64(len(lineBytes))
-		if *consumed > MaxFileSize {
-			return false, fmt.Errorf("artifact metadata is larger than %d MiB", MaxFileSize>>20)
-		}
-		lineBuffer.Write(lineBytes)
-		if errors.Is(err, bufio.ErrBufferFull) {
-			if isBlankLine(lineBuffer.String()) {
-				lineBuffer.Reset()
-				continue
+		line, complete, err := readProbeLine(reader, consumed)
+		if !complete {
+			if errors.Is(err, io.EOF) {
+				return false, nil
 			}
-			return false, nil
+			return false, err
 		}
-		line := lineBuffer.String()
 		if isBlankLine(line) {
-			lineBuffer.Reset()
 			if errors.Is(err, io.EOF) {
 				return false, nil
 			}
@@ -295,7 +341,52 @@ func hasEnvelopeContinuationFrom(reader *bufio.Reader, consumed *int64) (bool, e
 			return true, nil
 		}
 		block, ok := parseOpening(line)
-		return ok && strings.HasPrefix(block.name, "parchment-"), nil
+		if !ok || !strings.HasPrefix(block.name, "parchment-") {
+			return false, nil
+		}
+		for {
+			line, complete, err = readProbeLine(reader, consumed)
+			if !complete {
+				if errors.Is(err, io.EOF) {
+					return false, nil
+				}
+				if err != nil {
+					return false, err
+				}
+				continue
+			}
+			if isFenceClose(line, block.marker[:1], len(block.marker)) {
+				break
+			}
+			if errors.Is(err, io.EOF) {
+				return false, nil
+			}
+			if err != nil {
+				return false, err
+			}
+		}
+	}
+}
+
+func readProbeLine(reader *bufio.Reader, consumed *int64) (string, bool, error) {
+	var line strings.Builder
+	oversized := false
+	for {
+		part, err := reader.ReadSlice('\n')
+		*consumed += int64(len(part))
+		if *consumed > MaxFileSize {
+			return "", false, fmt.Errorf("artifact metadata is larger than %d MiB", MaxFileSize>>20)
+		}
+		if !oversized && line.Len()+len(part) <= 4<<10 {
+			line.Write(part)
+		} else {
+			oversized = true
+			line.Reset()
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		return line.String(), !oversized, err
 	}
 }
 
@@ -326,10 +417,14 @@ func readMetadata(source string) (artifact.Artifact, int, error) {
 	if err != nil {
 		return artifact.Artifact{}, 0, fmt.Errorf("read Parchment metadata: %w", err)
 	}
-	var item artifact.Artifact
-	if err := json.Unmarshal(metadataBytes, &item); err != nil {
+	var envelope metadataEnvelope
+	if err := json.Unmarshal(metadataBytes, &envelope); err != nil {
 		return artifact.Artifact{}, 0, fmt.Errorf("decode Parchment metadata: %w", err)
 	}
+	if envelope.Format != "" && envelope.Format != envelopeFormat {
+		return artifact.Artifact{}, 0, fmt.Errorf("unsupported artifact format %q", envelope.Format)
+	}
+	item := envelope.Artifact
 	if err := item.Validate(); err != nil {
 		return artifact.Artifact{}, 0, fmt.Errorf("validate Parchment metadata: %w", err)
 	}
@@ -368,16 +463,9 @@ func StripPrivateBlocks(markdown string) string {
 			}
 		}
 		lists = updateListContainers(lists, containerLine, blockquotes)
-		block, context, ok := parseContainerFence(line)
+		block, context, ok := parseListContinuationFence(lists, line)
 		if !ok {
-			if indent, inList := listContinuationIndent(lists, blockquotes, containerLine); inList {
-				content := stripIndent(containerLine, indent)
-				if marker, info, fenced := parseFence(content); fenced {
-					block = opening{marker: marker, name: info}
-					context = fenceContainers{blockquotes: blockquotes, listIndent: indent}
-					ok = true
-				}
-			}
+			block, context, ok = parseContainerFence(line)
 		}
 		if ok {
 			fence = block.marker
@@ -406,16 +494,25 @@ type listContainer struct {
 }
 
 func parseContainerFence(line string) (opening, fenceContainers, bool) {
-	line, blockquotes := stripBlockquotePrefixes(line)
-	if marker, info, ok := parseFence(line); ok {
-		return opening{marker: marker, name: info}, fenceContainers{blockquotes: blockquotes}, true
+	var blockquotes, listIndent int
+	for {
+		stripped, depth := stripBlockquotePrefixes(line)
+		if depth > 0 {
+			blockquotes += depth
+			line = stripped
+			continue
+		}
+		if marker, info, ok := parseFence(line); ok {
+			return opening{marker: marker, name: info},
+				fenceContainers{blockquotes: blockquotes, listIndent: listIndent}, true
+		}
+		content, indent, ok := stripListMarker(line)
+		if !ok {
+			return opening{}, fenceContainers{}, false
+		}
+		listIndent += indent
+		line = content
 	}
-	marker, info, indent, ok := parseListItemFence(line)
-	if !ok {
-		return opening{}, fenceContainers{}, false
-	}
-	return opening{marker: marker, name: info},
-		fenceContainers{blockquotes: blockquotes, listIndent: indent}, true
 }
 
 func updateListContainers(lists []listContainer, line string, blockquotes int) []listContainer {
@@ -440,14 +537,33 @@ func updateListContainers(lists []listContainer, line string, blockquotes int) [
 	return lists
 }
 
-func listContinuationIndent(lists []listContainer, blockquotes int, line string) (int, bool) {
-	leading := leadingSpaces(line)
+func parseListContinuationFence(lists []listContainer, line string) (opening, fenceContainers, bool) {
 	for i := len(lists) - 1; i >= 0; i-- {
-		if lists[i].blockquotes <= blockquotes && lists[i].indent <= leading {
-			return lists[i].indent, true
+		container := lists[i]
+		if leadingSpaces(line) >= container.indent {
+			content := stripIndent(line, container.indent)
+			content, blockquotes := stripBlockquotePrefixes(content)
+			if blockquotes >= container.blockquotes {
+				if marker, info, ok := parseFence(content); ok {
+					return opening{marker: marker, name: info},
+						fenceContainers{blockquotes: blockquotes, listIndent: container.indent}, true
+				}
+			}
+		}
+		content, leadingBlockquotes := stripBlockquotePrefixes(line)
+		if leadingBlockquotes >= container.blockquotes && leadingSpaces(content) >= container.indent {
+			content = stripIndent(content, container.indent)
+			content, nestedBlockquotes := stripBlockquotePrefixes(content)
+			if marker, info, ok := parseFence(content); ok {
+				return opening{marker: marker, name: info},
+					fenceContainers{
+						blockquotes: leadingBlockquotes + nestedBlockquotes,
+						listIndent:  container.indent,
+					}, true
+			}
 		}
 	}
-	return 0, false
+	return opening{}, fenceContainers{}, false
 }
 
 func leadingSpaces(line string) int {
@@ -464,22 +580,6 @@ func stripIndent(line string, indent int) string {
 		return line
 	}
 	return line[indent:]
-}
-
-func parseListItemFence(line string) (string, string, int, bool) {
-	indent := 0
-	for {
-		content, markerIndent, ok := stripListMarker(line)
-		if !ok {
-			return "", "", 0, false
-		}
-		indent += markerIndent
-		marker, info, ok := parseFence(content)
-		if ok {
-			return marker, info, indent, true
-		}
-		line = content
-	}
 }
 
 func stripListMarker(line string) (string, int, bool) {
@@ -515,29 +615,34 @@ func stripListMarker(line string) (string, int, bool) {
 }
 
 func isFenceCloseInContainers(line string, containers fenceContainers, marker string, minLength int) bool {
-	line, blockquotes := stripBlockquotePrefixes(line)
-	if blockquotes != containers.blockquotes {
-		return false
-	}
-	if containers.listIndent > 0 {
-		indent := leadingSpaces(line)
-		if indent < containers.listIndent {
-			return false
-		}
-		line = line[containers.listIndent:]
-	}
-	return isFenceClose(line, marker, minLength)
+	line, blockquotes, ok := stripFenceContainers(line, containers)
+	return ok && blockquotes == containers.blockquotes && isFenceClose(line, marker, minLength)
 }
 
 func fenceContainerActive(line string, containers fenceContainers) bool {
-	line, blockquotes := stripBlockquotePrefixes(line)
-	if blockquotes < containers.blockquotes {
-		return false
+	_, blockquotes, ok := stripFenceContainers(line, containers)
+	return ok && blockquotes >= containers.blockquotes
+}
+
+func stripFenceContainers(line string, containers fenceContainers) (string, int, bool) {
+	if containers.listIndent == 0 {
+		content, blockquotes := stripBlockquotePrefixes(line)
+		return content, blockquotes, true
 	}
-	if blockquotes > containers.blockquotes || containers.listIndent == 0 || isBlankLine(line) {
-		return true
+	if leadingSpaces(line) >= containers.listIndent {
+		content := stripIndent(line, containers.listIndent)
+		content, blockquotes := stripBlockquotePrefixes(content)
+		if blockquotes >= containers.blockquotes {
+			return content, blockquotes, true
+		}
 	}
-	return leadingSpaces(line) >= containers.listIndent
+	content, leadingBlockquotes := stripBlockquotePrefixes(line)
+	if leadingSpaces(content) >= containers.listIndent {
+		content = stripIndent(content, containers.listIndent)
+		content, nestedBlockquotes := stripBlockquotePrefixes(content)
+		return content, leadingBlockquotes + nestedBlockquotes, true
+	}
+	return "", 0, false
 }
 
 func stripBlockquotePrefixes(line string) (string, int) {
