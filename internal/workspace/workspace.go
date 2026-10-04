@@ -462,7 +462,7 @@ func recoverArtifactFiles(dir string) error {
 		return fmt.Errorf("decode note transaction: %w", err)
 	}
 	for _, file := range transaction {
-		if file.Name != "content.md" && file.Name != metadataName {
+		if !validArtifactFileName(file.Name) {
 			return fmt.Errorf("invalid note transaction target %q", file.Name)
 		}
 		if file.HadOld {
@@ -572,6 +572,20 @@ func (w *Workspace) Delete(ctx context.Context, id string) error {
 }
 
 func (w *Workspace) deleteLocked(ctx context.Context, artifactsDir, id string) error {
+	return w.deleteArtifactLocked(ctx, artifactsDir, id, func() error {
+		if _, err := w.readNoteUnlocked(id); err != nil {
+			if errors.Is(err, errNotNote) || errors.Is(err, errNoMetadata) {
+				return fmt.Errorf("artifact ID %s is occupied by a non-note artifact", id)
+			}
+			return fmt.Errorf("validate note before deletion: %w", err)
+		}
+		return nil
+	})
+}
+
+// deleteArtifactLocked removes an artifact directory through the recoverable
+// tombstone sequence once validate confirms it is the expected kind.
+func (w *Workspace) deleteArtifactLocked(ctx context.Context, artifactsDir, id string, validate func() error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -599,11 +613,8 @@ func (w *Workspace) deleteLocked(ctx context.Context, artifactsDir, id string) e
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("note storage path is not a directory")
 	}
-	if _, err := w.readNoteUnlocked(id); err != nil {
-		if errors.Is(err, errNotNote) || errors.Is(err, errNoMetadata) {
-			return fmt.Errorf("artifact ID %s is occupied by a non-note artifact", id)
-		}
-		return fmt.Errorf("validate note before deletion: %w", err)
+	if err := validate(); err != nil {
+		return err
 	}
 	tombstone := filepath.Join(artifactsDir, pendingArtifactPrefix+id)
 	if err := writeArtifactDeletionIntent(artifactsDir, artifactDeletionIntent{ID: id, State: "pending"}); err != nil {
