@@ -404,7 +404,8 @@ func TestLegacyNoteAndDocumentArtifactsRemainReadable(t *testing.T) {
 		}
 	}
 
-	legacyNote, err := notes.Create(ctx, "Legacy note", "Plain Markdown note")
+	legacyNoteBody := "```parchment-footnote\nnot JSON\n```\n\nPlain Markdown note"
+	legacyNote, err := notes.Create(ctx, "Legacy note", legacyNoteBody)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +419,8 @@ func TestLegacyNoteAndDocumentArtifactsRemainReadable(t *testing.T) {
 
 	layout := document.DefaultLayout()
 	layout.Columns = 2
-	created, err := docs.Create(ctx, document.Draft{Title: "Legacy document", Body: "Introduction", Layout: layout})
+	legacyDocumentBody := "```parchment-footnote\nnot JSON\n```\n\nIntroduction"
+	created, err := docs.Create(ctx, document.Draft{Title: "Legacy document", Body: legacyDocumentBody, Layout: layout})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +475,7 @@ func TestLegacyNoteAndDocumentArtifactsRemainReadable(t *testing.T) {
 		t.Fatal(err)
 	}
 	loadedNotes, err := note.NewService(reopened, 10).List(ctx)
-	if err != nil || len(loadedNotes) != 1 || loadedNotes[0].Body != "Plain Markdown note" {
+	if err != nil || len(loadedNotes) != 1 || loadedNotes[0].Body != legacyNoteBody {
 		t.Fatalf("legacy notes = %+v, %v", loadedNotes, err)
 	}
 	loadedDocs := document.NewService(reopened, 10)

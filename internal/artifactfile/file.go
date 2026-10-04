@@ -143,8 +143,11 @@ func readMetadata(source string) (artifact.Artifact, int, error) {
 	line, _ := nextLine(source, 0)
 	opening, ok := parseOpening(line)
 	if !ok || opening.name != metadataBlock {
-		if _, info, isFence := parseFence(line); isFence && strings.HasPrefix(info, "parchment-") {
-			return artifact.Artifact{}, 0, errors.New("Parchment metadata block must be the first Markdown block")
+		if _, info, isFence := parseFence(line); isFence {
+			fields := strings.Fields(info)
+			if len(fields) > 0 && fields[0] == metadataBlock {
+				return artifact.Artifact{}, 0, errors.New("Parchment metadata block must be the first Markdown block")
+			}
 		}
 		return artifact.Artifact{}, 0, fmt.Errorf("%w: it must be the first Markdown block", ErrMetadataMissing)
 	}

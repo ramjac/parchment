@@ -58,9 +58,12 @@ func TestReadMetadataDistinguishesMissingFromInvalidEnvelope(t *testing.T) {
 		errors.Is(err, ErrMetadataMissing) {
 		t.Fatalf("invalid metadata error = %v", err)
 	}
-	if _, err := ReadMetadata([]byte("```parchment-note\n{}\n```\n")); err == nil ||
+	if _, err := ReadMetadata([]byte("```parchment-note\n{}\n```\n")); !errors.Is(err, ErrMetadataMissing) {
+		t.Fatalf("non-metadata leading fence error = %v", err)
+	}
+	if _, err := ReadMetadata([]byte("```parchment-meta extra\n{}\n```\n")); err == nil ||
 		errors.Is(err, ErrMetadataMissing) {
-		t.Fatalf("misordered metadata error = %v", err)
+		t.Fatalf("malformed metadata opening error = %v", err)
 	}
 }
 
