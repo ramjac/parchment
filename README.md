@@ -22,6 +22,21 @@ requires pull requests and both checks to pass before merging.
 
 ## Quick start
 
+Open an existing Markdown file directly; this does not require a workspace and
+saves edits back to the same plain Markdown file without adding Parchment
+metadata:
+
+```sh
+go run ./cmd/parchment mydoc.md
+```
+
+When a workspace note or document starts with a valid `parchment-meta` block,
+Parchment locates its workspace and opens the matching artifact screen. Plain
+Markdown files open in the single-file Notes screen. Other artifact kinds do
+not yet have an interactive screen.
+
+Workspace-backed notes can also be managed from the CLI:
+
 ```sh
 go run ./cmd/parchment init ~/Documents/parchment
 go run ./cmd/parchment --workspace ~/Documents/parchment note create "First note" \
@@ -256,7 +271,6 @@ This repository currently implements notes, documents, basic spreadsheets,
 and basic Markdown presentations.
 The broader suite is planned to add:
 
-- Change basic usage expectations. Don't expect or require a parchment workspace. Expect typical usage to be a command like "parchment mydoc.md". That should open the Markdown file in the parchment TUI. If it is a parchment artifact according to a "parchment-meta" code block at the top, then the artifact specific TUI will be used. Otherwise, by default, the Notes TUI will be used.
 - Background auto-save and recovery from auto-save so that in the event Parchment crashes or is force closed, any changes since the last save can be optionally recovered.
 - Read and work with plain Markdown files that lack Parchment metadata, without
   adding `parchment-meta` or other `parchment-*` blocks to them. Provide an

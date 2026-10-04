@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +40,70 @@ func TestResponsiveMinimumAndHelpModal(t *testing.T) {
 	model = *updated.(*Model)
 	if model.mode != browsing || !strings.Contains(model.View(), "Close help") {
 		t.Fatalf("help overlay did not retain focus: mode=%d view=%q", model.mode, model.View())
+	}
+}
+
+func TestSingleMarkdownFileModeEditsBodyOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "garden.md")
+	if err := os.WriteFile(path, []byte("# Garden\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repository, err := workspace.OpenMarkdownFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := note.NewService(repository, 10)
+	items, err := service.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := items[0]
+	model := NewModel(service, repository, "garden.md", path, WithSingleMarkdownFile())
+	model.width, model.height = 90, 24
+	updated, _ := model.Update(notesLoadedMsg{notes: []note.Note{item}})
+	model = *updated.(*Model)
+	if !model.showPreview || !strings.Contains(model.View(), "# Garden") || strings.Contains(model.View(), "Notes (") {
+		t.Fatalf("single-file initial view = %q", model.View())
+	}
+	if !model.startEdit(item) || !model.bodyInput.Focused() {
+		t.Fatal("single-file editor did not focus Markdown body")
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("!")})
+	model = *updated.(*Model)
+	if model.bodyInput.Value() != "# Garden\n!" || model.titleInput.Value() != item.Title {
+		t.Fatalf("editor values = title %q, body %q", model.titleInput.Value(), model.bodyInput.Value())
+	}
+	result := model.saveNote()().(noteSavedMsg)
+	if result.err != nil {
+		t.Fatalf("save plain Markdown file: %v", result.err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "# Garden\n!" {
+		t.Fatalf("plain file content = %q", data)
+	}
+}
+
+func TestInitialNoteOptionSelectsAndPreviewsNote(t *testing.T) {
+	ws := openTestWorkspace(t)
+	service := note.NewService(ws, 10)
+	first, err := service.Create(context.Background(), "First", "First body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := service.Create(context.Background(), "Target", "Target body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(service, ws, "test", ws.Root(), WithInitialNote(target.ID))
+	message := model.Init()()
+	updated, _ := model.Update(message)
+	model = *updated.(*Model)
+	selected, ok := model.selectedNote()
+	if !ok || selected.ID != target.ID || !model.showPreview {
+		t.Fatalf("initial note selection = %+v, preview=%t (first note %s)", selected, model.showPreview, first.ID)
 	}
 }
 

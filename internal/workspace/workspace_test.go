@@ -247,6 +247,82 @@ func TestWorkspaceUsesConfiguredArtifactDirectory(t *testing.T) {
 	}
 }
 
+func TestOpenMarkdownFileEditsPlainMarkdownWithoutEnvelope(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "garden.md")
+	if err := os.WriteFile(path, []byte("# Garden\n\nBefore.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repository, err := OpenMarkdownFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := note.NewService(repository, 10)
+	current, err := service.Get(context.Background(), repository.item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := service.UpdateExpected(context.Background(), current, current.Title, "# Garden\n\nAfter.\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Location != filepath.ToSlash(path) {
+		t.Fatalf("Markdown file location = %q, want %q", updated.Location, filepath.ToSlash(path))
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != updated.Body {
+		t.Fatalf("file content = %q, want %q", data, updated.Body)
+	}
+	if _, err := artifactfile.ReadMetadata(data); !errors.Is(err, artifactfile.ErrMetadataMissing) {
+		t.Fatalf("plain Markdown gained Parchment metadata: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("file mode = %v, want 0600", info.Mode().Perm())
+	}
+	if _, err := service.Undo(context.Background()); err != nil {
+		t.Fatalf("undo file edit: %v", err)
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "# Garden\n\nBefore.\n" {
+		t.Fatalf("file after undo = %q", data)
+	}
+	if _, err := service.Redo(context.Background()); err != nil {
+		t.Fatalf("redo file edit: %v", err)
+	}
+}
+
+func TestMarkdownFileRejectsExternalChanges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "garden.md")
+	if err := os.WriteFile(path, []byte("before\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repository, err := OpenMarkdownFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := repository.Get(context.Background(), repository.item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("external edit\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := current
+	target.Body = "Parchment edit\n"
+	if err := repository.Transition(context.Background(), current.ID, &current, &target); err == nil {
+		t.Fatal("save overwrote an external Markdown edit")
+	}
+}
+
 func TestWorkspaceRejectsUnsafeIDsAndLocations(t *testing.T) {
 	ws := openTestWorkspace(t, t.TempDir())
 	if _, err := ws.Get(context.Background(), "../outside"); err != note.ErrNotFound {

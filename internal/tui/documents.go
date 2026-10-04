@@ -104,6 +104,7 @@ type documentsScreen struct {
 	mode              documentMode
 	documents         []document.Document
 	selected          int
+	initialDocumentID string
 	showPreview       bool
 	showChanges       bool
 	changesDocumentID string
@@ -190,6 +191,7 @@ func (s *documentsScreen) update(message tea.Msg) (tea.Cmd, bool) {
 		} else {
 			s.errMessage = ""
 			s.documents = msg.documents
+			s.selectInitialDocument()
 			s.clampSelection()
 			s.refreshPreview()
 		}
@@ -615,6 +617,20 @@ func (s *documentsScreen) selectedDocument() (document.Document, bool) {
 
 func (s *documentsScreen) clampSelection() {
 	s.selected = max(min(s.selected, len(s.documents)-1), 0)
+}
+
+func (s *documentsScreen) selectInitialDocument() {
+	if s.initialDocumentID == "" {
+		return
+	}
+	for i, item := range s.documents {
+		if item.ID == s.initialDocumentID {
+			s.selected = i
+			s.showPreview = true
+			break
+		}
+	}
+	s.initialDocumentID = ""
 }
 
 // refreshPreview paginates the selected document for the print preview.

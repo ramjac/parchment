@@ -11,6 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/artifactfile"
 	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/note"
@@ -32,9 +34,16 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "parchment",
 		Short:         "A local-first productivity workspace",
-		Example:       "  parchment init ~/Documents/work\n  parchment --workspace ~/Documents/work note create \"First note\"\n  parchment search project",
+		Example:       "  parchment mydoc.md\n  parchment init ~/Documents/work\n  parchment --workspace ~/Documents/work note create \"First note\"\n  parchment search project",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return cmd.Help()
+			}
+			return openMarkdownFile(cmd, args[0])
+		},
 	}
 	root.SetOut(stdout)
 	root.SetErr(stderr)
@@ -215,6 +224,78 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 		},
 	})
 	return root
+}
+
+func openMarkdownFile(cmd *cobra.Command, path string) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve Markdown file path: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return fmt.Errorf("resolve Markdown file: %w", err)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return fmt.Errorf("inspect Markdown file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("Markdown file %s is not a regular file", resolved)
+	}
+	file, err := os.Open(resolved)
+	if err != nil {
+		return fmt.Errorf("open Markdown file: %w", err)
+	}
+	metadata, metadataErr := artifactfile.ReadMetadataFrom(file)
+	closeErr := file.Close()
+	if metadataErr != nil && !errors.Is(metadataErr, artifactfile.ErrMetadataMissing) {
+		return metadataErr
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close Markdown file: %w", closeErr)
+	}
+	if errors.Is(metadataErr, artifactfile.ErrMetadataMissing) {
+		repository, err := workspace.OpenMarkdownFile(resolved)
+		if err != nil {
+			return err
+		}
+		return tui.Run(cmd.Context(), note.NewService(repository, 100), repository,
+			filepath.Base(resolved), resolved, tui.WithSingleMarkdownFile())
+	}
+
+	workspacePath, err := workspace.Find(filepath.Dir(resolved))
+	if err != nil {
+		return fmt.Errorf("open Parchment artifact: %w", err)
+	}
+	if err := workspace.ValidateMarker(workspacePath); err != nil {
+		return err
+	}
+	userPath, err := config.UserConfigPath()
+	if err != nil {
+		return err
+	}
+	settings, err := config.Load(userPath, filepath.Join(workspacePath, "parchment.toml"))
+	if err != nil {
+		return err
+	}
+	ws, err := workspace.OpenWithArtifactDir(workspacePath, settings.ArtifactDir)
+	if err != nil {
+		return err
+	}
+	expectedPath := filepath.Join(workspacePath, filepath.FromSlash(ws.ArtifactLocation(metadata.ID)))
+	if filepath.Clean(expectedPath) != filepath.Clean(resolved) {
+		return fmt.Errorf("Parchment artifact %s is not stored at its declared workspace location", metadata.ID)
+	}
+	switch metadata.Kind {
+	case artifact.NoteKind:
+		return tui.Run(cmd.Context(), note.NewService(ws, settings.UndoLimit), ws, ws.Name(), ws.Root(),
+			tui.WithDocuments(document.NewService(ws, settings.UndoLimit)), tui.WithInitialNote(metadata.ID))
+	case artifact.DocumentKind:
+		return tui.Run(cmd.Context(), note.NewService(ws, settings.UndoLimit), ws, ws.Name(), ws.Root(),
+			tui.WithDocuments(document.NewService(ws, settings.UndoLimit)), tui.WithInitialDocument(metadata.ID))
+	default:
+		return fmt.Errorf("the interactive TUI does not support %s artifacts yet", metadata.Kind)
+	}
 }
 
 func quoteFields(values []string) string {

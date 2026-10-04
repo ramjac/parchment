@@ -56,6 +56,27 @@ func newDocumentsModel(t *testing.T) (*Model, *document.Service) {
 	return m, docs
 }
 
+func TestInitialDocumentOptionOpensMatchingDocument(t *testing.T) {
+	ws := openTestWorkspace(t)
+	service := document.NewService(ws, 10)
+	created, err := service.Create(context.Background(), document.Draft{Title: "Target", Body: "Target body"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root(),
+		WithDocuments(service), WithInitialDocument(created.ID))
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	model = *updated.(*Model)
+	message := model.Init()()
+	updated, _ = model.Update(message)
+	model = *updated.(*Model)
+	selected, ok := model.documents.selectedDocument()
+	if !model.documentsActive || !ok || selected.ID != created.ID || !model.documents.showPreview {
+		t.Fatalf("initial document state = active %t, selected %q, preview %t",
+			model.documentsActive, selected.ID, model.documents.showPreview)
+	}
+}
+
 func TestDocumentEditorHasToolbarAndSavesLayout(t *testing.T) {
 	m, docs := newDocumentsModel(t)
 	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
