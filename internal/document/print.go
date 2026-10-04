@@ -303,6 +303,7 @@ func runningLine(spec string, width int) string {
 
 var (
 	headingRE   = regexp.MustCompile(`^(#{1,6})\s+(.*?)(?:\s+#+)?$`)
+	setextRE    = regexp.MustCompile(`^(?:=+|-+)\s*$`)
 	ruleRE      = regexp.MustCompile(`^(?:\*\s*){3,}$|^(?:-\s*){3,}$|^(?:_\s*){3,}$`)
 	listItemRE  = regexp.MustCompile(`^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$`)
 	quoteRE     = regexp.MustCompile(`^>\s?(.*)$`)
@@ -354,6 +355,30 @@ func formatBlocks(lines []string, width int, marks *[]headMark) []string {
 			out = append(out, "")
 		}
 	}
+	heading := func(level int, raw string) {
+		blank()
+		text := inlineText(raw)
+		if marks != nil {
+			*marks = append(*marks, headMark{line: len(out), level: level, title: text})
+		}
+		if level == 1 {
+			text = strings.ToUpper(text)
+		}
+		wrapped := wrap(text, width, "", "")
+		out = append(out, wrapped...)
+		if level <= 2 {
+			longest := 0
+			for _, w := range wrapped {
+				longest = max(longest, runewidth.StringWidth(w))
+			}
+			underline := "="
+			if level == 2 {
+				underline = "-"
+			}
+			out = append(out, strings.Repeat(underline, longest))
+		}
+		blank()
+	}
 	fence := ""
 	for _, raw := range lines {
 		line := strings.TrimRight(strings.ReplaceAll(raw, "\t", "    "), " \r")
@@ -378,31 +403,18 @@ func formatBlocks(lines []string, width int, marks *[]headMark) []string {
 			flush()
 			blank()
 		case commentRE.MatchString(trimmed):
+		case p.active && !p.quote && p.first == "" && setextRE.MatchString(trimmed):
+			level := 1
+			if trimmed[0] == '-' {
+				level = 2
+			}
+			title := strings.Join(p.text, " ")
+			p = paragraph{}
+			heading(level, title)
 		case headingRE.MatchString(trimmed):
 			flush()
-			blank()
 			match := headingRE.FindStringSubmatch(trimmed)
-			text := inlineText(match[2])
-			if marks != nil {
-				*marks = append(*marks, headMark{line: len(out), level: len(match[1]), title: text})
-			}
-			if len(match[1]) == 1 {
-				text = strings.ToUpper(text)
-			}
-			wrapped := wrap(text, width, "", "")
-			out = append(out, wrapped...)
-			if len(match[1]) <= 2 {
-				longest := 0
-				for _, w := range wrapped {
-					longest = max(longest, runewidth.StringWidth(w))
-				}
-				underline := "="
-				if len(match[1]) == 2 {
-					underline = "-"
-				}
-				out = append(out, strings.Repeat(underline, longest))
-			}
-			blank()
+			heading(len(match[1]), match[2])
 		case ruleRE.MatchString(trimmed):
 			flush()
 			blank()

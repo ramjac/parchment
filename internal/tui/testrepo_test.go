@@ -66,6 +66,15 @@ func cloneNote(n note.Note) note.Note {
 	return out
 }
 
+// DocumentID is runtime-only and excluded from JSON, so it is restored.
+func cloneChanges(changes []document.Change) []document.Change {
+	out := cloneValue(changes)
+	for i := range out {
+		out[i].DocumentID = changes[i].DocumentID
+	}
+	return out
+}
+
 func cloneDocument(d document.Document) document.Document {
 	out := cloneValue(d)
 	out.Blocks = cloneBlocks(d.Blocks)
@@ -205,7 +214,7 @@ func (r *memoryRepository) transitionDocument(
 	}
 	r.documents[id] = cloneDocument(*target)
 	if changes != nil {
-		r.changes[id] = cloneValue(*changes)
+		r.changes[id] = cloneChanges(*changes)
 	}
 	return nil
 }
@@ -220,7 +229,7 @@ func (r *memoryRepository) DeleteDocument(ctx context.Context, id string, expect
 	if !document.Equal(current, expected) {
 		return nil, fmt.Errorf("document %s changed since this operation was recorded", id)
 	}
-	changes := cloneValue(r.changes[id])
+	changes := cloneChanges(r.changes[id])
 	delete(r.documents, id)
 	delete(r.changes, id)
 	return changes, ctx.Err()
@@ -232,7 +241,7 @@ func (r *memoryRepository) ListDocumentChanges(ctx context.Context, id string) (
 	if _, ok := r.documents[id]; !ok {
 		return nil, document.ErrNotFound
 	}
-	return cloneValue(r.changes[id]), ctx.Err()
+	return cloneChanges(r.changes[id]), ctx.Err()
 }
 
 func (r *memoryRepository) ProposeDocumentChange(ctx context.Context, id string, expected document.Document, change document.Change) error {
@@ -259,7 +268,7 @@ func (r *memoryRepository) ProposeDocumentChange(ctx context.Context, id string,
 			return errors.New("resolve the existing document change before proposing another")
 		}
 	}
-	r.changes[id] = append(r.changes[id], cloneValue(change))
+	r.changes[id] = append(r.changes[id], cloneChanges([]document.Change{change})[0])
 	return ctx.Err()
 }
 
@@ -298,7 +307,7 @@ func (r *memoryRepository) TransitionDocumentChange(
 		}
 		r.documents[id] = cloneDocument(*targetDocument)
 	}
-	r.changes[id][index] = cloneValue(target)
+	r.changes[id][index] = cloneChanges([]document.Change{target})[0]
 	return ctx.Err()
 }
 

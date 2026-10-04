@@ -242,3 +242,48 @@ func TestOpenDocumentFileRejectsOtherArtifacts(t *testing.T) {
 		t.Fatal("opened a directory")
 	}
 }
+
+func TestStandaloneDocumentWithProposalsSurvivesRename(t *testing.T) {
+	ctx := context.Background()
+	path := standaloneDocumentPath(t)
+	repository, err := OpenDocumentFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := document.NewService(repository, 10)
+	items, err := service.List(ctx)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("list = %v, %v", items, err)
+	}
+	before, err := service.Get(ctx, items[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := document.Draft{Title: before.Title, Body: before.Body + "\nMore.\n", Layout: before.Layout, Images: before.Images}
+	if _, err := service.Propose(ctx, before, "Add more", draft); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "document_id") {
+		t.Fatal("proposal persisted a runtime document ID")
+	}
+	moved := filepath.Join(t.TempDir(), "renamed.md")
+	if err := os.WriteFile(moved, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenDocumentFile(moved)
+	if err != nil {
+		t.Fatalf("moved document with proposals did not open: %v", err)
+	}
+	listed, err := reopened.ListDocuments(ctx)
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("list moved = %v, %v", listed, err)
+	}
+	changes, err := reopened.ListDocumentChanges(ctx, listed[0].ID)
+	if err != nil || len(changes) != 1 || changes[0].DocumentID != listed[0].ID {
+		t.Fatalf("moved changes = %+v, %v", changes, err)
+	}
+}

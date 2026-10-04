@@ -53,3 +53,20 @@ func TestOutlineEmptyDocument(t *testing.T) {
 		t.Fatalf("sections=%v err=%v", sections, err)
 	}
 }
+
+func TestOutlineIncludesSetextHeadings(t *testing.T) {
+	d := Document{Body: "Short title\n-----------\n\ntext\n\nBig title\n=========\n\n- item\n\n---\n", Layout: DefaultLayout()}
+	sections, err := Outline(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sections) != 2 || sections[0].Level != 2 || sections[0].Title != "Short title" ||
+		sections[1].Level != 1 || sections[1].Title != "Big title" {
+		t.Fatalf("sections = %+v", sections)
+	}
+	pages, _ := Paginate(d)
+	text := strings.Join(pages[0].Lines, "\n")
+	if !strings.Contains(text, "BIG TITLE") || !strings.Contains(text, "=========") {
+		t.Fatalf("setext heading not rendered as a heading:\n%s", text)
+	}
+}

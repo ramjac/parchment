@@ -145,3 +145,27 @@ func TestNoteEditorShowsCursorAwayFromTextEnd(t *testing.T) {
 		t.Fatalf("cursor at line %d is not visible in the editor view", model.bodyInput.Line())
 	}
 }
+
+func TestPlaceTextareaCursorWithGrowingLineNumbers(t *testing.T) {
+	editor := textarea.New()
+	editor.Prompt = ""
+	editor.ShowLineNumbers = true
+	editor.MaxHeight = 0
+	editor.SetWidth(30)
+	editor.SetHeight(14)
+	lines := make([]string, 12)
+	for i := range lines {
+		lines[i] = "abcdef"
+	}
+	editor.SetValue(strings.Join(lines, "\n"))
+	editor.Focus()
+	editor.View()
+	// Line 12 has a two-digit number, so its text starts one column later.
+	if !placeTextareaCursor(&editor, 6, 11) {
+		t.Fatal("click on a two-digit line was ignored")
+	}
+	editor.InsertString("!")
+	if got := strings.Split(editor.Value(), "\n")[11]; got != "ab!cdef" {
+		t.Fatalf("click on line 12 inserted at %q", got)
+	}
+}

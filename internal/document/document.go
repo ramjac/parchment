@@ -59,7 +59,7 @@ const (
 // until the proposal is accepted.
 type Change struct {
 	ID          string         `json:"id"`
-	DocumentID  string         `json:"document_id"`
+	DocumentID  string         `json:"-"` // bound to the open document's runtime ID, never persisted
 	Description string         `json:"description"`
 	CreatedAt   time.Time      `json:"created_at"`
 	ResolvedAt  *time.Time     `json:"resolved_at,omitempty"`

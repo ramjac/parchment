@@ -358,6 +358,9 @@ func decodeDocumentContent(content []byte, withImages bool, id string) (document
 	if err := payload.Layout.Validate(); err != nil {
 		return document.Document{}, nil, fmt.Errorf("validate document layout %s: %w", id, err)
 	}
+	for i := range payload.Changes {
+		payload.Changes[i].DocumentID = id
+	}
 	if err := validateDocumentChanges(id, payload.Changes); err != nil {
 		return document.Document{}, nil, fmt.Errorf("validate document changes %s: %w", id, err)
 	}

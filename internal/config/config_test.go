@@ -40,11 +40,15 @@ func TestUserConfigPathUsesPerUserParchmentTOML(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("APPDATA", home)
 	t.Setenv("XDG_CONFIG_HOME", home)
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		t.Skipf("no user config directory: %v", err)
+	}
 	path, err := UserConfigPath()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if path != filepath.Join(home, "parchment", "parchment.toml") {
+	if path != filepath.Join(dir, "parchment", "parchment.toml") {
 		t.Fatalf("user config path = %q", path)
 	}
 }

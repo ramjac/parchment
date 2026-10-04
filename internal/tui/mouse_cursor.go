@@ -56,7 +56,13 @@ func placeTextareaCursor(editor *textarea.Model, x, y int) bool {
 	info := editor.LineInfo()
 	gutter := runewidth.StringWidth(editor.Prompt)
 	if editor.ShowLineNumbers {
-		gutter += len(strconv.Itoa(editor.MaxHeight)) + 2
+		// Bubbles pads numbers to the digits of MaxHeight but lets longer
+		// numbers expand; wrapped continuation rows keep the padded width.
+		digits := len(strconv.Itoa(editor.MaxHeight))
+		if info.RowOffset == 0 {
+			digits = max(digits, len(strconv.Itoa(editor.Line()+1)))
+		}
+		gutter += digits + 2
 	}
 	column := max(x-gutter, 0)
 	source := []rune(strings.Split(editor.Value(), "\n")[editor.Line()])
