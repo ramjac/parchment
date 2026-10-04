@@ -29,12 +29,34 @@ func Paginate(d Document) ([]Page, error) {
 	if err != nil {
 		return nil, err
 	}
-	bodies := paginateBody(d.Body, d.Layout.Columns, g.TextCols, g.BodyRows())
+	bodies := paginateBody(d.Body, d.Layout.Columns, g.TextCols, g.BodyRows(), nil)
 	pages := make([]Page, len(bodies))
 	for i, rows := range bodies {
 		pages[i] = Page{Number: i + 1, Lines: composePage(d, g, rows, i+1, len(bodies))}
 	}
 	return pages, nil
+}
+
+// Section is one heading in a document and the page it is printed on.
+type Section struct {
+	Level int
+	Title string
+	Page  int
+}
+
+// Outline lists the document's headings with the page each one lands on, in
+// the same layout Paginate produces.
+func Outline(d Document) ([]Section, error) {
+	if err := d.Layout.Validate(); err != nil {
+		return nil, err
+	}
+	g, err := d.Layout.Geometry()
+	if err != nil {
+		return nil, err
+	}
+	var sections []Section
+	paginateBody(d.Body, d.Layout.Columns, g.TextCols, g.BodyRows(), &sections)
+	return sections, nil
 }
 
 // Print renders every page as text with a form feed between pages, ready to
@@ -59,7 +81,13 @@ func clampColumns(columns, textCols int) int {
 	return columns
 }
 
-func paginateBody(body string, defaultColumns, textCols, bodyRows int) [][]string {
+type headMark struct {
+	line  int
+	level int
+	title string
+}
+
+func paginateBody(body string, defaultColumns, textCols, bodyRows int, sections *[]Section) [][]string {
 	var pages [][]string
 	var current []string
 	pendingBreaks := 0
@@ -70,7 +98,21 @@ func paginateBody(body string, defaultColumns, textCols, bodyRows int) [][]strin
 	for _, r := range splitRuns(body, defaultColumns) {
 		columns := clampColumns(r.columns, textCols)
 		width := ColumnWidth(textCols, columns)
-		flat := trimBlankEnds(formatBlocks(r.lines, width))
+		var marks []headMark
+		raw := formatBlocks(r.lines, width, &marks)
+		flat := trimBlankEnds(raw)
+		pos := 0 // index of flat[0] within raw
+		for pos < len(raw) && raw[pos] == "" {
+			pos++
+		}
+		record := func(consumed int) {
+			for len(marks) > 0 && marks[0].line < pos+consumed {
+				if sections != nil {
+					*sections = append(*sections, Section{Level: marks[0].level, Title: marks[0].title, Page: len(pages) + 1})
+				}
+				marks = marks[1:]
+			}
+		}
 		if len(flat) > 0 {
 			for ; pendingBreaks > 0; pendingBreaks-- {
 				newPage()
@@ -84,6 +126,7 @@ func paginateBody(body string, defaultColumns, textCols, bodyRows int) [][]strin
 					newPage()
 				}
 				if len(current) == 0 {
+					pos += leadingBlanks(flat)
 					flat = trimBlankEnds(flat)
 					if len(flat) == 0 {
 						break
@@ -98,6 +141,8 @@ func paginateBody(body string, defaultColumns, textCols, bodyRows int) [][]strin
 					height = (n + columns - 1) / columns
 				}
 				current = append(current, columnRows(chunk, columns, width, height)...)
+				pos += n
+				record(0)
 			}
 		}
 		if r.end == pageBreak || (r.end == sectionBreak && !r.continuous) {
@@ -108,6 +153,14 @@ func paginateBody(body string, defaultColumns, textCols, bodyRows int) [][]strin
 		pages = append(pages, current)
 	}
 	return pages
+}
+
+func leadingBlanks(lines []string) int {
+	n := 0
+	for n < len(lines) && lines[n] == "" {
+		n++
+	}
+	return n
 }
 
 func trimBlankEnds(lines []string) []string {
@@ -287,7 +340,7 @@ type paragraph struct {
 }
 
 // formatBlocks converts Markdown lines to plain text wrapped to width.
-func formatBlocks(lines []string, width int) []string {
+func formatBlocks(lines []string, width int, marks *[]headMark) []string {
 	var out []string
 	var p paragraph
 	flush := func() {
@@ -330,6 +383,9 @@ func formatBlocks(lines []string, width int) []string {
 			blank()
 			match := headingRE.FindStringSubmatch(trimmed)
 			text := inlineText(match[2])
+			if marks != nil {
+				*marks = append(*marks, headMark{line: len(out), level: len(match[1]), title: text})
+			}
 			if len(match[1]) == 1 {
 				text = strings.ToUpper(text)
 			}

@@ -213,9 +213,6 @@ func (w *Workspace) readPresentationUnlocked(id string) (presentation.Presentati
 	if err != nil {
 		return presentation.Presentation{}, fmt.Errorf("read presentation metadata %s: %w", id, err)
 	}
-	if metadata.ID != id {
-		return presentation.Presentation{}, fmt.Errorf("invalid presentation metadata for %s", id)
-	}
 	if metadata.Kind != artifact.PresentationKind {
 		return presentation.Presentation{}, presentation.ErrNotFound
 	}
@@ -223,8 +220,7 @@ func (w *Workspace) readPresentationUnlocked(id string) (presentation.Presentati
 	if err != nil {
 		return presentation.Presentation{}, fmt.Errorf("decode presentation %s: %w", id, err)
 	}
-	if item.ID != id || item.Location != filepath.ToSlash(filepath.Join(w.artifactDir, id, presentationName)) {
-		return presentation.Presentation{}, fmt.Errorf("invalid presentation metadata for %s", id)
-	}
+	item.ID = id
+	item.Location = filepath.ToSlash(filepath.Join(w.artifactDir, id, presentationName))
 	return item, nil
 }

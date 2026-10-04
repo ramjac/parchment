@@ -124,15 +124,14 @@ func (s *Service) Create(ctx context.Context, title, source string) (Presentatio
 
 // Update replaces the presentation source if expected still matches storage.
 func (s *Service) Update(ctx context.Context, expected Presentation, source string) (Presentation, error) {
-	deck, err := Parse(source)
+	_, err := Parse(source)
 	if err != nil {
 		return Presentation{}, err
 	}
-	if expected.Source == source && expected.Title == deck.Title {
+	if expected.Source == source {
 		return expected, nil
 	}
 	after := clonePresentation(expected)
-	after.Title = deck.Title
 	after.Source = source
 	after.ModifiedAt = s.now().UTC()
 	if err := Validate(after); err != nil {
@@ -436,12 +435,9 @@ func Validate(item Presentation) error {
 	if !utf8.ValidString(item.Source) {
 		return errors.New("presentation source must be valid UTF-8")
 	}
-	deck, err := Parse(item.Source)
+	_, err := Parse(item.Source)
 	if err != nil {
 		return err
-	}
-	if deck.Title != item.Title {
-		return errors.New("presentation metadata title does not match Markdown title")
 	}
 	return nil
 }
@@ -548,6 +544,7 @@ func cloneBlocksExcept(blocks map[string]json.RawMessage, excluded ...string) ma
 }
 
 func Equal(left, right Presentation) bool {
+	left.Title, right.Title = "", ""
 	if len(left.Tags) == 0 {
 		left.Tags = nil
 	}

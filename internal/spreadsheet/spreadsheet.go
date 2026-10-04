@@ -117,9 +117,6 @@ func (s *Service) Get(ctx context.Context, id string) (Spreadsheet, error) {
 
 func (s *Service) Create(ctx context.Context, title string, rows [][]Cell) (Spreadsheet, error) {
 	title = strings.TrimSpace(title)
-	if title == "" {
-		return Spreadsheet{}, errors.New("spreadsheet title is required")
-	}
 	id, err := artifact.NewID(artifact.SpreadsheetKind)
 	if err != nil {
 		return Spreadsheet{}, err
@@ -272,9 +269,6 @@ func Normalize(book *Spreadsheet) error {
 	}
 	if book.Kind != artifact.SpreadsheetKind {
 		return errors.New("artifact is not a spreadsheet")
-	}
-	if !utf8.ValidString(book.Title) {
-		return errors.New("spreadsheet title must be valid UTF-8")
 	}
 	book.CreatedAt = book.CreatedAt.UTC()
 	book.ModifiedAt = book.ModifiedAt.UTC()
@@ -446,6 +440,7 @@ func (o spreadsheetOperation) transition(ctx context.Context, expected, target *
 
 // Equal reports whether two spreadsheets have the same persisted value.
 func Equal(left, right Spreadsheet) bool {
+	left.Title, right.Title = "", ""
 	if len(left.Tags) == 0 {
 		left.Tags = nil
 	}

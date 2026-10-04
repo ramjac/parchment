@@ -42,7 +42,6 @@ type Draft struct {
 // ChangeSnapshot captures the editable document fields without duplicating
 // embedded image data in the change log.
 type ChangeSnapshot struct {
-	Title      string   `json:"title"`
 	Body       string   `json:"body"`
 	Layout     Layout   `json:"layout"`
 	ImageNames []string `json:"images,omitempty"`
@@ -113,7 +112,7 @@ func (s *Service) Get(ctx context.Context, id string) (Document, error) {
 	return s.repository.GetDocument(ctx, id)
 }
 
-// Propose records a title, Markdown, or layout edit for later review without
+// Propose records a Markdown or layout edit for later review without
 // changing the live document. Proposals may retain or remove embedded images,
 // but cannot add or replace their data.
 func (s *Service) Propose(ctx context.Context, before Document, description string, draft Draft) (Change, error) {
@@ -292,11 +291,8 @@ func validChangeID(id string) bool {
 }
 
 func validateSnapshot(s ChangeSnapshot) error {
-	if !utf8.ValidString(s.Title) || !utf8.ValidString(s.Body) {
+	if !utf8.ValidString(s.Body) {
 		return errors.New("document snapshot text must be valid UTF-8")
-	}
-	if strings.TrimSpace(s.Title) == "" {
-		return errors.New("title is required")
 	}
 	if err := s.Layout.Validate(); err != nil {
 		return err
@@ -312,7 +308,7 @@ func validateSnapshot(s ChangeSnapshot) error {
 }
 
 func snapshot(d Document) ChangeSnapshot {
-	result := ChangeSnapshot{Title: d.Title, Body: d.Body, Layout: d.Layout}
+	result := ChangeSnapshot{Body: d.Body, Layout: d.Layout}
 	for _, img := range d.Images {
 		result.ImageNames = append(result.ImageNames, img.Name)
 	}
@@ -336,7 +332,7 @@ func sameSnapshot(left, right ChangeSnapshot) bool {
 }
 
 func applySnapshot(d *Document, s ChangeSnapshot) {
-	d.Title, d.Body, d.Layout = s.Title, s.Body, s.Layout
+	d.Body, d.Layout = s.Body, s.Layout
 	wanted := make(map[string]bool, len(s.ImageNames))
 	for _, name := range s.ImageNames {
 		wanted[name] = true
@@ -390,14 +386,6 @@ func (s *Service) Modify(ctx context.Context, id, description string, edit func(
 		return Document{}, err
 	}
 	return s.apply(ctx, before, description, edit)
-}
-
-// Rename changes a document's title without changing its ID.
-func (s *Service) Rename(ctx context.Context, id, title string) (Document, error) {
-	return s.Modify(ctx, id, "Rename document", func(d *Document) error {
-		d.Title = title
-		return nil
-	})
 }
 
 // SetLayout replaces the page layout.
@@ -498,7 +486,6 @@ func WithImage(d Document, img Image) Document {
 }
 
 func applyDraft(d *Document, draft Draft) {
-	d.Title = draft.Title
 	d.Body = draft.Body
 	d.Layout = draft.Layout
 	d.Images = draft.Images
@@ -526,12 +513,8 @@ func (s *Service) apply(ctx context.Context, expected Document, description stri
 // normalize validates a document and prunes images that the body no longer
 // references, so the artifact directory holds only images in use.
 func normalize(d *Document) error {
-	d.Title = strings.TrimSpace(d.Title)
-	if !utf8.ValidString(d.Title) || !utf8.ValidString(d.Body) {
-		return errors.New("document title and body must be valid UTF-8")
-	}
-	if d.Title == "" {
-		return errors.New("document title is required")
+	if !utf8.ValidString(d.Body) {
+		return errors.New("document body must be valid UTF-8")
 	}
 	if err := d.Layout.Validate(); err != nil {
 		return err
@@ -551,7 +534,14 @@ func normalize(d *Document) error {
 	}
 	sort.Slice(images, func(i, j int) bool { return images[i].Name < images[j].Name })
 	d.Images = images
-	return d.Artifact.Validate()
+	return validateArtifact(d.Artifact)
+}
+
+func validateArtifact(a artifact.Artifact) error {
+	// The shared validator still requires its legacy title field; validate the
+	// rest of the envelope without populating the runtime title.
+	a.Title = "document"
+	return a.Validate()
 }
 
 func (s *Service) change(ctx context.Context, before, after *Document, description string) error {
@@ -663,6 +653,7 @@ func (o documentOperation) transition(ctx context.Context, expected, target *Doc
 
 // Equal reports whether two documents have the same persisted value.
 func Equal(left, right Document) bool {
+	left.Title, right.Title = "", ""
 	if len(left.Tags) == 0 {
 		left.Tags = nil
 	}

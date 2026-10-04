@@ -1,13 +1,10 @@
 ```parchment-meta
 {
-  "parchment_format": "parchment-single-file-v1",
-  "id": "n1",
+  "parchment_format": "parchment-single-file-v2",
   "kind": "note",
-  "title": "Trail observations",
+  "format_version": 2,
   "created_at": "2026-01-15T09:00:00Z",
-  "modified_at": "2026-01-15T09:00:00Z",
-  "format_version": 1,
-  "location": "parchment/artifacts/n1/content.md"
+  "modified_at": "2026-10-04T20:30:21.389582623Z"
 }
 ```
 
@@ -22,3 +19,4 @@ meadow, where the new footbridge is still needed.
 
 - Bring a camera on the next visit.
 - Ask the ranger about bridge materials.
+ [] Add checkbox functionality

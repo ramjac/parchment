@@ -18,15 +18,12 @@ const (
 
 // Settings is the fully resolved application configuration.
 type Settings struct {
-	Editor             string
-	Theme              string
-	UndoLimit          int
-	WorkspacePath      string
-	WorkspaceDiscovery string
-	ArtifactDir        string
-	LogLevel           string
-	LogFormat          string
-	LocalBackup        string
+	Editor      string
+	Theme       string
+	UndoLimit   int
+	LogLevel    string
+	LogFormat   string
+	LocalBackup string
 }
 
 type fileConfig struct {
@@ -34,11 +31,6 @@ type fileConfig struct {
 	Editor    *string `toml:"editor"`
 	Theme     *string `toml:"theme"`
 	UndoLimit *int    `toml:"undo_limit"`
-	Workspace struct {
-		Path        *string `toml:"path"`
-		Discovery   *string `toml:"discovery"`
-		ArtifactDir *string `toml:"artifact_dir"`
-	} `toml:"workspace"`
 	Logging struct {
 		Level  *string `toml:"level"`
 		Format *string `toml:"format"`
@@ -50,18 +42,14 @@ type fileConfig struct {
 	} `toml:"backup"`
 }
 
-// Load resolves user then workspace TOML, followed by environment overrides.
-func Load(userPath, workspacePath string) (Settings, error) {
+// Load resolves the per-user TOML file, followed by environment overrides.
+func Load(userPath string) (Settings, error) {
 	settings := Settings{
-		Editor: "vi", Theme: "adaptive", UndoLimit: 100, WorkspaceDiscovery: "parents",
-		ArtifactDir: DefaultArtifactDir,
+		Editor: "vi", Theme: "adaptive", UndoLimit: 100,
 		LogLevel:    "warn", LogFormat: "text",
 	}
-	for _, path := range []string{userPath, workspacePath} {
-		if path == "" {
-			continue
-		}
-		cfg, err := read(path)
+	if userPath != "" {
+		cfg, err := read(userPath)
 		if err != nil {
 			return Settings{}, err
 		}
@@ -71,14 +59,6 @@ func Load(userPath, workspacePath string) (Settings, error) {
 	if settings.UndoLimit < 1 || settings.UndoLimit > 10000 {
 		return Settings{}, errors.New("undo_limit must be between 1 and 10000")
 	}
-	if settings.WorkspaceDiscovery != "parents" && settings.WorkspaceDiscovery != "disabled" {
-		return Settings{}, fmt.Errorf("unsupported workspace discovery mode %q", settings.WorkspaceDiscovery)
-	}
-	artifactDir, err := ValidateArtifactDir(settings.ArtifactDir)
-	if err != nil {
-		return Settings{}, err
-	}
-	settings.ArtifactDir = artifactDir
 	return settings, nil
 }
 
@@ -98,7 +78,7 @@ func UserConfigPath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("find user config directory: %w", err)
 	}
-	return filepath.Join(dir, "parchment", "config.toml"), nil
+	return filepath.Join(dir, "parchment", "parchment.toml"), nil
 }
 
 func read(path string) (fileConfig, error) {
@@ -129,15 +109,6 @@ func apply(settings *Settings, cfg fileConfig) {
 	if cfg.UndoLimit != nil {
 		settings.UndoLimit = *cfg.UndoLimit
 	}
-	if cfg.Workspace.Path != nil {
-		settings.WorkspacePath = *cfg.Workspace.Path
-	}
-	if cfg.Workspace.Discovery != nil {
-		settings.WorkspaceDiscovery = *cfg.Workspace.Discovery
-	}
-	if cfg.Workspace.ArtifactDir != nil {
-		settings.ArtifactDir = *cfg.Workspace.ArtifactDir
-	}
 	if cfg.Logging.Level != nil {
 		settings.LogLevel = *cfg.Logging.Level
 	}
@@ -162,9 +133,6 @@ func applyEnvironment(settings *Settings) {
 		} else {
 			settings.UndoLimit = 0
 		}
-	}
-	if value, ok := os.LookupEnv("PARCHMENT_ARTIFACT_DIR"); ok {
-		settings.ArtifactDir = value
 	}
 	if value, ok := os.LookupEnv("PARCHMENT_LOG_LEVEL"); ok {
 		settings.LogLevel = strings.ToLower(value)

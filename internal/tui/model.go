@@ -88,6 +88,7 @@ type Model struct {
 	documents           *documentsScreen
 	documentsActive     bool
 	singleMarkdownFile  bool
+	singleDocumentFile  bool
 	initialNoteID       string
 }
 
@@ -123,6 +124,16 @@ func WithInitialDocument(id string) Option {
 		m.documentsActive = true
 		if m.documents != nil {
 			m.documents.initialDocumentID = id
+		}
+	}
+}
+
+// WithSingleDocumentFile keeps navigation and creation within one open document.
+func WithSingleDocumentFile() Option {
+	return func(m *Model) {
+		m.singleDocumentFile = true
+		if m.documents != nil {
+			m.documents.singleFile = true
 		}
 	}
 }
@@ -180,6 +191,23 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.resizeEditors()
 		m.resizePreview()
+	case tea.MouseMsg:
+		if m.mode == editing && !m.pending && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			bodyY := 3
+			if !m.singleMarkdownFile {
+				bodyY += 2
+				if msg.Y == 3 {
+					m.titleInput.SetCursor(max(msg.X-len(m.titleInput.Prompt), 0))
+					m.bodyInput.Blur()
+					return m, m.titleInput.Focus()
+				}
+			}
+			if placeTextareaCursor(&m.bodyInput, msg.X, msg.Y-bodyY) {
+				m.titleInput.Blur()
+				return m, m.bodyInput.Focus()
+			}
+		}
+		return m, nil
 	case notesLoadedMsg:
 		m.finishOperation()
 		m.pending = false
@@ -191,8 +219,19 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.selectInitialNote()
 			m.clampSelection()
 			m.resizePreview()
+			m.refreshHistoryAvailability()
+			if m.singleMarkdownFile {
+				if n, ok := m.selectedNote(); ok {
+					if !m.startEdit(n) {
+						return m, nil
+					}
+					return m, m.bodyInput.Focus()
+				}
+			}
 		}
-		m.refreshHistoryAvailability()
+		if msg.err != nil {
+			m.refreshHistoryAvailability()
+		}
 	case searchCompletedMsg:
 		m.finishOperation()
 		m.pending = false
@@ -221,10 +260,16 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.refreshHistoryAvailability()
-		m.mode = browsing
-		m.creating = false
 		m.errMessage = ""
 		m.status = "Saved “" + msg.note.Title + "”"
+		if m.singleMarkdownFile {
+			m.editingSnapshot = msg.note
+			m.originalTitle, m.originalBody = msg.note.Title, msg.note.Body
+			m.pending = false
+			return m, nil
+		}
+		m.mode = browsing
+		m.creating = false
 		return m, m.loadNotes()
 	case noteDeletedMsg:
 		m.finishOperation()
@@ -314,6 +359,15 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.mode == editing {
 		switch key {
 		case "esc":
+			if m.singleMarkdownFile {
+				if m.dirty() {
+					m.titleInput.SetValue(m.originalTitle)
+					m.bodyInput.SetValue(m.originalBody)
+					m.status = "Edit discarded"
+					return m, nil
+				}
+				return m, tea.Quit
+			}
 			m.mode = browsing
 			m.creating = false
 			m.status = "Edit cancelled"
@@ -468,7 +522,7 @@ func (m Model) View() string {
 		titleInput := m.titleInput
 		titleInput.SetValue(sanitizeTerminalLine(titleInput.Value()))
 		bodyInput := m.bodyInput
-		bodyInput.SetValue(sanitizeTerminalText(bodyInput.Value()))
+		sanitizeTextareaView(&bodyInput)
 		content := header + "\n" + state + "  ·  "
 		if m.singleMarkdownFile {
 			content += "Ctrl+S saves  ·  Esc cancels\n\n" + bodyInput.View()
@@ -828,6 +882,17 @@ func sanitizeTerminalText(value string) string {
 	}, value)
 }
 
+// sanitizeTextareaView replaces control characters in a view copy of editor.
+// SetValue moves the cursor to the end of the text, which would draw it away
+// from (or outside the scrolled view of) its real position, so it is skipped
+// when nothing needs replacing.
+func sanitizeTextareaView(editor *textarea.Model) {
+	value := editor.Value()
+	if sanitized := sanitizeTerminalText(value); sanitized != value {
+		editor.SetValue(sanitized)
+	}
+}
+
 // Run starts the full-screen terminal application.
 func Run(ctx context.Context, service *note.Service, repository note.Repository, workspaceName, workspacePath string, options ...Option) error {
 	model := NewModel(service, repository, workspaceName, workspacePath, options...)
@@ -837,7 +902,7 @@ func Run(ctx context.Context, service *note.Service, repository note.Repository,
 	if model.documents != nil {
 		model.documents.newOperationContext = model.newOperationContext
 	}
-	program := tea.NewProgram(&model, tea.WithAltScreen(), tea.WithContext(ctx))
+	program := tea.NewProgram(&model, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx))
 	_, err := program.Run()
 	return err
 }
@@ -855,6 +920,9 @@ func (m *Model) updateDocuments(message tea.Msg) (bool, tea.Cmd) {
 	}
 	cmd, leave := m.documents.update(message)
 	if leave && !m.documents.busy() {
+		if m.singleDocumentFile {
+			return true, tea.Quit
+		}
 		m.documentsActive = false
 		return true, m.loadNotes()
 	}

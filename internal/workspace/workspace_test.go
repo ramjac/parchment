@@ -94,7 +94,11 @@ func TestArtifactEditsPreserveAdditionalPayloadBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	addTestPayloadBlock(t, contentPath(n.ID))
-	if _, err := notes.Rename(ctx, n.ID, "Renamed note"); err != nil {
+	currentNote, err := notes.Get(ctx, n.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := notes.UpdateExpected(ctx, currentNote, currentNote.Title, "Updated note body"); err != nil {
 		t.Fatal(err)
 	}
 	requireTestPayloadBlock(t, contentPath(n.ID))
@@ -105,7 +109,13 @@ func TestArtifactEditsPreserveAdditionalPayloadBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	addTestPayloadBlock(t, contentPath(d.ID))
-	if _, err := documents.Rename(ctx, d.ID, "Renamed document"); err != nil {
+	currentDocument, err := documents.Get(ctx, d.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := documents.Save(ctx, currentDocument, document.Draft{
+		Body: "Updated document body", Layout: currentDocument.Layout,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	requireTestPayloadBlock(t, contentPath(d.ID))
@@ -148,14 +158,18 @@ func TestCompactExtensionBlockSurvivesRenameUndo(t *testing.T) {
 	}
 	path := filepath.Join(root, filepath.FromSlash(created.Location))
 	addTestPayloadBlock(t, path)
-	if _, err := service.Rename(ctx, created.ID, "Renamed"); err != nil {
+	current, err := service.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.UpdateExpected(ctx, current, current.Title, "Updated compact block body"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.Undo(ctx); err != nil {
 		t.Fatal(err)
 	}
 	restored, err := service.Get(ctx, created.ID)
-	if err != nil || restored.Title != created.Title {
+	if err != nil || restored.Body != "Body" {
 		t.Fatalf("note after undo = %+v, %v", restored, err)
 	}
 	requireTestPayloadBlock(t, path)
@@ -175,7 +189,7 @@ func TestWorkspacePersistsInspectableNotesAndStableIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Kind != "note" || created.FormatVersion != 1 || created.CreatedAt.Location().String() != "UTC" {
+	if created.Kind != "note" || created.FormatVersion != artifact.FormatVersion || created.CreatedAt.Location().String() != "UTC" {
 		t.Fatalf("unexpected artifact metadata: %+v", created.Artifact)
 	}
 	contentPath := filepath.Join(root, filepath.FromSlash(created.Location))
@@ -189,18 +203,22 @@ func TestWorkspacePersistsInspectableNotesAndStableIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	file, err := artifactfile.Decode(content)
-	if err != nil || file.Artifact.Title != "Trip ideas" || file.Body != "Visit the museum" {
+	if err != nil || file.Body != "Visit the museum" {
 		t.Fatalf("decoded artifact file = %+v, %v", file, err)
 	}
 	if err := service.AddTag(context.Background(), created.ID, "travel"); err != nil {
 		t.Fatal(err)
 	}
-	renamed, err := service.Rename(context.Background(), created.ID, "Weekend ideas")
+	current, err := service.Get(context.Background(), created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if renamed.ID != created.ID {
-		t.Fatalf("rename changed artifact ID from %q to %q", created.ID, renamed.ID)
+	updated, err := service.UpdateExpected(context.Background(), current, current.Title, "Visit the museum and art gallery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ID != created.ID {
+		t.Fatalf("update changed artifact ID from %q to %q", created.ID, updated.ID)
 	}
 	reopened, err := Open(root)
 	if err != nil {
@@ -210,10 +228,10 @@ func TestWorkspacePersistsInspectableNotesAndStableIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Title != "Weekend ideas" || loaded.Body != "Visit the museum" || len(loaded.Tags) != 1 {
+	if loaded.Body != "Visit the museum and art gallery" {
 		t.Fatalf("loaded note = %+v", loaded)
 	}
-	results, err := search.Notes(context.Background(), reopened, "TRAVEL")
+	results, err := search.Notes(context.Background(), reopened, "MUSEUM")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +437,7 @@ func TestDeleteRecoversCommittedIntentBeforeRedoingDeletion(t *testing.T) {
 func TestInitRejectsNonRegularWorkspaceMarker(t *testing.T) {
 	t.Run("directory", func(t *testing.T) {
 		root := t.TempDir()
-		if err := os.Mkdir(filepath.Join(root, "parchment.toml"), 0o700); err != nil {
+		if err := os.Mkdir(filepath.Join(root, ".parchment-root"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		if err := Init(root); err == nil {
@@ -432,7 +450,7 @@ func TestInitRejectsNonRegularWorkspaceMarker(t *testing.T) {
 		if err := os.WriteFile(target, []byte("version = 1\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Symlink(target, filepath.Join(root, "parchment.toml")); err != nil {
+		if err := os.Symlink(target, filepath.Join(root, ".parchment-root")); err != nil {
 			t.Skipf("symlink creation unavailable: %v", err)
 		}
 		if err := Init(root); err == nil {
@@ -547,7 +565,7 @@ func TestValidateMarkerRejectsSymlinkWithoutFollowingIt(t *testing.T) {
 	if err := os.WriteFile(target, []byte("version = 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	marker := filepath.Join(root, "parchment.toml")
+	marker := filepath.Join(root, ".parchment-root")
 	if err := os.Symlink(target, marker); err != nil {
 		t.Skipf("symlink creation unavailable: %v", err)
 	}
@@ -636,18 +654,22 @@ func TestNoteCleanupFailureDoesNotFailCommittedRename(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(metadataDir, "unmanaged"), []byte("preserve"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Rename(ctx, created.ID, "After"); err != nil {
-		t.Fatalf("committed rename reported cleanup failure: %v", err)
+	current, err := service.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	renamed, err := service.Get(ctx, created.ID)
-	if err != nil || renamed.Title != "After" {
-		t.Fatalf("renamed note = %+v, %v", renamed, err)
+	if _, err := service.UpdateExpected(ctx, current, current.Title, "updated body"); err != nil {
+		t.Fatalf("committed update reported cleanup failure: %v", err)
+	}
+	updated, err := service.Get(ctx, created.ID)
+	if err != nil || updated.Body != "updated body" {
+		t.Fatalf("updated note = %+v, %v", updated, err)
 	}
 	if _, err := service.Undo(ctx); err != nil {
-		t.Fatalf("rename was not recorded for undo: %v", err)
+		t.Fatalf("update was not recorded for undo: %v", err)
 	}
 	restored, err := service.Get(ctx, created.ID)
-	if err != nil || restored.Title != "Before" {
+	if err != nil || restored.Body != "body" {
 		t.Fatalf("undo after committed rename = %+v, %v", restored, err)
 	}
 }
@@ -819,7 +841,7 @@ func TestOpenRecoversInterruptedArtifactReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Title != created.Title || loaded.Body != created.Body {
+	if loaded.Body != created.Body {
 		t.Fatalf("recovered note = %+v, want original note", loaded)
 	}
 }
@@ -915,8 +937,8 @@ func TestOpenRestoresPendingArtifactDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open did not restore pending note deletion: %v", err)
 	}
-	if loaded.Title != created.Title || loaded.Body != created.Body {
-		t.Fatalf("restored note = %+v, want %+v", loaded, created)
+	if loaded.Body != created.Body {
+		t.Fatalf("restored note = %+v, want body %q", loaded, created.Body)
 	}
 	if _, err := os.Lstat(tombstone); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("pending tombstone remains: %v", err)
@@ -1148,7 +1170,7 @@ func TestOpenRecoversReplacementInsideRestoredPendingDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Title != created.Title || loaded.Body != created.Body {
+	if loaded.Body != created.Body {
 		t.Fatalf("recovered note = %+v, want original note", loaded)
 	}
 }

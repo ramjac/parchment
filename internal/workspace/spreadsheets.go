@@ -213,9 +213,6 @@ func (w *Workspace) readSpreadsheetUnlocked(id string) (spreadsheet.Spreadsheet,
 	if err != nil {
 		return spreadsheet.Spreadsheet{}, fmt.Errorf("read spreadsheet metadata %s: %w", id, err)
 	}
-	if metadata.ID != id {
-		return spreadsheet.Spreadsheet{}, fmt.Errorf("invalid spreadsheet metadata for %s", id)
-	}
 	if metadata.Kind != artifact.SpreadsheetKind {
 		return spreadsheet.Spreadsheet{}, spreadsheet.ErrNotFound
 	}
@@ -223,8 +220,8 @@ func (w *Workspace) readSpreadsheetUnlocked(id string) (spreadsheet.Spreadsheet,
 	if err != nil {
 		return spreadsheet.Spreadsheet{}, fmt.Errorf("decode spreadsheet %s: %w", id, err)
 	}
-	if book.ID != id || book.Location != filepath.ToSlash(filepath.Join(w.artifactDir, id, spreadsheetName)) {
-		return spreadsheet.Spreadsheet{}, fmt.Errorf("invalid spreadsheet metadata for %s", id)
-	}
+	book.ID = id
+	book.Title = markdownTitle(book.Body)
+	book.Location = filepath.ToSlash(filepath.Join(w.artifactDir, id, spreadsheetName))
 	return book, nil
 }

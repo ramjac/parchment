@@ -2,28 +2,21 @@ package note_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"example.com/parchment/internal/note"
-	"example.com/parchment/internal/workspace"
 )
 
 func TestNoteOperationsUndoAndRedo(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
-	if err := workspace.Init(root); err != nil {
-		t.Fatal(err)
-	}
-	ws, err := workspace.Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	service := note.NewService(ws, 20)
+	repository := newMemoryRepository()
+	service := note.NewService(repository, 20)
 	created, err := service.Create(ctx, "First", "draft")
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, err := service.Update(ctx, created.ID, "First", "final")
+	updated, err := service.UpdateExpected(ctx, created, "First", "final")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,9 +32,6 @@ func TestNoteOperationsUndoAndRedo(t *testing.T) {
 	if err := service.RemoveTag(ctx, created.ID, "   "); err == nil {
 		t.Fatal("empty tag removal succeeded")
 	}
-	if _, err := service.Rename(ctx, created.ID, "Renamed"); err != nil {
-		t.Fatal(err)
-	}
 	if err := service.Delete(ctx, created.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -55,10 +45,10 @@ func TestNoteOperationsUndoAndRedo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored.Title != "Renamed" {
-		t.Fatalf("restored title = %q", restored.Title)
+	if restored.Body != "final" {
+		t.Fatalf("undo of deletion restored body = %q, want final", restored.Body)
 	}
-	for range 3 {
+	for range 2 {
 		if _, err := service.Undo(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -97,15 +87,8 @@ func TestNoteOperationsUndoAndRedo(t *testing.T) {
 
 func TestNoOpUpdateDoesNotCreateHistory(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
-	if err := workspace.Init(root); err != nil {
-		t.Fatal(err)
-	}
-	ws, err := workspace.Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	service := note.NewService(ws, 10)
+	repository := newMemoryRepository()
+	service := note.NewService(repository, 10)
 	n, err := service.Create(ctx, "Title", "Body")
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +99,7 @@ func TestNoOpUpdateDoesNotCreateHistory(t *testing.T) {
 	if _, err := service.Redo(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Update(ctx, n.ID, n.Title, n.Body); err != nil {
+	if _, err := service.UpdateExpected(ctx, n, n.Title, n.Body); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.Undo(ctx); err != nil {
@@ -129,25 +112,18 @@ func TestNoOpUpdateDoesNotCreateHistory(t *testing.T) {
 
 func TestUndoRedoTreatsEmptySlicesAsEquivalentToNil(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
-	if err := workspace.Init(root); err != nil {
-		t.Fatal(err)
-	}
-	ws, err := workspace.Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	service := note.NewService(ws, 10)
+	repository := newMemoryRepository()
+	service := note.NewService(repository, 10)
 	created, err := service.Create(ctx, "Title", "before")
 	if err != nil {
 		t.Fatal(err)
 	}
 	created.Tags = []string{}
 	created.Links = []string{}
-	if err := ws.Save(ctx, created); err != nil {
+	if err := repository.Save(ctx, created); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Update(ctx, created.ID, "Title", "after"); err != nil {
+	if _, err := service.UpdateExpected(ctx, created, "Title", "after"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.Undo(ctx); err != nil {
@@ -160,31 +136,28 @@ func TestUndoRedoTreatsEmptySlicesAsEquivalentToNil(t *testing.T) {
 
 func TestHistorySnapshotsDoNotAliasReturnedNoteSlices(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
-	if err := workspace.Init(root); err != nil {
-		t.Fatal(err)
-	}
-	ws, err := workspace.Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	service := note.NewService(ws, 10)
+	repository := newMemoryRepository()
+	service := note.NewService(repository, 10)
 	created, err := service.Create(ctx, "Before", "body")
 	if err != nil {
 		t.Fatal(err)
 	}
 	created.Tags = []string{"work"}
 	created.Links = []string{"related"}
-	if err := ws.Save(ctx, created); err != nil {
+	if err := repository.Save(ctx, created); err != nil {
 		t.Fatal(err)
 	}
-
-	renamed, err := service.Rename(ctx, created.ID, "After")
+	created, err = service.Get(ctx, created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	renamed.Tags[0] = "mutated"
-	renamed.Links[0] = "mutated"
+
+	updated, err := service.UpdateExpected(ctx, created, "After", "changed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated.Tags[0] = "mutated"
+	updated.Links[0] = "mutated"
 
 	if _, err := service.Undo(ctx); err != nil {
 		t.Fatalf("undo failed after mutating returned slices: %v", err)
@@ -193,7 +166,113 @@ func TestHistorySnapshotsDoNotAliasReturnedNoteSlices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored.Title != "Before" || restored.Tags[0] != "work" || restored.Links[0] != "related" {
+	if restored.Title != "Before" || restored.Body != "body" ||
+		restored.Tags[0] != "work" || restored.Links[0] != "related" {
 		t.Fatalf("undo restored mutated history snapshot: %+v", restored)
 	}
+}
+
+func TestEqualIgnoresTransientTitle(t *testing.T) {
+	left := note.Note{}
+	right := left
+	left.Title = "filename one"
+	right.Title = "filename two"
+
+	if !note.Equal(left, right) {
+		t.Fatal("transient title differences should not affect note equality")
+	}
+}
+
+func TestCreateDoesNotRequireTitle(t *testing.T) {
+	service := note.NewService(newMemoryRepository(), 1)
+
+	created, err := service.Create(context.Background(), "  ", "body")
+	if err != nil {
+		t.Fatalf("created note without a title: %v", err)
+	}
+	if created.Body != "body" {
+		t.Fatalf("body = %q, want body", created.Body)
+	}
+}
+
+type memoryRepository struct {
+	notes map[string]note.Note
+}
+
+func newMemoryRepository() *memoryRepository {
+	return &memoryRepository{notes: make(map[string]note.Note)}
+}
+
+func (*memoryRepository) ArtifactLocation(id string) string {
+	return "parchment/artifacts/" + id + "/content.md"
+}
+
+func (r *memoryRepository) List(ctx context.Context) ([]note.Note, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	notes := make([]note.Note, 0, len(r.notes))
+	for _, item := range r.notes {
+		notes = append(notes, cloneNote(item))
+	}
+	return notes, nil
+}
+
+func (r *memoryRepository) Get(ctx context.Context, id string) (note.Note, error) {
+	if err := ctx.Err(); err != nil {
+		return note.Note{}, err
+	}
+	item, ok := r.notes[id]
+	if !ok {
+		return note.Note{}, note.ErrNotFound
+	}
+	return cloneNote(item), nil
+}
+
+func (r *memoryRepository) Save(ctx context.Context, item note.Note) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.notes[item.ID] = cloneNote(item)
+	return nil
+}
+
+func (r *memoryRepository) Delete(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, ok := r.notes[id]; !ok {
+		return note.ErrNotFound
+	}
+	delete(r.notes, id)
+	return nil
+}
+
+func (r *memoryRepository) Transition(ctx context.Context, id string, expected, target *note.Note) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	current, exists := r.notes[id]
+	if expected == nil {
+		if exists {
+			return errors.New("note already exists")
+		}
+	} else if !exists || !note.Equal(current, *expected) {
+		return errors.New("stale note")
+	}
+	if target == nil {
+		if !exists {
+			return note.ErrNotFound
+		}
+		delete(r.notes, id)
+		return nil
+	}
+	r.notes[id] = cloneNote(*target)
+	return nil
+}
+
+func cloneNote(item note.Note) note.Note {
+	item.Tags = append([]string(nil), item.Tags...)
+	item.Links = append([]string(nil), item.Links...)
+	return item
 }

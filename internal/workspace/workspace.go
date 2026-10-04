@@ -20,6 +20,7 @@ const (
 	transactionName       = ".parchment-transaction.json"
 	deleteIntentPrefix    = ".parchment-delete-intent-"
 	pendingArtifactPrefix = ".parchment-pending-delete-"
+	workspaceMarker       = ".parchment-root"
 )
 
 type artifactDeletionIntent struct {
@@ -30,6 +31,9 @@ type artifactDeletionIntent struct {
 var validID = artifact.ValidID
 var errNotNote = errors.New("artifact is not a note")
 var errNoMetadata = errors.New("artifact metadata not found")
+
+// ErrNoWorkspace indicates that no workspace marker exists in a directory or its parents.
+var ErrNoWorkspace = errors.New("workspace marker not present")
 
 // Workspace is the local filesystem-backed artifact store for one workspace.
 type Workspace struct {
@@ -52,7 +56,7 @@ func InitWithArtifactDir(path, artifactDir string) error {
 	if err != nil {
 		return fmt.Errorf("resolve workspace path: %w", err)
 	}
-	configPath := filepath.Join(abs, "parchment.toml")
+	configPath := filepath.Join(abs, workspaceMarker)
 	if info, err := os.Lstat(configPath); err == nil {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("workspace config path %s is not a regular file", configPath)
@@ -67,7 +71,7 @@ func InitWithArtifactDir(path, artifactDir string) error {
 	if err := ensureWorkspaceDirectories(abs, normalized); err != nil {
 		return fmt.Errorf("create workspace: %w", err)
 	}
-	return writeAtomic(configPath, []byte("version = 1\n\n[workspace]\ndiscovery = \"parents\"\n"), 0o600)
+	return writeAtomic(configPath, []byte(""), 0o600)
 }
 
 // ValidateMarker checks the workspace config marker without following links.
@@ -76,7 +80,7 @@ func ValidateMarker(path string) error {
 	if err != nil {
 		return fmt.Errorf("resolve workspace path: %w", err)
 	}
-	configPath := filepath.Join(abs, "parchment.toml")
+	configPath := filepath.Join(abs, workspaceMarker)
 	info, err := os.Lstat(configPath)
 	if err != nil {
 		return fmt.Errorf("inspect workspace config: %w", err)
@@ -95,6 +99,15 @@ func Open(path string) (*Workspace, error) {
 // OpenWithArtifactDir opens an initialized workspace using its configured
 // artifact directory.
 func OpenWithArtifactDir(path, artifactDir string) (*Workspace, error) {
+	return openWithArtifactDir(path, artifactDir, true)
+}
+
+// OpenImplicit opens a current-directory store without creating a workspace marker.
+func OpenImplicit(path, artifactDir string) (*Workspace, error) {
+	return openWithArtifactDir(path, artifactDir, false)
+}
+
+func openWithArtifactDir(path, artifactDir string, requireMarker bool) (*Workspace, error) {
 	normalized, err := config.ValidateArtifactDir(artifactDir)
 	if err != nil {
 		return nil, err
@@ -103,11 +116,15 @@ func OpenWithArtifactDir(path, artifactDir string) (*Workspace, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace path: %w", err)
 	}
-	if err := ValidateMarker(abs); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("open workspace: %s is not initialized (run `parchment init`)", abs)
+	if requireMarker {
+		if err := ValidateMarker(abs); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, fmt.Errorf("open workspace: %s is not initialized (run `parchment init`)", abs)
+			}
+			return nil, fmt.Errorf("open workspace: %w", err)
 		}
-		return nil, fmt.Errorf("open workspace: %w", err)
+	} else if err := os.MkdirAll(abs, 0o700); err != nil {
+		return nil, fmt.Errorf("create artifact root: %w", err)
 	}
 	ws := &Workspace{root: abs, artifactDir: normalized}
 	artifacts := ws.artifactsRoot()
@@ -184,7 +201,7 @@ func Find(start string) (string, error) {
 		}
 		parent := filepath.Dir(current)
 		if parent == current {
-			return "", errors.New("no workspace found; run `parchment init` or pass --workspace")
+			return "", ErrNoWorkspace
 		}
 		current = parent
 	}
@@ -249,9 +266,9 @@ func (w *Workspace) readArtifactMetadataUnlocked(id string) (artifact.Artifact, 
 
 	metadata, err := readArtifactMetadata(filepath.Join(dir, "content.md"))
 	if err == nil {
-		if metadata.ID != id {
-			return artifact.Artifact{}, fmt.Errorf("invalid artifact metadata for %s", id)
-		}
+		metadata.ID = id
+		metadata.Title = id
+		metadata.Location = w.ArtifactLocation(id)
 		return metadata, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, artifactfile.ErrMetadataMissing) {
@@ -868,9 +885,6 @@ func (w *Workspace) readNoteUnlocked(id string) (note.Note, error) {
 	if err != nil {
 		return note.Note{}, fmt.Errorf("read note metadata %s: %w", id, err)
 	}
-	if metadata.ID != id {
-		return note.Note{}, fmt.Errorf("invalid note metadata for %s", id)
-	}
 	if metadata.Kind != artifact.NoteKind {
 		return note.Note{}, errNotNote
 	}
@@ -879,15 +893,12 @@ func (w *Workspace) readNoteUnlocked(id string) (note.Note, error) {
 		return note.Note{}, fmt.Errorf("decode note artifact %s: %w", id, err)
 	}
 	a := file.Artifact
-	if a.ID != id {
-		return note.Note{}, fmt.Errorf("invalid note metadata for %s", id)
-	}
 	if a.Kind != artifact.NoteKind {
 		return note.Note{}, errNotNote
 	}
-	if a.Location != w.ArtifactLocation(id) {
-		return note.Note{}, fmt.Errorf("invalid note metadata for %s", id)
-	}
+	a.ID = id
+	a.Title = markdownTitle(file.Body)
+	a.Location = w.ArtifactLocation(id)
 	a.CreatedAt = a.CreatedAt.UTC()
 	a.ModifiedAt = a.ModifiedAt.UTC()
 	return note.Note{Artifact: a, Body: file.Body, Blocks: copyPayloadBlocks(file.Blocks, "")}, nil

@@ -32,7 +32,7 @@ func TestSpreadsheetIsSingleInspectableFileWithMetadataAndUndo(t *testing.T) {
 		t.Fatal(err)
 	}
 	decoded, err := spreadsheet.Decode(data)
-	if err != nil || decoded.Title != "Simple" || decoded.Sheets[0].Rows[1][0].Value != "Book" {
+	if err != nil || decoded.Sheets[0].Rows[1][0].Value != "Book" {
 		t.Fatalf("decoded workbook = %+v, %v", decoded, err)
 	}
 	if info, err := os.Stat(filepath.Join(dir, "content.md")); err != nil || info.Mode().Perm() != 0o600 {

@@ -57,11 +57,9 @@ func (s *Service) Get(ctx context.Context, id string) (Note, error) {
 	return s.repository.Get(ctx, id)
 }
 
-// Create adds a note and returns its stable artifact envelope.
+// Create adds a note. title is retained as transient display metadata for
+// callers during the transition to filename-derived titles.
 func (s *Service) Create(ctx context.Context, title, body string) (Note, error) {
-	if strings.TrimSpace(title) == "" {
-		return Note{}, errors.New("note title is required")
-	}
 	id, err := artifact.NewID(artifact.NoteKind)
 	if err != nil {
 		return Note{}, err
@@ -78,62 +76,16 @@ func (s *Service) Create(ctx context.Context, title, body string) (Note, error) 
 	return n, nil
 }
 
-// Update saves a note's title and Markdown body as one undoable change.
-func (s *Service) Update(ctx context.Context, id, title, body string) (Note, error) {
-	return s.UpdateFields(ctx, id, &title, &body)
-}
-
 // UpdateExpected applies an edit only if the note still matches its snapshot.
+// title is retained for TUI compatibility but is not persisted.
 func (s *Service) UpdateExpected(ctx context.Context, expected Note, title, body string) (Note, error) {
-	if strings.TrimSpace(title) == "" {
-		return Note{}, errors.New("note title is required")
-	}
 	after := expected
-	after.Title = strings.TrimSpace(title)
 	after.Body = body
-	if after.Title == expected.Title && after.Body == expected.Body {
+	if after.Body == expected.Body {
 		return expected, nil
 	}
 	after.ModifiedAt = s.now().UTC()
 	if err := s.change(ctx, &expected, &after, "Edit note"); err != nil {
-		return Note{}, err
-	}
-	return after, nil
-}
-
-// UpdateFields changes only the supplied title and body fields from one
-// repository snapshot, so omitted fields cannot overwrite concurrent updates.
-func (s *Service) UpdateFields(ctx context.Context, id string, title, body *string) (Note, error) {
-	before, err := s.repository.Get(ctx, id)
-	if err != nil {
-		return Note{}, err
-	}
-	nextTitle, nextBody := before.Title, before.Body
-	if title != nil {
-		nextTitle = *title
-	}
-	if body != nil {
-		nextBody = *body
-	}
-	return s.UpdateExpected(ctx, before, nextTitle, nextBody)
-}
-
-// Rename changes a note's title without changing its ID.
-func (s *Service) Rename(ctx context.Context, id, title string) (Note, error) {
-	before, err := s.repository.Get(ctx, id)
-	if err != nil {
-		return Note{}, err
-	}
-	if strings.TrimSpace(title) == "" {
-		return Note{}, errors.New("note title is required")
-	}
-	after := before
-	after.Title = strings.TrimSpace(title)
-	after.ModifiedAt = s.now().UTC()
-	if before.Title == after.Title {
-		return before, nil
-	}
-	if err := s.change(ctx, &before, &after, "Rename note"); err != nil {
 		return Note{}, err
 	}
 	return after, nil
@@ -264,6 +216,7 @@ func (o noteOperation) transition(ctx context.Context, expected, target *Note) e
 
 // Equal reports whether two notes have the same persisted value.
 func Equal(left, right Note) bool {
+	left.Title, right.Title = "", ""
 	if len(left.Tags) == 0 {
 		left.Tags = nil
 	}

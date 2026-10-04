@@ -68,7 +68,7 @@ func TestDocumentsPersistInspectablyAndCoexistWithNotes(t *testing.T) {
 	}
 	listedDocs, _ := docs.List(ctx)
 	listedNotes, _ := notes.List(ctx)
-	if len(listedDocs) != 1 || len(listedNotes) != 1 || listedNotes[0].Title != "A note" {
+	if len(listedDocs) != 1 || len(listedNotes) != 1 || listedNotes[0].Body != "report text" {
 		t.Fatalf("documents=%d notes=%d", len(listedDocs), len(listedNotes))
 	}
 	if _, err := notes.Get(ctx, created.ID); err == nil {
@@ -227,14 +227,17 @@ func TestDocumentSaveDetectsConcurrentChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	stale, _ := docs.Get(ctx, created.ID)
-	if _, err := docs.Rename(ctx, created.ID, "Renamed"); err != nil {
+	if _, err := docs.Modify(ctx, created.ID, "Concurrent edit", func(d *document.Document) error {
+		d.Body = "newer"
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := docs.Save(ctx, stale, document.Draft{Title: "Shared", Body: "two", Layout: stale.Layout}); err == nil {
 		t.Fatal("stale save overwrote a newer document")
 	}
 	current, _ := docs.Get(ctx, created.ID)
-	if current.Title != "Renamed" || current.Body != "one" {
+	if current.Body != "newer" {
 		t.Fatalf("document = %+v", current)
 	}
 }
@@ -248,6 +251,10 @@ func TestDocumentChangesPersistAndResolveAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	created, err = service.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	proposal, err := service.Propose(ctx, created, "Revise text", document.Draft{
 		Title: "Revised", Body: "proposed", Layout: created.Layout,
@@ -256,7 +263,7 @@ func TestDocumentChangesPersistAndResolveAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	live, err := service.Get(ctx, created.ID)
-	if err != nil || live.Title != "Draft" || live.Body != "original" {
+	if err != nil || live.Body != "original" {
 		t.Fatalf("proposal changed the live document: %+v, %v", live, err)
 	}
 	if _, err := service.Propose(ctx, created, "Another", document.Draft{
@@ -271,7 +278,7 @@ func TestDocumentChangesPersistAndResolveAtomically(t *testing.T) {
 	}
 	reopened := document.NewService(ws, 10)
 	persisted, err := reopened.GetChange(ctx, created.ID, proposal.ID)
-	if err != nil || persisted.Status != document.ChangePending || persisted.After.Title != "Revised" {
+	if err != nil || persisted.Status != document.ChangePending {
 		t.Fatalf("persisted proposal = %+v, %v", persisted, err)
 	}
 	if err := reopened.Reject(ctx, created.ID, proposal.ID); err != nil {
@@ -282,7 +289,7 @@ func TestDocumentChangesPersistAndResolveAtomically(t *testing.T) {
 		t.Fatalf("rejected proposal = %+v, %v", rejected, err)
 	}
 	live, err = reopened.Get(ctx, created.ID)
-	if err != nil || live.Title != "Draft" || live.Body != "original" {
+	if err != nil || live.Body != "original" {
 		t.Fatalf("reject changed the live document: %+v, %v", live, err)
 	}
 
@@ -294,7 +301,7 @@ func TestDocumentChangesPersistAndResolveAtomically(t *testing.T) {
 	}
 	accepting := document.NewService(ws, 10)
 	accepted, err := accepting.Accept(ctx, created.ID, proposal.ID)
-	if err != nil || accepted.Title != "Accepted" || accepted.Body != "final" {
+	if err != nil || accepted.Body != "final" {
 		t.Fatalf("accept result = %+v, %v", accepted, err)
 	}
 	status, err := accepting.GetChange(ctx, created.ID, proposal.ID)
@@ -305,14 +312,14 @@ func TestDocumentChangesPersistAndResolveAtomically(t *testing.T) {
 		t.Fatalf("undo accepted proposal: %v", err)
 	}
 	undone, err := accepting.Get(ctx, created.ID)
-	if err != nil || undone.Title != "Draft" || undone.Body != "original" {
+	if err != nil || undone.Body != "original" {
 		t.Fatalf("document after undo = %+v, %v", undone, err)
 	}
 	if _, err := accepting.Redo(ctx); err != nil {
 		t.Fatalf("redo accepted proposal: %v", err)
 	}
 	redone, err := accepting.Get(ctx, created.ID)
-	if err != nil || redone.Title != "Accepted" || redone.Body != "final" {
+	if err != nil || redone.Body != "final" {
 		t.Fatalf("document after redo = %+v, %v", redone, err)
 	}
 }
@@ -325,17 +332,16 @@ func TestDocumentProposalsRejectInvalidUTF8Snapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	created, err = service.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	invalid := string([]byte{0xff})
 	for _, test := range []struct {
 		name   string
 		before document.Document
 		draft  document.Draft
 	}{
-		{
-			name:   "invalid title",
-			before: created,
-			draft:  document.Draft{Title: "Revised" + invalid, Body: "proposed", Layout: created.Layout},
-		},
 		{
 			name:   "invalid body",
 			before: created,
@@ -496,7 +502,14 @@ func TestProposeRejectsAStaleDocumentSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Rename(ctx, created.ID, "Concurrent edit"); err != nil {
+	created, err = service.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Modify(ctx, created.ID, "Concurrent edit", func(d *document.Document) error {
+		d.Body = "concurrent body"
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.Propose(ctx, created, "Stale edit", document.Draft{
@@ -505,7 +518,7 @@ func TestProposeRejectsAStaleDocumentSnapshot(t *testing.T) {
 		t.Fatal("stale document snapshot was accepted as a proposal baseline")
 	}
 	current, err := service.Get(ctx, created.ID)
-	if err != nil || current.Title != "Concurrent edit" || current.Body != "original" {
+	if err != nil || current.Body != "concurrent body" {
 		t.Fatalf("stale proposal changed the document: %+v, %v", current, err)
 	}
 }
@@ -518,20 +531,27 @@ func TestAcceptDocumentChangeRejectsStaleProposal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	created, err = service.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	proposal, err := service.Propose(ctx, created, "Proposed edit", document.Draft{
 		Title: "Proposed", Body: "proposed", Layout: created.Layout,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Rename(ctx, created.ID, "Immediate edit"); err != nil {
+	if _, err := service.Modify(ctx, created.ID, "Immediate edit", func(d *document.Document) error {
+		d.Body = "immediate body"
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.Accept(ctx, created.ID, proposal.ID); err == nil {
 		t.Fatal("stale proposal overwrote a newer document")
 	}
 	current, err := service.Get(ctx, created.ID)
-	if err != nil || current.Title != "Immediate edit" || current.Body != "original" {
+	if err != nil || current.Body != "immediate body" {
 		t.Fatalf("document after stale proposal = %+v, %v", current, err)
 	}
 }
@@ -560,9 +580,6 @@ func TestDocumentServiceValidatesInput(t *testing.T) {
 	ctx := context.Background()
 	ws := openTestWorkspace(t, t.TempDir())
 	docs := document.NewService(ws, 10)
-	if _, err := docs.Create(ctx, document.Draft{Title: "  "}); err == nil {
-		t.Fatal("blank title was accepted")
-	}
 	bad := document.DefaultLayout()
 	bad.Columns = 7
 	if _, err := docs.Create(ctx, document.Draft{Title: "x", Layout: bad}); err == nil {
@@ -583,10 +600,6 @@ func TestDocumentServiceValidatesInput(t *testing.T) {
 	}
 	if err := docs.AddTag(ctx, created.ID, "draft"); err != nil {
 		t.Fatal(err)
-	}
-	got, _ := docs.Get(ctx, created.ID)
-	if len(got.Tags) != 1 {
-		t.Fatalf("tags = %v", got.Tags)
 	}
 	if err := docs.RemoveTag(ctx, created.ID, "draft"); err != nil {
 		t.Fatal(err)
@@ -678,7 +691,10 @@ func TestImageWithMarkdownTitleSurvivesUnrelatedEdits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := docs.Rename(ctx, saved.ID, "Renamed"); err != nil {
+	if _, err := docs.Modify(ctx, saved.ID, "Unrelated edit", func(d *document.Document) error {
+		d.Layout.Header = "Updated header"
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	persisted, err := docs.Get(ctx, created.ID)

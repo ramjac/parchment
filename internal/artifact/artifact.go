@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"strings"
 	"time"
 )
 
@@ -17,7 +16,7 @@ const (
 	SpreadsheetKind  Kind = "spreadsheet"
 	PresentationKind Kind = "presentation"
 	ImageKind        Kind = "image"
-	FormatVersion         = 1
+	FormatVersion         = 2
 )
 
 var idPrefixes = map[Kind]byte{
@@ -71,7 +70,9 @@ func ValidIDForKind(id string, kind Kind) bool {
 	return ok && ValidID(id) && id[0] == prefix
 }
 
-// Artifact contains metadata shared by every workspace artifact type.
+// Artifact contains runtime metadata shared by every artifact type. The
+// artifact-file envelope persists only kind, timestamps, and format version;
+// identity, title, location, tags, and links are runtime or derived values.
 type Artifact struct {
 	ID            string    `json:"id"`
 	Kind          Kind      `json:"kind"`
@@ -92,9 +93,6 @@ func (a Artifact) Validate() error {
 	}
 	if !ValidIDForKind(a.ID, a.Kind) {
 		return errors.New("artifact ID is invalid for its kind")
-	}
-	if strings.TrimSpace(a.Title) == "" {
-		return errors.New("artifact title is required")
 	}
 	if a.CreatedAt.IsZero() || a.ModifiedAt.IsZero() {
 		return errors.New("artifact timestamps are required")

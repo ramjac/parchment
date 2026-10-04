@@ -2,8 +2,10 @@ package workspace
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,38 @@ import (
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/note"
 )
+
+// standaloneID is stable for a resolved file path and is never persisted.
+func standaloneID(kind artifact.Kind, path string) string {
+	prefix := map[artifact.Kind]byte{
+		artifact.NoteKind: 'n', artifact.DocumentKind: 'd', artifact.SpreadsheetKind: 's',
+		artifact.PresentationKind: 'p', artifact.ImageKind: 'i',
+	}[kind]
+	digest := sha256.Sum256([]byte(path))
+	return string(prefix) + new(big.Int).SetBytes(digest[:16]).Text(36)
+}
+
+func standaloneTitle(path string) string {
+	title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	if title == "" {
+		return filepath.Base(path)
+	}
+	return title
+}
+
+func markdownTitle(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "# ") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "# "))
+		}
+		return line
+	}
+	return "Untitled"
+}
 
 // MarkdownFile is a repository for one ordinary Markdown file opened directly
 // without adding Parchment metadata.
@@ -43,14 +77,8 @@ func OpenMarkdownFile(path string) (*MarkdownFile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read Markdown file: %w", err)
 	}
-	id, err := artifact.NewID(artifact.NoteKind)
-	if err != nil {
-		return nil, err
-	}
-	title := strings.TrimSuffix(filepath.Base(resolved), filepath.Ext(resolved))
-	if title == "" {
-		title = filepath.Base(resolved)
-	}
+	id := standaloneID(artifact.NoteKind, resolved)
+	title := standaloneTitle(resolved)
 	now := time.Now().UTC()
 	return &MarkdownFile{
 		path: resolved,

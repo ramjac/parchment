@@ -62,11 +62,9 @@ func TestSingleMarkdownFileModeEditsBodyOnly(t *testing.T) {
 	model.width, model.height = 90, 24
 	updated, _ := model.Update(notesLoadedMsg{notes: []note.Note{item}})
 	model = *updated.(*Model)
-	if !model.showPreview || !strings.Contains(model.View(), "# Garden") || strings.Contains(model.View(), "Notes (") {
+	if model.mode != editing || !model.bodyInput.Focused() ||
+		!strings.Contains(model.View(), "# Garden") || strings.Contains(model.View(), "Notes (") {
 		t.Fatalf("single-file initial view = %q", model.View())
-	}
-	if !model.startEdit(item) || !model.bodyInput.Focused() {
-		t.Fatal("single-file editor did not focus Markdown body")
 	}
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("!")})
 	model = *updated.(*Model)
@@ -83,6 +81,41 @@ func TestSingleMarkdownFileModeEditsBodyOnly(t *testing.T) {
 	}
 	if string(data) != "# Garden\n!" {
 		t.Fatalf("plain file content = %q", data)
+	}
+}
+
+func TestSingleMarkdownFileStaysInEditorAfterSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "garden.md")
+	if err := os.WriteFile(path, []byte("# Garden\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repository, err := workspace.OpenMarkdownFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(note.NewService(repository, 10), repository, "garden.md", path, WithSingleMarkdownFile())
+	model.width, model.height = 90, 24
+	model.Update(model.Init()())
+	if model.mode != editing || !model.bodyInput.Focused() {
+		t.Fatalf("initial mode=%d, focused=%t", model.mode, model.bodyInput.Focused())
+	}
+	model.bodyInput.SetValue("# Changed\n")
+	_, save := model.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if save == nil {
+		t.Fatal("save command not returned")
+	}
+	model.Update(save())
+	if model.mode != editing || model.pending || model.dirty() {
+		t.Fatalf("save left editor: mode=%d pending=%t dirty=%t", model.mode, model.pending, model.dirty())
+	}
+	model.bodyInput.SetValue("# Discarded\n")
+	model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if model.mode != editing || model.bodyInput.Value() != "# Changed\n" {
+		t.Fatal("escape did not discard unsaved edit in editor")
+	}
+	_, quit := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if quit == nil || quit() != (tea.QuitMsg{}) {
+		t.Fatal("escape did not quit clean editor")
 	}
 }
 
@@ -292,7 +325,7 @@ func TestEditSaveRejectsConcurrentExternalChange(t *testing.T) {
 	model.bodyInput.SetValue("Edited body")
 
 	external := created
-	external.Title = "Changed outside TUI"
+	external.Body = "Changed outside TUI"
 	external.ModifiedAt = external.ModifiedAt.Add(time.Second)
 	if err := ws.Save(ctx, external); err != nil {
 		t.Fatal(err)
@@ -314,7 +347,7 @@ func TestEditSaveRejectsConcurrentExternalChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.Title != external.Title || current.Body != created.Body {
+	if current.Body != external.Body {
 		t.Fatalf("stale editor overwrote external update: %+v", current)
 	}
 }
@@ -366,7 +399,7 @@ func TestReloadPreservesActiveSearch(t *testing.T) {
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
-	if len(result.notes) != 1 || result.notes[0].Title != "Matching note" {
+	if len(result.notes) != 1 || result.notes[0].Body != "needle" {
 		t.Fatalf("reload results = %+v, want active query preserved", result.notes)
 	}
 	updated, _ := model.Update(searchCompletedMsg{notes: result.notes})

@@ -2,7 +2,6 @@ package workspace
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -372,18 +371,6 @@ func (w *Workspace) saveDocumentLockedWithChanges(ctx context.Context, d documen
 	if err := d.Layout.Validate(); err != nil {
 		return err
 	}
-	payload := documentFileData{Layout: d.Layout}
-	seenImages := map[string]bool{}
-	for _, img := range d.Images {
-		if err := img.Validate(); err != nil {
-			return err
-		}
-		if seenImages[img.Name] {
-			return fmt.Errorf("duplicate document image %s", img.Name)
-		}
-		seenImages[img.Name] = true
-		payload.Images = append(payload.Images, embeddedDocumentImage{Name: img.Name, Data: img.Data})
-	}
 	if changes != nil {
 		if err := validateDocumentChanges(d.ID, changes); err != nil {
 			return err
@@ -430,13 +417,7 @@ func (w *Workspace) saveDocumentLockedWithChanges(ctx context.Context, d documen
 			}
 		}
 	}
-	payload.Changes = changes
-	blocks := make(map[string]any, len(d.Blocks)+1)
-	for name, block := range d.Blocks {
-		blocks[name] = block
-	}
-	blocks[documentDataBlock] = payload
-	data, err := artifactfile.Encode(d.Artifact, d.Body, blocks)
+	data, err := encodeDocumentContent(d, changes)
 	if err != nil {
 		if created {
 			if cleanupErr := os.Remove(dir); cleanupErr != nil {
@@ -527,71 +508,20 @@ func (w *Workspace) readDocumentFileUnlocked(id string, withImages bool) (docume
 	if err != nil {
 		return document.Document{}, nil, fmt.Errorf("read document metadata %s: %w", id, err)
 	}
-	if metadata.ID != id {
-		return document.Document{}, nil, fmt.Errorf("invalid document metadata for %s", id)
-	}
 	if metadata.Kind != artifact.DocumentKind {
 		return document.Document{}, nil, errNotDocument
 	}
-	file, err := artifactfile.Decode(content)
+	d, changes, err := decodeDocumentContent(content, withImages, id)
+	if errors.Is(err, errNotDocument) {
+		return document.Document{}, nil, err
+	}
 	if err != nil {
-		return document.Document{}, nil, fmt.Errorf("decode document artifact %s: %w", id, err)
+		return document.Document{}, nil, fmt.Errorf("document %s: %w", id, err)
 	}
-	a := file.Artifact
-	if a.ID != id {
-		return document.Document{}, nil, fmt.Errorf("invalid document metadata for %s", id)
-	}
-	if a.Kind != artifact.DocumentKind {
-		return document.Document{}, nil, errNotDocument
-	}
-	if a.Location != w.ArtifactLocation(id) {
-		return document.Document{}, nil, fmt.Errorf("invalid document metadata for %s", id)
-	}
-	payloadJSON, ok := file.Blocks[documentDataBlock]
-	if !ok {
-		return document.Document{}, nil, errors.New("document data block is missing")
-	}
-	var payload documentFileData
-	if withImages {
-		if err := json.Unmarshal(payloadJSON, &payload); err != nil {
-			return document.Document{}, nil, fmt.Errorf("decode document data %s: %w", id, err)
-		}
-	} else {
-		var lightweight documentFileDataWithoutImages
-		if err := json.Unmarshal(payloadJSON, &lightweight); err != nil {
-			return document.Document{}, nil, fmt.Errorf("decode document data %s: %w", id, err)
-		}
-		payload.Layout = lightweight.Layout
-		payload.Changes = lightweight.Changes
-	}
-	if payload.Layout == (document.Layout{}) {
-		payload.Layout = document.DefaultLayout()
-	}
-	if err := payload.Layout.Validate(); err != nil {
-		return document.Document{}, nil, fmt.Errorf("validate document layout %s: %w", id, err)
-	}
-	if err := validateDocumentChanges(id, payload.Changes); err != nil {
-		return document.Document{}, nil, fmt.Errorf("validate document changes %s: %w", id, err)
-	}
-	a.CreatedAt = a.CreatedAt.UTC()
-	a.ModifiedAt = a.ModifiedAt.UTC()
-	d := document.Document{
-		Artifact: a, Body: file.Body, Layout: payload.Layout,
-		Blocks: copyPayloadBlocks(file.Blocks, documentDataBlock),
-	}
-	seenImages := map[string]bool{}
-	for _, imageData := range payload.Images {
-		img := document.Image{Name: imageData.Name, Data: imageData.Data}
-		if err := img.Validate(); err != nil {
-			return document.Document{}, nil, fmt.Errorf("validate document image %s: %w", img.Name, err)
-		}
-		if seenImages[img.Name] {
-			return document.Document{}, nil, fmt.Errorf("duplicate document image %s", img.Name)
-		}
-		seenImages[img.Name] = true
-		d.Images = append(d.Images, img)
-	}
-	return d, payload.Changes, nil
+	d.ID = id
+	d.Title = markdownTitle(d.Body)
+	d.Location = w.ArtifactLocation(id)
+	return d, changes, nil
 }
 
 // readRegularFile reads a regular file without following links. A negative

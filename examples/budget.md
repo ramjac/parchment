@@ -1,15 +1,20 @@
 ```parchment-meta
 {
-  "parchment_format": "parchment-single-file-v1",
-  "id": "s3",
+  "parchment_format": "parchment-single-file-v2",
   "kind": "spreadsheet",
-  "title": "Monthly budget",
   "created_at": "2026-01-15T09:00:00Z",
   "modified_at": "2026-01-15T09:00:00Z",
-  "format_version": 1,
-  "location": "parchment/artifacts/s3/content.md"
+  "format_version": 2
 }
 ```
+
+<!-- parchment-body -->
+
+# Monthly budget
+
+The variance column is calculated from planned and actual spending.
+
+<!-- parchment-blocks -->
 
 ```parchment-spreadsheet
 {
@@ -53,9 +58,3 @@
   ]
 }
 ```
-
-<!-- parchment-body -->
-
-# Monthly budget
-
-The variance column is calculated from planned and actual spending.

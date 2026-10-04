@@ -79,8 +79,7 @@ const (
 type editorFocus int
 
 const (
-	focusTitle editorFocus = iota
-	focusBody
+	focusBody editorFocus = iota
 	focusToolbar
 )
 
@@ -99,6 +98,7 @@ const (
 // editor. It owns UI state only; document rules live in the document service.
 type documentsScreen struct {
 	service           *document.Service
+	singleFile        bool
 	theme             theme
 	width, height     int
 	mode              documentMode
@@ -111,6 +111,7 @@ type documentsScreen struct {
 	reviewing         bool
 	changes           []document.Change
 	selectedChange    int
+	outline           []document.Section
 	previewPages      []document.Page
 	previewPage       int
 	preview           viewport.Model
@@ -130,7 +131,6 @@ type documentsScreen struct {
 	creating       bool
 	proposing      bool
 	snapshot       document.Document
-	titleInput     textinput.Model
 	body           textarea.Model
 	layout         document.Layout
 	images         []document.Image
@@ -146,14 +146,11 @@ type documentsScreen struct {
 }
 
 type editorDraft struct {
-	title, body, images string
-	layout              document.Layout
+	body, images string
+	layout       document.Layout
 }
 
 func newDocumentsScreen(service *document.Service, t theme, newContext func() (context.Context, context.CancelFunc)) *documentsScreen {
-	title := textinput.New()
-	title.Prompt = "Title: "
-	title.CharLimit = 200
 	body := textarea.New()
 	body.Prompt = ""
 	body.ShowLineNumbers = false
@@ -163,7 +160,7 @@ func newDocumentsScreen(service *document.Service, t theme, newContext func() (c
 	prompt := textinput.New()
 	prompt.CharLimit = document.MaxRunningTextLength * 2
 	return &documentsScreen{
-		service: service, theme: t, titleInput: title, body: body, promptInput: prompt,
+		service: service, theme: t, body: body, promptInput: prompt,
 		preview: viewport.New(0, 0), changeReview: viewport.New(0, 0), newOperationContext: newContext,
 		canUndo: service.CanUndo(), canRedo: service.CanRedo(), layout: document.DefaultLayout(),
 	}
@@ -225,7 +222,7 @@ func (s *documentsScreen) update(message tea.Msg) (tea.Cmd, bool) {
 		}
 		s.mode, s.creating = documentBrowsing, false
 		s.errMessage, s.status = "", "Saved “"+msg.document.Title+"”"
-		return tea.Batch(tea.DisableMouse, s.loadDocuments()), false
+		return s.loadDocuments(), false
 	case documentProposedMsg:
 		s.finishOperation()
 		s.pending = false
@@ -235,7 +232,7 @@ func (s *documentsScreen) update(message tea.Msg) (tea.Cmd, bool) {
 		}
 		s.mode, s.proposing = documentBrowsing, false
 		s.errMessage, s.status = "", "Proposal recorded: "+msg.change.ID
-		return tea.Batch(tea.DisableMouse, s.loadChanges(msg.change.DocumentID)), false
+		return s.loadChanges(msg.change.DocumentID), false
 	case documentChangesLoadedMsg:
 		s.finishOperation()
 		s.pending = false
@@ -304,6 +301,27 @@ func (s *documentsScreen) update(message tea.Msg) (tea.Cmd, bool) {
 		s.layoutEditor()
 		return cmd, leave
 	case tea.MouseMsg:
+		if s.mode == documentBrowsing && !s.showChanges && !s.pending && !s.help && !s.confirmDelete &&
+			msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft && s.width >= 80 {
+			s.clickOutline(msg.X, msg.Y)
+			return nil, false
+		}
+		if s.mode == documentBrowsing && s.showPreview && !s.showChanges && !s.pending && msg.Action == tea.MouseActionPress {
+			switch msg.Button {
+			case tea.MouseButtonWheelDown:
+				if s.preview.AtBottom() && s.changePreviewPage(1, false) {
+					return nil, false
+				}
+				s.preview, _ = s.preview.Update(msg)
+			case tea.MouseButtonWheelUp:
+				if s.preview.AtTop() && s.changePreviewPage(-1, false) {
+					s.preview.GotoBottom()
+					return nil, false
+				}
+				s.preview, _ = s.preview.Update(msg)
+			}
+			return nil, false
+		}
 		cmd := s.updateMouse(msg)
 		s.layoutEditor()
 		return cmd, false
@@ -376,9 +394,37 @@ func (s *documentsScreen) updateBrowseKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		}
 		return nil, false
 	}
+	switch key {
+	case "{", "}":
+		step := 1
+		if key == "{" {
+			step = -1
+		}
+		s.stepSection(step)
+		return nil, false
+	}
 	if s.showPreview {
 		switch key {
-		case "up", "k", "down", "j", "pgup", "pgdown", "home", "end":
+		case "right":
+			s.changePreviewPage(1, false)
+			return nil, false
+		case "left":
+			s.changePreviewPage(-1, false)
+			return nil, false
+		case "up", "k", "pgup":
+			if s.preview.AtTop() && s.changePreviewPage(-1, false) {
+				s.preview.GotoBottom()
+				return nil, false
+			}
+			s.preview, _ = s.preview.Update(msg)
+			return nil, false
+		case "down", "j", "pgdown":
+			if s.preview.AtBottom() && s.changePreviewPage(1, false) {
+				return nil, false
+			}
+			s.preview, _ = s.preview.Update(msg)
+			return nil, false
+		case "home", "end":
 			s.preview, _ = s.preview.Update(msg)
 			return nil, false
 		}
@@ -410,16 +456,15 @@ func (s *documentsScreen) updateBrowseKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		s.showPreview = true
 		s.resizePreview()
 	case "[", "]":
-		if len(s.previewPages) > 0 {
-			step := 1
-			if key == "[" {
-				step = -1
-			}
-			s.previewPage = (s.previewPage + step + len(s.previewPages)) % len(s.previewPages)
-			s.showPreviewPage()
+		step := 1
+		if key == "[" {
+			step = -1
 		}
+		s.changePreviewPage(step, true)
 	case "n":
-		return s.startCreate(), false
+		if !s.singleFile {
+			return s.startCreate(), false
+		}
 	case "e":
 		if d, ok := s.selectedDocument(); ok {
 			s.pending = true
@@ -431,8 +476,10 @@ func (s *documentsScreen) updateBrowseKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			}, false
 		}
 	case "d":
-		if _, ok := s.selectedDocument(); ok {
-			s.confirmDelete = true
+		if !s.singleFile {
+			if _, ok := s.selectedDocument(); ok {
+				s.confirmDelete = true
+			}
 		}
 	case "u", "ctrl+z":
 		return s.history("Undid ", s.service.Undo), false
@@ -450,6 +497,22 @@ func (s *documentsScreen) updateBrowseKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		}
 	}
 	return nil, false
+}
+
+func (s *documentsScreen) changePreviewPage(step int, wrap bool) bool {
+	if len(s.previewPages) == 0 {
+		return false
+	}
+	next := s.previewPage + step
+	if wrap {
+		next = (next + len(s.previewPages)) % len(s.previewPages)
+	}
+	if next < 0 || next >= len(s.previewPages) || next == s.previewPage {
+		return false
+	}
+	s.previewPage = next
+	s.showPreviewPage()
+	return true
 }
 
 func (s *documentsScreen) loadChanges(id string) tea.Cmd {
@@ -529,9 +592,8 @@ func (s *documentsScreen) setChangeReviewContent() {
 		return
 	}
 	content := fmt.Sprintf(
-		"%s  ·  %s  ·  %s\n\n--- Current: %s\n+++ Proposed: %s\n\nCurrent page setup:\n%s\n\nProposed page setup:\n%s\n\n--- Current Markdown ---\n%s\n\n+++ Proposed Markdown +++\n%s",
+		"%s  ·  %s  ·  %s\n\nCurrent page setup:\n%s\n\nProposed page setup:\n%s\n\n--- Current Markdown ---\n%s\n\n+++ Proposed Markdown +++\n%s",
 		change.ID, change.Status, sanitizeTerminalLine(change.Description),
-		sanitizeTerminalLine(change.Before.Title), sanitizeTerminalLine(change.After.Title),
 		changeLayoutDescription(change.Before.Layout), changeLayoutDescription(change.After.Layout),
 		sanitizeTerminalText(change.Before.Body), sanitizeTerminalText(change.After.Body),
 	)
@@ -635,11 +697,12 @@ func (s *documentsScreen) selectInitialDocument() {
 
 // refreshPreview paginates the selected document for the print preview.
 func (s *documentsScreen) refreshPreview() {
-	s.previewPages, s.previewPage = nil, 0
+	s.previewPages, s.previewPage, s.outline = nil, 0, nil
 	if d, ok := s.selectedDocument(); ok {
 		pages, err := document.Paginate(d)
 		if err == nil {
 			s.previewPages = pages
+			s.outline, _ = document.Outline(d)
 		}
 	}
 	s.resizePreview()
@@ -683,8 +746,9 @@ func (s *documentsScreen) view(header string) string {
 		return header + "\n\n" +
 			"Documents\n\n" +
 			"↑/↓ or j/k   Select document\n" +
-			"Enter        Focus print preview (↑/↓ scroll)\n" +
-			"[ / ]        Previous / next page in the preview\n" +
+			"Enter        Focus print preview (↑/↓ scroll across pages)\n" +
+			"←/→ or [/]   Previous / next page in the preview\n" +
+			"{ / }        Previous / next section (or click it in the outline)\n" +
 			"n            New document\n" +
 			"e            Edit document\n" +
 			"c            Propose an edit    v  Review proposals\n" +
@@ -702,7 +766,7 @@ func (s *documentsScreen) view(header string) string {
 func (s *documentsScreen) viewNarrow(header string) string {
 	if s.showPreview {
 		if _, ok := s.selectedDocument(); ok {
-			return header + "\n" + s.preview.View() + "\n\n↑/↓ scroll  ·  [ ] page " + s.pageLabel() + "  ·  Esc returns" + s.statusLine()
+			return header + "\n" + s.preview.View() + "\n\n↑/↓ scroll across pages  ·  ←/→ or [ ] page " + s.pageLabel() + "  ·  { } section  ·  Esc returns" + s.statusLine()
 		}
 	}
 	var b strings.Builder
@@ -725,22 +789,10 @@ func (s *documentsScreen) viewNarrow(header string) string {
 }
 
 func (s *documentsScreen) viewWide(header string) string {
-	listWidth := max(s.width/3, 24)
-	previewWidth := max(s.width-listWidth-4, 30)
-	visible := max((s.height-9)/2, 1)
-	start := visibleWindowStart(len(s.documents), s.selected, visible)
-	end := min(start+visible, len(s.documents))
-	var list strings.Builder
-	list.WriteString("Documents\n")
-	if len(s.documents) == 0 {
-		list.WriteString("\nNo documents yet.\nPress n to create one.")
-	}
-	for i := start; i < end; i++ {
-		marker := "  "
-		if i == s.selected {
-			marker = "› "
-		}
-		fmt.Fprintf(&list, "%s%s\n", marker, sanitizeTerminalLine(s.documents[i].Title))
+	listWidth, previewWidth := s.paneWidths()
+	lines, _ := s.sidebar()
+	for i, line := range lines {
+		lines[i] = runewidth.Truncate(line, max(listWidth-2, 1), "…")
 	}
 	pane := func(width int, content string) string {
 		return lipgloss.NewStyle().Width(width).Height(s.height-5).Border(lipgloss.NormalBorder()).
@@ -750,12 +802,111 @@ func (s *documentsScreen) viewWide(header string) string {
 	if _, ok := s.selectedDocument(); ok {
 		content = "Page " + s.pageLabel() + "\n" + s.preview.View()
 	}
-	footer := "↑/↓ select  Enter focus preview  [ ] page  n new  e edit  c propose  v changes  d delete  Tab notes  ? help  q quit"
-	if s.showPreview {
-		footer = "↑/↓ scroll  [ ] page  Esc return to list  n new  e edit  c propose  v changes  d delete  Tab notes  ? help  q quit"
+	footer := "↑/↓ select  Enter focus preview  [ ] page  { } section  e edit  c propose  v changes  Tab notes  ? help  q quit"
+	if s.singleFile {
+		footer = "Enter focus preview  [ ] page  { } section  click outline to jump  e edit  c propose  v changes  Tab notes  ? help  q quit"
 	}
-	return header + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, pane(listWidth, list.String()), pane(previewWidth, content)) +
+	if s.showPreview {
+		footer = "↑/↓ scroll across pages  ←/→ or [ ] page  { } section  Esc return  e edit  ? help  q quit"
+	}
+	return header + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, pane(listWidth, strings.Join(lines, "\n")), pane(previewWidth, content)) +
 		"\n" + footer + s.statusLine()
+}
+
+func (s *documentsScreen) paneWidths() (list, preview int) {
+	list = max(s.width/3, 24)
+	return list, max(s.width-list-4, 30)
+}
+
+// currentSection is the last outline entry that starts on or before the page
+// being previewed, or -1 before the first heading.
+func (s *documentsScreen) currentSection() int {
+	current := -1
+	for i, section := range s.outline {
+		if section.Page <= s.previewPage+1 {
+			current = i
+		}
+	}
+	return current
+}
+
+// sidebar renders the left pane: the document list when several documents
+// can be opened, then the outline of the selected document. targets maps each
+// line to an outline index, or -1 when the line is not a section.
+func (s *documentsScreen) sidebar() (lines []string, targets []int) {
+	add := func(line string, target int) {
+		lines = append(lines, line)
+		targets = append(targets, target)
+	}
+	if !s.singleFile {
+		add("Documents", -1)
+		if len(s.documents) == 0 {
+			add("No documents yet.", -1)
+			add("Press n to create one.", -1)
+		}
+		visible := max((s.height-5)/3, 1)
+		start := visibleWindowStart(len(s.documents), s.selected, visible)
+		for i := start; i < min(start+visible, len(s.documents)); i++ {
+			marker := "  "
+			if i == s.selected {
+				marker = "› "
+			}
+			add(marker+sanitizeTerminalLine(s.documents[i].Title), -1)
+		}
+		add("", -1)
+	}
+	add("Outline", -1)
+	if len(s.outline) == 0 {
+		if _, ok := s.selectedDocument(); ok {
+			add("  No headings", -1)
+		}
+		return lines, targets
+	}
+	room := max(s.height-5-len(lines), 1)
+	current := s.currentSection()
+	start := visibleWindowStart(len(s.outline), max(current, 0), room)
+	for i := start; i < min(start+room, len(s.outline)); i++ {
+		section := s.outline[i]
+		marker := "  "
+		if i == current {
+			marker = "› "
+		}
+		indent := strings.Repeat("  ", min(section.Level-1, 4))
+		add(fmt.Sprintf("%s%s%s", marker, indent, sanitizeTerminalLine(section.Title)), i)
+	}
+	return lines, targets
+}
+
+func (s *documentsScreen) stepSection(step int) {
+	if len(s.outline) == 0 {
+		return
+	}
+	current := s.currentSection()
+	next := current + step
+	if next < 0 || next >= len(s.outline) {
+		return
+	}
+	s.gotoSection(next)
+}
+
+func (s *documentsScreen) gotoSection(index int) {
+	s.previewPage = min(max(s.outline[index].Page-1, 0), max(len(s.previewPages)-1, 0))
+	s.showPreview = true
+	s.resizePreview()
+}
+
+// clickOutline jumps to the section under a left click in the sidebar. Rows
+// start below the header line and the pane's top border.
+func (s *documentsScreen) clickOutline(x, y int) {
+	listWidth, _ := s.paneWidths()
+	if x < 1 || x > listWidth+1 {
+		return
+	}
+	_, targets := s.sidebar()
+	row := y - 2
+	if row >= 0 && row < len(targets) && targets[row] >= 0 {
+		s.gotoSection(targets[row])
+	}
 }
 
 func (s *documentsScreen) viewChanges(header string) string {
@@ -832,7 +983,7 @@ func (s *documentsScreen) dirty() bool { return s.currentDraft() != s.original }
 
 func (s *documentsScreen) currentDraft() editorDraft {
 	return editorDraft{
-		title: s.titleInput.Value(), body: s.body.Value(), layout: s.layout, images: imageKey(s.images),
+		body: s.body.Value(), layout: s.layout, images: imageKey(s.images),
 	}
 }
 

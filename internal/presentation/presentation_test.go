@@ -106,8 +106,9 @@ func TestEncodeDecodeSinglePresentationFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !Equal(item, decoded) {
-		t.Fatalf("round trip changed presentation:\noriginal: %+v\ndecoded: %+v", item, decoded)
+	if item.Source != decoded.Source || item.Version != decoded.Version ||
+		!item.CreatedAt.Equal(decoded.CreatedAt) || !item.ModifiedAt.Equal(decoded.ModifiedAt) {
+		t.Fatalf("round trip changed persisted presentation content:\noriginal: %+v\ndecoded: %+v", item, decoded)
 	}
 }
 
@@ -346,8 +347,8 @@ func TestUpdateUsesExpectedSnapshotAndUndoRedo(t *testing.T) {
 		t.Fatalf("redo = %+v, %v", redone, err)
 	}
 	renamed, err := service.Update(ctx, redone, "# Renamed\n\n## Start\n\nAfter\n")
-	if err != nil || renamed.Title != "Renamed" {
-		t.Fatalf("Markdown title update = %+v, %v", renamed, err)
+	if err != nil || renamed.Title != redone.Title {
+		t.Fatalf("Markdown title update changed transient artifact title: %+v, %v", renamed, err)
 	}
 }
 
@@ -413,7 +414,7 @@ func TestMetadataBlockIsInspectable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if file.Artifact.Title != "Demo" || file.Artifact.Kind != artifact.PresentationKind {
+	if file.Artifact.Kind != artifact.PresentationKind {
 		t.Fatalf("embedded metadata = %+v", file.Artifact)
 	}
 }
@@ -421,6 +422,7 @@ func TestMetadataBlockIsInspectable(t *testing.T) {
 func TestEqualTreatsEmptyMetadataSlicesAsNil(t *testing.T) {
 	left := testPresentation()
 	right := left
+	right.Title = "different filename"
 	right.Tags = []string{}
 	right.Links = []string{}
 	if !Equal(left, right) {
