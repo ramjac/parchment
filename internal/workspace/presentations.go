@@ -26,7 +26,7 @@ func (w *Workspace) ListPresentations(ctx context.Context) ([]presentation.Prese
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if !entry.IsDir() || !validID.MatchString(entry.Name()) {
+		if !entry.IsDir() || !validID(entry.Name()) {
 			continue
 		}
 		var item presentation.Presentation
@@ -61,7 +61,7 @@ func (w *Workspace) GetPresentation(ctx context.Context, id string) (presentatio
 	if err := ctx.Err(); err != nil {
 		return presentation.Presentation{}, err
 	}
-	if !validID.MatchString(id) {
+	if !validID(id) {
 		return presentation.Presentation{}, presentation.ErrNotFound
 	}
 	var item presentation.Presentation
@@ -80,7 +80,7 @@ func (w *Workspace) TransitionPresentation(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !validID.MatchString(id) {
+	if !validID(id) {
 		return presentation.ErrNotFound
 	}
 	if expected != nil && expected.ID != id {
@@ -135,7 +135,7 @@ func (w *Workspace) TransitionPresentation(
 }
 
 func (w *Workspace) savePresentationLocked(ctx context.Context, item presentation.Presentation) error {
-	if !validID.MatchString(item.ID) || item.Kind != artifact.PresentationKind {
+	if !validID(item.ID) || item.Kind != artifact.PresentationKind {
 		return errors.New("invalid presentation artifact")
 	}
 	if item.Location != filepath.ToSlash(filepath.Join(w.artifactDir, item.ID, presentationName)) {

@@ -26,7 +26,7 @@ func (w *Workspace) ListSpreadsheets(ctx context.Context) ([]spreadsheet.Spreads
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if !entry.IsDir() || !validID.MatchString(entry.Name()) {
+		if !entry.IsDir() || !validID(entry.Name()) {
 			continue
 		}
 		var book spreadsheet.Spreadsheet
@@ -61,7 +61,7 @@ func (w *Workspace) GetSpreadsheet(ctx context.Context, id string) (spreadsheet.
 	if err := ctx.Err(); err != nil {
 		return spreadsheet.Spreadsheet{}, err
 	}
-	if !validID.MatchString(id) {
+	if !validID(id) {
 		return spreadsheet.Spreadsheet{}, spreadsheet.ErrNotFound
 	}
 	var book spreadsheet.Spreadsheet
@@ -80,7 +80,7 @@ func (w *Workspace) TransitionSpreadsheet(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !validID.MatchString(id) {
+	if !validID(id) {
 		return spreadsheet.ErrNotFound
 	}
 	if expected != nil && expected.ID != id {
@@ -135,7 +135,7 @@ func (w *Workspace) TransitionSpreadsheet(
 }
 
 func (w *Workspace) saveSpreadsheetLocked(ctx context.Context, book spreadsheet.Spreadsheet) error {
-	if !validID.MatchString(book.ID) || book.Kind != artifact.SpreadsheetKind {
+	if !validID(book.ID) || book.Kind != artifact.SpreadsheetKind {
 		return errors.New("invalid spreadsheet artifact")
 	}
 	if book.Location != filepath.ToSlash(filepath.Join(w.artifactDir, book.ID, spreadsheetName)) {

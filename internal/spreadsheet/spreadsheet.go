@@ -2,8 +2,6 @@ package spreadsheet
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -122,11 +120,10 @@ func (s *Service) Create(ctx context.Context, title string, rows [][]Cell) (Spre
 	if title == "" {
 		return Spreadsheet{}, errors.New("spreadsheet title is required")
 	}
-	idBytes := make([]byte, 16)
-	if _, err := rand.Read(idBytes); err != nil {
-		return Spreadsheet{}, fmt.Errorf("generate spreadsheet ID: %w", err)
+	id, err := artifact.NewID(artifact.SpreadsheetKind)
+	if err != nil {
+		return Spreadsheet{}, err
 	}
-	id := hex.EncodeToString(idBytes)
 	now := s.now().UTC()
 	sheet := Spreadsheet{
 		Artifact: artifact.Artifact{

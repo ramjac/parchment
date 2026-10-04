@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"example.com/parchment/internal/artifact"
@@ -28,7 +27,7 @@ type artifactDeletionIntent struct {
 	State string `json:"state"`
 }
 
-var validID = regexp.MustCompile(`^[a-f0-9]{32}$`)
+var validID = artifact.ValidID
 var errNotNote = errors.New("artifact is not a note")
 var errNoMetadata = errors.New("artifact metadata not found")
 
@@ -93,8 +92,8 @@ func Open(path string) (*Workspace, error) {
 	return OpenWithArtifactDir(path, config.DefaultArtifactDir)
 }
 
-// OpenWithArtifactDir opens an initialized workspace, creating its configured
-// artifact directory if needed.
+// OpenWithArtifactDir opens an initialized workspace using its configured
+// artifact directory.
 func OpenWithArtifactDir(path, artifactDir string) (*Workspace, error) {
 	normalized, err := config.ValidateArtifactDir(artifactDir)
 	if err != nil {
@@ -112,7 +111,7 @@ func OpenWithArtifactDir(path, artifactDir string) (*Workspace, error) {
 	}
 	ws := &Workspace{root: abs, artifactDir: normalized}
 	artifacts := ws.artifactsRoot()
-	if err := ensureWorkspaceRelativeDirectory(abs, normalized); err != nil {
+	if err := ensureExistingWorkspaceRelativeDirectory(abs, normalized); err != nil {
 		return nil, fmt.Errorf("open workspace: %w", err)
 	}
 	entries, err := os.ReadDir(artifacts)
@@ -120,7 +119,7 @@ func OpenWithArtifactDir(path, artifactDir string) (*Workspace, error) {
 		return nil, fmt.Errorf("list artifacts: %w", err)
 	}
 	for _, entry := range entries {
-		if id := strings.TrimPrefix(entry.Name(), deleteIntentPrefix); id != entry.Name() && validID.MatchString(id) {
+		if id := strings.TrimPrefix(entry.Name(), deleteIntentPrefix); id != entry.Name() && validID(id) {
 			if err := withArtifactLock(context.Background(), artifacts, id, func() error {
 				return recoverArtifactDeletion(artifacts, id)
 			}); err != nil {
@@ -128,7 +127,7 @@ func OpenWithArtifactDir(path, artifactDir string) (*Workspace, error) {
 			}
 			continue
 		}
-		if id := strings.TrimPrefix(entry.Name(), pendingArtifactPrefix); id != entry.Name() && validID.MatchString(id) {
+		if id := strings.TrimPrefix(entry.Name(), pendingArtifactPrefix); id != entry.Name() && validID(id) {
 			if err := withArtifactLock(context.Background(), artifacts, id, func() error {
 				return restorePendingArtifact(artifacts, id)
 			}); err != nil {
@@ -144,7 +143,7 @@ func OpenWithArtifactDir(path, artifactDir string) (*Workspace, error) {
 		return nil, fmt.Errorf("list artifacts: %w", err)
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() || !validID.MatchString(entry.Name()) {
+		if !entry.IsDir() || !validID(entry.Name()) {
 			continue
 		}
 		if err := withArtifactLock(context.Background(), artifacts, entry.Name(), func() error {
@@ -203,7 +202,7 @@ func (w *Workspace) List(ctx context.Context) ([]note.Note, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if !entry.IsDir() || !validID.MatchString(entry.Name()) {
+		if !entry.IsDir() || !validID(entry.Name()) {
 			continue
 		}
 		var n note.Note
@@ -269,7 +268,7 @@ func (w *Workspace) Get(ctx context.Context, id string) (note.Note, error) {
 	if err := ctx.Err(); err != nil {
 		return note.Note{}, err
 	}
-	if !validID.MatchString(id) {
+	if !validID(id) {
 		return note.Note{}, note.ErrNotFound
 	}
 	n, err := w.readNote(ctx, id)
@@ -288,7 +287,7 @@ func (w *Workspace) Transition(ctx context.Context, id string, expected, target 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !validID.MatchString(id) {
+	if !validID(id) {
 		return note.ErrNotFound
 	}
 	if expected != nil && expected.ID != id {
@@ -336,7 +335,7 @@ func (w *Workspace) Save(ctx context.Context, n note.Note) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !validID.MatchString(n.ID) {
+	if !validID(n.ID) {
 		return errors.New("invalid note artifact")
 	}
 	return withArtifactLock(ctx, w.artifactsRoot(), n.ID, func() error {
@@ -345,7 +344,7 @@ func (w *Workspace) Save(ctx context.Context, n note.Note) error {
 }
 
 func (w *Workspace) saveLocked(ctx context.Context, n note.Note) error {
-	if !validID.MatchString(n.ID) || n.Kind != artifact.NoteKind {
+	if !validID(n.ID) || n.Kind != artifact.NoteKind {
 		return errors.New("invalid note artifact")
 	}
 	if err := n.Artifact.Validate(); err != nil {
@@ -630,7 +629,7 @@ func (w *Workspace) Delete(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !validID.MatchString(id) {
+	if !validID(id) {
 		return note.ErrNotFound
 	}
 	artifactsDir := w.artifactsRoot()
@@ -969,10 +968,32 @@ func ensureWorkspaceRelativeDirectory(root, relative string) error {
 	return nil
 }
 
+func ensureExistingWorkspaceRelativeDirectory(root, relative string) error {
+	current := root
+	for _, component := range strings.Split(filepath.FromSlash(relative), string(filepath.Separator)) {
+		current = filepath.Join(current, component)
+		if err := ensureExistingDirectory(current); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func ensureDirectory(path string) error {
 	if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 		return err
 	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is not a directory", path)
+	}
+	return nil
+}
+
+func ensureExistingDirectory(path string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return err

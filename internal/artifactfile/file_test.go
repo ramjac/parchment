@@ -14,9 +14,9 @@ import (
 func testArtifact() artifact.Artifact {
 	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
 	return artifact.Artifact{
-		ID: "0123456789abcdef0123456789abcdef", Kind: artifact.NoteKind, Title: "Example",
+		ID: "n12345", Kind: artifact.NoteKind, Title: "Example",
 		CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
-		Location: "parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+		Location: "parchment/artifacts/n12345/content.md",
 	}
 }
 

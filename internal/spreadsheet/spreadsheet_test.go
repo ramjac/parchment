@@ -13,9 +13,9 @@ import (
 func TestSingleFileWorkbookEncodesMetadataCellsAndFormulas(t *testing.T) {
 	book := Spreadsheet{
 		Artifact: artifact.Artifact{
-			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.SpreadsheetKind,
+			ID: "s12345", Kind: artifact.SpreadsheetKind,
 			Title: "Budget", FormatVersion: artifact.FormatVersion,
-			Location:  "parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+			Location:  "parchment/artifacts/s12345/content.md",
 			CreatedAt: fixedTime, ModifiedAt: fixedTime,
 		},
 		Version: FileVersion,
@@ -76,9 +76,9 @@ func TestNormalizeRejectsInvalidUTF8Title(t *testing.T) {
 func TestFormulaArithmeticReferencesAndCycles(t *testing.T) {
 	book := Spreadsheet{
 		Artifact: artifact.Artifact{
-			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.SpreadsheetKind,
+			ID: "s12345", Kind: artifact.SpreadsheetKind,
 			Title: "Formula test", FormatVersion: artifact.FormatVersion,
-			Location:  "parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+			Location:  "parchment/artifacts/s12345/content.md",
 			CreatedAt: fixedTime, ModifiedAt: fixedTime,
 		},
 		Version: FileVersion,
@@ -215,9 +215,9 @@ func formulaChain(formulas int) Spreadsheet {
 	}
 	return Spreadsheet{
 		Artifact: artifact.Artifact{
-			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.SpreadsheetKind,
+			ID: "s12345", Kind: artifact.SpreadsheetKind,
 			Title: "Deep formulas", FormatVersion: artifact.FormatVersion,
-			Location:  "parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+			Location:  "parchment/artifacts/s12345/content.md",
 			CreatedAt: fixedTime, ModifiedAt: fixedTime,
 		},
 		Version: FileVersion, Sheets: []Sheet{{Name: "Sheet1", Rows: rows}},
@@ -227,9 +227,9 @@ func formulaChain(formulas int) Spreadsheet {
 func TestEqualTreatsEmptyMetadataSlicesAsNil(t *testing.T) {
 	left := Spreadsheet{
 		Artifact: artifact.Artifact{
-			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.SpreadsheetKind,
+			ID: "s12345", Kind: artifact.SpreadsheetKind,
 			Title: "Metadata", FormatVersion: artifact.FormatVersion,
-			Location:  "parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+			Location:  "parchment/artifacts/s12345/content.md",
 			CreatedAt: fixedTime, ModifiedAt: fixedTime,
 		},
 		Version: FileVersion, Sheets: []Sheet{{Name: "Sheet1", Rows: [][]Cell{{{Value: "1"}}}}},

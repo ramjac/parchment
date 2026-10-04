@@ -1,13 +1,13 @@
 ```parchment-meta
 {
   "parchment_format": "parchment-single-file-v1",
-  "id": "40000000000000000000000000000004",
+  "id": "p4",
   "kind": "presentation",
   "title": "Product Update",
   "created_at": "2026-01-15T09:00:00Z",
   "modified_at": "2026-01-15T09:00:00Z",
   "format_version": 1,
-  "location": "parchment/artifacts/40000000000000000000000000000004/content.md"
+  "location": "parchment/artifacts/p4/content.md"
 }
 ```
 

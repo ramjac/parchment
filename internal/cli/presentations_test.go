@@ -39,7 +39,7 @@ func TestPresentationCLI(t *testing.T) {
 	}
 	must("init")
 	id := strings.TrimSpace(must("presentation", "create", "A Talk", "--body-file", sourcePath))
-	if len(id) != 32 {
+	if len(id) < 2 || len(id) > 26 || id[0] != 'p' {
 		t.Fatalf("presentation ID = %q", id)
 	}
 	if got := must("presentation", "show", id); got != source {

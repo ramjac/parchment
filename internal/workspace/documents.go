@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/artifactfile"
@@ -18,6 +19,7 @@ import (
 const documentDataBlock = "parchment-document"
 
 var errNotDocument = errors.New("artifact is not a document")
+var validChangeID = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
 // validArtifactFileName accepts the artifact file targeted by recovery journals.
 func validArtifactFileName(name string) bool {
@@ -53,7 +55,7 @@ func (w *Workspace) ListDocuments(ctx context.Context) ([]document.Document, err
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if !entry.IsDir() || !validID.MatchString(entry.Name()) {
+		if !entry.IsDir() || !validID(entry.Name()) {
 			continue
 		}
 		var d document.Document
@@ -88,7 +90,7 @@ func (w *Workspace) GetDocument(ctx context.Context, id string) (document.Docume
 	if err := ctx.Err(); err != nil {
 		return document.Document{}, err
 	}
-	if !validID.MatchString(id) {
+	if !validID(id) {
 		return document.Document{}, document.ErrNotFound
 	}
 	var d document.Document
@@ -124,7 +126,7 @@ func (w *Workspace) transitionDocument(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !validID.MatchString(id) {
+	if !validID(id) {
 		return document.ErrNotFound
 	}
 	if expected != nil && expected.ID != id {
@@ -176,7 +178,7 @@ func (w *Workspace) DeleteDocument(ctx context.Context, id string, expected docu
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if !validID.MatchString(id) {
+	if !validID(id) {
 		return nil, document.ErrNotFound
 	}
 	if expected.ID != id {
@@ -225,7 +227,7 @@ func (w *Workspace) ListDocumentChanges(ctx context.Context, id string) ([]docum
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if !validID.MatchString(id) {
+	if !validID(id) {
 		return nil, document.ErrNotFound
 	}
 	var changes []document.Change
@@ -249,7 +251,7 @@ func (w *Workspace) ProposeDocumentChange(ctx context.Context, id string, expect
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !validID.MatchString(id) {
+	if !validID(id) {
 		return document.ErrNotFound
 	}
 	if expected.ID != id || change.DocumentID != id {
@@ -299,7 +301,7 @@ func (w *Workspace) TransitionDocumentChange(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !validID.MatchString(id) || !validID.MatchString(changeID) {
+	if !validID(id) || !validChangeID.MatchString(changeID) {
 		return document.ErrChangeNotFound
 	}
 	if expected.DocumentID != id || target.DocumentID != id || expected.ID != changeID || target.ID != changeID {
@@ -358,7 +360,7 @@ func (w *Workspace) saveDocumentLocked(ctx context.Context, d document.Document)
 }
 
 func (w *Workspace) saveDocumentLockedWithChanges(ctx context.Context, d document.Document, changes []document.Change) error {
-	if !validID.MatchString(d.ID) || d.Kind != artifact.DocumentKind {
+	if !validID(d.ID) || d.Kind != artifact.DocumentKind {
 		return errors.New("invalid document artifact")
 	}
 	if err := d.Artifact.Validate(); err != nil {

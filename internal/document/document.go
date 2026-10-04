@@ -247,8 +247,8 @@ var ErrChangeNotFound = errors.New("document change not found")
 
 // Validate checks the persisted shape and consistency of a proposed change.
 func (c Change) Validate() error {
-	if !validArtifactID(c.ID) || !validArtifactID(c.DocumentID) {
-		return errors.New("document change IDs must be 32 lowercase hexadecimal characters")
+	if !validChangeID(c.ID) || !artifact.ValidID(c.DocumentID) {
+		return errors.New("document change ID or artifact ID is invalid")
 	}
 	if strings.TrimSpace(c.Description) == "" || c.CreatedAt.IsZero() {
 		return errors.New("document change description and creation time are required")
@@ -277,7 +277,7 @@ func (c Change) Validate() error {
 	return nil
 }
 
-func validArtifactID(id string) bool {
+func validChangeID(id string) bool {
 	if len(id) != 32 {
 		return false
 	}
@@ -352,11 +352,10 @@ func applySnapshot(d *Document, s ChangeSnapshot) {
 
 // Create adds a document. A zero Layout selects DefaultLayout.
 func (s *Service) Create(ctx context.Context, draft Draft) (Document, error) {
-	idBytes := make([]byte, 16)
-	if _, err := rand.Read(idBytes); err != nil {
-		return Document{}, fmt.Errorf("generate document ID: %w", err)
+	id, err := artifact.NewID(artifact.DocumentKind)
+	if err != nil {
+		return Document{}, err
 	}
-	id := hex.EncodeToString(idBytes)
 	now := s.now().UTC()
 	if draft.Layout == (Layout{}) {
 		draft.Layout = DefaultLayout()

@@ -1,13 +1,13 @@
 ```parchment-meta
 {
   "parchment_format": "parchment-single-file-v1",
-  "id": "30000000000000000000000000000003",
+  "id": "s3",
   "kind": "spreadsheet",
   "title": "Monthly budget",
   "created_at": "2026-01-15T09:00:00Z",
   "modified_at": "2026-01-15T09:00:00Z",
   "format_version": 1,
-  "location": "parchment/artifacts/30000000000000000000000000000003/content.md"
+  "location": "parchment/artifacts/s3/content.md"
 }
 ```
 

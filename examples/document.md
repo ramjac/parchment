@@ -1,13 +1,13 @@
 ```parchment-meta
 {
   "parchment_format": "parchment-single-file-v1",
-  "id": "20000000000000000000000000000002",
+  "id": "d2",
   "kind": "document",
   "title": "Community Garden Project Brief",
   "created_at": "2026-01-15T09:00:00Z",
   "modified_at": "2026-01-15T09:00:00Z",
   "format_version": 1,
-  "location": "parchment/artifacts/20000000000000000000000000000002/content.md"
+  "location": "parchment/artifacts/d2/content.md"
 }
 ```
 

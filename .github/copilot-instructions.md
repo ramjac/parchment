@@ -67,9 +67,11 @@ process.
   and confirmation states receive input before background screens. Do not
   introduce a universal child-component interface until multiple real
   components need it.
-- Persist artifact IDs as 32-character lowercase hex strings. An artifact's
-  `Location` must match its configured workspace artifact directory; the
-  default is `parchment/artifacts/<id>/content.md`.
+- Persist artifact IDs as a kind-prefixed lowercase base-36 encoding of 128
+  random bits (`n` for notes, `d` for documents, `s` for spreadsheets, `p` for
+  presentations, `i` for images). An artifact's `Location` must match its
+  configured workspace artifact directory; the default is
+  `parchment/artifacts/<id>/content.md`.
 - Generally, persist each artifact as one human-readable file. Keep its shared
   metadata, content, comments or annotations, and change-tracking data together
   so a text editor can inspect the complete artifact without opening sidecars.

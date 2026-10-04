@@ -54,7 +54,7 @@ func TestSpreadsheetCLIFormulasAndGridOperations(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := strings.TrimSpace(must("spreadsheet", "create", "Fruit", "--csv-file", input))
-	if len(id) != 32 {
+	if len(id) < 2 || len(id) > 26 || id[0] != 's' {
 		t.Fatalf("spreadsheet ID = %q", id)
 	}
 	if out := must("spreadsheet", "cell", id, "B2"); strings.TrimSpace(out) != "4" {

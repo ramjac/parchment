@@ -411,7 +411,7 @@ func TestTransitionPreventsConcurrentLostUpdates(t *testing.T) {
 func TestTransitionDoesNotOverwriteOccupiedArtifactIDs(t *testing.T) {
 	ctx := context.Background()
 	ws := openTestWorkspace(t, t.TempDir())
-	id := "0123456789abcdef0123456789abcdef"
+	id := "n12345"
 	dir := filepath.Join(ws.Root(), "parchment", "artifacts", id)
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -450,7 +450,7 @@ func TestTransitionDoesNotOverwriteOccupiedArtifactIDs(t *testing.T) {
 		t.Fatalf("non-note metadata changed: %s", after)
 	}
 
-	occupiedID := "abcdef0123456789abcdef0123456789"
+	occupiedID := "n23456"
 	occupiedDir := filepath.Join(ws.Root(), "parchment", "artifacts", occupiedID)
 	if err := os.Mkdir(occupiedDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -580,10 +580,10 @@ func TestFailedCreateDoesNotLeaveArtifactDirectory(t *testing.T) {
 	root := t.TempDir()
 	ws := openTestWorkspace(t, root)
 	n := note.Note{Artifact: artifact.Artifact{
-		ID: "0123456789abcdef0123456789abcdef", Kind: artifact.NoteKind, Title: "Invalid time",
+		ID: "n12345", Kind: artifact.NoteKind, Title: "Invalid time",
 		CreatedAt:  time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC),
 		ModifiedAt: time.Now().UTC(), FormatVersion: artifact.FormatVersion,
-		Location: "parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+		Location: "parchment/artifacts/n12345/content.md",
 	}}
 	if err := ws.Save(context.Background(), n); err == nil {
 		t.Fatal("save succeeded with an unrepresentable timestamp")
@@ -614,7 +614,7 @@ func TestOpenRejectsSymlinkedWorkspaceStorage(t *testing.T) {
 func TestSaveRejectsSymlinkedArtifactDirectory(t *testing.T) {
 	root := t.TempDir()
 	ws := openTestWorkspace(t, root)
-	id := "0123456789abcdef0123456789abcdef"
+	id := "n12345"
 	outside := t.TempDir()
 	if err := os.Symlink(outside, filepath.Join(root, "parchment", "artifacts", id)); err != nil {
 		t.Fatal(err)
@@ -683,7 +683,7 @@ func TestArtifactLockWaitsAndHonorsCancellation(t *testing.T) {
 	if err := os.MkdirAll(artifactsDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	const id = "0123456789abcdef0123456789abcdef"
+	const id = "n12345"
 	unlock, err := lockArtifact(context.Background(), artifactsDir, id)
 	if err != nil {
 		t.Fatal(err)
@@ -931,7 +931,7 @@ func TestOpenKeepsCommittedDeletionIntentWhenTombstoneCleanupFails(t *testing.T)
 
 func TestNoteRepositoryIgnoresOtherArtifactKinds(t *testing.T) {
 	ws := openTestWorkspace(t, t.TempDir())
-	id := "0123456789abcdef0123456789abcdef"
+	id := "d12345"
 	dir := filepath.Join(ws.Root(), "parchment", "artifacts", id)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -987,11 +987,14 @@ func TestArtifactListsCheckKindBeforeReadingBodies(t *testing.T) {
 			return len(items), err
 		}},
 	}
-	for i, source := range listers {
+	for _, source := range listers {
 		t.Run(string(source.kind), func(t *testing.T) {
 			root := t.TempDir()
 			ws := openTestWorkspace(t, root)
-			id := fmt.Sprintf("%032x", i+1)
+			id, err := artifact.NewID(source.kind)
+			if err != nil {
+				t.Fatal(err)
+			}
 			now := time.Now().UTC()
 			item := artifact.Artifact{
 				ID: id, Kind: source.kind, Title: "Large", CreatedAt: now, ModifiedAt: now,

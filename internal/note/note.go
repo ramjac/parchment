@@ -2,11 +2,8 @@ package note
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -65,15 +62,15 @@ func (s *Service) Create(ctx context.Context, title, body string) (Note, error) 
 	if strings.TrimSpace(title) == "" {
 		return Note{}, errors.New("note title is required")
 	}
-	idBytes := make([]byte, 16)
-	if _, err := rand.Read(idBytes); err != nil {
-		return Note{}, fmt.Errorf("generate note ID: %w", err)
+	id, err := artifact.NewID(artifact.NoteKind)
+	if err != nil {
+		return Note{}, err
 	}
 	now := s.now().UTC()
 	n := Note{Artifact: artifact.Artifact{
-		ID: hex.EncodeToString(idBytes), Kind: artifact.NoteKind, Title: strings.TrimSpace(title),
+		ID: id, Kind: artifact.NoteKind, Title: strings.TrimSpace(title),
 		CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
-		Location: s.repository.ArtifactLocation(hex.EncodeToString(idBytes)),
+		Location: s.repository.ArtifactLocation(id),
 	}, Body: body}
 	if err := s.change(ctx, nil, &n, "Create note"); err != nil {
 		return Note{}, err

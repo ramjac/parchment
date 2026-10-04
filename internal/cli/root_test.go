@@ -36,7 +36,7 @@ func TestWorkspaceAndNoteCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := strings.TrimSpace(output)
-	if len(id) != 32 {
+	if len(id) < 2 || len(id) > 26 || id[0] != 'n' {
 		t.Fatalf("created ID = %q", id)
 	}
 	if _, err := run("note", "add", id, "terminal"); err != nil {

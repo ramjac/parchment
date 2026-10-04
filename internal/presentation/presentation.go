@@ -3,8 +3,6 @@ package presentation
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -102,11 +100,10 @@ func (s *Service) Create(ctx context.Context, title, source string) (Presentatio
 	if deck.Title != title {
 		return Presentation{}, fmt.Errorf("Markdown title %q does not match presentation title %q", deck.Title, title)
 	}
-	idBytes := make([]byte, 16)
-	if _, err := rand.Read(idBytes); err != nil {
-		return Presentation{}, fmt.Errorf("generate presentation ID: %w", err)
+	id, err := artifact.NewID(artifact.PresentationKind)
+	if err != nil {
+		return Presentation{}, err
 	}
-	id := hex.EncodeToString(idBytes)
 	now := s.now().UTC()
 	item := Presentation{
 		Artifact: artifact.Artifact{

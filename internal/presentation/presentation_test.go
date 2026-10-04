@@ -356,10 +356,10 @@ var testNow = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 func testPresentation() Presentation {
 	return Presentation{
 		Artifact: artifact.Artifact{
-			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.PresentationKind,
+			ID: "p12345", Kind: artifact.PresentationKind,
 			Title: "Demo", CreatedAt: testNow, ModifiedAt: testNow,
 			FormatVersion: artifact.FormatVersion,
-			Location:      "parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+			Location:      "parchment/artifacts/p12345/content.md",
 		},
 		Version: FileVersion, Source: "# Demo\n\n## Slide 1\n\nHello.\n",
 	}

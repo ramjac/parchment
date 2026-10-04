@@ -10,16 +10,13 @@ Copy the sample files into a workspace:
 ```sh
 workspace=./example-workspace
 parchment init "$workspace"
-for id in 10000000000000000000000000000001 \
-          20000000000000000000000000000002 \
-          30000000000000000000000000000003 \
-          40000000000000000000000000000004; do
+for id in n1 d2 s3 p4; do
   mkdir -m 700 -p "$workspace/parchment/artifacts/$id"
 done
-cp examples/note.md "$workspace/parchment/artifacts/10000000000000000000000000000001/content.md"
-cp examples/document.md "$workspace/parchment/artifacts/20000000000000000000000000000002/content.md"
-cp examples/budget.md "$workspace/parchment/artifacts/30000000000000000000000000000003/content.md"
-cp examples/presentation.md "$workspace/parchment/artifacts/40000000000000000000000000000004/content.md"
+cp examples/note.md "$workspace/parchment/artifacts/n1/content.md"
+cp examples/document.md "$workspace/parchment/artifacts/d2/content.md"
+cp examples/budget.md "$workspace/parchment/artifacts/s3/content.md"
+cp examples/presentation.md "$workspace/parchment/artifacts/p4/content.md"
 chmod 600 "$workspace"/parchment/artifacts/*/content.md
 ```
 
@@ -35,8 +32,8 @@ parchment --workspace ./example-workspace presentation list
 Try the spreadsheet formula and document print preview:
 
 ```sh
-parchment --workspace ./example-workspace spreadsheet cell 30000000000000000000000000000003 D2
-parchment --workspace ./example-workspace document print 20000000000000000000000000000002
+parchment --workspace ./example-workspace spreadsheet cell s3 D2
+parchment --workspace ./example-workspace document print d2
 ```
 
 The garden illustration is embedded in the document's hidden JSON payload as

@@ -32,7 +32,7 @@ func TestDocumentCLI(t *testing.T) {
 	}
 	must("init")
 	id := strings.TrimSpace(must("document", "create", "Quarterly", "--body", "first page", "--header", "{title}", "--columns", "2"))
-	if len(id) != 32 {
+	if len(id) < 2 || len(id) > 26 || id[0] != 'd' {
 		t.Fatalf("created ID = %q", id)
 	}
 	must("document", "page-break", id)
