@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"example.com/parchment/internal/config"
+	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/note"
 	"example.com/parchment/internal/search"
 	"example.com/parchment/internal/tui"
@@ -169,6 +170,8 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 	deleteNote.Flags().Bool("yes", false, "confirm permanent deletion")
 	notes.AddCommand(deleteNote)
 
+	addDocumentCommands(root, streams)
+
 	root.AddCommand(&cobra.Command{
 		Use: "search <query>", Short: "Search note titles, Markdown, and tags", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -189,13 +192,14 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 		},
 	})
 	root.AddCommand(&cobra.Command{
-		Use: "tui", Short: "Open the interactive notes workspace", Args: cobra.NoArgs,
+		Use: "tui", Short: "Open the interactive notes and documents workspace", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			ws, service, err := open(cmd)
+			ws, settings, err := openWorkspace(cmd)
 			if err != nil {
 				return err
 			}
-			return tui.Run(cmd.Context(), service, ws, ws.Name(), ws.Root())
+			return tui.Run(cmd.Context(), note.NewService(ws, settings.UndoLimit), ws, ws.Name(), ws.Root(),
+				tui.WithDocuments(document.NewService(ws, settings.UndoLimit)))
 		},
 	})
 	return root
@@ -227,13 +231,29 @@ func tagCommand(action string) *cobra.Command {
 }
 
 func open(cmd *cobra.Command) (*workspace.Workspace, *note.Service, error) {
-	userPath, err := config.UserConfigPath()
+	ws, settings, err := openWorkspace(cmd)
 	if err != nil {
 		return nil, nil, err
 	}
-	userSettings, err := config.Load(userPath, "")
+	return ws, note.NewService(ws, settings.UndoLimit), nil
+}
+
+func openDocuments(cmd *cobra.Command) (*workspace.Workspace, *document.Service, error) {
+	ws, settings, err := openWorkspace(cmd)
 	if err != nil {
 		return nil, nil, err
+	}
+	return ws, document.NewService(ws, settings.UndoLimit), nil
+}
+
+func openWorkspace(cmd *cobra.Command) (*workspace.Workspace, config.Settings, error) {
+	userPath, err := config.UserConfigPath()
+	if err != nil {
+		return nil, config.Settings{}, err
+	}
+	userSettings, err := config.Load(userPath, "")
+	if err != nil {
+		return nil, config.Settings{}, err
 	}
 	path, _ := cmd.InheritedFlags().GetString("workspace")
 	if path == "" {
@@ -245,30 +265,30 @@ func open(cmd *cobra.Command) (*workspace.Workspace, *note.Service, error) {
 	if path == "" && userSettings.WorkspaceDiscovery == "parents" {
 		cwd, err := os.Getwd()
 		if err != nil {
-			return nil, nil, err
+			return nil, config.Settings{}, err
 		}
 		path, err = workspace.Find(cwd)
 		if err != nil {
-			return nil, nil, err
+			return nil, config.Settings{}, err
 		}
 	}
 	if path == "" {
-		return nil, nil, errors.New("workspace path is required; pass --workspace or set PARCHMENT_WORKSPACE")
+		return nil, config.Settings{}, errors.New("workspace path is required; pass --workspace or set PARCHMENT_WORKSPACE")
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return nil, nil, err
+		return nil, config.Settings{}, err
 	}
 	if err := workspace.ValidateMarker(abs); err != nil {
-		return nil, nil, err
+		return nil, config.Settings{}, err
 	}
 	settings, err := config.Load(userPath, filepath.Join(abs, "parchment.toml"))
 	if err != nil {
-		return nil, nil, err
+		return nil, config.Settings{}, err
 	}
 	ws, err := workspace.Open(abs)
 	if err != nil {
-		return nil, nil, err
+		return nil, config.Settings{}, err
 	}
-	return ws, note.NewService(ws, settings.UndoLimit), nil
+	return ws, settings, nil
 }
