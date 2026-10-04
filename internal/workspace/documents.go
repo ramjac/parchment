@@ -750,7 +750,7 @@ func readArtifactMetadata(path string) (artifact.Artifact, bool, error) {
 	if err != nil {
 		return artifact.Artifact{}, false, err
 	}
-	item, err := artifactfile.ReadMetadataEnvelopeFrom(file)
+	marked, err := artifactfile.HasFormatMarkerFrom(file)
 	if closeErr := file.Close(); err == nil && closeErr != nil {
 		return artifact.Artifact{}, false, closeErr
 	}
@@ -761,12 +761,11 @@ func readArtifactMetadata(path string) (artifact.Artifact, bool, error) {
 	if err != nil {
 		return artifact.Artifact{}, false, err
 	}
-	defer file.Close()
-	marked, err := artifactfile.HasFormatMarkerFrom(file)
-	if err != nil {
-		return artifact.Artifact{}, false, err
+	item, metadataErr := artifactfile.ReadMetadataEnvelopeFrom(file)
+	if closeErr := file.Close(); metadataErr == nil && closeErr != nil {
+		return artifact.Artifact{}, false, closeErr
 	}
-	return item, marked, nil
+	return item, marked, metadataErr
 }
 
 func openRegularFile(path string) (*os.File, error) {

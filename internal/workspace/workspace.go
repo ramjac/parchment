@@ -223,16 +223,16 @@ func (w *Workspace) readArtifactMetadataUnlocked(id string) (artifact.Artifact, 
 	}
 
 	metadata, marked, err := readArtifactMetadata(filepath.Join(dir, "content.md"))
-	if err == nil {
-		if !marked {
-			legacy, legacyErr := readLegacyArtifactMetadata(dir, id)
-			if legacyErr == nil {
-				return legacy, nil
-			}
-			if !errors.Is(legacyErr, os.ErrNotExist) {
-				return artifact.Artifact{}, fmt.Errorf("read legacy artifact metadata %s: %w", id, legacyErr)
-			}
+	if !marked {
+		legacy, legacyErr := readLegacyArtifactMetadata(dir, id)
+		if legacyErr == nil {
+			return legacy, nil
 		}
+		if !errors.Is(legacyErr, os.ErrNotExist) {
+			return artifact.Artifact{}, fmt.Errorf("read legacy artifact metadata %s: %w", id, legacyErr)
+		}
+	}
+	if err == nil {
 		if metadata.ID != id {
 			return artifact.Artifact{}, fmt.Errorf("invalid artifact metadata for %s", id)
 		}
@@ -241,18 +241,10 @@ func (w *Workspace) readArtifactMetadataUnlocked(id string) (artifact.Artifact, 
 	if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, artifactfile.ErrMetadataMissing) {
 		return artifact.Artifact{}, err
 	}
-	metadataErr := err
-	metadata, err = readLegacyArtifactMetadata(dir, id)
-	if err == nil {
-		return metadata, nil
-	}
 	if errors.Is(err, os.ErrNotExist) {
-		if errors.Is(metadataErr, os.ErrNotExist) {
-			return artifact.Artifact{}, errNoMetadata
-		}
-		return artifact.Artifact{}, fmt.Errorf("read artifact metadata %s: %w", id, metadataErr)
+		return artifact.Artifact{}, errNoMetadata
 	}
-	return artifact.Artifact{}, fmt.Errorf("read legacy artifact metadata %s: %w", id, err)
+	return artifact.Artifact{}, fmt.Errorf("read artifact metadata %s: %w", id, err)
 }
 
 // Get returns the note with the supplied stable ID.

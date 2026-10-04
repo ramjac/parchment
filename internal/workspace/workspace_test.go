@@ -1082,14 +1082,45 @@ func TestLegacyNoteMayBeginWithMetadataFenceExample(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "content.md"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	secondID := "1123456789abcdef0123456789abcdef"
+	secondDir := filepath.Join(root, ".parchment", "artifacts", secondID)
+	if err := os.Mkdir(secondDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	secondMetadata := metadata
+	secondMetadata.ID = secondID
+	secondMetadata.Title = "Legacy with invalid metadata example"
+	secondMetadata.Location = filepath.ToSlash(filepath.Join(".parchment", "artifacts", secondID, "content.md"))
+	secondMetadataBytes, err := json.Marshal(secondMetadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBody := "```parchment-meta\n{}\n```\n\n<!-- parchment-body -->\nLegacy body after invalid example\n"
+	if err := os.WriteFile(filepath.Join(secondDir, "metadata.json"), secondMetadataBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secondDir, "content.md"), []byte(secondBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	loaded, err := ws.Get(ctx, id)
 	if err != nil || loaded.Body != body {
 		t.Fatalf("legacy note = %+v, %v", loaded, err)
 	}
 	notes, err := ws.List(ctx)
-	if err != nil || len(notes) != 1 || notes[0].Body != body {
+	if err != nil || len(notes) != 2 {
 		t.Fatalf("legacy note list = %+v, %v", notes, err)
+	}
+	foundFirst, foundSecond := false, false
+	for _, listed := range notes {
+		foundFirst = foundFirst || listed.ID == id && listed.Body == body
+		foundSecond = foundSecond || listed.ID == secondID && listed.Body == secondBody
+	}
+	if !foundFirst || !foundSecond {
+		t.Fatalf("legacy note examples were not preserved: %+v", notes)
+	}
+	if loaded, err := ws.Get(ctx, secondID); err != nil || loaded.Body != secondBody {
+		t.Fatalf("legacy note with invalid metadata example = %+v, %v", loaded, err)
 	}
 	for _, list := range []func(context.Context) error{
 		func(ctx context.Context) error {

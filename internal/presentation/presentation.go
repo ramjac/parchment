@@ -236,7 +236,12 @@ func Parse(source string) (Deck, error) {
 				listIndent = 0
 			}
 			if !isListItem && listIndent > 0 && leadingSpaces(line) >= listIndent {
-				marker = markdownFence(strings.TrimSpace(line[listIndent:]))
+				content := line[listIndent:]
+				if !hasFourSpaceFenceIndent(content) {
+					marker = markdownFence(strings.TrimSpace(content))
+				} else {
+					marker = ""
+				}
 				markerIndent = listIndent
 			} else if !isListItem && marker == "" && !isIndentedCode(line) {
 				marker = markdownFence(trimmed)
