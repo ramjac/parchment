@@ -136,7 +136,7 @@ func (f *PresentationFile) TransitionPresentation(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := writeAtomic(f.path, data, info.Mode().Perm()); err != nil {
+	if err := writeAtomic(ctx, f.path, data, info.Mode().Perm()); err != nil {
 		return fmt.Errorf("save presentation file: %w", err)
 	}
 	f.item = clonePresentationFileItem(*target)

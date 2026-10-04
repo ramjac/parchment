@@ -155,7 +155,7 @@ func (f *MarkdownFile) Transition(ctx context.Context, id string, expected, targ
 	if err != nil {
 		return fmt.Errorf("inspect Markdown file before save: %w", err)
 	}
-	if err := writeAtomic(f.path, []byte(target.Body), info.Mode().Perm()); err != nil {
+	if err := writeAtomic(ctx, f.path, []byte(target.Body), info.Mode().Perm()); err != nil {
 		return fmt.Errorf("save Markdown file: %w", err)
 	}
 	f.item = *target

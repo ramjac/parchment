@@ -60,7 +60,7 @@ func OpenNoteFile(path string) (*NoteFile, error) {
 	a.ID = standaloneID(artifact.NoteKind, resolved)
 	a.Title = standaloneTitle(resolved)
 	a.Location = filepath.ToSlash(resolved)
-	item := note.Note{Artifact: a, Body: file.Body, Blocks: file.Blocks}
+	item := note.Note{Artifact: a, Body: file.Body, Blocks: cloneRawBlocks(file.Blocks)}
 	return &NoteFile{path: resolved, item: item, data: data}, nil
 }
 
@@ -77,7 +77,7 @@ func (f *NoteFile) List(ctx context.Context) ([]note.Note, error) {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return []note.Note{f.item}, nil
+	return []note.Note{cloneNote(f.item)}, nil
 }
 
 func (f *NoteFile) Get(ctx context.Context, id string) (note.Note, error) {
@@ -89,7 +89,7 @@ func (f *NoteFile) Get(ctx context.Context, id string) (note.Note, error) {
 	if id != f.item.ID {
 		return note.Note{}, note.ErrNotFound
 	}
-	return f.item, nil
+	return cloneNote(f.item), nil
 }
 
 func (f *NoteFile) Save(ctx context.Context, item note.Note) error {
@@ -143,10 +143,10 @@ func (f *NoteFile) Transition(ctx context.Context, id string, expected, target *
 	if err != nil {
 		return err
 	}
-	if err := writeAtomic(f.path, data, info.Mode().Perm()); err != nil {
+	if err := writeAtomic(ctx, f.path, data, info.Mode().Perm()); err != nil {
 		return fmt.Errorf("save note file: %w", err)
 	}
-	f.item = *target
+	f.item = cloneNote(*target)
 	f.data = data
 	return nil
 }

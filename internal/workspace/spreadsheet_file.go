@@ -68,7 +68,7 @@ func (f *SpreadsheetFile) ListSpreadsheets(ctx context.Context) ([]spreadsheet.S
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return []spreadsheet.Spreadsheet{f.book}, nil
+	return []spreadsheet.Spreadsheet{cloneSpreadsheet(f.book)}, nil
 }
 
 func (f *SpreadsheetFile) GetSpreadsheet(ctx context.Context, id string) (spreadsheet.Spreadsheet, error) {
@@ -80,7 +80,7 @@ func (f *SpreadsheetFile) GetSpreadsheet(ctx context.Context, id string) (spread
 	if id != f.book.ID {
 		return spreadsheet.Spreadsheet{}, spreadsheet.ErrNotFound
 	}
-	return f.book, nil
+	return cloneSpreadsheet(f.book), nil
 }
 
 func (f *SpreadsheetFile) TransitionSpreadsheet(ctx context.Context, id string, expected, target *spreadsheet.Spreadsheet) error {
@@ -119,10 +119,10 @@ func (f *SpreadsheetFile) TransitionSpreadsheet(ctx context.Context, id string, 
 	if err != nil {
 		return err
 	}
-	if err := writeAtomic(f.path, data, info.Mode().Perm()); err != nil {
+	if err := writeAtomic(ctx, f.path, data, info.Mode().Perm()); err != nil {
 		return fmt.Errorf("save spreadsheet file: %w", err)
 	}
-	f.book = *target
+	f.book = cloneSpreadsheet(*target)
 	f.data = data
 	return nil
 }

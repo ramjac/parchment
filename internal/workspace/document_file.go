@@ -129,7 +129,7 @@ func (f *DocumentFile) transition(
 	if changes != nil {
 		next = *changes
 	}
-	return f.saveLocked(*target, next)
+	return f.saveLocked(ctx, *target, next)
 }
 
 // DeleteDocument always fails: a standalone document file is never removed.
@@ -146,7 +146,7 @@ func (f *DocumentFile) ListDocumentChanges(ctx context.Context, id string) ([]do
 	if id != f.item.ID {
 		return nil, document.ErrNotFound
 	}
-	return append([]document.Change(nil), f.changes...), nil
+	return cloneChanges(f.changes), nil
 }
 
 func (f *DocumentFile) ProposeDocumentChange(ctx context.Context, id string, expected document.Document, change document.Change) error {
@@ -181,8 +181,8 @@ func (f *DocumentFile) ProposeDocumentChange(ctx context.Context, id string, exp
 			return errors.New("resolve the existing document change before proposing another")
 		}
 	}
-	changes := append(append([]document.Change(nil), f.changes...), change)
-	return f.saveLocked(f.item, changes)
+	changes := append(cloneChanges(f.changes), cloneChange(change))
+	return f.saveLocked(ctx, f.item, changes)
 }
 
 func (f *DocumentFile) TransitionDocumentChange(
@@ -223,10 +223,10 @@ func (f *DocumentFile) TransitionDocumentChange(
 	if (expectedDocument == nil) != (targetDocument == nil) {
 		return errors.New("document transition must include both expected and target documents")
 	}
-	changes := append([]document.Change(nil), f.changes...)
-	changes[index] = target
+	changes := cloneChanges(f.changes)
+	changes[index] = cloneChange(target)
 	if expectedDocument == nil {
-		return f.saveLocked(f.item, changes)
+		return f.saveLocked(ctx, f.item, changes)
 	}
 	if expectedDocument.ID != id || targetDocument.ID != id || !document.Equal(f.item, *expectedDocument) {
 		return errors.New("document changed since the proposal was reviewed")
@@ -235,12 +235,12 @@ func (f *DocumentFile) TransitionDocumentChange(
 		!document.ChangeSnapshotEqual(target.After, document.ChangeSnapshotOf(*targetDocument)) {
 		return errors.New("accepted document does not match the proposal")
 	}
-	return f.saveLocked(*targetDocument, changes)
+	return f.saveLocked(ctx, *targetDocument, changes)
 }
 
 // saveLocked writes target and changes only if the file still holds the bytes
 // last read or written by this repository.
-func (f *DocumentFile) saveLocked(target document.Document, changes []document.Change) error {
+func (f *DocumentFile) saveLocked(ctx context.Context, target document.Document, changes []document.Change) error {
 	if target.ID != f.item.ID || target.Kind != artifact.DocumentKind || target.Location != f.item.Location {
 		return errors.New("invalid standalone document update")
 	}
@@ -262,12 +262,12 @@ func (f *DocumentFile) saveLocked(target document.Document, changes []document.C
 	if !bytes.Equal(current, f.data) {
 		return errors.New("document file changed outside Parchment")
 	}
-	if err := writeAtomic(f.path, data, info.Mode().Perm()); err != nil {
+	if err := writeAtomic(ctx, f.path, data, info.Mode().Perm()); err != nil {
 		return fmt.Errorf("save document file: %w", err)
 	}
 	f.item = cloneStandaloneDocument(target)
 	f.item.Title = standaloneTitle(f.path)
-	f.changes = append([]document.Change(nil), changes...)
+	f.changes = cloneChanges(changes)
 	f.data = data
 	return nil
 }
