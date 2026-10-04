@@ -198,6 +198,22 @@ func TestReadMetadataFromStopsAtNonMetadataFirstLine(t *testing.T) {
 	}
 }
 
+func TestReadMetadataFromPreservesOversizedMetadataLines(t *testing.T) {
+	metadata := testArtifact()
+	metadata.Title = strings.Repeat("x", 10_000)
+	data, err := Encode(metadata, "body", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadMetadataFrom(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != metadata.Title {
+		t.Fatal("metadata line was not preserved")
+	}
+}
+
 func TestStripPrivateBlocksPreservesOrdinaryCodeFences(t *testing.T) {
 	markdown := "before\n\n```parchment-secret\nhidden\n```\n\n```go\n```parchment-example\nvisible\n```\n```\nafter\n"
 	got := StripPrivateBlocks(markdown)
@@ -219,6 +235,26 @@ func TestStripPrivateBlocksRecognizesQuotedFences(t *testing.T) {
 	}
 	if !strings.Contains(got, "> ```go\n> ```parchment-example\n> visible\n> ```\n> ```") {
 		t.Fatalf("ordinary quoted code fence content was removed: %q", got)
+	}
+}
+
+func TestStripPrivateBlocksTracksFenceContainers(t *testing.T) {
+	markdown := "~~~parchment-secret\nsecret-before\n> ~~~\nsecret-after\n~~~\n\n" +
+		"~~~go\n> ~~~\n```parchment-example\nvisible\n~~~\n\n" +
+		"- ```parchment-list-secret\n  list-hidden\n  ```\n" +
+		"- ```go\n  ```parchment-list-example\n  list-visible\n  ```\n"
+	got := StripPrivateBlocks(markdown)
+	for _, hidden := range []string{"parchment-secret", "secret-before", "secret-after",
+		"parchment-list-secret", "list-hidden"} {
+		if strings.Contains(got, hidden) {
+			t.Fatalf("reserved block content %q was rendered: %q", hidden, got)
+		}
+	}
+	for _, visible := range []string{"~~~go\n> ~~~\n```parchment-example\nvisible\n~~~",
+		"- ```go\n  ```parchment-list-example\n  list-visible\n  ```"} {
+		if !strings.Contains(got, visible) {
+			t.Fatalf("ordinary fenced content was removed: %q", got)
+		}
 	}
 }
 

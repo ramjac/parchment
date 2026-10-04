@@ -172,7 +172,6 @@ func ReadMetadataFrom(input io.Reader) (artifact.Artifact, error) {
 					prefix.WriteString(line)
 					return ReadMetadata([]byte(prefix.String()))
 				}
-				prefix.WriteString(line)
 				lineBuffer.Reset()
 				openingLineIncomplete = true
 				continue
@@ -194,7 +193,6 @@ func ReadMetadataFrom(input io.Reader) (artifact.Artifact, error) {
 			}
 		} else {
 			if errors.Is(err, bufio.ErrBufferFull) {
-				prefix.Write(lineBytes)
 				continue
 			}
 			line := lineBuffer.String()
@@ -259,25 +257,27 @@ func readMetadata(source string) (artifact.Artifact, int, error) {
 func StripPrivateBlocks(markdown string) string {
 	var output strings.Builder
 	fence := ""
+	var containers fenceContainers
 	skipping := false
 	for offset := 0; offset < len(markdown); {
 		line, next := nextLine(markdown, offset)
 		if fence != "" {
-			if isFenceClose(stripBlockquotePrefixes(line), fence[:1], len(fence)) {
+			if isFenceCloseInContainers(line, containers, fence[:1], len(fence)) {
 				if !skipping {
 					output.WriteString(line)
 				}
-				fence, skipping = "", false
+				fence, containers, skipping = "", fenceContainers{}, false
 			} else if !skipping {
 				output.WriteString(line)
 			}
 			offset = next
 			continue
 		}
-		marker, info, ok := parseFence(stripBlockquotePrefixes(line))
+		block, context, ok := parseContainerFence(line)
 		if ok {
-			fence = marker
-			skipping = strings.HasPrefix(info, "parchment-")
+			fence = block.marker
+			containers = context
+			skipping = strings.HasPrefix(block.name, "parchment-")
 			if !skipping {
 				output.WriteString(line)
 			}
@@ -290,25 +290,115 @@ func StripPrivateBlocks(markdown string) string {
 	return output.String()
 }
 
-func stripBlockquotePrefixes(line string) string {
+type fenceContainers struct {
+	blockquotes int
+	listIndent  int
+}
+
+func parseContainerFence(line string) (opening, fenceContainers, bool) {
+	line, blockquotes := stripBlockquotePrefixes(line)
+	if marker, info, ok := parseFence(line); ok {
+		return opening{marker: marker, name: info}, fenceContainers{blockquotes: blockquotes}, true
+	}
+	marker, info, indent, ok := parseListItemFence(line)
+	if !ok {
+		return opening{}, fenceContainers{}, false
+	}
+	return opening{marker: marker, name: info},
+		fenceContainers{blockquotes: blockquotes, listIndent: indent}, true
+}
+
+func parseListItemFence(line string) (string, string, int, bool) {
+	indent := 0
 	for {
+		content, markerIndent, ok := stripListMarker(line)
+		if !ok {
+			return "", "", 0, false
+		}
+		indent += markerIndent
+		marker, info, ok := parseFence(content)
+		if ok {
+			return marker, info, indent, true
+		}
+		line = content
+	}
+}
+
+func stripListMarker(line string) (string, int, bool) {
+	text := strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+	indent := 0
+	for indent < len(text) && indent < 4 && text[indent] == ' ' {
+		indent++
+	}
+	if indent > 3 || indent == len(text) {
+		return "", 0, false
+	}
+	end := indent
+	if text[end] == '-' || text[end] == '+' || text[end] == '*' {
+		end++
+	} else {
+		digits := end
+		for end < len(text) && text[end] >= '0' && text[end] <= '9' && end-digits < 10 {
+			end++
+		}
+		if end == digits || end == len(text) || text[end] != '.' && text[end] != ')' {
+			return "", 0, false
+		}
+		end++
+	}
+	if end == len(text) || text[end] != ' ' && text[end] != '\t' {
+		return "", 0, false
+	}
+	for end < len(text) && (text[end] == ' ' || text[end] == '\t') {
+		end++
+	}
+	ending := line[len(text):]
+	return text[end:] + ending, end, true
+}
+
+func isFenceCloseInContainers(line string, containers fenceContainers, marker string, minLength int) bool {
+	line, blockquotes := stripBlockquotePrefixes(line)
+	if blockquotes != containers.blockquotes {
+		return false
+	}
+	if containers.listIndent > 0 {
 		text := strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+		indent := 0
+		for indent < len(text) && text[indent] == ' ' {
+			indent++
+		}
+		if indent < containers.listIndent {
+			return false
+		}
+		line = line[containers.listIndent:]
+	}
+	return isFenceClose(line, marker, minLength)
+}
+
+func stripBlockquotePrefixes(line string) (string, int) {
+	endingStart := len(line)
+	for endingStart > 0 && (line[endingStart-1] == '\n' || line[endingStart-1] == '\r') {
+		endingStart--
+	}
+	ending := line[endingStart:]
+	text := line[:endingStart]
+	depth := 0
+	for {
 		spaces := 0
 		for spaces < len(text) && spaces < 4 && text[spaces] == ' ' {
 			spaces++
 		}
 		if spaces > 3 || spaces == len(text) || text[spaces] != '>' {
-			return line
+			if depth == 0 {
+				return line, depth
+			}
+			return text + ending, depth
 		}
-		line = text[spaces+1:]
-		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
-			line = line[1:]
+		text = text[spaces+1:]
+		if strings.HasPrefix(text, " ") || strings.HasPrefix(text, "\t") {
+			text = text[1:]
 		}
-		if strings.HasSuffix(line, "\r") {
-			line = strings.TrimSuffix(line, "\r") + "\n"
-		} else if strings.HasSuffix(line, "\n") {
-			line = line[:len(line)-1] + "\n"
-		}
+		depth++
 	}
 }
 
