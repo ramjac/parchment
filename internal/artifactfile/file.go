@@ -45,9 +45,18 @@ func Encode(item artifact.Artifact, body string, blocks map[string]any) ([]byte,
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		payload, err := json.MarshalIndent(blocks[name], "", "  ")
-		if err != nil {
-			return nil, fmt.Errorf("encode %s block: %w", name, err)
+		var payload []byte
+		if raw, ok := blocks[name].(json.RawMessage); ok {
+			if !json.Valid(raw) {
+				return nil, fmt.Errorf("encode %s block: invalid JSON", name)
+			}
+			payload = append([]byte(nil), raw...)
+		} else {
+			var err error
+			payload, err = json.MarshalIndent(blocks[name], "", "  ")
+			if err != nil {
+				return nil, fmt.Errorf("encode %s block: %w", name, err)
+			}
 		}
 		writeBlock(&output, name, payload)
 	}
@@ -75,22 +84,26 @@ func Decode(data []byte) (File, error) {
 	file := File{Artifact: item, Blocks: make(map[string]json.RawMessage)}
 	for offset < len(source) {
 		probe := offset
-		line, end := nextLine(source, probe)
-		if isBlankLine(line) {
+		for {
+			line, end := nextLine(source, probe)
+			if !isBlankLine(line) {
+				break
+			}
 			probe = end
 			if probe == len(source) {
-				offset = probe
 				break
 			}
 		}
-		line, end = nextLine(source, probe)
+		if probe == len(source) {
+			break
+		}
+		line, end := nextLine(source, probe)
 		if strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r") == bodyBoundary {
 			offset = end
 			break
 		}
 		block, isBlock := parseOpening(line)
 		if !isBlock || !strings.HasPrefix(block.name, "parchment-") {
-			offset = probe
 			break
 		}
 		if block.name == metadataBlock {

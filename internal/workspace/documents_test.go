@@ -249,7 +249,7 @@ func TestDocumentChangesPersistAndResolveAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	proposal, err := service.Propose(ctx, created.ID, "Revise text", document.Draft{
+	proposal, err := service.Propose(ctx, created, "Revise text", document.Draft{
 		Title: "Revised", Body: "proposed", Layout: created.Layout,
 	})
 	if err != nil {
@@ -259,7 +259,7 @@ func TestDocumentChangesPersistAndResolveAtomically(t *testing.T) {
 	if err != nil || live.Title != "Draft" || live.Body != "original" {
 		t.Fatalf("proposal changed the live document: %+v, %v", live, err)
 	}
-	if _, err := service.Propose(ctx, created.ID, "Another", document.Draft{
+	if _, err := service.Propose(ctx, created, "Another", document.Draft{
 		Title: "Another", Body: "other", Layout: created.Layout,
 	}); err == nil {
 		t.Fatal("a second pending proposal was accepted")
@@ -286,7 +286,7 @@ func TestDocumentChangesPersistAndResolveAtomically(t *testing.T) {
 		t.Fatalf("reject changed the live document: %+v, %v", live, err)
 	}
 
-	proposal, err = reopened.Propose(ctx, created.ID, "Accept text", document.Draft{
+	proposal, err = reopened.Propose(ctx, created, "Accept text", document.Draft{
 		Title: "Accepted", Body: "final", Layout: created.Layout,
 	})
 	if err != nil {
@@ -325,7 +325,7 @@ func TestUndoDocumentDeleteRestoresChangeHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rejected, err := service.Propose(ctx, created.ID, "Rejected edit", document.Draft{
+	rejected, err := service.Propose(ctx, created, "Rejected edit", document.Draft{
 		Title: "Rejected", Body: "first", Layout: created.Layout,
 	})
 	if err != nil {
@@ -334,7 +334,7 @@ func TestUndoDocumentDeleteRestoresChangeHistory(t *testing.T) {
 	if err := service.Reject(ctx, created.ID, rejected.ID); err != nil {
 		t.Fatal(err)
 	}
-	pending, err := service.Propose(ctx, created.ID, "Pending edit", document.Draft{
+	pending, err := service.Propose(ctx, created, "Pending edit", document.Draft{
 		Title: "Pending", Body: "second", Layout: created.Layout,
 	})
 	if err != nil {
@@ -362,6 +362,155 @@ func TestUndoDocumentDeleteRestoresChangeHistory(t *testing.T) {
 	}
 }
 
+func TestUndoRedoDocumentCreationPreservesChangeHistory(t *testing.T) {
+	ctx := context.Background()
+	ws := openTestWorkspace(t, t.TempDir())
+	service := document.NewService(ws, 10)
+	created, err := service.Create(ctx, document.Draft{Title: "Tracked", Body: "original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := service.Propose(ctx, created, "Proposed edit", document.Draft{
+		Title: "Updated", Body: "proposed", Layout: created.Layout,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Undo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Redo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	changes, err := service.Changes(ctx, created.ID)
+	if err != nil || len(changes) != 1 || changes[0].ID != proposal.ID || changes[0].Status != document.ChangePending {
+		t.Fatalf("changes after undo and redo = %+v, %v", changes, err)
+	}
+}
+
+func TestLegacyNoteAndDocumentArtifactsRemainReadable(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	notes := note.NewService(ws, 10)
+	docs := document.NewService(ws, 10)
+	write := func(path string, data []byte) {
+		t.Helper()
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	legacyNote, err := notes.Create(ctx, "Legacy note", "Plain Markdown note")
+	if err != nil {
+		t.Fatal(err)
+	}
+	noteDir := filepath.Join(root, ".parchment", "artifacts", legacyNote.ID)
+	noteMetadata, err := json.Marshal(legacyNote.Artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join(noteDir, "metadata.json"), noteMetadata)
+	write(filepath.Join(noteDir, "content.md"), []byte(legacyNote.Body))
+
+	layout := document.DefaultLayout()
+	layout.Columns = 2
+	created, err := docs.Create(ctx, document.Draft{Title: "Legacy document", Body: "Introduction", Layout: layout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withImage, imageName, err := docs.AddImage(ctx, created.ID, "Chart", testPNG(t, 88))
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := docs.Propose(ctx, withImage, "Legacy proposal", document.Draft{
+		Title: withImage.Title, Body: withImage.Body + "\nProposed text", Layout: withImage.Layout,
+		Images: withImage.Images,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes, err := docs.Changes(ctx, created.ID)
+	if err != nil || len(changes) != 1 || changes[0].ID != proposal.ID {
+		t.Fatalf("proposal changes = %+v, %v", changes, err)
+	}
+	docDir := filepath.Join(root, ".parchment", "artifacts", withImage.ID)
+	docMetadata, err := json.Marshal(withImage.Artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layoutData, err := json.Marshal(withImage.Layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changeData, err := json.Marshal(changes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join(docDir, "metadata.json"), docMetadata)
+	write(filepath.Join(docDir, "layout.json"), layoutData)
+	write(filepath.Join(docDir, "changes.json"), changeData)
+	write(filepath.Join(docDir, "content.md"), []byte(withImage.Body))
+	write(filepath.Join(docDir, imageName), withImage.Images[0].Data)
+
+	legacyDefault, err := docs.Create(ctx, document.Draft{Title: "Legacy default", Body: "Text"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultDir := filepath.Join(root, ".parchment", "artifacts", legacyDefault.ID)
+	defaultMetadata, err := json.Marshal(legacyDefault.Artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join(defaultDir, "metadata.json"), defaultMetadata)
+	write(filepath.Join(defaultDir, "content.md"), []byte(legacyDefault.Body))
+
+	reopened, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadedNotes, err := note.NewService(reopened, 10).List(ctx)
+	if err != nil || len(loadedNotes) != 1 || loadedNotes[0].Body != "Plain Markdown note" {
+		t.Fatalf("legacy notes = %+v, %v", loadedNotes, err)
+	}
+	loadedDocs := document.NewService(reopened, 10)
+	loaded, err := loadedDocs.Get(ctx, withImage.ID)
+	if err != nil || loaded.Body != withImage.Body || loaded.Layout != layout ||
+		len(loaded.Images) != 1 || loaded.Images[0].Name != imageName {
+		t.Fatalf("legacy document = %+v, %v", loaded, err)
+	}
+	loadedChanges, err := loadedDocs.Changes(ctx, withImage.ID)
+	if err != nil || len(loadedChanges) != 1 || loadedChanges[0].ID != proposal.ID {
+		t.Fatalf("legacy document changes = %+v, %v", loadedChanges, err)
+	}
+	defaultDocument, err := loadedDocs.Get(ctx, legacyDefault.ID)
+	if err != nil || defaultDocument.Layout != document.DefaultLayout() {
+		t.Fatalf("legacy document default layout = %+v, %v", defaultDocument.Layout, err)
+	}
+}
+
+func TestProposeRejectsAStaleDocumentSnapshot(t *testing.T) {
+	ctx := context.Background()
+	ws := openTestWorkspace(t, t.TempDir())
+	service := document.NewService(ws, 10)
+	created, err := service.Create(ctx, document.Draft{Title: "Before", Body: "original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Rename(ctx, created.ID, "Concurrent edit"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Propose(ctx, created, "Stale edit", document.Draft{
+		Title: "Stale proposal", Body: "stale", Layout: created.Layout,
+	}); err == nil {
+		t.Fatal("stale document snapshot was accepted as a proposal baseline")
+	}
+	current, err := service.Get(ctx, created.ID)
+	if err != nil || current.Title != "Concurrent edit" || current.Body != "original" {
+		t.Fatalf("stale proposal changed the document: %+v, %v", current, err)
+	}
+}
+
 func TestAcceptDocumentChangeRejectsStaleProposal(t *testing.T) {
 	ctx := context.Background()
 	ws := openTestWorkspace(t, t.TempDir())
@@ -370,7 +519,7 @@ func TestAcceptDocumentChangeRejectsStaleProposal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposal, err := service.Propose(ctx, created.ID, "Proposed edit", document.Draft{
+	proposal, err := service.Propose(ctx, created, "Proposed edit", document.Draft{
 		Title: "Proposed", Body: "proposed", Layout: created.Layout,
 	})
 	if err != nil {
@@ -400,7 +549,7 @@ func TestDocumentProposalCannotAddEmbeddedImageData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Propose(ctx, created.ID, "Add image", document.Draft{
+	if _, err := service.Propose(ctx, created, "Add image", document.Draft{
 		Title: created.Title, Body: document.ImageMarkdown("chart", image.Name),
 		Layout: created.Layout, Images: []document.Image{image},
 	}); err == nil {

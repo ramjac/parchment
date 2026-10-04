@@ -134,6 +134,20 @@ func TestIndentedFenceIsCodeAndHeaderFencesArePreserved(t *testing.T) {
 	}
 }
 
+func TestParsePreservesIndentationAtMarkdownBoundaries(t *testing.T) {
+	source := "# Indented\n\n    header code\n\n## Slide\n\n    slide code\n"
+	deck, err := Parse(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(deck.Header, "    header code") {
+		t.Fatalf("header indentation was lost: %q", deck.Header)
+	}
+	if got := deck.Slides[0].Body; !strings.HasPrefix(got, "    slide code") {
+		t.Fatalf("slide body indentation was lost: %q", got)
+	}
+}
+
 func TestUpdateUsesExpectedSnapshotAndUndoRedo(t *testing.T) {
 	ctx := context.Background()
 	repository := newMemoryRepository()

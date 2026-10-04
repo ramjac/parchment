@@ -19,9 +19,15 @@ const documentDataBlock = "parchment-document"
 
 var errNotDocument = errors.New("artifact is not a document")
 
-// validArtifactFileName lists the files an artifact transaction may touch.
+// validArtifactFileName accepts current and legacy targets in recovery journals.
 func validArtifactFileName(name string) bool {
-	return name == "content.md"
+	switch name {
+	case "content.md", "metadata.json", "layout.json", "changes.json",
+		"spreadsheet.json", "presentation.md":
+		return true
+	default:
+		return document.IsImageName(name)
+	}
 }
 
 type embeddedDocumentImage struct {
@@ -513,7 +519,7 @@ func (w *Workspace) readDocumentFileUnlocked(id string, withImages bool) (docume
 	}
 	metadata, err := artifactfile.ReadMetadata(content)
 	if err != nil {
-		return document.Document{}, nil, fmt.Errorf("read document metadata %s: %w", id, err)
+		return w.readLegacyDocumentFileUnlocked(id, dir, content, withImages, err)
 	}
 	if metadata.ID != id {
 		return document.Document{}, nil, fmt.Errorf("invalid document metadata for %s", id)
@@ -558,15 +564,8 @@ func (w *Workspace) readDocumentFileUnlocked(id string, withImages bool) (docume
 	if err := payload.Layout.Validate(); err != nil {
 		return document.Document{}, nil, fmt.Errorf("validate document layout %s: %w", id, err)
 	}
-	seenChanges := map[string]bool{}
-	for _, change := range payload.Changes {
-		if err := change.Validate(); err != nil {
-			return document.Document{}, nil, fmt.Errorf("validate document change %s: %w", change.ID, err)
-		}
-		if change.DocumentID != id || seenChanges[change.ID] {
-			return document.Document{}, nil, fmt.Errorf("invalid document change list for %s", id)
-		}
-		seenChanges[change.ID] = true
+	if err := validateDocumentChanges(id, payload.Changes); err != nil {
+		return document.Document{}, nil, fmt.Errorf("validate document changes %s: %w", id, err)
 	}
 	a.CreatedAt = a.CreatedAt.UTC()
 	a.ModifiedAt = a.ModifiedAt.UTC()
@@ -587,6 +586,79 @@ func (w *Workspace) readDocumentFileUnlocked(id string, withImages bool) (docume
 		d.Images = append(d.Images, img)
 	}
 	return d, payload.Changes, nil
+}
+
+func (w *Workspace) readLegacyDocumentFileUnlocked(
+	id, dir string, content []byte, withImages bool, metadataErr error,
+) (document.Document, []document.Change, error) {
+	a, err := readLegacyArtifactMetadata(dir, id)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return document.Document{}, nil, fmt.Errorf("read document metadata %s: %w", id, metadataErr)
+		}
+		return document.Document{}, nil, fmt.Errorf("read legacy document metadata %s: %w", id, err)
+	}
+	if a.Kind != artifact.DocumentKind {
+		return document.Document{}, nil, errNotDocument
+	}
+	layout := document.DefaultLayout()
+	layoutData, err := readRegularFile(filepath.Join(dir, "layout.json"), 1<<20)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return document.Document{}, nil, fmt.Errorf("read document layout %s: %w", id, err)
+	}
+	if err == nil {
+		if err := json.Unmarshal(layoutData, &layout); err != nil {
+			return document.Document{}, nil, fmt.Errorf("decode document layout %s: %w", id, err)
+		}
+	}
+	if err := layout.Validate(); err != nil {
+		return document.Document{}, nil, fmt.Errorf("validate document layout %s: %w", id, err)
+	}
+	var changes []document.Change
+	changeData, err := readRegularFile(filepath.Join(dir, "changes.json"), artifactfile.MaxFileSize)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return document.Document{}, nil, fmt.Errorf("read document changes %s: %w", id, err)
+	}
+	if err == nil {
+		if err := json.Unmarshal(changeData, &changes); err != nil {
+			return document.Document{}, nil, fmt.Errorf("decode document changes %s: %w", id, err)
+		}
+		if err := validateDocumentChanges(id, changes); err != nil {
+			return document.Document{}, nil, fmt.Errorf("validate document changes %s: %w", id, err)
+		}
+	}
+	a.CreatedAt = a.CreatedAt.UTC()
+	a.ModifiedAt = a.ModifiedAt.UTC()
+	d := document.Document{Artifact: a, Body: string(content), Layout: layout}
+	if withImages {
+		if d.Images, err = readDocumentImages(dir); err != nil {
+			return document.Document{}, nil, fmt.Errorf("read document images %s: %w", id, err)
+		}
+	}
+	return d, changes, nil
+}
+
+func readDocumentImages(dir string) ([]document.Image, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var images []document.Image
+	for _, entry := range entries {
+		if !document.IsImageName(entry.Name()) {
+			continue
+		}
+		data, err := readRegularFile(filepath.Join(dir, entry.Name()), document.MaxImageBytes)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", entry.Name(), err)
+		}
+		img := document.Image{Name: entry.Name(), Data: data}
+		if err := img.Validate(); err != nil {
+			return nil, err
+		}
+		images = append(images, img)
+	}
+	return images, nil
 }
 
 // readRegularFile reads a regular file without following links. A negative

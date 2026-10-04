@@ -805,6 +805,18 @@ func (w *Workspace) readNoteUnlocked(id string) (note.Note, error) {
 	}
 	metadata, err := artifactfile.ReadMetadata(content)
 	if err != nil {
+		a, legacyErr := readLegacyArtifactMetadata(dir, id)
+		if legacyErr == nil {
+			if a.Kind != artifact.NoteKind {
+				return note.Note{}, errNotNote
+			}
+			a.CreatedAt = a.CreatedAt.UTC()
+			a.ModifiedAt = a.ModifiedAt.UTC()
+			return note.Note{Artifact: a, Body: string(content)}, nil
+		}
+		if !errors.Is(legacyErr, os.ErrNotExist) {
+			return note.Note{}, fmt.Errorf("read legacy note metadata %s: %w", id, legacyErr)
+		}
 		return note.Note{}, fmt.Errorf("read note metadata %s: %w", id, err)
 	}
 	if metadata.ID != id {
@@ -830,6 +842,24 @@ func (w *Workspace) readNoteUnlocked(id string) (note.Note, error) {
 	a.CreatedAt = a.CreatedAt.UTC()
 	a.ModifiedAt = a.ModifiedAt.UTC()
 	return note.Note{Artifact: a, Body: file.Body, Blocks: copyPayloadBlocks(file.Blocks, "")}, nil
+}
+
+func readLegacyArtifactMetadata(dir, id string) (artifact.Artifact, error) {
+	data, err := readRegularFile(filepath.Join(dir, "metadata.json"), 1<<20)
+	if err != nil {
+		return artifact.Artifact{}, err
+	}
+	var item artifact.Artifact
+	if err := json.Unmarshal(data, &item); err != nil {
+		return artifact.Artifact{}, fmt.Errorf("decode artifact metadata: %w", err)
+	}
+	if err := item.Validate(); err != nil {
+		return artifact.Artifact{}, fmt.Errorf("validate artifact metadata: %w", err)
+	}
+	if item.ID != id || item.Location != filepath.ToSlash(filepath.Join(".parchment", "artifacts", id, "content.md")) {
+		return artifact.Artifact{}, fmt.Errorf("invalid artifact metadata for %s", id)
+	}
+	return item, nil
 }
 
 func copyPayloadBlocks(blocks map[string]json.RawMessage, excluded string) map[string]json.RawMessage {

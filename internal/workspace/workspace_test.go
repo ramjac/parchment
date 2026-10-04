@@ -137,6 +137,30 @@ func TestArtifactEditsPreserveAdditionalPayloadBlocks(t *testing.T) {
 	requireTestPayloadBlock(t, contentPath(deck.ID))
 }
 
+func TestCompactExtensionBlockSurvivesRenameUndo(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	service := note.NewService(ws, 10)
+	created, err := service.Create(ctx, "Compact block", "Body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, filepath.FromSlash(created.Location))
+	addTestPayloadBlock(t, path)
+	if _, err := service.Rename(ctx, created.ID, "Renamed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Undo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := service.Get(ctx, created.ID)
+	if err != nil || restored.Title != created.Title {
+		t.Fatalf("note after undo = %+v, %v", restored, err)
+	}
+	requireTestPayloadBlock(t, path)
+}
+
 func TestWorkspacePersistsInspectableNotesAndStableIDs(t *testing.T) {
 	root := t.TempDir()
 	if err := Init(root); err != nil {
@@ -712,6 +736,44 @@ func TestRecoveryRejectsUnexpectedBackupBeforeMutatingFiles(t *testing.T) {
 	}
 	if data, err := os.ReadFile(victim); err != nil || string(data) != "must remain" {
 		t.Fatalf("unexpected external file change: content=%q err=%v", data, err)
+	}
+}
+
+func TestRecoveryAcceptsLegacyArtifactTransactionTargets(t *testing.T) {
+	dir := t.TempDir()
+	names := []string{
+		"metadata.json", "layout.json", "changes.json", "spreadsheet.json", "presentation.md",
+		"image-0123456789abcdef.png",
+	}
+	var transaction []transactionFile
+	for _, name := range names {
+		original := []byte("original " + name)
+		backup, err := stageFile(dir, original)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("partial replacement"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		transaction = append(transaction, transactionFile{
+			Name: name, Backup: filepath.Base(backup), HadOld: true,
+		})
+	}
+	journal, err := json.Marshal(transaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, transactionName), journal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := recoverArtifactFiles(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		got, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil || string(got) != "original "+name {
+			t.Errorf("recovered %s = %q, %v", name, got, err)
+		}
 	}
 }
 

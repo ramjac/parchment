@@ -147,22 +147,41 @@ func TestFormulaReferenceShiftsPreserveDecimalExponents(t *testing.T) {
 }
 
 func TestNormalizeRejectsDeepFormulaChainsRegardlessOfCacheOrder(t *testing.T) {
-	book := Spreadsheet{
+	book := formulaChain(maxFormulaDepth + 1)
+	if err := Normalize(&book); err == nil || !strings.Contains(err.Error(), "dependency depth") {
+		t.Fatalf("Normalize accepted an over-deep formula chain: %v", err)
+	}
+}
+
+func TestFormulaDepthBoundaryAgreesBetweenNormalizeAndEvaluate(t *testing.T) {
+	book := formulaChain(maxFormulaDepth)
+	value, err := Evaluate(&book, 0, len(book.Sheets[0].Rows), 1)
+	if err != nil || value != 1 {
+		t.Fatalf("Evaluate at the depth limit = %v, %v", value, err)
+	}
+	if err := Normalize(&book); err != nil {
+		t.Fatalf("Normalize rejected a chain at the depth limit: %v", err)
+	}
+	value, err = Evaluate(&book, 0, len(book.Sheets[0].Rows), 1)
+	if err != nil || value != 1 {
+		t.Fatalf("Evaluate after Normalize = %v, %v", value, err)
+	}
+}
+
+func formulaChain(formulas int) Spreadsheet {
+	rows := make([][]Cell, formulas+1)
+	rows[0] = []Cell{{Value: "1"}}
+	for row := 2; row <= len(rows); row++ {
+		rows[row-1] = []Cell{{Formula: "=" + CellName(row-1, 1)}}
+	}
+	return Spreadsheet{
 		Artifact: artifact.Artifact{
 			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.SpreadsheetKind,
 			Title: "Deep formulas", FormatVersion: artifact.FormatVersion,
 			Location:  ".parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
 			CreatedAt: fixedTime, ModifiedAt: fixedTime,
 		},
-		Version: FileVersion,
-		Sheets:  []Sheet{{Name: "Sheet1", Rows: make([][]Cell, maxFormulaDepth+2)}},
-	}
-	book.Sheets[0].Rows[0] = []Cell{{Value: "1"}}
-	for row := 2; row <= len(book.Sheets[0].Rows); row++ {
-		book.Sheets[0].Rows[row-1] = []Cell{{Formula: "=" + CellName(row-1, 1)}}
-	}
-	if err := Normalize(&book); err == nil || !strings.Contains(err.Error(), "dependency depth") {
-		t.Fatalf("Normalize accepted an over-deep formula chain: %v", err)
+		Version: FileVersion, Sheets: []Sheet{{Name: "Sheet1", Rows: rows}},
 	}
 }
 

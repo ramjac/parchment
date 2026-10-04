@@ -55,9 +55,6 @@ func (e *evaluator) cell(sheetIndex, row, column int) (float64, error) {
 	if e.visiting[coordinate] {
 		return 0, fmt.Errorf("circular reference at %s", CellName(row, column))
 	}
-	if len(e.visiting) >= maxFormulaDepth {
-		return 0, fmt.Errorf("formula dependency depth exceeds %d", maxFormulaDepth)
-	}
 	cell := e.book.Sheets[sheetIndex].Rows[row-1][column-1]
 	if cell.Formula == "" {
 		if strings.TrimSpace(cell.Value) == "" {
@@ -69,6 +66,9 @@ func (e *evaluator) cell(sheetIndex, row, column int) (float64, error) {
 		}
 		e.cache[coordinate] = value
 		return value, nil
+	}
+	if len(e.visiting) >= maxFormulaDepth {
+		return 0, fmt.Errorf("formula dependency depth exceeds %d", maxFormulaDepth)
 	}
 	e.visiting[coordinate] = true
 	e.depths = append(e.depths, 0)

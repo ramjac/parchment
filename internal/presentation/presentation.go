@@ -170,7 +170,7 @@ func Parse(source string) (Deck, error) {
 	var header, body, notes strings.Builder
 	flush := func() {
 		if current != nil {
-			current.Body = strings.TrimSpace(body.String())
+			current.Body = strings.Trim(body.String(), "\r\n")
 			current.Notes = strings.TrimSpace(notes.String())
 			deck.Slides = append(deck.Slides, *current)
 			current = nil
@@ -268,7 +268,7 @@ func Parse(source string) (Deck, error) {
 	if len(deck.Slides) == 0 {
 		return Deck{}, errors.New("presentation must contain at least one '## Slide' heading")
 	}
-	deck.Header = strings.TrimSpace(header.String())
+	deck.Header = strings.Trim(header.String(), "\r\n")
 	return deck, nil
 }
 

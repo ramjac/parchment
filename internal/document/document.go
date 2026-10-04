@@ -114,11 +114,8 @@ func (s *Service) Get(ctx context.Context, id string) (Document, error) {
 // Propose records a title, Markdown, or layout edit for later review without
 // changing the live document. Proposals may retain or remove embedded images,
 // but cannot add or replace their data.
-func (s *Service) Propose(ctx context.Context, id, description string, draft Draft) (Change, error) {
-	before, err := s.repository.GetDocument(ctx, id)
-	if err != nil {
-		return Change{}, err
-	}
+func (s *Service) Propose(ctx context.Context, before Document, description string, draft Draft) (Change, error) {
+	id := before.ID
 	for _, proposedImage := range draft.Images {
 		found := false
 		for _, existingImage := range before.Images {
@@ -623,10 +620,22 @@ func (o *documentOperation) Apply(ctx context.Context) error {
 		o.changes = changes
 		return nil
 	}
+	if o.restoreChanges && o.before == nil && o.after != nil {
+		return o.repository.TransitionDocumentWithChanges(ctx, o.after.ID, nil, o.after, o.changes)
+	}
 	return o.transition(ctx, o.before, o.after)
 }
 
 func (o *documentOperation) Undo(ctx context.Context) error {
+	if o.before == nil && o.after != nil {
+		changes, err := o.repository.DeleteDocument(ctx, o.after.ID, *o.after)
+		if err != nil {
+			return err
+		}
+		o.changes = changes
+		o.restoreChanges = true
+		return nil
+	}
 	return o.transition(ctx, o.after, o.before)
 }
 

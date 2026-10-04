@@ -146,7 +146,7 @@ func TestDocumentChangeReviewScrollsAndBoundsChangeList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	change, err := docs.Propose(ctx, created.ID, "Long proposal", document.Draft{
+	change, err := docs.Propose(ctx, created, "Long proposal", document.Draft{
 		Title: "Long", Body: strings.Repeat("proposed line\n", 80) + "PROPOSED-LAST",
 		Layout: created.Layout,
 	})

@@ -1,6 +1,7 @@
 package artifactfile
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -81,8 +82,59 @@ func TestDecodeAcceptsLegacyEnvelopeWithoutBodyBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if file.Body != body {
-		t.Fatalf("body = %q, want %q", file.Body, body)
+	if file.Body != "\n"+body {
+		t.Fatalf("body = %q, want %q", file.Body, "\n"+body)
+	}
+}
+
+func TestEncodePreservesRawBlockFormatting(t *testing.T) {
+	raw := json.RawMessage(`{"compact":true,"nested":{"count":2}}`)
+	data, err := Encode(testArtifact(), "", map[string]any{"parchment-note": raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, raw) {
+		t.Fatalf("raw JSON block was reformatted:\n%s", data)
+	}
+	file, err := Decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(file.Blocks["parchment-note"], raw) {
+		t.Fatalf("decoded block = %s, want %s", file.Blocks["parchment-note"], raw)
+	}
+}
+
+func TestDecodeSkipsMultipleSeparatingBlankLinesAndPreservesBodyWhitespace(t *testing.T) {
+	encoded, err := Encode(testArtifact(), "Markdown body\n", map[string]any{
+		"parchment-note": map[string]string{"kind": "note"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	multiple := strings.Replace(string(encoded), "\n\n```parchment-note", "\n\n\n\n```parchment-note", 1)
+	multiple = strings.Replace(multiple, "\n\n"+bodyBoundary, "\n\n\n\n"+bodyBoundary, 1)
+	file, err := Decode([]byte(multiple))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := file.Blocks["parchment-note"]; !ok || file.Body != "Markdown body\n" {
+		t.Fatalf("decoded envelope = blocks %v, body %q", file.Blocks, file.Body)
+	}
+
+	var legacy bytes.Buffer
+	metadata, err := json.Marshal(testArtifact())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeBlock(&legacy, metadataBlock, metadata)
+	legacy.WriteString("\n\n  Legacy body\n")
+	file, err = Decode(legacy.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if file.Body != "\n\n  Legacy body\n" {
+		t.Fatalf("legacy body whitespace = %q", file.Body)
 	}
 }
 
