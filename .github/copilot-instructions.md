@@ -23,8 +23,9 @@ same interface along with the service. This keeps note behavior independent of
 the CLI, TUI, and storage implementation. `internal/history` provides bounded,
 in-memory undo/redo for successful service changes.
 
-An initialized workspace stores versioned `parchment.toml` at its root and
-artifacts under `.parchment/artifacts/<id>/content.md`. A Parchment file is a
+An initialized workspace stores versioned `parchment.toml` at its root and,
+by default, artifacts under `parchment/artifacts/<id>/content.md`. The path
+can be changed with `workspace.artifact_dir`. A Parchment file is a
 Markdown document with an embedded, typed data envelope: its first fenced code
 block is `parchment-meta`, containing the shared artifact metadata as JSON;
 kind-specific data is stored in `parchment-<thing>` fenced blocks, also JSON
@@ -67,7 +68,8 @@ process.
   introduce a universal child-component interface until multiple real
   components need it.
 - Persist artifact IDs as 32-character lowercase hex strings. An artifact's
-  `Location` must be `.parchment/artifacts/<id>/content.md`.
+  `Location` must match its configured workspace artifact directory; the
+  default is `parchment/artifacts/<id>/content.md`.
 - Generally, persist each artifact as one human-readable file. Keep its shared
   metadata, content, comments or annotations, and change-tracking data together
   so a text editor can inspect the complete artifact without opening sidecars.

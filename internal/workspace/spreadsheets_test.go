@@ -22,7 +22,7 @@ func TestSpreadsheetIsSingleInspectableFileWithMetadataAndUndo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(root, ".parchment", "artifacts", created.ID)
+	dir := filepath.Join(root, "parchment", "artifacts", created.ID)
 	entries, err := os.ReadDir(dir)
 	if err != nil || len(entries) != 1 || entries[0].Name() != "content.md" {
 		t.Fatalf("spreadsheet artifact files = %v, %v", entries, err)

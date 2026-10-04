@@ -25,6 +25,7 @@ type Note struct {
 
 // Repository is the persistence boundary required by note operations.
 type Repository interface {
+	ArtifactLocation(string) string
 	List(context.Context) ([]Note, error)
 	Get(context.Context, string) (Note, error)
 	Save(context.Context, Note) error
@@ -72,7 +73,7 @@ func (s *Service) Create(ctx context.Context, title, body string) (Note, error) 
 	n := Note{Artifact: artifact.Artifact{
 		ID: hex.EncodeToString(idBytes), Kind: artifact.NoteKind, Title: strings.TrimSpace(title),
 		CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
-		Location: ".parchment/artifacts/" + hex.EncodeToString(idBytes) + "/content.md",
+		Location: s.repository.ArtifactLocation(hex.EncodeToString(idBytes)),
 	}, Body: body}
 	if err := s.change(ctx, nil, &n, "Create note"); err != nil {
 		return Note{}, err

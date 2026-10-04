@@ -71,6 +71,7 @@ type Change struct {
 
 // Repository is the persistence boundary required by document operations.
 type Repository interface {
+	ArtifactLocation(string) string
 	ListDocuments(context.Context) ([]Document, error)
 	GetDocument(context.Context, string) (Document, error)
 	TransitionDocument(context.Context, string, *Document, *Document) error
@@ -362,7 +363,7 @@ func (s *Service) Create(ctx context.Context, draft Draft) (Document, error) {
 	}
 	d := Document{Artifact: artifact.Artifact{
 		ID: id, Kind: artifact.DocumentKind, CreatedAt: now, ModifiedAt: now,
-		FormatVersion: artifact.FormatVersion, Location: ".parchment/artifacts/" + id + "/content.md",
+		FormatVersion: artifact.FormatVersion, Location: s.repository.ArtifactLocation(id),
 	}}
 	applyDraft(&d, draft)
 	if err := normalize(&d); err != nil {

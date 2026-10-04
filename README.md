@@ -43,8 +43,11 @@ from the workspace; there is no search index or daemon.
 ## Storage
 
 The workspace is an ordinary directory. `parchment.toml` contains versioned
-workspace configuration; artifacts live under
-`.parchment/artifacts/<stable-id>/content.md`. Every supported artifact is one
+workspace configuration; by default, artifacts live under the visible
+`parchment/artifacts/<stable-id>/content.md` directory. The artifact directory
+can be changed with `workspace.artifact_dir` in TOML or
+`PARCHMENT_ARTIFACT_DIR`; configured paths are relative to the workspace.
+Every supported artifact is one
 Markdown file. It begins with a `parchment-meta` fenced code block containing
 the shared metadata as JSON. Structured artifact data uses additional
 `parchment-<thing>` JSON code blocks before the visible Markdown body. The
@@ -118,7 +121,7 @@ undo and redo like notes.
 ### Spreadsheets
 
 Spreadsheets are stored as one Markdown file per workbook:
-`.parchment/artifacts/<id>/content.md`. The hidden `parchment-spreadsheet`
+`parchment/artifacts/<id>/content.md`. The hidden `parchment-spreadsheet`
 JSON block contains the versioned workbook data, named sheets, two-dimensional
 cell arrays, and explicit literal or formula cells. This keeps the workbook
 self-contained and avoids formulas being inferred from arbitrary text. CSV
@@ -149,7 +152,7 @@ applications can open directly.
 ### Presentations
 
 A presentation is stored as one Markdown text file at
-`.parchment/artifacts/<id>/content.md`. Its leading `parchment-meta` block
+`parchment/artifacts/<id>/content.md`. Its leading `parchment-meta` block
 embeds the shared artifact metadata; the rest is editable Markdown. The initial
 syntax follows Go present's Markdown conventions: `#` gives the deck title,
 `##` begins a slide, `###` adds a subsection, `//` begins an ignored comment,
@@ -204,6 +207,7 @@ undo_limit = 100
 
 [workspace]
 discovery = "parents"
+artifact_dir = "parchment/artifacts"
 
 [logging]
 level = "warn"
@@ -216,10 +220,11 @@ destination = ""
 Settings are merged from built-in defaults, user TOML, workspace TOML, then
 environment overrides. Workspace selection accepts `--workspace` and
 `PARCHMENT_WORKSPACE`; user configuration can also set a workspace path and
-parent-directory discovery behavior. `PARCHMENT_UNDO_LIMIT` overrides the
-configured undo limit. Editor, theme, logging, and backup settings are parsed
-but are not yet connected to runtime behavior, and their environment
-variables currently have no effect.
+parent-directory discovery behavior. `PARCHMENT_UNDO_LIMIT` and
+`PARCHMENT_ARTIFACT_DIR` override the configured undo limit and artifact
+directory. Editor, theme, logging, and backup settings are parsed but are not
+yet connected to runtime behavior, and their environment variables currently
+have no effect.
 
 ## Interactive notes
 
@@ -249,7 +254,6 @@ This repository currently implements notes, documents, basic spreadsheets,
 and basic Markdown presentations.
 The broader suite is planned to add:
 
-- Make the default directory for storing Parchment artifacts a non-hidden folder and also make the default directory path configurable. Generally assume that Parchment artifacts might be read by other applications; especially text file and markdown interpreters.
 - Background auto-save and recovery from auto-save so that in the event Parchment crashes or is force closed, any changes since the last save can be optionally recovered.
 - Read and work with plain Markdown files that lack Parchment metadata, without
   adding `parchment-meta` or other `parchment-*` blocks to them. Provide an
@@ -257,7 +261,7 @@ The broader suite is planned to add:
   conversion adds Parchment metadata and structured blocks to the file.
 - Shorter, friendlier artifact IDs and paths. The current 32-character hex IDs
   produce long paths such as
-  `.parchment/artifacts/40000000000000000000000000000004/content.md`. Consider
+  `parchment/artifacts/40000000000000000000000000000004/content.md`. Consider
   a compact format that starts with a letter and drops the zeros between that
   letter and the first significant digit, so artifacts don't need long runs of
   padding zeros. Update the format and checked-in examples together; before

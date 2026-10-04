@@ -65,8 +65,38 @@ func TestWorkspaceAndNoteCLI(t *testing.T) {
 	if _, err := run("note", "delete", id, "--yes"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(root + "/.parchment/artifacts/" + id); !os.IsNotExist(err) {
+	if _, err := os.Stat(root + "/parchment/artifacts/" + id); !os.IsNotExist(err) {
 		t.Fatalf("deleted artifact storage exists: %v", err)
+	}
+}
+
+func TestCLIUsesConfiguredArtifactDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", home)
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("PARCHMENT_WORKSPACE", "")
+	t.Setenv("PARCHMENT_ARTIFACT_DIR", "external/readable")
+	root := t.TempDir()
+	run := func(args ...string) (string, error) {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		cmd := New(&stdout, &stderr)
+		cmd.SetArgs(append([]string{"--workspace", root}, args...))
+		err := cmd.Execute()
+		return stdout.String(), err
+	}
+	if _, err := run("init"); err != nil {
+		t.Fatal(err)
+	}
+	created, err := run("note", "create", "Visible artifact")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := strings.TrimSpace(created)
+	if _, err := os.Stat(filepath.Join(root, "external", "readable", id, "content.md")); err != nil {
+		t.Fatalf("configured artifact file: %v", err)
 	}
 }
 

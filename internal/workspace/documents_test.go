@@ -44,7 +44,7 @@ func TestDocumentsPersistInspectablyAndCoexistWithNotes(t *testing.T) {
 	if _, err := notes.Create(ctx, "A note", "report text"); err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(root, ".parchment", "artifacts", created.ID)
+	dir := filepath.Join(root, "parchment", "artifacts", created.ID)
 	entries, err := os.ReadDir(dir)
 	if err != nil || len(entries) != 1 || entries[0].Name() != "content.md" {
 		t.Fatalf("document artifact files = %v, %v", entries, err)
@@ -106,7 +106,7 @@ func TestListDocumentsDoesNotDecodeEmbeddedImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(root, ".parchment", "artifacts", created.ID, "content.md")
+	path := filepath.Join(root, "parchment", "artifacts", created.ID, "content.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -157,7 +157,7 @@ func TestDocumentImagesUndoRedoAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(root, ".parchment", "artifacts", created.ID)
+	dir := filepath.Join(root, "parchment", "artifacts", created.ID)
 
 	withImage, name, err := docs.AddImage(ctx, created.ID, "Chart", testPNG(t, 200))
 	if err != nil {
@@ -446,7 +446,7 @@ func TestSidecarOnlyArtifactsAreNotLoaded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	noteDir := filepath.Join(root, ".parchment", "artifacts", createdNote.ID)
+	noteDir := filepath.Join(root, "parchment", "artifacts", createdNote.ID)
 	noteMetadata, err := json.Marshal(createdNote.Artifact)
 	if err != nil {
 		t.Fatal(err)
@@ -465,7 +465,7 @@ func TestSidecarOnlyArtifactsAreNotLoaded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	documentDir := filepath.Join(root, ".parchment", "artifacts", createdDocument.ID)
+	documentDir := filepath.Join(root, "parchment", "artifacts", createdDocument.ID)
 	documentMetadata, err := json.Marshal(createdDocument.Artifact)
 	if err != nil {
 		t.Fatal(err)

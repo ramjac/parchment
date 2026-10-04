@@ -82,6 +82,7 @@ type fileContent struct {
 
 // Repository persists spreadsheets as individual artifacts.
 type Repository interface {
+	ArtifactLocation(string) string
 	ListSpreadsheets(context.Context) ([]Spreadsheet, error)
 	GetSpreadsheet(context.Context, string) (Spreadsheet, error)
 	TransitionSpreadsheet(context.Context, string, *Spreadsheet, *Spreadsheet) error
@@ -131,7 +132,7 @@ func (s *Service) Create(ctx context.Context, title string, rows [][]Cell) (Spre
 		Artifact: artifact.Artifact{
 			ID: id, Kind: artifact.SpreadsheetKind, Title: title,
 			CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
-			Location: ".parchment/artifacts/" + id + "/content.md",
+			Location: s.repository.ArtifactLocation(id),
 		},
 		Version: FileVersion, Sheets: []Sheet{{Name: "Sheet1", Rows: cloneRows(rows)}},
 	}

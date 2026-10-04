@@ -52,6 +52,7 @@ type fileContent struct {
 
 // Repository persists presentations as single-file artifacts.
 type Repository interface {
+	ArtifactLocation(string) string
 	ListPresentations(context.Context) ([]Presentation, error)
 	GetPresentation(context.Context, string) (Presentation, error)
 	TransitionPresentation(context.Context, string, *Presentation, *Presentation) error
@@ -111,7 +112,7 @@ func (s *Service) Create(ctx context.Context, title, source string) (Presentatio
 		Artifact: artifact.Artifact{
 			ID: id, Kind: artifact.PresentationKind, Title: title,
 			CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
-			Location: ".parchment/artifacts/" + id + "/content.md",
+			Location: s.repository.ArtifactLocation(id),
 		},
 		Version: FileVersion, Source: source,
 	}

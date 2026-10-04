@@ -11,7 +11,10 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-const Version = 1
+const (
+	Version            = 1
+	DefaultArtifactDir = "parchment/artifacts"
+)
 
 // Settings is the fully resolved application configuration.
 type Settings struct {
@@ -20,6 +23,7 @@ type Settings struct {
 	UndoLimit          int
 	WorkspacePath      string
 	WorkspaceDiscovery string
+	ArtifactDir        string
 	LogLevel           string
 	LogFormat          string
 	LocalBackup        string
@@ -31,8 +35,9 @@ type fileConfig struct {
 	Theme     *string `toml:"theme"`
 	UndoLimit *int    `toml:"undo_limit"`
 	Workspace struct {
-		Path      *string `toml:"path"`
-		Discovery *string `toml:"discovery"`
+		Path        *string `toml:"path"`
+		Discovery   *string `toml:"discovery"`
+		ArtifactDir *string `toml:"artifact_dir"`
 	} `toml:"workspace"`
 	Logging struct {
 		Level  *string `toml:"level"`
@@ -49,7 +54,8 @@ type fileConfig struct {
 func Load(userPath, workspacePath string) (Settings, error) {
 	settings := Settings{
 		Editor: "vi", Theme: "adaptive", UndoLimit: 100, WorkspaceDiscovery: "parents",
-		LogLevel: "warn", LogFormat: "text",
+		ArtifactDir: DefaultArtifactDir,
+		LogLevel:    "warn", LogFormat: "text",
 	}
 	for _, path := range []string{userPath, workspacePath} {
 		if path == "" {
@@ -68,7 +74,22 @@ func Load(userPath, workspacePath string) (Settings, error) {
 	if settings.WorkspaceDiscovery != "parents" && settings.WorkspaceDiscovery != "disabled" {
 		return Settings{}, fmt.Errorf("unsupported workspace discovery mode %q", settings.WorkspaceDiscovery)
 	}
+	artifactDir, err := ValidateArtifactDir(settings.ArtifactDir)
+	if err != nil {
+		return Settings{}, err
+	}
+	settings.ArtifactDir = artifactDir
 	return settings, nil
+}
+
+// ValidateArtifactDir returns a normalized workspace-relative artifact directory.
+func ValidateArtifactDir(value string) (string, error) {
+	clean := filepath.Clean(filepath.FromSlash(strings.TrimSpace(value)))
+	if clean == "" || clean == "." || filepath.IsAbs(clean) || filepath.VolumeName(clean) != "" ||
+		clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("workspace artifact_dir must be a non-empty path within the workspace")
+	}
+	return filepath.ToSlash(clean), nil
 }
 
 // UserConfigPath returns the platform-appropriate user configuration path.
@@ -114,6 +135,9 @@ func apply(settings *Settings, cfg fileConfig) {
 	if cfg.Workspace.Discovery != nil {
 		settings.WorkspaceDiscovery = *cfg.Workspace.Discovery
 	}
+	if cfg.Workspace.ArtifactDir != nil {
+		settings.ArtifactDir = *cfg.Workspace.ArtifactDir
+	}
 	if cfg.Logging.Level != nil {
 		settings.LogLevel = *cfg.Logging.Level
 	}
@@ -138,6 +162,9 @@ func applyEnvironment(settings *Settings) {
 		} else {
 			settings.UndoLimit = 0
 		}
+	}
+	if value, ok := os.LookupEnv("PARCHMENT_ARTIFACT_DIR"); ok {
+		settings.ArtifactDir = value
 	}
 	if value, ok := os.LookupEnv("PARCHMENT_LOG_LEVEL"); ok {
 		settings.LogLevel = strings.ToLower(value)

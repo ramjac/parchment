@@ -43,7 +43,7 @@ type documentFileDataWithoutImages struct {
 // ListDocuments implements the document repository interface. Embedded image
 // data is omitted; GetDocument returns complete documents.
 func (w *Workspace) ListDocuments(ctx context.Context) ([]document.Document, error) {
-	root := filepath.Join(w.root, ".parchment", "artifacts")
+	root := w.artifactsRoot()
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, fmt.Errorf("list artifacts: %w", err)
@@ -92,7 +92,7 @@ func (w *Workspace) GetDocument(ctx context.Context, id string) (document.Docume
 		return document.Document{}, document.ErrNotFound
 	}
 	var d document.Document
-	err := withArtifactLock(ctx, filepath.Join(w.root, ".parchment", "artifacts"), id, func() error {
+	err := withArtifactLock(ctx, w.artifactsRoot(), id, func() error {
 		var readErr error
 		d, readErr = w.readDocumentUnlocked(id, true)
 		return readErr
@@ -133,7 +133,7 @@ func (w *Workspace) transitionDocument(
 	if target != nil && target.ID != id {
 		return errors.New("target document ID does not match transition ID")
 	}
-	artifactsDir := filepath.Join(w.root, ".parchment", "artifacts")
+	artifactsDir := w.artifactsRoot()
 	return withArtifactLock(ctx, artifactsDir, id, func() error {
 		_, dirErr := os.Lstat(filepath.Join(artifactsDir, id))
 		if errors.Is(dirErr, os.ErrNotExist) {
@@ -182,7 +182,7 @@ func (w *Workspace) DeleteDocument(ctx context.Context, id string, expected docu
 	if expected.ID != id {
 		return nil, errors.New("expected document ID does not match deletion ID")
 	}
-	artifactsDir := filepath.Join(w.root, ".parchment", "artifacts")
+	artifactsDir := w.artifactsRoot()
 	var changes []document.Change
 	err := withArtifactLock(ctx, artifactsDir, id, func() error {
 		current, err := w.readDocumentUnlocked(id, true)
@@ -229,7 +229,7 @@ func (w *Workspace) ListDocumentChanges(ctx context.Context, id string) ([]docum
 		return nil, document.ErrNotFound
 	}
 	var changes []document.Change
-	err := withArtifactLock(ctx, filepath.Join(w.root, ".parchment", "artifacts"), id, func() error {
+	err := withArtifactLock(ctx, w.artifactsRoot(), id, func() error {
 		if _, err := w.readDocumentUnlocked(id, false); err != nil {
 			return err
 		}
@@ -261,7 +261,7 @@ func (w *Workspace) ProposeDocumentChange(ctx context.Context, id string, expect
 	if change.Status != document.ChangePending {
 		return errors.New("new document change must be pending")
 	}
-	artifactsDir := filepath.Join(w.root, ".parchment", "artifacts")
+	artifactsDir := w.artifactsRoot()
 	return withArtifactLock(ctx, artifactsDir, id, func() error {
 		current, err := w.readDocumentUnlocked(id, true)
 		if err != nil {
@@ -308,7 +308,7 @@ func (w *Workspace) TransitionDocumentChange(
 	if err := target.Validate(); err != nil {
 		return err
 	}
-	artifactsDir := filepath.Join(w.root, ".parchment", "artifacts")
+	artifactsDir := w.artifactsRoot()
 	return withArtifactLock(ctx, artifactsDir, id, func() error {
 		current, err := w.readDocumentUnlocked(id, true)
 		if err != nil {
@@ -364,7 +364,7 @@ func (w *Workspace) saveDocumentLockedWithChanges(ctx context.Context, d documen
 	if err := d.Artifact.Validate(); err != nil {
 		return err
 	}
-	if d.Location != filepath.ToSlash(filepath.Join(".parchment", "artifacts", d.ID, "content.md")) {
+	if d.Location != w.ArtifactLocation(d.ID) {
 		return errors.New("invalid document content location")
 	}
 	if err := d.Layout.Validate(); err != nil {
@@ -387,7 +387,7 @@ func (w *Workspace) saveDocumentLockedWithChanges(ctx context.Context, d documen
 			return err
 		}
 	}
-	dir := filepath.Join(w.root, ".parchment", "artifacts", d.ID)
+	dir := filepath.Join(w.artifactsRoot(), d.ID)
 	created := false
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		if !errors.Is(err, os.ErrExist) {
@@ -503,7 +503,7 @@ func (w *Workspace) readDocumentUnlocked(id string, withImages bool) (document.D
 }
 
 func (w *Workspace) readDocumentFileUnlocked(id string, withImages bool) (document.Document, []document.Change, error) {
-	dir := filepath.Join(w.root, ".parchment", "artifacts", id)
+	dir := filepath.Join(w.artifactsRoot(), id)
 	info, err := os.Lstat(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -542,7 +542,7 @@ func (w *Workspace) readDocumentFileUnlocked(id string, withImages bool) (docume
 	if a.Kind != artifact.DocumentKind {
 		return document.Document{}, nil, errNotDocument
 	}
-	if a.Location != filepath.ToSlash(filepath.Join(".parchment", "artifacts", id, "content.md")) {
+	if a.Location != w.ArtifactLocation(id) {
 		return document.Document{}, nil, fmt.Errorf("invalid document metadata for %s", id)
 	}
 	payloadJSON, ok := file.Blocks[documentDataBlock]

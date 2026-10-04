@@ -53,7 +53,15 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 			if value, _ := cmd.InheritedFlags().GetString("workspace"); value != "" {
 				path = value
 			}
-			if err := workspace.Init(path); err != nil {
+			userPath, err := config.UserConfigPath()
+			if err != nil {
+				return err
+			}
+			settings, err := config.Load(userPath, filepath.Join(path, "parchment.toml"))
+			if err != nil {
+				return err
+			}
+			if err := workspace.InitWithArtifactDir(path, settings.ArtifactDir); err != nil {
 				return err
 			}
 			abs, err := filepath.Abs(path)
@@ -306,7 +314,7 @@ func openWorkspace(cmd *cobra.Command) (*workspace.Workspace, config.Settings, e
 	if err != nil {
 		return nil, config.Settings{}, err
 	}
-	ws, err := workspace.Open(abs)
+	ws, err := workspace.OpenWithArtifactDir(abs, settings.ArtifactDir)
 	if err != nil {
 		return nil, config.Settings{}, err
 	}

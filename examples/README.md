@@ -14,13 +14,13 @@ for id in 10000000000000000000000000000001 \
           20000000000000000000000000000002 \
           30000000000000000000000000000003 \
           40000000000000000000000000000004; do
-  mkdir -m 700 -p "$workspace/.parchment/artifacts/$id"
+  mkdir -m 700 -p "$workspace/parchment/artifacts/$id"
 done
-cp examples/note.md "$workspace/.parchment/artifacts/10000000000000000000000000000001/content.md"
-cp examples/document.md "$workspace/.parchment/artifacts/20000000000000000000000000000002/content.md"
-cp examples/budget.md "$workspace/.parchment/artifacts/30000000000000000000000000000003/content.md"
-cp examples/presentation.md "$workspace/.parchment/artifacts/40000000000000000000000000000004/content.md"
-chmod 600 "$workspace"/.parchment/artifacts/*/content.md
+cp examples/note.md "$workspace/parchment/artifacts/10000000000000000000000000000001/content.md"
+cp examples/document.md "$workspace/parchment/artifacts/20000000000000000000000000000002/content.md"
+cp examples/budget.md "$workspace/parchment/artifacts/30000000000000000000000000000003/content.md"
+cp examples/presentation.md "$workspace/parchment/artifacts/40000000000000000000000000000004/content.md"
+chmod 600 "$workspace"/parchment/artifacts/*/content.md
 ```
 
 Inspect each artifact type in the sample workspace with:
