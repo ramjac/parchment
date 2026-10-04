@@ -36,5 +36,7 @@ parchment --workspace ./example-workspace spreadsheet cell s3 D2
 parchment --workspace ./example-workspace document print d2
 ```
 
-The garden illustration is embedded in the document's hidden JSON payload as
+The document body demonstrates CommonMark 0.31.2 block and inline syntax,
+including headings, lists, quotes, code, links, images, escapes, entities, and
+HTML. Its garden illustration is embedded in the hidden JSON payload as
 base64, so the artifact is still one Markdown file.
