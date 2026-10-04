@@ -150,6 +150,17 @@ func (s *documentsScreen) startCreate() tea.Cmd {
 }
 
 func (s *documentsScreen) startEdit(d document.Document) tea.Cmd {
+	// Refuse documents the editor widgets would truncate or alter; saving
+	// after any edit would otherwise overwrite the full stored text.
+	s.titleInput.SetValue(d.Title)
+	s.body.SetValue(d.Body)
+	if s.titleInput.Value() != d.Title || s.body.Value() != d.Body {
+		s.titleInput.SetValue("")
+		s.body.SetValue("")
+		s.errMessage = "This document exceeds editor limits or contains text the editor cannot preserve; edit it with `parchment document edit`"
+		s.status = ""
+		return nil
+	}
 	s.creating = false
 	s.snapshot = d
 	s.layout = d.Layout

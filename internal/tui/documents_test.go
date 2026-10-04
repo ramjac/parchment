@@ -209,3 +209,22 @@ func TestCancelledImageLoadIsDiscarded(t *testing.T) {
 		t.Fatalf("status = %q", m.documents.status)
 	}
 }
+
+func TestEditorRefusesDocumentItCannotPreserve(t *testing.T) {
+	m, docs := newDocumentsModel(t)
+	long := strings.Repeat("t", 250)
+	created, err := docs.Create(context.Background(), document.Draft{Title: long, Body: "body"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	s := m.documents
+	if s.mode != documentBrowsing || !strings.Contains(s.errMessage, "exceeds editor limits") {
+		t.Fatalf("mode = %d, error = %q", s.mode, s.errMessage)
+	}
+	stored, err := docs.Get(context.Background(), created.ID)
+	if err != nil || stored.Title != long {
+		t.Fatalf("stored title changed: %q, %v", stored.Title, err)
+	}
+}
