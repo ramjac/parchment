@@ -40,6 +40,19 @@ func TestSpreadsheetCLIFormulasAndGridOperations(t *testing.T) {
 		return out
 	}
 	must("init")
+	if err := os.WriteFile(input, []byte("Name\nbad\xff\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := run("spreadsheet", "create", "Invalid", "--csv-file", input); err == nil ||
+		!strings.Contains(err.Error(), "valid UTF-8") || out != "" {
+		t.Fatalf("invalid UTF-8 CSV import = %q, %v", out, err)
+	}
+	if out := must("spreadsheet", "list"); strings.Contains(out, "Invalid") {
+		t.Fatalf("failed CSV import persisted an artifact: %q", out)
+	}
+	if err := os.WriteFile(input, []byte("Item,Count\nApples,4\nOranges,3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	id := strings.TrimSpace(must("spreadsheet", "create", "Fruit", "--csv-file", input))
 	if len(id) != 32 {
 		t.Fatalf("spreadsheet ID = %q", id)

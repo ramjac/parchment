@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/artifactfile"
@@ -333,6 +334,9 @@ func Normalize(book *Spreadsheet) error {
 }
 
 func validateCell(cell Cell) error {
+	if !utf8.ValidString(cell.Value) || !utf8.ValidString(cell.Formula) {
+		return errors.New("cell text must be valid UTF-8")
+	}
 	if cell.Formula != "" && cell.Value != "" {
 		return errors.New("cell cannot contain both a value and a formula")
 	}
