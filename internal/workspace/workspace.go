@@ -180,7 +180,21 @@ func (w *Workspace) List(ctx context.Context) ([]note.Note, error) {
 		if !entry.IsDir() || !validID.MatchString(entry.Name()) {
 			continue
 		}
-		n, err := w.readNote(ctx, entry.Name())
+		var n note.Note
+		err := withArtifactLock(ctx, root, entry.Name(), func() error {
+			metadata, err := w.readArtifactMetadataUnlocked(entry.Name())
+			if errors.Is(err, errNoMetadata) {
+				return err
+			}
+			if err != nil {
+				return err
+			}
+			if metadata.Kind != artifact.NoteKind {
+				return errNotNote
+			}
+			n, err = w.readNoteUnlocked(entry.Name())
+			return err
+		})
 		if errors.Is(err, errNotNote) {
 			continue
 		}
@@ -193,6 +207,43 @@ func (w *Workspace) List(ctx context.Context) ([]note.Note, error) {
 		notes = append(notes, n)
 	}
 	return notes, nil
+}
+
+func (w *Workspace) readArtifactMetadataUnlocked(id string) (artifact.Artifact, error) {
+	dir := filepath.Join(w.root, ".parchment", "artifacts", id)
+	info, err := os.Lstat(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return artifact.Artifact{}, errNoMetadata
+		}
+		return artifact.Artifact{}, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return artifact.Artifact{}, errors.New("artifact storage path is not a directory")
+	}
+
+	metadata, err := readArtifactMetadata(filepath.Join(dir, "content.md"))
+	if err == nil {
+		if metadata.ID != id {
+			return artifact.Artifact{}, fmt.Errorf("invalid artifact metadata for %s", id)
+		}
+		return metadata, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, artifactfile.ErrMetadataMissing) {
+		return artifact.Artifact{}, err
+	}
+	metadataErr := err
+	metadata, err = readLegacyArtifactMetadata(dir, id)
+	if err == nil {
+		return metadata, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(metadataErr, os.ErrNotExist) {
+			return artifact.Artifact{}, errNoMetadata
+		}
+		return artifact.Artifact{}, fmt.Errorf("read artifact metadata %s: %w", id, metadataErr)
+	}
+	return artifact.Artifact{}, fmt.Errorf("read legacy artifact metadata %s: %w", id, err)
 }
 
 // Get returns the note with the supplied stable ID.

@@ -169,6 +169,35 @@ func TestDecodeSkipsMultipleSeparatingBlankLinesAndPreservesBodyWhitespace(t *te
 	}
 }
 
+func TestReadMetadataFromStopsAfterMetadataBlock(t *testing.T) {
+	data, err := Encode(testArtifact(), strings.Repeat("body ", 200_000), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := bytes.NewReader(append([]byte("\n\n"), data...))
+	got, err := ReadMetadataFrom(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != testArtifact().ID {
+		t.Fatalf("metadata ID = %q", got.ID)
+	}
+	if reader.Len() == 0 {
+		t.Fatal("metadata reader consumed the artifact body")
+	}
+}
+
+func TestReadMetadataFromStopsAtNonMetadataFirstLine(t *testing.T) {
+	reader := bytes.NewReader([]byte(strings.Repeat("body", 250_000)))
+	_, err := ReadMetadataFrom(reader)
+	if !errors.Is(err, ErrMetadataMissing) {
+		t.Fatalf("non-envelope metadata error = %v", err)
+	}
+	if reader.Len() == 0 {
+		t.Fatal("metadata reader consumed a long Markdown line")
+	}
+}
+
 func TestStripPrivateBlocksPreservesOrdinaryCodeFences(t *testing.T) {
 	markdown := "before\n\n```parchment-secret\nhidden\n```\n\n```go\n```parchment-example\nvisible\n```\n```\nafter\n"
 	got := StripPrivateBlocks(markdown)
@@ -177,6 +206,19 @@ func TestStripPrivateBlocksPreservesOrdinaryCodeFences(t *testing.T) {
 	}
 	if !strings.Contains(got, "```go\n```parchment-example\nvisible\n```\n```") {
 		t.Fatalf("ordinary code fence content was removed: %q", got)
+	}
+}
+
+func TestStripPrivateBlocksRecognizesQuotedFences(t *testing.T) {
+	markdown := "> ```parchment-secret\n> hidden\n> ```\n\n" +
+		"> > ~~~parchment-deep\n> > hidden deep\n> > ~~~\n\n" +
+		"> ```go\n> ```parchment-example\n> visible\n> ```\n> ```\n"
+	got := StripPrivateBlocks(markdown)
+	if strings.Contains(got, "parchment-secret") || strings.Contains(got, "hidden") {
+		t.Fatalf("quoted Parchment block was rendered: %q", got)
+	}
+	if !strings.Contains(got, "> ```go\n> ```parchment-example\n> visible\n> ```\n> ```") {
+		t.Fatalf("ordinary quoted code fence content was removed: %q", got)
 	}
 }
 

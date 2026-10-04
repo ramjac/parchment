@@ -1,10 +1,12 @@
 package artifactfile
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 
@@ -139,6 +141,80 @@ func ReadMetadata(data []byte) (artifact.Artifact, error) {
 	return item, err
 }
 
+// ReadMetadataFrom reads only the leading metadata block from an artifact
+// stream, without loading its structured payloads or Markdown body.
+func ReadMetadataFrom(input io.Reader) (artifact.Artifact, error) {
+	reader := bufio.NewReader(io.LimitReader(input, MaxFileSize+1))
+	var prefix strings.Builder
+	var lineBuffer strings.Builder
+	var block opening
+	var consumed int64
+	haveBlock := false
+	openingLineIncomplete := false
+	for {
+		lineBytes, err := reader.ReadSlice('\n')
+		consumed += int64(len(lineBytes))
+		if consumed > MaxFileSize {
+			return artifact.Artifact{}, fmt.Errorf("artifact metadata is larger than %d MiB", MaxFileSize>>20)
+		}
+		lineBuffer.Write(lineBytes)
+		if !haveBlock {
+			if errors.Is(err, bufio.ErrBufferFull) {
+				line := lineBuffer.String()
+				if isBlankLine(line) {
+					lineBuffer.Reset()
+					prefix.Reset()
+					prefix.WriteByte('\n')
+					continue
+				}
+				block, haveBlock = parseOpening(line)
+				if !haveBlock || block.name != metadataBlock {
+					prefix.WriteString(line)
+					return ReadMetadata([]byte(prefix.String()))
+				}
+				prefix.WriteString(line)
+				lineBuffer.Reset()
+				openingLineIncomplete = true
+				continue
+			}
+			line := lineBuffer.String()
+			lineBuffer.Reset()
+			if isBlankLine(line) {
+				prefix.Reset()
+				prefix.WriteByte('\n')
+			} else {
+				var ok bool
+				block, ok = parseOpening(line)
+				if !ok || block.name != metadataBlock {
+					prefix.WriteString(line)
+					return ReadMetadata([]byte(prefix.String()))
+				}
+				haveBlock = true
+				prefix.WriteString(line)
+			}
+		} else {
+			if errors.Is(err, bufio.ErrBufferFull) {
+				prefix.Write(lineBytes)
+				continue
+			}
+			line := lineBuffer.String()
+			lineBuffer.Reset()
+			prefix.WriteString(line)
+			if openingLineIncomplete {
+				openingLineIncomplete = false
+			} else if isFenceClose(line, block.marker[:1], len(block.marker)) {
+				return ReadMetadata([]byte(prefix.String()))
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return ReadMetadata([]byte(prefix.String()))
+			}
+			return artifact.Artifact{}, fmt.Errorf("read Parchment metadata: %w", err)
+		}
+	}
+}
+
 func readMetadata(source string) (artifact.Artifact, int, error) {
 	start := 0
 	for start < len(source) {
@@ -187,7 +263,7 @@ func StripPrivateBlocks(markdown string) string {
 	for offset := 0; offset < len(markdown); {
 		line, next := nextLine(markdown, offset)
 		if fence != "" {
-			if isFenceClose(line, fence[:1], len(fence)) {
+			if isFenceClose(stripBlockquotePrefixes(line), fence[:1], len(fence)) {
 				if !skipping {
 					output.WriteString(line)
 				}
@@ -198,7 +274,7 @@ func StripPrivateBlocks(markdown string) string {
 			offset = next
 			continue
 		}
-		marker, info, ok := parseFence(line)
+		marker, info, ok := parseFence(stripBlockquotePrefixes(line))
 		if ok {
 			fence = marker
 			skipping = strings.HasPrefix(info, "parchment-")
@@ -212,6 +288,28 @@ func StripPrivateBlocks(markdown string) string {
 		offset = next
 	}
 	return output.String()
+}
+
+func stripBlockquotePrefixes(line string) string {
+	for {
+		text := strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+		spaces := 0
+		for spaces < len(text) && spaces < 4 && text[spaces] == ' ' {
+			spaces++
+		}
+		if spaces > 3 || spaces == len(text) || text[spaces] != '>' {
+			return line
+		}
+		line = text[spaces+1:]
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			line = line[1:]
+		}
+		if strings.HasSuffix(line, "\r") {
+			line = strings.TrimSuffix(line, "\r") + "\n"
+		} else if strings.HasSuffix(line, "\n") {
+			line = line[:len(line)-1] + "\n"
+		}
+	}
 }
 
 type opening struct {

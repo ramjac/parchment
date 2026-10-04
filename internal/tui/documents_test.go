@@ -193,6 +193,49 @@ func TestDocumentChangeReviewScrollsAndBoundsChangeList(t *testing.T) {
 	}
 }
 
+func TestDocumentChangeReviewReflowsLongLinesOnResize(t *testing.T) {
+	m, docs := newDocumentsModel(t)
+	ctx := context.Background()
+	created, err := docs.Create(ctx, document.Draft{
+		Title: "Long", Body: strings.Repeat("c", 90) + "CURRENT-END",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	change, err := docs.Propose(ctx, created, "Long proposal", document.Draft{
+		Title: "Long", Body: strings.Repeat("p", 90) + "PROPOSED-END",
+		Layout: created.Layout,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := m.documents
+	s.changes, s.selectedChange, s.showChanges, s.reviewing = []document.Change{change}, 0, true, true
+	s.resize(100, 12)
+	wideLineCount := s.changeReview.TotalLineCount()
+	s.resize(40, 12)
+	if s.changeReview.TotalLineCount() <= wideLineCount {
+		t.Fatalf("narrow review did not reflow long lines: wide=%d narrow=%d",
+			wideLineCount, s.changeReview.TotalLineCount())
+	}
+	var view string
+	sawCurrent, sawProposed := false, false
+	for i := 0; i < s.changeReview.TotalLineCount() && !(sawCurrent && sawProposed); i++ {
+		s.changeReview.SetYOffset(i)
+		view = s.changeReview.View()
+		sawCurrent = sawCurrent || strings.Contains(view, "CURRENT-END")
+		sawProposed = sawProposed || strings.Contains(view, "PROPOSED-END")
+	}
+	if !sawCurrent || !sawProposed {
+		t.Fatalf("reflowed review did not make the ends of both long lines inspectable: offset=%d lines=%d view=%q",
+			s.changeReview.YOffset, s.changeReview.TotalLineCount(), view)
+	}
+	review := s.viewChanges("header")
+	if !strings.Contains(review, "a accept") || !strings.Contains(review, "Esc return") {
+		t.Fatal("review controls disappeared after reflow")
+	}
+}
+
 func TestToolbarMouseClickAndUnsavedEscape(t *testing.T) {
 	m, _ := newDocumentsModel(t)
 	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})

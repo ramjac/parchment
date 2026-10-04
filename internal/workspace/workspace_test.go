@@ -952,3 +952,64 @@ func TestNoteRepositoryIgnoresOtherArtifactKinds(t *testing.T) {
 		t.Fatalf("Delete changed non-note artifact file: %v", err)
 	}
 }
+
+func TestArtifactListsCheckKindBeforeReadingBodies(t *testing.T) {
+	listers := []struct {
+		kind artifact.Kind
+		list func(context.Context, *Workspace) (int, error)
+	}{
+		{artifact.NoteKind, func(ctx context.Context, ws *Workspace) (int, error) {
+			items, err := ws.List(ctx)
+			return len(items), err
+		}},
+		{artifact.DocumentKind, func(ctx context.Context, ws *Workspace) (int, error) {
+			items, err := ws.ListDocuments(ctx)
+			return len(items), err
+		}},
+		{artifact.PresentationKind, func(ctx context.Context, ws *Workspace) (int, error) {
+			items, err := ws.ListPresentations(ctx)
+			return len(items), err
+		}},
+		{artifact.SpreadsheetKind, func(ctx context.Context, ws *Workspace) (int, error) {
+			items, err := ws.ListSpreadsheets(ctx)
+			return len(items), err
+		}},
+	}
+	for i, source := range listers {
+		t.Run(string(source.kind), func(t *testing.T) {
+			root := t.TempDir()
+			ws := openTestWorkspace(t, root)
+			id := fmt.Sprintf("%032x", i+1)
+			now := time.Now().UTC()
+			item := artifact.Artifact{
+				ID: id, Kind: source.kind, Title: "Large", CreatedAt: now, ModifiedAt: now,
+				FormatVersion: artifact.FormatVersion,
+				Location:      filepath.ToSlash(filepath.Join(".parchment", "artifacts", id, "content.md")),
+			}
+			data, err := artifactfile.Encode(item, "body", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := filepath.Join(root, ".parchment", "artifacts", id)
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "content.md")
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Truncate(path, artifactfile.MaxFileSize+1); err != nil {
+				t.Fatal(err)
+			}
+			for _, list := range listers {
+				if list.kind == source.kind {
+					continue
+				}
+				count, err := list.list(context.Background(), ws)
+				if err != nil || count != 0 {
+					t.Fatalf("%s list read a foreign artifact body: count=%d err=%v", list.kind, count, err)
+				}
+			}
+		})
+	}
+}

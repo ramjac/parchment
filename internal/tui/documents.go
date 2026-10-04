@@ -511,8 +511,13 @@ func (s *documentsScreen) updateChangesKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 func (s *documentsScreen) resizeChangeReview() {
+	offset := s.changeReview.YOffset
 	s.changeReview.Width = max(s.width-4, 1)
 	s.changeReview.Height = max(s.height-8, 1)
+	if s.reviewing {
+		s.setChangeReviewContent()
+		s.changeReview.SetYOffset(offset)
+	}
 }
 
 func (s *documentsScreen) setChangeReviewContent() {
@@ -521,14 +526,35 @@ func (s *documentsScreen) setChangeReviewContent() {
 		s.changeReview.SetContent("")
 		return
 	}
-	s.changeReview.SetContent(fmt.Sprintf(
+	content := fmt.Sprintf(
 		"%s  ·  %s  ·  %s\n\n--- Current: %s\n+++ Proposed: %s\n\nCurrent page setup:\n%s\n\nProposed page setup:\n%s\n\n--- Current Markdown ---\n%s\n\n+++ Proposed Markdown +++\n%s",
 		change.ID, change.Status, sanitizeTerminalLine(change.Description),
 		sanitizeTerminalLine(change.Before.Title), sanitizeTerminalLine(change.After.Title),
 		changeLayoutDescription(change.Before.Layout), changeLayoutDescription(change.After.Layout),
 		sanitizeTerminalText(change.Before.Body), sanitizeTerminalText(change.After.Body),
-	))
+	)
+	s.changeReview.SetContent(wrapReviewText(content, max(s.changeReview.Width, 1)))
 	s.changeReview.GotoTop()
+}
+
+func wrapReviewText(content string, width int) string {
+	var wrapped strings.Builder
+	for lineIndex, line := range strings.Split(content, "\n") {
+		if lineIndex > 0 {
+			wrapped.WriteByte('\n')
+		}
+		lineWidth := 0
+		for _, r := range line {
+			runeWidth := max(runewidth.RuneWidth(r), 0)
+			if lineWidth > 0 && lineWidth+runeWidth > width {
+				wrapped.WriteByte('\n')
+				lineWidth = 0
+			}
+			wrapped.WriteRune(r)
+			lineWidth += runeWidth
+		}
+	}
+	return wrapped.String()
 }
 
 func (s *documentsScreen) selectedChangeValue() (document.Change, bool) {

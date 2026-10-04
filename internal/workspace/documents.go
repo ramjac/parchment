@@ -64,6 +64,16 @@ func (w *Workspace) ListDocuments(ctx context.Context) ([]document.Document, err
 		}
 		var d document.Document
 		err := withArtifactLock(ctx, root, entry.Name(), func() error {
+			metadata, err := w.readArtifactMetadataUnlocked(entry.Name())
+			if errors.Is(err, errNoMetadata) {
+				return errNoMetadata
+			}
+			if err != nil {
+				return err
+			}
+			if metadata.Kind != artifact.DocumentKind {
+				return errNotDocument
+			}
 			var readErr error
 			d, readErr = w.readDocumentUnlocked(entry.Name(), false)
 			return readErr
@@ -677,14 +687,7 @@ func readDocumentImages(dir string) ([]document.Image, error) {
 // readRegularFile reads a regular file without following links. A negative
 // limit means no size limit; otherwise larger files are an error.
 func readRegularFile(path string, limit int64) ([]byte, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, errors.New("not a regular file")
-	}
-	file, err := os.Open(path)
+	file, err := openRegularFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -700,4 +703,24 @@ func readRegularFile(path string, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("larger than %d bytes", limit)
 	}
 	return data, nil
+}
+
+func readArtifactMetadata(path string) (artifact.Artifact, error) {
+	file, err := openRegularFile(path)
+	if err != nil {
+		return artifact.Artifact{}, err
+	}
+	defer file.Close()
+	return artifactfile.ReadMetadataFrom(file)
+}
+
+func openRegularFile(path string) (*os.File, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("not a regular file")
+	}
+	return os.Open(path)
 }

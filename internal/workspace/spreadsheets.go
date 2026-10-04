@@ -31,6 +31,16 @@ func (w *Workspace) ListSpreadsheets(ctx context.Context) ([]spreadsheet.Spreads
 		}
 		var book spreadsheet.Spreadsheet
 		err := withArtifactLock(ctx, root, entry.Name(), func() error {
+			metadata, err := w.readArtifactMetadataUnlocked(entry.Name())
+			if errors.Is(err, errNoMetadata) {
+				return spreadsheet.ErrNotFound
+			}
+			if err != nil {
+				return err
+			}
+			if metadata.Kind != artifact.SpreadsheetKind {
+				return spreadsheet.ErrNotFound
+			}
 			var readErr error
 			book, readErr = w.readSpreadsheetUnlocked(entry.Name())
 			return readErr
