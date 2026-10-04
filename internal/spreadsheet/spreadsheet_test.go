@@ -3,6 +3,7 @@ package spreadsheet
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -13,9 +14,9 @@ import (
 func TestSingleFileWorkbookEncodesMetadataCellsAndFormulas(t *testing.T) {
 	book := Spreadsheet{
 		Artifact: artifact.Artifact{
-			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.SpreadsheetKind,
+			ID: "s12345", Kind: artifact.SpreadsheetKind,
 			Title: "Budget", FormatVersion: artifact.FormatVersion,
-			Location:  ".parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+			Location:  "parchment/artifacts/s12345/content.md",
 			CreatedAt: fixedTime, ModifiedAt: fixedTime,
 		},
 		Version: FileVersion,
@@ -37,8 +38,8 @@ func TestSingleFileWorkbookEncodesMetadataCellsAndFormulas(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !Equal(book, decoded) {
-		t.Fatalf("round trip changed workbook:\noriginal: %+v\ndecoded: %+v", book, decoded)
+	if book.Version != decoded.Version || book.Body != decoded.Body || !reflect.DeepEqual(book.Sheets, decoded.Sheets) {
+		t.Fatalf("round trip changed persisted workbook content:\noriginal: %+v\ndecoded: %+v", book, decoded)
 	}
 	value, err := Evaluate(&decoded, 0, 2, 3)
 	if err != nil || value != 125 {
@@ -65,20 +66,20 @@ func TestNormalizeRejectsInvalidUTF8SheetNames(t *testing.T) {
 	}
 }
 
-func TestNormalizeRejectsInvalidUTF8Title(t *testing.T) {
+func TestNormalizeDoesNotValidateTransientTitle(t *testing.T) {
 	book := formulaChain(0)
 	book.Title += string([]byte{0xff})
-	if err := Normalize(&book); err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
-		t.Fatalf("invalid UTF-8 workbook title returned %v", err)
+	if err := Normalize(&book); err != nil {
+		t.Fatalf("transient title affected workbook validation: %v", err)
 	}
 }
 
 func TestFormulaArithmeticReferencesAndCycles(t *testing.T) {
 	book := Spreadsheet{
 		Artifact: artifact.Artifact{
-			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.SpreadsheetKind,
+			ID: "s12345", Kind: artifact.SpreadsheetKind,
 			Title: "Formula test", FormatVersion: artifact.FormatVersion,
-			Location:  ".parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+			Location:  "parchment/artifacts/s12345/content.md",
 			CreatedAt: fixedTime, ModifiedAt: fixedTime,
 		},
 		Version: FileVersion,
@@ -215,30 +216,12 @@ func formulaChain(formulas int) Spreadsheet {
 	}
 	return Spreadsheet{
 		Artifact: artifact.Artifact{
-			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.SpreadsheetKind,
+			ID: "s12345", Kind: artifact.SpreadsheetKind,
 			Title: "Deep formulas", FormatVersion: artifact.FormatVersion,
-			Location:  ".parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+			Location:  "parchment/artifacts/s12345/content.md",
 			CreatedAt: fixedTime, ModifiedAt: fixedTime,
 		},
 		Version: FileVersion, Sheets: []Sheet{{Name: "Sheet1", Rows: rows}},
-	}
-}
-
-func TestEqualTreatsEmptyMetadataSlicesAsNil(t *testing.T) {
-	left := Spreadsheet{
-		Artifact: artifact.Artifact{
-			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.SpreadsheetKind,
-			Title: "Metadata", FormatVersion: artifact.FormatVersion,
-			Location:  ".parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
-			CreatedAt: fixedTime, ModifiedAt: fixedTime,
-		},
-		Version: FileVersion, Sheets: []Sheet{{Name: "Sheet1", Rows: [][]Cell{{{Value: "1"}}}}},
-	}
-	right := left
-	right.Tags = []string{}
-	right.Links = []string{}
-	if !Equal(left, right) {
-		t.Fatal("empty tags and links should equal nil slices")
 	}
 }
 
@@ -252,6 +235,10 @@ type memoryRepository struct {
 
 func newMemoryRepository() *memoryRepository {
 	return &memoryRepository{books: make(map[string]Spreadsheet)}
+}
+
+func (*memoryRepository) ArtifactLocation(id string) string {
+	return "parchment/artifacts/" + id + "/content.md"
 }
 
 func (r *memoryRepository) ListSpreadsheets(context.Context) ([]Spreadsheet, error) {

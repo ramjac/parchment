@@ -1,296 +1,95 @@
-# parchment
+# Parchment
 
-`parchment` is the beginning of a local-first productivity workspace for the
-terminal. The first working slice is Markdown notes: workspace storage, shared
-artifact metadata, direct filesystem search, a command-line interface, and an
-interactive notes screen.
+Parchment is a local-first terminal editor for files wherever they live. A
+user's ordinary filesystem is the shared workspace: Parchment and other
+editors can open the same files. It works offline without an account, server,
+Parchment-specific directory, or initialization step. Requires Go 1.24 or
+newer.
 
-The module path `example.com/parchment` is a placeholder because this
-repository does not yet define a canonical Go module path.
-
-## Requirements
-
-- Go 1.24 or newer
-- A filesystem writable by the current user
-
-Normal use is offline. There are no accounts, hosted services, telemetry,
-background processes, or synchronization protocol.
-
-Pull requests targeting `main` run `go build ./cmd/parchment` and `go test ./...`
-in separate GitHub Actions jobs (`Go build` and `Go test`). The `main` branch
-requires pull requests and both checks to pass before merging.
-
-## Quick start
+## Open a file
 
 ```sh
-go run ./cmd/parchment init ~/Documents/parchment
-go run ./cmd/parchment --workspace ~/Documents/parchment note create "First note" \
-  --body "Markdown stays readable on disk."
-go run ./cmd/parchment --workspace ~/Documents/parchment note list
-go run ./cmd/parchment --workspace ~/Documents/parchment tui
+go run ./cmd/parchment path/to/notes.md
+go run ./cmd/parchment examples/note.md
+go run ./cmd/parchment examples/document.md
+go run ./cmd/parchment examples/budget.md
+go run ./cmd/parchment examples/presentation.md
 ```
 
-From inside an initialized workspace, the `--workspace` flag can be omitted:
-parchment searches the current directory and its parents. `PARCHMENT_WORKSPACE`
-can select a workspace explicitly. Use `parchment --help` and
-`parchment note --help` for the complete command tree.
+The path is the only command argument. Files are saved back to that path;
+Parchment does not move them into a managed directory or create a project.
+Ordinary Markdown remains ordinary Markdown on save. A Parchment artifact
+starts with a `parchment-meta` fenced JSON block containing its kind, format
+version, creation time, and modification time (no title or ID). Optional
+editable Markdown follows a `<!-- parchment-body -->` separator. Optional
+kind-specific `parchment-*` blocks follow the body after an explicit
+`<!-- parchment-blocks -->` marker. Metadata, workbook cells, document layout,
+embedded images, and change history stay in the same inspectable file, with
+the human-readable content before large structured payloads.
 
-Available note operations include `note create`, `list`, `show`, `edit`,
-`rename`, `add`, `remove`, and `delete`. Deletion requires `--yes`. The
-`search <query>` command scans note titles, Markdown bodies, and tags directly
-from the workspace; there is no search index or daemon.
-
-## Storage
-
-The workspace is an ordinary directory. `parchment.toml` contains versioned
-workspace configuration; artifacts live under
-`.parchment/artifacts/<stable-id>/content.md`. Every supported artifact is one
-Markdown file. It begins with a `parchment-meta` fenced code block containing
-the shared metadata as JSON. Structured artifact data uses additional
-`parchment-<thing>` JSON code blocks before the visible Markdown body. The
-envelope and body are separated by a required `<!-- parchment-body -->`
-comment, so a body can safely begin with a reserved code fence. Parchment
-renderers hide these reserved blocks while ordinary Markdown remains readable.
-Metadata timestamps are UTC RFC 3339 values. Copying, archiving, or versioning
-the workspace with standard tools is sufficient for a local backup.
-
-Initial artifact metadata recognizes the `note`, `document`, `spreadsheet`,
-`presentation`, and `image` kinds. Notes, documents, spreadsheets, and basic
-presentations have application behavior; image editing is not yet implemented.
-
-### Documents
-
-Documents are a separate feature from notes, with multi-page printing in mind.
-The visible body is canonical Markdown. A hidden `parchment-document` JSON
-block stores page layout, embedded image bytes, and proposal history in the
-same `content.md` artifact file. Embedded image references use ordinary
-Markdown links. Page and section breaks are HTML comments so other Markdown
-tools ignore them: `<!-- parchment:page-break -->` and
-`<!-- parchment:section-break columns=2 [continuous] -->`. Headers and footers
-are `left|center|right` text with `{title}`, `{page}`, and `{pages}` tokens.
-
-Printing renders monospaced pages (10 characters and 6 lines per inch) with
-margins, columns, headers, footers, and page numbers, separated by form feeds:
-
-```sh
-parchment document create "Report" --body-file report.md --columns 2 --footer "{title}|{page}/{pages}"
-parchment document print <id> | lpr
-```
-
-Document font selection, when implemented, applies to the whole document, not
-individual sections, and only to printer-oriented rendering. It cannot change
-the font used by the TUI or terminal previews, which use the font configured
-in the user's terminal emulator.
-
-Document commands (`parchment document`, alias `doc`): `list`, `create`,
-`show`, `edit`, `rename`, `tag-add`, `tag-remove`, `layout`, `page-break`,
-`section-break`, `image`, `print`, `search`, `propose`, `changes`, `review`,
-`accept`, `reject`, and `delete --yes`. `propose` records a title, Markdown,
-or layout edit without changing the live document; `review` displays the
-current and proposed Markdown, and `accept` or `reject` resolves the pending
-proposal. Only one proposal may be pending per document, and a proposal cannot
-be accepted if the live document has changed since it was recorded. For
-proposals, existing embedded images can be kept or removed, but new image data
-must be added with the regular `image` command. For example:
-
-```sh
-change=$(parchment document propose <id> --body-file revised.md --description "Revise introduction")
-parchment document review <id> "$change"
-parchment document accept <id> "$change"
-```
-
-Proposal history is stored as inspectable JSON in each document's hidden
-`parchment-document` block. In the interactive shell, press
-`Tab` on the notes screen to switch to documents (and back). Press `c` on a
-selected document to record a proposed edit, `v` to browse its changes, then
-`Enter` to review and `a` or `r` to accept or reject a pending proposal. The
-document editor always shows a toolbar above the text with buttons
-for save, preview, close, text formatting (bold, italic, strikethrough, code,
-headings, lists, quote, link, rule, image) and page setup (page and section
-breaks, columns, margins, page size, orientation, header, footer, page
-numbers). Click a button, press `F2` and use the arrow keys with `Enter`, or
-use the `Alt` shortcuts (`B` bold, `I` italic, `C` code, `1`–`3` headings,
-`L`/`N` lists, `Q` quote, `K` link, `M` image, `P` page break, `S` section
-break). `F5` previews the printed pages and `Ctrl+S` saves (or records a
-proposal when editing a proposal). Document changes, including images, support
-undo and redo like notes.
-
-### Spreadsheets
-
-Spreadsheets are stored as one Markdown file per workbook:
-`.parchment/artifacts/<id>/content.md`. The hidden `parchment-spreadsheet`
-JSON block contains the versioned workbook data, named sheets, two-dimensional
-cell arrays, and explicit literal or formula cells. This keeps the workbook
-self-contained and avoids formulas being inferred from arbitrary text. CSV
-files can initialize a workbook; CSV cells are imported as literal text. A new
-workbook starts with `Sheet1`; additional sheets can be created with
-`spreadsheet add-sheet`.
-
-```sh
-parchment spreadsheet create "Budget" --csv-file budget.csv
-parchment spreadsheet cell <id> B2 12
-parchment spreadsheet cell <id> C2 '=B2*2' --formula
-parchment spreadsheet cell <id> C2
-parchment spreadsheet show <id>
-```
-
-Formula evaluation currently supports numeric constants, same-sheet A1 cell
-references, parentheses, unary signs, and `+`, `-`, `*`, and `/`. Empty
-referenced cells evaluate to zero. Cycles, non-numeric references, and
-division by zero are rejected. Formulas are limited to 4096 bytes and 512
-nested dependencies or parentheses. Rows and columns can be inserted with
-`spreadsheet insert-row` and `spreadsheet insert-column`; formula references
-shift with inserted rows and columns. Spreadsheet edits can be undone and
-redone through the service API while its process is running; the CLI is
-stateless across invocations. The Markdown file with its JSON data block is
-Parchment's canonical format, not a CSV file that third-party spreadsheet
-applications can open directly.
-
-### Presentations
-
-A presentation is stored as one Markdown text file at
-`.parchment/artifacts/<id>/content.md`. Its leading `parchment-meta` block
-embeds the shared artifact metadata; the rest is editable Markdown. The initial
-syntax follows Go present's Markdown conventions: `#` gives the deck title,
-`##` begins a slide, `###` adds a subsection, `//` begins an ignored comment,
-and `: ` begins a speaker-note line. Speaker notes and comments remain in the
-source but are omitted from the plain-text preview.
-
-```markdown
-# Product Update
-
-Presenter Name
-
-## What changed
-
-- Faster search
-- Local-first storage
-
-: Mention the upcoming release date.
-
-## Questions
-
-Thank you.
-```
-
-Use `presentation create <title> --body-file slides.md` to add a deck,
-`presentation show <id>` to inspect its source, and
-`presentation preview <id>` for a slide-separated plain-text preview.
-`presentation edit <id> --body-file slides.md` replaces the Markdown source.
-The parser preserves Markdown for later rendering but does not yet render it;
-embedded media and Go present command directives are not implemented.
-Presentation font selection, when implemented, applies to the whole
-presentation, not individual sections. It applies only to rendered output,
-never to terminal previews.
-
-## Examples
-
-The [`examples/`](examples/) directory contains complete Markdown artifact
-files for notes, documents, spreadsheets, and presentations. Its README shows
-how to copy them into a sample workspace; the document's image data is embedded
-in its hidden payload.
+Notes open directly in the Markdown editor (`Ctrl+S` saves; `Esc` discards
+unsaved edits or quits when clean).
+Documents offer a paginated preview and a body-first editor (no separate
+title field), layout, images, and proposals. Spreadsheets open as a grid:
+use arrow keys to select a cell,
+`Enter` to edit, `=` to enter a formula, and `u`/`Ctrl+R` for undo/redo.
+Presentations open as slides with an editable Markdown source. Press `q` to
+quit an editor. Existing file permissions are preserved on save; edits made
+by another program while a file is open are not overwritten.
 
 ## Configuration
 
-User configuration is read from the platform's standard user configuration
-directory at `parchment/config.toml`. Workspace configuration lives at
-`parchment.toml`. Both use TOML and require `version = 1`. For example:
+The optional per-user `parchment.toml` lives under the OS configuration
+directory at `parchment/parchment.toml` (for example,
+`~/.config/parchment/parchment.toml` on Linux). It is not stored beside an
+edited file. A minimal configuration is:
 
 ```toml
 version = 1
-editor = "vi"
-theme = "adaptive"
 undo_limit = 100
-
-[workspace]
-discovery = "parents"
-
-[logging]
-level = "warn"
-format = "text"
-
-[backup.local]
-destination = ""
 ```
 
-Settings are merged from built-in defaults, user TOML, workspace TOML, then
-environment overrides. Workspace selection accepts `--workspace` and
-`PARCHMENT_WORKSPACE`; user configuration can also set a workspace path and
-parent-directory discovery behavior. `PARCHMENT_UNDO_LIMIT` overrides the
-configured undo limit. Editor, theme, logging, and backup settings are parsed
-but are not yet connected to runtime behavior, and their environment
-variables currently have no effect.
-
-## Interactive notes
-
-Run `parchment tui` from a terminal. Use arrow keys or `j`/`k` to select notes,
-`Enter` to preview, `n` to create, `e` to edit, `/` to search, `Enter` to submit
-a search, `Esc` to clear search, `d` to request deletion, `?` for help, and `q`
-to quit. `Ctrl+C` exits from the notes screen and cancels an operation in
-progress; in the editor it cancels a clean edit but will not abandon unsaved
-changes. Ctrl+C during a save cancels that operation and leaves the editor open.
-In the editor, `Tab` switches between title and Markdown, `Ctrl+S` saves, and
-`Esc` discards the edit. Deletion requires an explicit `y`; `n` or `Esc`
-cancels. In the notes list, `u`/`Ctrl+Z` undo and `Ctrl+R` redo; these bindings
-do not apply while editing. Use `Enter` to focus the preview in wide layouts
-and `↑`/`↓` to scroll it; in narrow layouts, `Enter` opens the preview, `↑`/`↓`
-scroll, and `Esc` returns to the notes list. Narrow and very small terminals use
-a simpler layout and a minimum-size message; quit remains available. Preview is
-plain text rather than rendered Markdown, so canonical Markdown is never
-confused with presentation.
-
-Undo and redo cover note creation, edits, title changes, tag changes, and
-deletion. The bounded history is in memory for the current process and does
-not survive a restart.
+Settings are loaded from built-in defaults, then the per-user file, then
+environment overrides. Undo history is in memory for the current editor
+session only. Files are written via a temporary file, sync, and rename.
 
 ## Future work
 
-This repository currently implements notes, documents, basic spreadsheets,
-and basic Markdown presentations.
-The broader suite is planned to add:
+Parchment supports notes, documents, basic spreadsheets, and Markdown
+presentations. Planned work includes:
 
-- Make the default directory for storing Parchment artifacts a non-hidden folder and also make the default directory path configurable. Generally assume that Parchment artifacts might be read by other applications; especially text file and markdown interpreters.
-- Background auto-save and recovery from auto-save so that in the event Parchment crashes or is force closed, any changes since the last save can be optionally recovered.
-- Read and work with plain Markdown files that lack Parchment metadata, without
-  adding `parchment-meta` or other `parchment-*` blocks to them. Provide an
-  explicit, opt-in "convert to Parchment artifact" operation; only that
-  conversion adds Parchment metadata and structured blocks to the file.
-- Shorter, friendlier artifact IDs and paths. The current 32-character hex IDs
-  produce long paths such as
-  `.parchment/artifacts/40000000000000000000000000000004/content.md`. Consider
-  a compact format that starts with a letter and drops the zeros between that
-  letter and the first significant digit, so artifacts don't need long runs of
-  padding zeros. Update the format and checked-in examples together; before
-  the first release, format changes do not require migration or backwards
-  compatibility.
-- Reader-friendly artifact layout. Artifacts currently place all `parchment-*`
-  blocks, including large base64-encoded images, before the visible Markdown
-  body, so someone opening the file in a text editor must scroll past them.
-  Keep `parchment-meta` as the first block, but move other structured blocks
-  to the end of the file after the body, behind a clear trailing separator.
-  This requires the artifact parser to read trailing structured blocks (it
-  currently reads them only between `parchment-meta` and the body), to keep
-  reading the existing leading layout, and to avoid treating body content as
-  structured data.
-- Shared artifact navigation and organization, including links and
-  attachments, plus import and export.
-- Backup operations and optional provider integrations. Any future Perkeep
-  integration should remain optional and decoupled from core workspace logic;
-  there is no custom synchronization protocol planned.
-- A more complete interactive shell across artifact types, including
-  contextual navigation and richer focus/key-binding behavior. Markdown
-  rendering may be added as a presentation-only preview; Markdown remains the
-  canonical note content.
-- Runtime support for the currently parsed editor, theme, logging, and backup
-  configuration settings.
-- Persistent undo/redo, if introduced, with explicit storage and migration
+- Background autosave and optional recovery of unsaved changes after a crash
+  or forced close.
+- File navigation and organization, including Markdown links.
+- Backup operations and optional provider integrations. Any Perkeep
+  integration should remain optional; no custom synchronization protocol is
+  planned.
+- Handling for commonly used editing key combinations like Ctrl+del to remove whole words. Ctrl+arrow for moving the cursor word by word. Tab for inserting several spaces or a tab.  Also Shift+arrow keys for selections.
+- Overall visual improvements
+  - Notes editor doesn't use full height of terminal
+  - Parchment app components at the bottom of the page like the "Ready" status and undo/redo indicators are not visually separated from the content of the artifact being shown. The same is true for the app components at the top of the page.
+- Runtime support for parsed settings such as editor, theme, logging, and
+  backup configuration.
+- Persistent undo/redo, if introduced, with explicit storage and recovery
   semantics. History currently lasts only for the running process.
-- Basic image-editing features using the shared workspace and artifact metadata.
+- Make a plan for importing and exporting to/from common document file
+  formats. Acknowledge that this will be a "lossy" process in the sense that
+  Parchment doesn't support many of the features of those formats, like
+  multiple fonts or exact image/object positioning.
+  - Export to ODF file format
+  - Export to DOCX file format
+  - Import from ODF file format
+  - Import from DOCX file format
+- Basic image-editing features for files opened directly by Parchment.
+  - Crop
+  - Resize
 
 ## Development
 
 ```sh
-gofmt -w cmd internal
-go test ./...
 go build ./cmd/parchment
+go test ./...
 ```
+
+The module path `example.com/parchment` is a placeholder until the project
+selects a canonical module path.

@@ -87,6 +87,9 @@ type Model struct {
 	cancelOperation     context.CancelFunc
 	documents           *documentsScreen
 	documentsActive     bool
+	singleMarkdownFile  bool
+	singleDocumentFile  bool
+	initialNoteID       string
 }
 
 // Option customizes the interactive model.
@@ -96,6 +99,42 @@ type Option func(*Model)
 func WithDocuments(service *document.Service) Option {
 	return func(m *Model) {
 		m.documents = newDocumentsScreen(service, m.theme, m.newOperationContext)
+	}
+}
+
+// WithSingleMarkdownFile restricts the notes screen to editing one ordinary
+// Markdown file without adding Parchment metadata.
+func WithSingleMarkdownFile() Option {
+	return func(m *Model) {
+		m.singleMarkdownFile = true
+		m.showPreview = true
+	}
+}
+
+// WithInitialNote selects and previews one note after the first list load.
+func WithInitialNote(id string) Option {
+	return func(m *Model) {
+		m.initialNoteID = id
+	}
+}
+
+// WithInitialDocument opens the documents screen on one document.
+func WithInitialDocument(id string) Option {
+	return func(m *Model) {
+		m.documentsActive = true
+		if m.documents != nil {
+			m.documents.initialDocumentID = id
+		}
+	}
+}
+
+// WithSingleDocumentFile keeps navigation and creation within one open document.
+func WithSingleDocumentFile() Option {
+	return func(m *Model) {
+		m.singleDocumentFile = true
+		if m.documents != nil {
+			m.documents.singleFile = true
+		}
 	}
 }
 
@@ -134,6 +173,9 @@ func NewModel(service *note.Service, repository note.Repository, workspaceName, 
 
 // Init loads the initial note list.
 func (m *Model) Init() tea.Cmd {
+	if m.documentsActive {
+		return m.documents.init()
+	}
 	return m.loadNotes()
 }
 
@@ -149,6 +191,23 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.resizeEditors()
 		m.resizePreview()
+	case tea.MouseMsg:
+		if m.mode == editing && !m.pending && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			bodyY := 3
+			if !m.singleMarkdownFile {
+				bodyY += 2
+				if msg.Y == 3 {
+					m.titleInput.SetCursor(max(msg.X-len(m.titleInput.Prompt), 0))
+					m.bodyInput.Blur()
+					return m, m.titleInput.Focus()
+				}
+			}
+			if placeTextareaCursor(&m.bodyInput, msg.X, msg.Y-bodyY) {
+				m.titleInput.Blur()
+				return m, m.bodyInput.Focus()
+			}
+		}
+		return m, nil
 	case notesLoadedMsg:
 		m.finishOperation()
 		m.pending = false
@@ -157,10 +216,22 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.errMessage = ""
 			m.notes = msg.notes
+			m.selectInitialNote()
 			m.clampSelection()
 			m.resizePreview()
+			m.refreshHistoryAvailability()
+			if m.singleMarkdownFile {
+				if n, ok := m.selectedNote(); ok {
+					if !m.startEdit(n) {
+						return m, nil
+					}
+					return m, m.bodyInput.Focus()
+				}
+			}
 		}
-		m.refreshHistoryAvailability()
+		if msg.err != nil {
+			m.refreshHistoryAvailability()
+		}
 	case searchCompletedMsg:
 		m.finishOperation()
 		m.pending = false
@@ -189,10 +260,16 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.refreshHistoryAvailability()
-		m.mode = browsing
-		m.creating = false
 		m.errMessage = ""
 		m.status = "Saved “" + msg.note.Title + "”"
+		if m.singleMarkdownFile {
+			m.editingSnapshot = msg.note
+			m.originalTitle, m.originalBody = msg.note.Title, msg.note.Body
+			m.pending = false
+			return m, nil
+		}
+		m.mode = browsing
+		m.creating = false
 		return m, m.loadNotes()
 	case noteDeletedMsg:
 		m.finishOperation()
@@ -282,6 +359,15 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.mode == editing {
 		switch key {
 		case "esc":
+			if m.singleMarkdownFile {
+				if m.dirty() {
+					m.titleInput.SetValue(m.originalTitle)
+					m.bodyInput.SetValue(m.originalBody)
+					m.status = "Edit discarded"
+					return m, nil
+				}
+				return m, tea.Quit
+			}
 			m.mode = browsing
 			m.creating = false
 			m.status = "Edit cancelled"
@@ -290,6 +376,9 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.pending = true
 			return m, m.saveNote()
 		case "tab":
+			if m.singleMarkdownFile {
+				return m, nil
+			}
 			if m.titleInput.Focused() {
 				m.titleInput.Blur()
 				return m, m.bodyInput.Focus()
@@ -340,6 +429,13 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if key == "q" {
 		return m, tea.Quit
+	}
+	if m.singleMarkdownFile && key != "e" && key != "enter" &&
+		key != "up" && key != "k" && key != "down" && key != "j" &&
+		key != "pgup" && key != "pgdown" && key != "home" && key != "end" &&
+		key != "left" && key != "right" && key != "esc" &&
+		key != "u" && key != "ctrl+z" && key != "ctrl+r" {
+		return m, nil
 	}
 	switch key {
 	case "?":
@@ -426,9 +522,14 @@ func (m Model) View() string {
 		titleInput := m.titleInput
 		titleInput.SetValue(sanitizeTerminalLine(titleInput.Value()))
 		bodyInput := m.bodyInput
-		bodyInput.SetValue(sanitizeTerminalText(bodyInput.Value()))
-		content := header + "\n" + state + "  ·  Tab switches fields  ·  Ctrl+S saves  ·  Esc cancels\n\n" +
-			titleInput.View() + "\n\n" + bodyInput.View()
+		sanitizeTextareaView(&bodyInput)
+		content := header + "\n" + state + "  ·  "
+		if m.singleMarkdownFile {
+			content += "Ctrl+S saves  ·  Esc cancels\n\n" + bodyInput.View()
+		} else {
+			content += "Tab switches fields  ·  Ctrl+S saves  ·  Esc cancels\n\n" +
+				titleInput.View() + "\n\n" + bodyInput.View()
+		}
 		return content + m.statusLine()
 	}
 	if m.mode == searching {
@@ -448,6 +549,10 @@ func (m Model) View() string {
 			"/            Search titles, content, and tags\n" +
 			"u / Ctrl+Z   Undo    Ctrl+R  Redo\n" +
 			"?            Close help    q  Quit" + m.statusLine()
+	}
+	if m.singleMarkdownFile {
+		return header + "\n" + m.preview.View() +
+			"\ne edit  ·  ↑/↓ scroll  ·  u undo  ·  Ctrl+R redo  ·  q quit" + m.statusLine()
 	}
 	if m.width < 80 {
 		return m.viewNarrow(header)
@@ -515,13 +620,6 @@ func (m Model) viewWide(header string) string {
 			marker = "› "
 		}
 		fmt.Fprintf(&list, "%s%s\n", marker, sanitizeTerminalLine(n.Title))
-		if i == m.selected && len(n.Tags) > 0 {
-			tags := make([]string, len(n.Tags))
-			for j, tag := range n.Tags {
-				tags[j] = sanitizeTerminalLine(tag)
-			}
-			fmt.Fprintf(&list, "  #%s\n", strings.Join(tags, " #"))
-		}
 	}
 	listPane := lipgloss.NewStyle().Width(listWidth).Height(m.height-5).Border(lipgloss.NormalBorder()).
 		BorderForeground(m.theme.border).Padding(0, 1).Render(list.String())
@@ -589,8 +687,13 @@ func (m *Model) startEdit(n note.Note) bool {
 	m.editingID = n.ID
 	m.editingSnapshot = n
 	m.originalTitle, m.originalBody = n.Title, n.Body
-	m.titleInput.Focus()
-	m.bodyInput.Blur()
+	if m.singleMarkdownFile {
+		m.titleInput.Blur()
+		m.bodyInput.Focus()
+	} else {
+		m.titleInput.Focus()
+		m.bodyInput.Blur()
+	}
 	m.resizeEditors()
 	m.status, m.errMessage = "", ""
 	return true
@@ -667,7 +770,11 @@ func (m *Model) resizePreview() {
 	}
 	m.preview.Width, m.preview.Height = width, height
 	if n, ok := m.selectedNote(); ok {
-		m.preview.SetContent(preview(n))
+		if m.singleMarkdownFile {
+			m.preview.SetContent(sanitizeTerminalText(artifactfile.StripPrivateBlocks(n.Body)))
+		} else {
+			m.preview.SetContent(preview(n))
+		}
 	} else {
 		m.preview.SetContent("")
 	}
@@ -718,6 +825,20 @@ func (m *Model) clampSelection() {
 	}
 }
 
+func (m *Model) selectInitialNote() {
+	if m.initialNoteID == "" {
+		return
+	}
+	for i, item := range m.notes {
+		if item.ID == m.initialNoteID {
+			m.selected = i
+			m.showPreview = true
+			break
+		}
+	}
+	m.initialNoteID = ""
+}
+
 func (m Model) dirty() bool {
 	return m.titleInput.Value() != m.originalTitle || m.bodyInput.Value() != m.originalBody
 }
@@ -725,13 +846,6 @@ func (m Model) dirty() bool {
 func preview(n note.Note) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\n", sanitizeTerminalLine(n.Title))
-	if len(n.Tags) > 0 {
-		tags := make([]string, len(n.Tags))
-		for i, tag := range n.Tags {
-			tags[i] = sanitizeTerminalLine(tag)
-		}
-		fmt.Fprintf(&b, "\nTags: #%s\n", strings.Join(tags, " #"))
-	}
 	fmt.Fprintf(&b, "\n%s", sanitizeTerminalText(artifactfile.StripPrivateBlocks(n.Body)))
 	return b.String()
 }
@@ -754,6 +868,17 @@ func sanitizeTerminalText(value string) string {
 	}, value)
 }
 
+// sanitizeTextareaView replaces control characters in a view copy of editor.
+// SetValue moves the cursor to the end of the text, which would draw it away
+// from (or outside the scrolled view of) its real position, so it is skipped
+// when nothing needs replacing.
+func sanitizeTextareaView(editor *textarea.Model) {
+	value := editor.Value()
+	if sanitized := sanitizeTerminalText(value); sanitized != value {
+		editor.SetValue(sanitized)
+	}
+}
+
 // Run starts the full-screen terminal application.
 func Run(ctx context.Context, service *note.Service, repository note.Repository, workspaceName, workspacePath string, options ...Option) error {
 	model := NewModel(service, repository, workspaceName, workspacePath, options...)
@@ -763,7 +888,7 @@ func Run(ctx context.Context, service *note.Service, repository note.Repository,
 	if model.documents != nil {
 		model.documents.newOperationContext = model.newOperationContext
 	}
-	program := tea.NewProgram(&model, tea.WithAltScreen(), tea.WithContext(ctx))
+	program := tea.NewProgram(&model, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx))
 	_, err := program.Run()
 	return err
 }
@@ -781,6 +906,9 @@ func (m *Model) updateDocuments(message tea.Msg) (bool, tea.Cmd) {
 	}
 	cmd, leave := m.documents.update(message)
 	if leave && !m.documents.busy() {
+		if m.singleDocumentFile {
+			return true, tea.Quit
+		}
 		m.documentsActive = false
 		return true, m.loadNotes()
 	}

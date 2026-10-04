@@ -29,14 +29,6 @@ func Notes(ctx context.Context, repository note.Repository, query string) ([]not
 		}
 		matches := strings.Contains(strings.ToLower(n.Title), query) ||
 			strings.Contains(strings.ToLower(n.Body), query)
-		if !matches {
-			for _, tag := range n.Tags {
-				if strings.Contains(strings.ToLower(tag), query) {
-					matches = true
-					break
-				}
-			}
-		}
 		if matches {
 			results = append(results, n)
 		}
@@ -65,9 +57,6 @@ func Documents(ctx context.Context, repository document.Repository, query string
 		}
 		matches := strings.Contains(strings.ToLower(d.Title), query) ||
 			strings.Contains(strings.ToLower(d.Body), query)
-		for _, tag := range d.Tags {
-			matches = matches || strings.Contains(strings.ToLower(tag), query)
-		}
 		if matches {
 			results = append(results, d)
 		}

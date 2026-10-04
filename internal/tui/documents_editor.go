@@ -160,18 +160,16 @@ func (s *documentsScreen) startCreate() tea.Cmd {
 	s.snapshot = document.Document{}
 	s.layout = document.DefaultLayout()
 	s.images = nil
-	return s.beginEditor("", "")
+	return s.beginEditor("")
 }
 
 func (s *documentsScreen) startEdit(d document.Document) tea.Cmd {
 	// Refuse documents the editor widgets would truncate or alter; saving
 	// after any edit would otherwise overwrite the full stored text.
-	s.titleInput.SetValue(d.Title)
 	s.body.SetValue(d.Body)
-	if s.titleInput.Value() != d.Title || s.body.Value() != d.Body {
-		s.titleInput.SetValue("")
+	if s.body.Value() != d.Body {
 		s.body.SetValue("")
-		s.errMessage = "This document exceeds editor limits or contains text the editor cannot preserve; edit it with `parchment document edit`"
+		s.errMessage = "This document exceeds editor limits or contains text the editor cannot preserve; edit it outside Parchment"
 		s.status = ""
 		return nil
 	}
@@ -182,12 +180,11 @@ func (s *documentsScreen) startEdit(d document.Document) tea.Cmd {
 		s.layout = document.DefaultLayout()
 	}
 	s.images = d.Images
-	return s.beginEditor(d.Title, d.Body)
+	return s.beginEditor(d.Body)
 }
 
-func (s *documentsScreen) beginEditor(title, body string) tea.Cmd {
+func (s *documentsScreen) beginEditor(body string) tea.Cmd {
 	s.mode = documentEditing
-	s.titleInput.SetValue(title)
 	s.body.SetValue(body)
 	s.body.CursorStart()
 	s.original = s.currentDraft()
@@ -195,30 +192,22 @@ func (s *documentsScreen) beginEditor(title, body string) tea.Cmd {
 	s.toolbarIndex = 0
 	s.errMessage, s.status = "", ""
 	s.layoutEditor()
-	return tea.Batch(s.focusTitle(), tea.EnableMouseCellMotion)
+	return s.focusBody()
 }
 
 func (s *documentsScreen) stopEditing(status string) tea.Cmd {
 	s.mode, s.creating, s.proposing, s.prompt, s.previewing, s.discardWarning = documentBrowsing, false, false, promptNone, false, false
 	s.status, s.errMessage = status, ""
-	return tea.DisableMouse
-}
-
-func (s *documentsScreen) focusTitle() tea.Cmd {
-	s.focus = focusTitle
-	s.body.Blur()
-	return s.titleInput.Focus()
+	return nil
 }
 
 func (s *documentsScreen) focusBody() tea.Cmd {
 	s.focus = focusBody
-	s.titleInput.Blur()
 	return s.body.Focus()
 }
 
 func (s *documentsScreen) focusToolbar() {
 	s.focus = focusToolbar
-	s.titleInput.Blur()
 	s.body.Blur()
 }
 
@@ -226,15 +215,14 @@ func (s *documentsScreen) layoutEditor() {
 	if s.width == 0 {
 		return
 	}
-	s.titleInput.Width = max(s.width-10, 10)
 	s.body.SetWidth(max(s.width, 10))
-	// header, state, toolbar, blank, title, blank, status line, and a spare row.
-	s.body.SetHeight(max(s.height-s.toolbarRows()-7, 3))
+	// Header, state, toolbar, blank, status line, and a spare row.
+	s.body.SetHeight(max(s.height-s.toolbarRows()-5, 3))
 }
 
 func (s *documentsScreen) editorDocument() document.Document {
 	d := document.Document{Body: s.body.Value(), Layout: s.layout, Images: s.images}
-	d.Title = s.titleInput.Value()
+	d.Title = s.snapshot.Title
 	return d
 }
 
@@ -274,14 +262,11 @@ func (s *documentsScreen) updateEditorKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		return s.stopEditing("Edit closed")
 	case "tab":
-		switch s.focus {
-		case focusTitle:
-			return s.focusBody()
-		case focusBody:
+		if s.focus == focusBody {
 			s.focusToolbar()
 			return nil
 		}
-		return s.focusTitle()
+		return s.focusBody()
 	case "f2":
 		s.focusToolbar()
 		return nil
@@ -293,14 +278,7 @@ func (s *documentsScreen) updateEditorKey(msg tea.KeyMsg) tea.Cmd {
 		return s.updateToolbarKey(key)
 	}
 	var cmd tea.Cmd
-	if s.focus == focusTitle {
-		if key == "enter" {
-			return s.focusBody()
-		}
-		s.titleInput, cmd = s.titleInput.Update(msg)
-	} else {
-		s.body, cmd = s.body.Update(msg)
-	}
+	s.body, cmd = s.body.Update(msg)
 	return cmd
 }
 
@@ -342,6 +320,9 @@ func (s *documentsScreen) updateMouse(msg tea.MouseMsg) tea.Cmd {
 			return s.act(buttons[p.index].action)
 		}
 	}
+	if placeTextareaCursor(&s.body, msg.X, msg.Y-(toolbarTop+s.toolbarRows()+1)) {
+		s.focusBody()
+	}
 	return nil
 }
 
@@ -349,7 +330,7 @@ func (s *documentsScreen) save() tea.Cmd {
 	if s.pending {
 		return nil
 	}
-	draft := document.Draft{Title: s.titleInput.Value(), Body: s.body.Value(), Layout: s.layout, Images: s.images}
+	draft := document.Draft{Title: s.snapshot.Title, Body: s.body.Value(), Layout: s.layout, Images: s.images}
 	s.pending = true
 	s.errMessage = ""
 	ctx := s.startOperation()
@@ -600,7 +581,7 @@ func (s *documentsScreen) editorView(header string) string {
 	if s.proposing {
 		saveHint = "Ctrl+S records proposal"
 	}
-	state += "  ·  Tab switches Title/Body/Toolbar  ·  F2 toolbar  ·  " + saveHint
+	state += "  ·  Tab switches Body/Toolbar  ·  F2 toolbar  ·  " + saveHint
 	if s.previewing {
 		page := ""
 		if len(s.editPages) > 0 {
@@ -609,12 +590,10 @@ func (s *documentsScreen) editorView(header string) string {
 		return header + "\nPrint preview  ·  page " + fmt.Sprintf("%d/%d", s.editPage+1, len(s.editPages)) +
 			"  ·  ←/→ pages  ·  Esc returns\n" + page
 	}
-	title := s.titleInput
-	title.SetValue(sanitizeTerminalLine(title.Value()))
 	body := s.body
-	body.SetValue(sanitizeTerminalText(body.Value()))
+	sanitizeTextareaView(&body)
 	var b strings.Builder
-	b.WriteString(header + "\n" + state + "\n" + s.toolbarView() + "\n\n" + title.View() + "\n")
+	b.WriteString(header + "\n" + state + "\n" + s.toolbarView() + "\n")
 	if s.prompt != promptNone {
 		b.WriteString(s.promptInput.View())
 	}

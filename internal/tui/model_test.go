@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +19,7 @@ import (
 
 func TestResponsiveMinimumAndHelpModal(t *testing.T) {
 	ws := openTestWorkspace(t)
-	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())
+	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test")
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 30, Height: 8})
 	model = *updated.(*Model)
 	if view := model.View(); !strings.Contains(view, "too small") || !strings.Contains(view, "press q") {
@@ -41,22 +43,106 @@ func TestResponsiveMinimumAndHelpModal(t *testing.T) {
 	}
 }
 
-func openTestWorkspace(t *testing.T) *workspace.Workspace {
-	t.Helper()
-	root := t.TempDir()
-	if err := workspace.Init(root); err != nil {
+func TestSingleMarkdownFileModeEditsBodyOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "garden.md")
+	if err := os.WriteFile(path, []byte("# Garden\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	ws, err := workspace.Open(root)
+	repository, err := workspace.OpenMarkdownFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ws
+	service := note.NewService(repository, 10)
+	items, err := service.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := items[0]
+	model := NewModel(service, repository, "garden.md", path, WithSingleMarkdownFile())
+	model.width, model.height = 90, 24
+	updated, _ := model.Update(notesLoadedMsg{notes: []note.Note{item}})
+	model = *updated.(*Model)
+	if model.mode != editing || !model.bodyInput.Focused() ||
+		!strings.Contains(model.View(), "# Garden") || strings.Contains(model.View(), "Notes (") {
+		t.Fatalf("single-file initial view = %q", model.View())
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("!")})
+	model = *updated.(*Model)
+	if model.bodyInput.Value() != "# Garden\n!" || model.titleInput.Value() != item.Title {
+		t.Fatalf("editor values = title %q, body %q", model.titleInput.Value(), model.bodyInput.Value())
+	}
+	result := model.saveNote()().(noteSavedMsg)
+	if result.err != nil {
+		t.Fatalf("save plain Markdown file: %v", result.err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "# Garden\n!" {
+		t.Fatalf("plain file content = %q", data)
+	}
+}
+
+func TestSingleMarkdownFileStaysInEditorAfterSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "garden.md")
+	if err := os.WriteFile(path, []byte("# Garden\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repository, err := workspace.OpenMarkdownFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(note.NewService(repository, 10), repository, "garden.md", path, WithSingleMarkdownFile())
+	model.width, model.height = 90, 24
+	model.Update(model.Init()())
+	if model.mode != editing || !model.bodyInput.Focused() {
+		t.Fatalf("initial mode=%d, focused=%t", model.mode, model.bodyInput.Focused())
+	}
+	model.bodyInput.SetValue("# Changed\n")
+	_, save := model.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if save == nil {
+		t.Fatal("save command not returned")
+	}
+	model.Update(save())
+	if model.mode != editing || model.pending || model.dirty() {
+		t.Fatalf("save left editor: mode=%d pending=%t dirty=%t", model.mode, model.pending, model.dirty())
+	}
+	model.bodyInput.SetValue("# Discarded\n")
+	model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if model.mode != editing || model.bodyInput.Value() != "# Changed\n" {
+		t.Fatal("escape did not discard unsaved edit in editor")
+	}
+	_, quit := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if quit == nil || quit() != (tea.QuitMsg{}) {
+		t.Fatal("escape did not quit clean editor")
+	}
+}
+
+func TestInitialNoteOptionSelectsAndPreviewsNote(t *testing.T) {
+	ws := openTestWorkspace(t)
+	service := note.NewService(ws, 10)
+	first, err := service.Create(context.Background(), "First", "First body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := service.Create(context.Background(), "Target", "Target body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(service, ws, "test", "/tmp/test", WithInitialNote(target.ID))
+	message := model.Init()()
+	updated, _ := model.Update(message)
+	model = *updated.(*Model)
+	selected, ok := model.selectedNote()
+	if !ok || selected.ID != target.ID || !model.showPreview {
+		t.Fatalf("initial note selection = %+v, preview=%t (first note %s)", selected, model.showPreview, first.ID)
+	}
 }
 
 func TestPendingCtrlCCancelsOperationAndQuits(t *testing.T) {
 	ws := openTestWorkspace(t)
-	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())
+	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test")
 	opCtx, cancel := context.WithCancel(context.Background())
 	model.pending = true
 	model.cancelOperation = cancel
@@ -75,7 +161,7 @@ func TestPendingCtrlCCancelsOperationAndQuits(t *testing.T) {
 
 func TestMinimumSizeQuitCancelsPendingOperation(t *testing.T) {
 	ws := openTestWorkspace(t)
-	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())
+	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test")
 	opCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	model.pending = true
@@ -93,7 +179,7 @@ func TestMinimumSizeQuitCancelsPendingOperation(t *testing.T) {
 
 func TestPendingSaveCancellationKeepsEditorOpen(t *testing.T) {
 	ws := openTestWorkspace(t)
-	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())
+	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test")
 	opCtx, cancel := context.WithCancel(context.Background())
 	model.mode = editing
 	model.pending = true
@@ -119,7 +205,7 @@ func TestPendingSaveCancellationKeepsEditorOpen(t *testing.T) {
 
 func TestNarrowListKeepsSelectedNoteVisible(t *testing.T) {
 	ws := openTestWorkspace(t)
-	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())
+	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test")
 	model.width, model.height, model.selected = 50, 12, 15
 	for i := range 30 {
 		model.notes = append(model.notes, note.Note{Artifact: artifact.Artifact{Title: fmt.Sprintf("Note %02d", i)}})
@@ -142,7 +228,6 @@ func TestViewSanitizesTerminalControlSequences(t *testing.T) {
 	model.notes = []note.Note{{
 		Artifact: artifact.Artifact{
 			Title: "Title\x1b[2J",
-			Tags:  []string{"tag\x07"},
 		},
 		Body: "Body\x1b]52;c;payload\a\nnext line",
 	}}
@@ -186,7 +271,7 @@ func TestEditRefusesNotesThatEditorWouldNormalize(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ws := openTestWorkspace(t)
-			model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())
+			model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test")
 			model.width, model.height = 100, 20
 			model.pending = false
 			model.notes = []note.Note{{
@@ -216,7 +301,7 @@ func TestEditSaveRejectsConcurrentExternalChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	model := NewModel(service, ws, "test", ws.Root())
+	model := NewModel(service, ws, "test", "/tmp/test")
 	model.pending = false
 	model.notes = []note.Note{created}
 	model.width, model.height = 100, 20
@@ -226,7 +311,7 @@ func TestEditSaveRejectsConcurrentExternalChange(t *testing.T) {
 	model.bodyInput.SetValue("Edited body")
 
 	external := created
-	external.Title = "Changed outside TUI"
+	external.Body = "Changed outside TUI"
 	external.ModifiedAt = external.ModifiedAt.Add(time.Second)
 	if err := ws.Save(ctx, external); err != nil {
 		t.Fatal(err)
@@ -248,14 +333,14 @@ func TestEditSaveRejectsConcurrentExternalChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.Title != external.Title || current.Body != created.Body {
+	if current.Body != external.Body {
 		t.Fatalf("stale editor overwrote external update: %+v", current)
 	}
 }
 
 func TestPreviewCanScrollInWideLayout(t *testing.T) {
 	ws := openTestWorkspace(t)
-	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())
+	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test")
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 16})
 	model = *updated.(*Model)
 	body := make([]string, 30)
@@ -291,7 +376,7 @@ func TestReloadPreservesActiveSearch(t *testing.T) {
 	if _, err := service.Create(ctx, "Other note", "unrelated"); err != nil {
 		t.Fatal(err)
 	}
-	model := NewModel(service, ws, "test", ws.Root())
+	model := NewModel(service, ws, "test", "/tmp/test")
 	model.searchActive = true
 	model.searchQuery = "needle"
 	model.errMessage = "previous failure"
@@ -300,7 +385,7 @@ func TestReloadPreservesActiveSearch(t *testing.T) {
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
-	if len(result.notes) != 1 || result.notes[0].Title != "Matching note" {
+	if len(result.notes) != 1 || result.notes[0].Body != "needle" {
 		t.Fatalf("reload results = %+v, want active query preserved", result.notes)
 	}
 	updated, _ := model.Update(searchCompletedMsg{notes: result.notes})

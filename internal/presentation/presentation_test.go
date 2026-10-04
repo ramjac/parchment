@@ -106,8 +106,9 @@ func TestEncodeDecodeSinglePresentationFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !Equal(item, decoded) {
-		t.Fatalf("round trip changed presentation:\noriginal: %+v\ndecoded: %+v", item, decoded)
+	if item.Source != decoded.Source || item.Version != decoded.Version ||
+		!item.CreatedAt.Equal(decoded.CreatedAt) || !item.ModifiedAt.Equal(decoded.ModifiedAt) {
+		t.Fatalf("round trip changed persisted presentation content:\noriginal: %+v\ndecoded: %+v", item, decoded)
 	}
 }
 
@@ -346,8 +347,8 @@ func TestUpdateUsesExpectedSnapshotAndUndoRedo(t *testing.T) {
 		t.Fatalf("redo = %+v, %v", redone, err)
 	}
 	renamed, err := service.Update(ctx, redone, "# Renamed\n\n## Start\n\nAfter\n")
-	if err != nil || renamed.Title != "Renamed" {
-		t.Fatalf("Markdown title update = %+v, %v", renamed, err)
+	if err != nil || renamed.Title != redone.Title {
+		t.Fatalf("Markdown title update changed transient artifact title: %+v, %v", renamed, err)
 	}
 }
 
@@ -356,10 +357,10 @@ var testNow = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 func testPresentation() Presentation {
 	return Presentation{
 		Artifact: artifact.Artifact{
-			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.PresentationKind,
+			ID: "p12345", Kind: artifact.PresentationKind,
 			Title: "Demo", CreatedAt: testNow, ModifiedAt: testNow,
 			FormatVersion: artifact.FormatVersion,
-			Location:      ".parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+			Location:      "parchment/artifacts/p12345/content.md",
 		},
 		Version: FileVersion, Source: "# Demo\n\n## Slide 1\n\nHello.\n",
 	}
@@ -369,6 +370,9 @@ type memoryRepository struct{ items map[string]Presentation }
 
 func newMemoryRepository() *memoryRepository {
 	return &memoryRepository{items: make(map[string]Presentation)}
+}
+func (*memoryRepository) ArtifactLocation(id string) string {
+	return "parchment/artifacts/" + id + "/content.md"
 }
 func (r *memoryRepository) ListPresentations(context.Context) ([]Presentation, error) {
 	items := make([]Presentation, 0, len(r.items))
@@ -410,17 +414,7 @@ func TestMetadataBlockIsInspectable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if file.Artifact.Title != "Demo" || file.Artifact.Kind != artifact.PresentationKind {
+	if file.Artifact.Kind != artifact.PresentationKind {
 		t.Fatalf("embedded metadata = %+v", file.Artifact)
-	}
-}
-
-func TestEqualTreatsEmptyMetadataSlicesAsNil(t *testing.T) {
-	left := testPresentation()
-	right := left
-	right.Tags = []string{}
-	right.Links = []string{}
-	if !Equal(left, right) {
-		t.Fatal("empty tags and links should equal nil slices")
 	}
 }

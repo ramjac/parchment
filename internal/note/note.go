@@ -2,11 +2,8 @@ package note
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -25,6 +22,7 @@ type Note struct {
 
 // Repository is the persistence boundary required by note operations.
 type Repository interface {
+	ArtifactLocation(string) string
 	List(context.Context) ([]Note, error)
 	Get(context.Context, string) (Note, error)
 	Save(context.Context, Note) error
@@ -59,20 +57,18 @@ func (s *Service) Get(ctx context.Context, id string) (Note, error) {
 	return s.repository.Get(ctx, id)
 }
 
-// Create adds a note and returns its stable artifact envelope.
+// Create adds a note. title is retained as transient display metadata for
+// callers during the transition to filename-derived titles.
 func (s *Service) Create(ctx context.Context, title, body string) (Note, error) {
-	if strings.TrimSpace(title) == "" {
-		return Note{}, errors.New("note title is required")
-	}
-	idBytes := make([]byte, 16)
-	if _, err := rand.Read(idBytes); err != nil {
-		return Note{}, fmt.Errorf("generate note ID: %w", err)
+	id, err := artifact.NewID(artifact.NoteKind)
+	if err != nil {
+		return Note{}, err
 	}
 	now := s.now().UTC()
 	n := Note{Artifact: artifact.Artifact{
-		ID: hex.EncodeToString(idBytes), Kind: artifact.NoteKind, Title: strings.TrimSpace(title),
+		ID: id, Kind: artifact.NoteKind, Title: strings.TrimSpace(title),
 		CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
-		Location: ".parchment/artifacts/" + hex.EncodeToString(idBytes) + "/content.md",
+		Location: s.repository.ArtifactLocation(id),
 	}, Body: body}
 	if err := s.change(ctx, nil, &n, "Create note"); err != nil {
 		return Note{}, err
@@ -80,20 +76,12 @@ func (s *Service) Create(ctx context.Context, title, body string) (Note, error) 
 	return n, nil
 }
 
-// Update saves a note's title and Markdown body as one undoable change.
-func (s *Service) Update(ctx context.Context, id, title, body string) (Note, error) {
-	return s.UpdateFields(ctx, id, &title, &body)
-}
-
 // UpdateExpected applies an edit only if the note still matches its snapshot.
+// title is retained for TUI compatibility but is not persisted.
 func (s *Service) UpdateExpected(ctx context.Context, expected Note, title, body string) (Note, error) {
-	if strings.TrimSpace(title) == "" {
-		return Note{}, errors.New("note title is required")
-	}
 	after := expected
-	after.Title = strings.TrimSpace(title)
 	after.Body = body
-	if after.Title == expected.Title && after.Body == expected.Body {
+	if after.Body == expected.Body {
 		return expected, nil
 	}
 	after.ModifiedAt = s.now().UTC()
@@ -101,89 +89,6 @@ func (s *Service) UpdateExpected(ctx context.Context, expected Note, title, body
 		return Note{}, err
 	}
 	return after, nil
-}
-
-// UpdateFields changes only the supplied title and body fields from one
-// repository snapshot, so omitted fields cannot overwrite concurrent updates.
-func (s *Service) UpdateFields(ctx context.Context, id string, title, body *string) (Note, error) {
-	before, err := s.repository.Get(ctx, id)
-	if err != nil {
-		return Note{}, err
-	}
-	nextTitle, nextBody := before.Title, before.Body
-	if title != nil {
-		nextTitle = *title
-	}
-	if body != nil {
-		nextBody = *body
-	}
-	return s.UpdateExpected(ctx, before, nextTitle, nextBody)
-}
-
-// Rename changes a note's title without changing its ID.
-func (s *Service) Rename(ctx context.Context, id, title string) (Note, error) {
-	before, err := s.repository.Get(ctx, id)
-	if err != nil {
-		return Note{}, err
-	}
-	if strings.TrimSpace(title) == "" {
-		return Note{}, errors.New("note title is required")
-	}
-	after := before
-	after.Title = strings.TrimSpace(title)
-	after.ModifiedAt = s.now().UTC()
-	if before.Title == after.Title {
-		return before, nil
-	}
-	if err := s.change(ctx, &before, &after, "Rename note"); err != nil {
-		return Note{}, err
-	}
-	return after, nil
-}
-
-// AddTag adds a unique tag to a note.
-func (s *Service) AddTag(ctx context.Context, id, tag string) error {
-	tag = strings.TrimSpace(tag)
-	if tag == "" {
-		return errors.New("tag is required")
-	}
-	before, err := s.repository.Get(ctx, id)
-	if err != nil {
-		return err
-	}
-	for _, existing := range before.Tags {
-		if existing == tag {
-			return nil
-		}
-	}
-	after := before
-	after.Tags = append(append([]string(nil), before.Tags...), tag)
-	after.ModifiedAt = s.now().UTC()
-	return s.change(ctx, &before, &after, "Add tag")
-}
-
-// RemoveTag removes a tag from a note.
-func (s *Service) RemoveTag(ctx context.Context, id, tag string) error {
-	tag = strings.TrimSpace(tag)
-	if tag == "" {
-		return errors.New("tag is required")
-	}
-	before, err := s.repository.Get(ctx, id)
-	if err != nil {
-		return err
-	}
-	after := before
-	after.Tags = nil
-	for _, existing := range before.Tags {
-		if existing != tag {
-			after.Tags = append(after.Tags, existing)
-		}
-	}
-	if len(after.Tags) == len(before.Tags) {
-		return nil
-	}
-	after.ModifiedAt = s.now().UTC()
-	return s.change(ctx, &before, &after, "Remove tag")
 }
 
 // Delete removes a note and records enough information to restore it.
@@ -218,8 +123,6 @@ func cloneNote(n *Note) *Note {
 		return nil
 	}
 	clone := *n
-	clone.Tags = append([]string(nil), n.Tags...)
-	clone.Links = append([]string(nil), n.Links...)
 	clone.Blocks = cloneBlocks(n.Blocks)
 	return &clone
 }
@@ -266,18 +169,7 @@ func (o noteOperation) transition(ctx context.Context, expected, target *Note) e
 
 // Equal reports whether two notes have the same persisted value.
 func Equal(left, right Note) bool {
-	if len(left.Tags) == 0 {
-		left.Tags = nil
-	}
-	if len(right.Tags) == 0 {
-		right.Tags = nil
-	}
-	if len(left.Links) == 0 {
-		left.Links = nil
-	}
-	if len(right.Links) == 0 {
-		right.Links = nil
-	}
+	left.Title, right.Title = "", ""
 	return reflect.DeepEqual(left, right)
 }
 

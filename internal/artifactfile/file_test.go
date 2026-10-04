@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,9 +16,9 @@ import (
 func testArtifact() artifact.Artifact {
 	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
 	return artifact.Artifact{
-		ID: "0123456789abcdef0123456789abcdef", Kind: artifact.NoteKind, Title: "Example",
+		ID: "n12345", Kind: artifact.NoteKind, Title: "Example",
 		CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
-		Location: ".parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+		Location: "parchment/artifacts/n12345/content.md",
 	}
 }
 
@@ -30,6 +32,9 @@ func TestEncodeDecodePreservesMarkdownAndStructuredBlocks(t *testing.T) {
 	}
 	if !strings.HasPrefix(string(data), "```parchment-meta\n") {
 		t.Fatalf("metadata block is not first: %s", data)
+	}
+	if strings.Index(string(data), bodyBoundary) > strings.Index(string(data), "```parchment-note") {
+		t.Fatalf("structured block does not follow the body:\n%s", data)
 	}
 	file, err := Decode(data)
 	if err != nil {
@@ -71,7 +76,8 @@ func TestReadMetadataDistinguishesMissingFromInvalidEnvelope(t *testing.T) {
 	}
 	padded := append([]byte("\n\n"), data...)
 	metadata, err := ReadMetadata(padded)
-	if err != nil || metadata.ID != testArtifact().ID {
+	if err != nil || metadata.Kind != testArtifact().Kind ||
+		!metadata.CreatedAt.Equal(testArtifact().CreatedAt) {
 		t.Fatalf("metadata after leading blank lines = %+v, %v", metadata, err)
 	}
 	file, err := Decode(padded)
@@ -95,6 +101,33 @@ func TestReadMetadataRequiresCurrentFormatMarker(t *testing.T) {
 		if _, err := read([]byte(source)); err == nil || errors.Is(err, ErrMetadataMissing) {
 			t.Fatalf("metadata without current format marker error = %v", err)
 		}
+	}
+}
+
+func TestReadMetadataRejectsPreviousArtifactFormat(t *testing.T) {
+	data, err := Encode(testArtifact(), "body", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := strings.Replace(
+		strings.Replace(string(data), "parchment-single-file-v2", "parchment-single-file-v1", 1),
+		`"format_version": 2`, `"format_version": 1`, 1,
+	)
+	if _, err := ReadMetadata([]byte(previous)); err == nil {
+		t.Fatal("accepted the previous artifact format")
+	}
+}
+
+func TestReadMetadataRejectsRuntimeFields(t *testing.T) {
+	data, err := Encode(testArtifact(), "body", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := strings.Replace(string(data), `"kind": "note",`,
+		`"kind": "note",`+"\n  "+`"id": "n12345",`, 1)
+	if _, err := ReadMetadata([]byte(source)); err == nil ||
+		!strings.Contains(err.Error(), `unexpected Parchment metadata field "id"`) {
+		t.Fatalf("runtime metadata field error = %v", err)
 	}
 }
 
@@ -139,6 +172,46 @@ func TestEncodeDecodePreservesBodyStartingWithReservedFence(t *testing.T) {
 	}
 }
 
+func TestDecodeTreatsReservedFencesAsBodyWithoutTrailingBoundary(t *testing.T) {
+	body := "```parchment-note\n{\"text\":\"visible body\"}\n```\n"
+	data, err := Encode(testArtifact(), body, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := Decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if file.Body != body || len(file.Blocks) != 0 {
+		t.Fatalf("body = %q, blocks = %v", file.Body, file.Blocks)
+	}
+}
+
+func TestDecodePreservesBodyContainingTrailingBoundaryAndReservedFence(t *testing.T) {
+	body := "# Example\n\n" + trailingBlocksBoundary +
+		"\n\n```parchment-note\n{\"text\":\"body content\"}\n```\n\nMore body.\n"
+	data, err := Encode(testArtifact(), body, map[string]any{
+		"parchment-note": map[string]string{"text": "payload"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := Decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if file.Body != body || len(file.Blocks) != 1 {
+		t.Fatalf("body = %q, blocks = %v", file.Body, file.Blocks)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(file.Blocks["parchment-note"], &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["text"] != "payload" {
+		t.Fatalf("payload = %v", payload)
+	}
+}
+
 func TestDecodeRequiresBodyBoundary(t *testing.T) {
 	body := "# Example\n\nMarkdown body.\n"
 	data, err := Encode(testArtifact(), body, nil)
@@ -148,6 +221,41 @@ func TestDecodeRequiresBodyBoundary(t *testing.T) {
 	withoutBoundary := strings.Replace(string(data), bodyBoundary+"\n", "", 1)
 	if _, err := Decode([]byte(withoutBoundary)); err == nil {
 		t.Fatal("decoded artifact without body separator")
+	}
+}
+
+func TestDecodeRejectsPayloadBlocksBeforeBody(t *testing.T) {
+	data, err := Encode(testArtifact(), "body", map[string]any{
+		"parchment-note": map[string]string{"kind": "note"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(data)
+	payloadStart := strings.Index(source, "```parchment-note")
+	boundaryStart := strings.Index(source, bodyBoundary)
+	metadataEnd := strings.Index(source, "```\n\n")
+	if payloadStart < 0 || boundaryStart < 0 || metadataEnd < 0 {
+		t.Fatalf("encoded block boundaries not found:\n%s", source)
+	}
+	payloadEnd := strings.Index(source[payloadStart:], "```\n") + payloadStart + 4
+	preBody := source[:metadataEnd+4] + "\n" + source[payloadStart:payloadEnd] +
+		"\n" + source[boundaryStart:]
+	if _, err := Decode([]byte(preBody)); err == nil {
+		t.Fatal("accepted a payload block before the body")
+	}
+}
+
+func TestDecodeRejectsMalformedTrailingBlockOpening(t *testing.T) {
+	data, err := Encode(testArtifact(), "body", map[string]any{
+		"parchment-note": map[string]string{"kind": "note"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	malformed := strings.Replace(string(data), "```parchment-note\n", "```parchment-note extra\n", 1)
+	if _, err := Decode([]byte(malformed)); err == nil {
+		t.Fatal("accepted malformed trailing block opening")
 	}
 }
 
@@ -198,8 +306,8 @@ func TestReadMetadataFromStopsAfterMetadataBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ID != testArtifact().ID {
-		t.Fatalf("metadata ID = %q", got.ID)
+	if got.Kind != testArtifact().Kind || !got.CreatedAt.Equal(testArtifact().CreatedAt) {
+		t.Fatalf("metadata = %+v", got)
 	}
 	if reader.Len() == 0 {
 		t.Fatal("metadata reader consumed the artifact body")
@@ -219,7 +327,6 @@ func TestReadMetadataFromStopsAtNonMetadataFirstLine(t *testing.T) {
 
 func TestReadMetadataFromPreservesOversizedMetadataLines(t *testing.T) {
 	metadata := testArtifact()
-	metadata.Title = strings.Repeat("x", 10_000)
 	data, err := Encode(metadata, "body", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -228,8 +335,8 @@ func TestReadMetadataFromPreservesOversizedMetadataLines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Title != metadata.Title {
-		t.Fatal("metadata line was not preserved")
+	if got.Kind != metadata.Kind || !got.CreatedAt.Equal(metadata.CreatedAt) {
+		t.Fatalf("metadata was not preserved: %+v", got)
 	}
 }
 
@@ -244,8 +351,8 @@ func TestReadMetadataFromPreservesOversizedMetadataOpeningLine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ID != testArtifact().ID {
-		t.Fatalf("metadata ID = %q", got.ID)
+	if got.Kind != testArtifact().Kind {
+		t.Fatalf("metadata kind = %q", got.Kind)
 	}
 }
 
@@ -256,16 +363,68 @@ func TestReadMetadataParsesMinifiedCurrentMetadata(t *testing.T) {
 	}
 	minified := strings.Replace(
 		string(data),
-		`"parchment_format": "parchment-single-file-v1"`,
-		`"parchment_format":"parchment-single-file-v1"`,
+		`"parchment_format": "parchment-single-file-v2"`,
+		`"parchment_format":"parchment-single-file-v2"`,
 		1,
 	)
 	if minified == string(data) {
 		t.Fatal("format marker was not found")
 	}
 	item, err := ReadMetadata([]byte(minified))
-	if err != nil || item.ID != testArtifact().ID {
+	if err != nil || item.Kind != testArtifact().Kind {
 		t.Fatalf("read minified current metadata = %+v, %v", item, err)
+	}
+}
+
+func TestEnvelopeHasExactlyTheSharedDiskFields(t *testing.T) {
+	data, err := Encode(testArtifact(), "# Example\n", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, _, err := readBlock(string(data), 0, opening{marker: "```", name: metadataBlock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEnvelopeKeys(t, metadata)
+}
+
+func TestExamplesDecodeWithExactEnvelopeFields(t *testing.T) {
+	for _, name := range []string{"note.md", "document.md", "budget.md", "presentation.md"} {
+		t.Run(name, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join("../../examples", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			file, err := Decode(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if file.Artifact.Kind == "" {
+				t.Fatal("artifact kind is missing")
+			}
+			metadata, _, err := readBlock(string(data), 0, opening{marker: "```", name: metadataBlock})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertEnvelopeKeys(t, metadata)
+		})
+	}
+}
+
+func assertEnvelopeKeys(t *testing.T, metadata []byte) {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(metadata, &fields); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"parchment_format", "kind", "format_version", "created_at", "modified_at"}
+	if len(fields) != len(want) {
+		t.Fatalf("metadata fields = %v, want exactly %v", fields, want)
+	}
+	for _, key := range want {
+		if _, ok := fields[key]; !ok {
+			t.Errorf("metadata is missing %q", key)
+		}
 	}
 }
 

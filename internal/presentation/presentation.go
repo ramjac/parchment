@@ -3,8 +3,6 @@ package presentation
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,6 +50,7 @@ type fileContent struct {
 
 // Repository persists presentations as single-file artifacts.
 type Repository interface {
+	ArtifactLocation(string) string
 	ListPresentations(context.Context) ([]Presentation, error)
 	GetPresentation(context.Context, string) (Presentation, error)
 	TransitionPresentation(context.Context, string, *Presentation, *Presentation) error
@@ -101,17 +100,16 @@ func (s *Service) Create(ctx context.Context, title, source string) (Presentatio
 	if deck.Title != title {
 		return Presentation{}, fmt.Errorf("Markdown title %q does not match presentation title %q", deck.Title, title)
 	}
-	idBytes := make([]byte, 16)
-	if _, err := rand.Read(idBytes); err != nil {
-		return Presentation{}, fmt.Errorf("generate presentation ID: %w", err)
+	id, err := artifact.NewID(artifact.PresentationKind)
+	if err != nil {
+		return Presentation{}, err
 	}
-	id := hex.EncodeToString(idBytes)
 	now := s.now().UTC()
 	item := Presentation{
 		Artifact: artifact.Artifact{
 			ID: id, Kind: artifact.PresentationKind, Title: title,
 			CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
-			Location: ".parchment/artifacts/" + id + "/content.md",
+			Location: s.repository.ArtifactLocation(id),
 		},
 		Version: FileVersion, Source: source,
 	}
@@ -126,15 +124,14 @@ func (s *Service) Create(ctx context.Context, title, source string) (Presentatio
 
 // Update replaces the presentation source if expected still matches storage.
 func (s *Service) Update(ctx context.Context, expected Presentation, source string) (Presentation, error) {
-	deck, err := Parse(source)
+	_, err := Parse(source)
 	if err != nil {
 		return Presentation{}, err
 	}
-	if expected.Source == source && expected.Title == deck.Title {
+	if expected.Source == source {
 		return expected, nil
 	}
 	after := clonePresentation(expected)
-	after.Title = deck.Title
 	after.Source = source
 	after.ModifiedAt = s.now().UTC()
 	if err := Validate(after); err != nil {
@@ -438,12 +435,9 @@ func Validate(item Presentation) error {
 	if !utf8.ValidString(item.Source) {
 		return errors.New("presentation source must be valid UTF-8")
 	}
-	deck, err := Parse(item.Source)
+	_, err := Parse(item.Source)
 	if err != nil {
 		return err
-	}
-	if deck.Title != item.Title {
-		return errors.New("presentation metadata title does not match Markdown title")
 	}
 	return nil
 }
@@ -518,8 +512,6 @@ func Preview(deck Deck) string {
 }
 
 func clonePresentation(item Presentation) Presentation {
-	item.Tags = append([]string(nil), item.Tags...)
-	item.Links = append([]string(nil), item.Links...)
 	item.Blocks = cloneBlocks(item.Blocks)
 	return item
 }
@@ -550,18 +542,7 @@ func cloneBlocksExcept(blocks map[string]json.RawMessage, excluded ...string) ma
 }
 
 func Equal(left, right Presentation) bool {
-	if len(left.Tags) == 0 {
-		left.Tags = nil
-	}
-	if len(right.Tags) == 0 {
-		right.Tags = nil
-	}
-	if len(left.Links) == 0 {
-		left.Links = nil
-	}
-	if len(right.Links) == 0 {
-		right.Links = nil
-	}
+	left.Title, right.Title = "", ""
 	return reflect.DeepEqual(left, right)
 }
 

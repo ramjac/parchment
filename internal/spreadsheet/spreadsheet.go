@@ -2,8 +2,6 @@ package spreadsheet
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -82,6 +80,7 @@ type fileContent struct {
 
 // Repository persists spreadsheets as individual artifacts.
 type Repository interface {
+	ArtifactLocation(string) string
 	ListSpreadsheets(context.Context) ([]Spreadsheet, error)
 	GetSpreadsheet(context.Context, string) (Spreadsheet, error)
 	TransitionSpreadsheet(context.Context, string, *Spreadsheet, *Spreadsheet) error
@@ -118,20 +117,16 @@ func (s *Service) Get(ctx context.Context, id string) (Spreadsheet, error) {
 
 func (s *Service) Create(ctx context.Context, title string, rows [][]Cell) (Spreadsheet, error) {
 	title = strings.TrimSpace(title)
-	if title == "" {
-		return Spreadsheet{}, errors.New("spreadsheet title is required")
+	id, err := artifact.NewID(artifact.SpreadsheetKind)
+	if err != nil {
+		return Spreadsheet{}, err
 	}
-	idBytes := make([]byte, 16)
-	if _, err := rand.Read(idBytes); err != nil {
-		return Spreadsheet{}, fmt.Errorf("generate spreadsheet ID: %w", err)
-	}
-	id := hex.EncodeToString(idBytes)
 	now := s.now().UTC()
 	sheet := Spreadsheet{
 		Artifact: artifact.Artifact{
 			ID: id, Kind: artifact.SpreadsheetKind, Title: title,
 			CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
-			Location: ".parchment/artifacts/" + id + "/content.md",
+			Location: s.repository.ArtifactLocation(id),
 		},
 		Version: FileVersion, Sheets: []Sheet{{Name: "Sheet1", Rows: cloneRows(rows)}},
 	}
@@ -275,9 +270,6 @@ func Normalize(book *Spreadsheet) error {
 	if book.Kind != artifact.SpreadsheetKind {
 		return errors.New("artifact is not a spreadsheet")
 	}
-	if !utf8.ValidString(book.Title) {
-		return errors.New("spreadsheet title must be valid UTF-8")
-	}
 	book.CreatedAt = book.CreatedAt.UTC()
 	book.ModifiedAt = book.ModifiedAt.UTC()
 	if len(book.Sheets) == 0 || len(book.Sheets) > MaxSheets {
@@ -374,8 +366,6 @@ func cloneRows(rows [][]Cell) [][]Cell {
 }
 
 func cloneSpreadsheet(book Spreadsheet) Spreadsheet {
-	book.Tags = append([]string(nil), book.Tags...)
-	book.Links = append([]string(nil), book.Links...)
 	book.Blocks = cloneBlocks(book.Blocks)
 	book.Sheets = append([]Sheet(nil), book.Sheets...)
 	for i := range book.Sheets {
@@ -448,18 +438,7 @@ func (o spreadsheetOperation) transition(ctx context.Context, expected, target *
 
 // Equal reports whether two spreadsheets have the same persisted value.
 func Equal(left, right Spreadsheet) bool {
-	if len(left.Tags) == 0 {
-		left.Tags = nil
-	}
-	if len(right.Tags) == 0 {
-		right.Tags = nil
-	}
-	if len(left.Links) == 0 {
-		left.Links = nil
-	}
-	if len(right.Links) == 0 {
-		right.Links = nil
-	}
+	left.Title, right.Title = "", ""
 	return reflect.DeepEqual(left, right)
 }
 
