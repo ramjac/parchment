@@ -1,0 +1,181 @@
+package spreadsheet
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"example.com/parchment/internal/artifact"
+)
+
+func TestSingleFileWorkbookEncodesMetadataCellsAndFormulas(t *testing.T) {
+	book := Spreadsheet{
+		Artifact: artifact.Artifact{
+			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.SpreadsheetKind,
+			Title: "Budget", FormatVersion: artifact.FormatVersion,
+			Location:  ".parchment/artifacts/0123456789abcdef0123456789abcdef/spreadsheet.json",
+			CreatedAt: fixedTime, ModifiedAt: fixedTime,
+		},
+		Version: FileVersion,
+		Sheets: []Sheet{{Name: "Sheet1", Rows: [][]Cell{
+			{{Value: "Income"}, {Value: "125"}, {Formula: "=B1*2"}},
+			{{Value: "Total"}, {}, {Formula: "=(B1+C1)/3"}},
+		}}},
+	}
+	data, err := Encode(book)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data[:1]) != "{" {
+		t.Fatalf("workbook is not a readable JSON document: %q", data[:min(len(data), 100)])
+	}
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !Equal(book, decoded) {
+		t.Fatalf("round trip changed workbook:\noriginal: %+v\ndecoded: %+v", book, decoded)
+	}
+	value, err := Evaluate(&decoded, 0, 2, 3)
+	if err != nil || value != 125 {
+		t.Fatalf("formula result = %v, %v", value, err)
+	}
+}
+
+func TestFormulaArithmeticReferencesAndCycles(t *testing.T) {
+	book := Spreadsheet{
+		Artifact: artifact.Artifact{
+			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.SpreadsheetKind,
+			Title: "Formula test", FormatVersion: artifact.FormatVersion,
+			Location:  ".parchment/artifacts/0123456789abcdef0123456789abcdef/spreadsheet.json",
+			CreatedAt: fixedTime, ModifiedAt: fixedTime,
+		},
+		Version: FileVersion,
+		Sheets: []Sheet{{Name: "Sheet1", Rows: [][]Cell{
+			{{Value: "4"}, {Value: "3"}, {Formula: "=A1+B1*2"}},
+			{{}, {}, {Formula: "=(C1-2)/2"}},
+			{{Formula: "=-2+1.5e1"}},
+		}}},
+	}
+	if err := Normalize(&book); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		row, column int
+		want        float64
+	}{{1, 3, 10}, {2, 3, 4}, {3, 1, 13}} {
+		got, err := Evaluate(&book, 0, test.row, test.column)
+		if err != nil || got != test.want {
+			t.Fatalf("cell %s = %v, %v; want %v", CellName(test.row, test.column), got, err, test.want)
+		}
+	}
+	book.Sheets[0].Rows[0][0] = Cell{Formula: "=B1"}
+	book.Sheets[0].Rows[0][1] = Cell{Formula: "=A1"}
+	if _, err := Evaluate(&book, 0, 1, 1); err == nil {
+		t.Fatal("circular reference was accepted")
+	}
+	if err := Normalize(&book); err == nil {
+		t.Fatal("workbook with a circular formula was accepted")
+	}
+}
+
+func TestSpreadsheetOperationsFormulaShiftsAndHistory(t *testing.T) {
+	ctx := context.Background()
+	repository := newMemoryRepository()
+	service := NewService(repository, 20)
+	book, err := service.Create(ctx, "Values", [][]Cell{{{Value: "2"}, {Value: "3"}, {Formula: "=A1+B1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := Evaluate(&book, 0, 1, 3)
+	if err != nil || value != 5 {
+		t.Fatalf("initial formula = %v, %v", value, err)
+	}
+	updated, err := service.InsertRow(ctx, book.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	formula := updated.Sheets[0].Rows[1][2].Formula
+	if formula != "=A2+B2" {
+		t.Fatalf("formula after row insertion = %q", formula)
+	}
+	if _, err := service.Undo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	undone, err := service.Get(ctx, book.ID)
+	if err != nil || len(undone.Sheets[0].Rows) != 1 || undone.Sheets[0].Rows[0][2].Formula != "=A1+B1" {
+		t.Fatalf("undo did not restore sheet: %+v, %v", undone, err)
+	}
+	if _, err := service.Redo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	redone, err := service.Get(ctx, book.ID)
+	if err != nil || len(redone.Sheets[0].Rows) != 2 || redone.Sheets[0].Rows[1][2].Formula != "=A2+B2" {
+		t.Fatalf("redo did not restore inserted row: %+v, %v", redone, err)
+	}
+}
+
+func TestCellCoordinates(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		row, column int
+	}{
+		{"A1", 1, 1}, {"Z9", 9, 26}, {"AA12", 12, 27}, {"IV1000", 1000, 256},
+	} {
+		row, column, err := CellCoordinates(test.name)
+		if err != nil || row != test.row || column != test.column {
+			t.Errorf("CellCoordinates(%q) = %d,%d,%v", test.name, row, column, err)
+		}
+	}
+	for _, invalid := range []string{"", "A", "A0", "IW1", "A1001", "A-1"} {
+		if _, _, err := CellCoordinates(invalid); err == nil {
+			t.Errorf("CellCoordinates(%q) accepted invalid reference", invalid)
+		}
+	}
+}
+
+var fixedTime = mustTime()
+
+func mustTime() time.Time { return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) }
+
+type memoryRepository struct {
+	books map[string]Spreadsheet
+}
+
+func newMemoryRepository() *memoryRepository {
+	return &memoryRepository{books: make(map[string]Spreadsheet)}
+}
+
+func (r *memoryRepository) ListSpreadsheets(context.Context) ([]Spreadsheet, error) {
+	var books []Spreadsheet
+	for _, book := range r.books {
+		books = append(books, cloneSpreadsheet(book))
+	}
+	return books, nil
+}
+
+func (r *memoryRepository) GetSpreadsheet(_ context.Context, id string) (Spreadsheet, error) {
+	book, ok := r.books[id]
+	if !ok {
+		return Spreadsheet{}, ErrNotFound
+	}
+	return cloneSpreadsheet(book), nil
+}
+
+func (r *memoryRepository) TransitionSpreadsheet(_ context.Context, id string, expected, target *Spreadsheet) error {
+	current, exists := r.books[id]
+	if expected == nil {
+		if exists {
+			return errors.New("already exists")
+		}
+	} else if !exists || !Equal(current, *expected) {
+		return errors.New("stale workbook")
+	}
+	if target == nil {
+		delete(r.books, id)
+		return nil
+	}
+	r.books[id] = cloneSpreadsheet(*target)
+	return nil
+}

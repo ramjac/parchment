@@ -43,15 +43,17 @@ from the workspace; there is no search index or daemon.
 ## Storage
 
 The workspace is an ordinary directory. `parchment.toml` contains versioned
-workspace configuration; `.parchment/artifacts/<stable-id>/` contains each
-artifact's `metadata.json` envelope and canonical `content.md`. Metadata
-timestamps are UTC RFC 3339 values. Notes remain readable and editable with
-ordinary filesystem tools. Copying, archiving, or versioning the workspace
-with standard tools is sufficient for a local backup.
+workspace configuration; artifacts live under
+`.parchment/artifacts/<stable-id>/`. Notes and documents store a `metadata.json`
+envelope separately from canonical `content.md`; spreadsheet workbooks are
+self-contained JSON text files with their shared metadata embedded in the same
+file. Metadata timestamps are UTC RFC 3339 values. Artifacts remain readable
+and editable with ordinary filesystem tools. Copying, archiving, or versioning
+the workspace with standard tools is sufficient for a local backup.
 
 Initial artifact metadata recognizes the `note`, `document`, `spreadsheet`,
-`presentation`, and `image` kinds. Notes and documents have application
-behavior; the other kinds are not yet implemented.
+`presentation`, and `image` kinds. Notes, documents, and spreadsheets have
+application behavior; presentations and images are not yet implemented.
 
 ### Documents
 
@@ -106,6 +108,36 @@ use the `Alt` shortcuts (`B` bold, `I` italic, `C` code, `1`–`3` headings,
 break). `F5` previews the printed pages and `Ctrl+S` saves (or records a
 proposal when editing a proposal). Document changes, including images, support
 undo and redo like notes.
+
+### Spreadsheets
+
+Spreadsheets are stored as one editable text file per workbook:
+`.parchment/artifacts/<id>/spreadsheet.json`. The versioned file contains
+shared artifact metadata, named sheets, two-dimensional cell arrays, and
+explicit literal or formula cells. This keeps the workbook self-contained and
+avoids formulas being inferred from arbitrary text. CSV files can initialize a
+workbook; CSV cells are imported as literal text. A new workbook starts with
+`Sheet1`; additional sheets can be created with `spreadsheet add-sheet`.
+
+```sh
+parchment spreadsheet create "Budget" --csv-file budget.csv
+parchment spreadsheet cell <id> B2 12
+parchment spreadsheet cell <id> C2 '=B2*2' --formula
+parchment spreadsheet cell <id> C2
+parchment spreadsheet show <id>
+```
+
+Formula evaluation currently supports numeric constants, same-sheet A1 cell
+references, parentheses, unary signs, and `+`, `-`, `*`, and `/`. Empty
+referenced cells evaluate to zero. Cycles, non-numeric references, and
+division by zero are rejected. Formulas are limited to 4096 bytes and 512
+nested dependencies or parentheses. Rows and columns can be inserted with
+`spreadsheet insert-row` and `spreadsheet insert-column`; formula references
+shift with inserted rows and columns. Spreadsheet edits can be undone and
+redone through the service API while its process is running; the CLI is
+stateless across invocations. The JSON workbook is Parchment's canonical
+format, not a CSV file that third-party spreadsheet applications can open
+directly.
 
 ## Configuration
 
@@ -162,10 +194,9 @@ not survive a restart.
 
 ## Future work
 
-This repository currently implements notes and documents. The broader suite is
-planned to add:
+This repository currently implements notes, documents, and basic spreadsheets.
+The broader suite is planned to add:
 
-- Working spreadsheet features using the shared workspace and artifact metadata.
 - Working presentation features using the shared workspace and artifact metadata.
 - Basic image-editing features using the shared workspace and artifact metadata.
 - Shared artifact navigation and organization, including links and

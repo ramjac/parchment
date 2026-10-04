@@ -22,7 +22,7 @@ var errNotDocument = errors.New("artifact is not a document")
 // validArtifactFileName lists the files an artifact transaction may touch.
 func validArtifactFileName(name string) bool {
 	return name == "content.md" || name == metadataName || name == layoutName ||
-		name == changesName || document.IsImageName(name)
+		name == changesName || name == "spreadsheet.json" || document.IsImageName(name)
 }
 
 // ListDocuments implements the document repository interface. Embedded image
