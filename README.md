@@ -16,6 +16,10 @@ repository does not yet define a canonical Go module path.
 Normal use is offline. There are no accounts, hosted services, telemetry,
 background processes, or synchronization protocol.
 
+Pull requests targeting `main` run `go build ./cmd/parchment` and `go test ./...`
+in separate GitHub Actions jobs (`Go build` and `Go test`). The `main` branch
+requires pull requests and both checks to pass before merging.
+
 ## Quick start
 
 ```sh
