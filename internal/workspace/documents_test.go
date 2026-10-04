@@ -272,3 +272,30 @@ func TestCorruptOrRenamedWorkspaceImageIsRejected(t *testing.T) {
 		t.Fatal("image whose content does not match its name was loaded")
 	}
 }
+
+func TestImageWithMarkdownTitleSurvivesUnrelatedEdits(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	docs := document.NewService(ws, 10)
+	created, err := docs.Create(ctx, document.Draft{Title: "Pictures"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withImage, name, err := docs.AddImage(ctx, created.ID, "Chart", testPNG(t, 60))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "![Chart](" + name + ` "caption")`
+	saved, err := docs.Save(ctx, withImage, document.Draft{Title: "Pictures", Body: body, Layout: withImage.Layout, Images: withImage.Images})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := docs.Rename(ctx, saved.ID, "Renamed"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, ".parchment", "artifacts", created.ID, name)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("linked image was deleted: %v", err)
+	}
+}

@@ -22,7 +22,7 @@ const ImageNamePattern = `image-[a-f0-9]{16}\.(?:png|jpg|gif)`
 
 var (
 	imageNameRE      = regexp.MustCompile(`^` + ImageNamePattern + `$`)
-	imageReferenceRE = regexp.MustCompile(`!\[[^\]]*\]\((` + ImageNamePattern + `)\)`)
+	imageReferenceRE = regexp.MustCompile(ImageNamePattern)
 )
 
 // Image is an embedded image stored beside the document's Markdown.
@@ -80,11 +80,25 @@ func ImageMarkdown(alt, name string) string {
 	return "![" + alt + "](" + name + ")"
 }
 
-// ReferencedImages returns the managed image names referenced by a body.
+// ReferencedImages returns the managed image names mentioned in a body. The
+// result drives deletion of unreferenced files, so it is deliberately
+// conservative: any standalone occurrence of a managed name counts, which
+// covers inline images with titles or angle brackets, "./" paths,
+// reference-style definitions, and HTML img tags.
 func ReferencedImages(body string) map[string]bool {
 	names := map[string]bool{}
-	for _, match := range imageReferenceRE.FindAllStringSubmatch(body, -1) {
-		names[match[1]] = true
+	for _, loc := range imageReferenceRE.FindAllStringIndex(body, -1) {
+		if loc[0] > 0 && isNameByte(body[loc[0]-1]) {
+			continue
+		}
+		if loc[1] < len(body) && isNameByte(body[loc[1]]) {
+			continue
+		}
+		names[body[loc[0]:loc[1]]] = true
 	}
 	return names
+}
+
+func isNameByte(b byte) bool {
+	return b == '-' || b == '_' || b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
 }

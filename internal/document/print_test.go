@@ -331,3 +331,28 @@ func TestImageValidateRejectsMismatchedOrCorruptData(t *testing.T) {
 		t.Fatal("corrupt image data was accepted")
 	}
 }
+
+func TestReferencedImagesRecognizesMarkdownForms(t *testing.T) {
+	a, b := "image-0123456789abcdef.png", "image-fedcba9876543210.jpg"
+	for _, body := range []string{
+		"![Chart](" + a + ` "caption")`,
+		"![Chart](" + a + " 'caption')",
+		"![Chart](<" + a + ">)",
+		"![Chart](./" + a + ")",
+		"![Chart][fig]\n\n[fig]: " + a + ` "caption"`,
+		`<img src="` + a + `" alt="Chart">`,
+	} {
+		if !ReferencedImages(body)[a] {
+			t.Errorf("reference not detected in %q", body)
+		}
+	}
+	both := ReferencedImages("![x](" + a + ") ![y](" + b + ")")
+	if !both[a] || !both[b] {
+		t.Fatalf("adjacent references = %v", both)
+	}
+	for _, body := range []string{"x" + a, a + "x", "my-" + a, "image-0123456789abcdef0.png"} {
+		if refs := ReferencedImages(body); len(refs) != 0 {
+			t.Errorf("%q matched %v", body, refs)
+		}
+	}
+}
