@@ -31,6 +31,8 @@
 }
 ```
 
+<!-- parchment-body -->
+
 # Community Garden Project Brief
 
 ## Goal

@@ -3,7 +3,7 @@
 Each sample is a complete Markdown artifact file. A leading
 `parchment-meta` code block contains shared metadata; the document, spreadsheet,
 and embedded image data is kept in hidden Parchment code blocks. The body
-remains ordinary Markdown.
+remains ordinary Markdown after the `<!-- parchment-body -->` separator.
 
 Copy the sample files into a workspace:
 

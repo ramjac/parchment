@@ -53,6 +53,8 @@
 }
 ```
 
+<!-- parchment-body -->
+
 # Monthly budget
 
 The variance column is calculated from planned and actual spending.

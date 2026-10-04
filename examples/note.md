@@ -10,6 +10,8 @@
 }
 ```
 
+<!-- parchment-body -->
+
 # Trail observations
 
 The north path is dry and easy to follow. A narrow stream crosses the lower
