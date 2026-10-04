@@ -48,6 +48,44 @@ func TestEncodeDecodePreservesMarkdownAndStructuredBlocks(t *testing.T) {
 	}
 }
 
+func TestEncodeDecodePreservesBodyStartingWithReservedFence(t *testing.T) {
+	for _, body := range []string{
+		"```parchment-footnote\nnot JSON\n```\n",
+		"```parchment-note\n{\"text\":\"visible body\"}\n```\n",
+	} {
+		data, err := Encode(testArtifact(), body, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		file, err := Decode(data)
+		if err != nil {
+			t.Fatalf("Decode body %q: %v", body, err)
+		}
+		if file.Body != body {
+			t.Errorf("body = %q, want %q", file.Body, body)
+		}
+		if len(file.Blocks) != 0 {
+			t.Errorf("body fence was parsed as envelope blocks: %v", file.Blocks)
+		}
+	}
+}
+
+func TestDecodeAcceptsLegacyEnvelopeWithoutBodyBoundary(t *testing.T) {
+	body := "# Legacy artifact\n\nMarkdown body.\n"
+	data, err := Encode(testArtifact(), body, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := strings.Replace(string(data), bodyBoundary+"\n", "", 1)
+	file, err := Decode([]byte(legacy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if file.Body != body {
+		t.Fatalf("body = %q, want %q", file.Body, body)
+	}
+}
+
 func TestStripPrivateBlocksPreservesOrdinaryCodeFences(t *testing.T) {
 	markdown := "before\n\n```parchment-secret\nhidden\n```\n\n```go\n```parchment-example\nvisible\n```\n```\nafter\n"
 	got := StripPrivateBlocks(markdown)

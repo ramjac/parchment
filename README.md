@@ -47,8 +47,11 @@ workspace configuration; artifacts live under
 `.parchment/artifacts/<stable-id>/content.md`. Every supported artifact is one
 Markdown file. It begins with a `parchment-meta` fenced code block containing
 the shared metadata as JSON. Structured artifact data uses additional
-`parchment-<thing>` JSON code blocks before the visible Markdown body. Parchment
-renderers hide these reserved blocks while ordinary Markdown remains readable.
+`parchment-<thing>` JSON code blocks before the visible Markdown body. New files
+separate the envelope from the body with an `<!-- parchment-body -->` comment,
+so a body can safely begin with a reserved code fence; readers still accept
+older files without this separator. Parchment renderers hide these reserved
+blocks while ordinary Markdown remains readable.
 Metadata timestamps are UTC RFC 3339 values. Copying, archiving, or versioning
 the workspace with standard tools is sufficient for a local backup.
 

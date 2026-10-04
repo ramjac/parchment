@@ -12,6 +12,7 @@ import (
 )
 
 const metadataBlock = "parchment-meta"
+const bodyBoundary = "<!-- parchment-body -->"
 
 const MaxFileSize = 64 << 20
 
@@ -51,6 +52,8 @@ func Encode(item artifact.Artifact, body string, blocks map[string]any) ([]byte,
 		writeBlock(&output, name, payload)
 	}
 	output.WriteByte('\n')
+	output.WriteString(bodyBoundary)
+	output.WriteByte('\n')
 	output.WriteString(body)
 	if output.Len() > MaxFileSize {
 		return nil, fmt.Errorf("artifact file is larger than %d MiB", MaxFileSize>>20)
@@ -80,7 +83,11 @@ func Decode(data []byte) (File, error) {
 				break
 			}
 		}
-		line, _ = nextLine(source, probe)
+		line, end = nextLine(source, probe)
+		if strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r") == bodyBoundary {
+			offset = end
+			break
+		}
 		block, isBlock := parseOpening(line)
 		if !isBlock || !strings.HasPrefix(block.name, "parchment-") {
 			offset = probe
