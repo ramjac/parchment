@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/artifactfile"
@@ -67,6 +68,25 @@ Second slide.
 	}
 	if !strings.Contains(preview, "Presenter Name") || !strings.Contains(preview, "Second slide.") || !strings.Contains(preview, "\f") {
 		t.Fatalf("preview did not separate slides:\n%s", preview)
+	}
+}
+
+func TestPreviewStripsTerminalControlsButKeepsLayoutSeparators(t *testing.T) {
+	deck := Deck{
+		Title:  "Title\x1b[2J",
+		Header: "Header\x07",
+		Slides: []Slide{{Title: "Slide\u009b31m", Body: "Body\twith tab\n"}},
+	}
+	preview := Preview(deck)
+	for _, r := range preview {
+		if unicode.IsControl(r) && r != '\n' && r != '\r' && r != '\t' && r != '\f' {
+			t.Errorf("preview retained terminal control U+%04X: %q", r, preview)
+		}
+	}
+	for _, want := range []string{"Title[2J", "Header", "Slide31m", "Body\twith tab", "\f"} {
+		if !strings.Contains(preview, want) {
+			t.Errorf("preview lost %q: %q", want, preview)
+		}
 	}
 }
 

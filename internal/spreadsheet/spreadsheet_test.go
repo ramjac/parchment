@@ -110,6 +110,18 @@ func TestFormulaArithmeticReferencesAndCycles(t *testing.T) {
 	}
 }
 
+func TestFormulaParserSkipsUnicodeWhitespace(t *testing.T) {
+	book := formulaChain(0)
+	book.Sheets[0].Rows[0][0] = Cell{Formula: "=1\u00a0+2"}
+	if err := Normalize(&book); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Evaluate(&book, 0, 1, 1)
+	if err != nil || got != 3 {
+		t.Fatalf("formula with non-breaking space = %v, %v; want 3", got, err)
+	}
+}
+
 func TestSpreadsheetOperationsFormulaShiftsAndHistory(t *testing.T) {
 	ctx := context.Background()
 	repository := newMemoryRepository()

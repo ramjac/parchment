@@ -748,7 +748,7 @@ func TestRecoveryRejectsUnexpectedBackupBeforeMutatingFiles(t *testing.T) {
 	}
 	journal, err := json.Marshal([]transactionFile{
 		{Name: "content.md", Backup: filepath.Base(backup), HadOld: true},
-		{Name: "unexpected.md", Backup: "../../../../victim", HadOld: false},
+		{Name: "metadata.json", Backup: "../../../../victim", HadOld: false},
 	})
 	if err != nil {
 		t.Fatal(err)

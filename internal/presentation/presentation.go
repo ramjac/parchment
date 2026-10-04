@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"example.com/parchment/internal/artifact"
@@ -508,7 +509,12 @@ func Preview(deck Deck) string {
 			output.WriteByte('\n')
 		}
 	}
-	return output.String()
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) && r != '\n' && r != '\r' && r != '\t' && r != '\f' {
+			return -1
+		}
+		return r
+	}, output.String())
 }
 
 func clonePresentation(item Presentation) Presentation {

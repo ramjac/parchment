@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Evaluate calculates one cell. Empty referenced cells evaluate to zero;
@@ -117,8 +118,12 @@ type formulaParser struct {
 }
 
 func (p *formulaParser) skipSpace() {
-	for p.position < len(p.input) && unicode.IsSpace(rune(p.input[p.position])) {
-		p.position++
+	for p.position < len(p.input) {
+		r, size := utf8.DecodeRuneInString(p.input[p.position:])
+		if !unicode.IsSpace(r) {
+			return
+		}
+		p.position += size
 	}
 }
 
