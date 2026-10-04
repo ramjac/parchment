@@ -20,7 +20,6 @@ const (
 	transactionName       = ".parchment-transaction.json"
 	deleteIntentPrefix    = ".parchment-delete-intent-"
 	pendingArtifactPrefix = ".parchment-pending-delete-"
-	deletedArtifactPrefix = ".parchment-deleted-"
 )
 
 type artifactDeletionIntent struct {
@@ -119,14 +118,14 @@ func Open(path string) (*Workspace, error) {
 			}
 			continue
 		}
-		if id := strings.TrimPrefix(entry.Name(), deletedArtifactPrefix); id != entry.Name() && validID.MatchString(id) {
-			if err := withArtifactLock(context.Background(), artifacts, id, func() error {
-				return restoreArtifactTombstone(artifacts, deletedArtifactPrefix, id)
-			}); err != nil {
-				return nil, fmt.Errorf("restore ambiguous legacy deletion of artifact %s: %w", id, err)
-			}
-			continue
-		}
+	}
+	// Deletion recovery can restore artifact directories, so list again to
+	// replay interrupted file transactions in every live artifact.
+	entries, err = os.ReadDir(artifacts)
+	if err != nil {
+		return nil, fmt.Errorf("list artifacts: %w", err)
+	}
+	for _, entry := range entries {
 		if !entry.IsDir() || !validID.MatchString(entry.Name()) {
 			continue
 		}
@@ -222,16 +221,7 @@ func (w *Workspace) readArtifactMetadataUnlocked(id string) (artifact.Artifact, 
 		return artifact.Artifact{}, errors.New("artifact storage path is not a directory")
 	}
 
-	metadata, marked, err := readArtifactMetadata(filepath.Join(dir, "content.md"))
-	if !marked {
-		legacy, legacyErr := readLegacyArtifactMetadata(dir, id)
-		if legacyErr == nil {
-			return legacy, nil
-		}
-		if !errors.Is(legacyErr, os.ErrNotExist) {
-			return artifact.Artifact{}, fmt.Errorf("read legacy artifact metadata %s: %w", id, legacyErr)
-		}
-	}
+	metadata, err := readArtifactMetadata(filepath.Join(dir, "content.md"))
 	if err == nil {
 		if metadata.ID != id {
 			return artifact.Artifact{}, fmt.Errorf("invalid artifact metadata for %s", id)
@@ -388,21 +378,7 @@ func (w *Workspace) saveLocked(ctx context.Context, n note.Note) error {
 		}
 		return fmt.Errorf("save note files: %w", err)
 	}
-	if err := cleanupLegacyNoteMetadata(dir); err != nil {
-		slog.Warn("note save committed but legacy metadata cleanup failed", "artifact_id", n.ID, "error", err)
-	}
 	return nil
-}
-
-func cleanupLegacyNoteMetadata(dir string) error {
-	path := filepath.Join(dir, "metadata.json")
-	if err := os.Remove(path); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	return syncDirectory(dir)
 }
 
 type stagedArtifactFile struct {
@@ -666,9 +642,6 @@ func (w *Workspace) deleteArtifactLocked(ctx context.Context, artifactsDir, id s
 	if err := restorePendingArtifact(artifactsDir, id); err != nil {
 		return fmt.Errorf("restore prior deletion: %w", err)
 	}
-	if err := removeArtifactTombstone(artifactsDir, deletedArtifactPrefix, id); err != nil {
-		return fmt.Errorf("clean up prior deletion: %w", err)
-	}
 	info, err := os.Lstat(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return note.ErrNotFound
@@ -708,7 +681,7 @@ func (w *Workspace) deleteArtifactLocked(ctx context.Context, artifactsDir, id s
 			return errors.Join(fmt.Errorf("commit note deletion: %w", err), readErr, rollbackPendingArtifactDeletion(artifactsDir, id))
 		}
 	}
-	if err := removeArtifactTombstone(artifactsDir, pendingArtifactPrefix, id); err != nil {
+	if err := removePendingArtifactTombstone(artifactsDir, id); err != nil {
 		slog.Warn("note deletion committed but tombstone cleanup failed", "artifact_id", id, "error", err)
 		return nil
 	}
@@ -785,18 +758,14 @@ func recoverArtifactDeletion(artifactsDir, id string) error {
 		}
 		return removeArtifactDeletionIntent(artifactsDir, id)
 	}
-	if err := removeArtifactTombstone(artifactsDir, pendingArtifactPrefix, id); err != nil {
+	if err := removePendingArtifactTombstone(artifactsDir, id); err != nil {
 		return err
 	}
 	return removeArtifactDeletionIntent(artifactsDir, id)
 }
 
 func restorePendingArtifact(artifactsDir, id string) error {
-	return restoreArtifactTombstone(artifactsDir, pendingArtifactPrefix, id)
-}
-
-func restoreArtifactTombstone(artifactsDir, prefix, id string) error {
-	tombstone := filepath.Join(artifactsDir, prefix+id)
+	tombstone := filepath.Join(artifactsDir, pendingArtifactPrefix+id)
 	info, err := os.Lstat(tombstone)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -819,8 +788,8 @@ func restoreArtifactTombstone(artifactsDir, prefix, id string) error {
 	return syncDirectory(artifactsDir)
 }
 
-func removeArtifactTombstone(artifactsDir, prefix, id string) error {
-	tombstone := filepath.Join(artifactsDir, prefix+id)
+func removePendingArtifactTombstone(artifactsDir, id string) error {
+	tombstone := filepath.Join(artifactsDir, pendingArtifactPrefix+id)
 	info, err := os.Lstat(tombstone)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -864,36 +833,12 @@ func (w *Workspace) readNoteUnlocked(id string) (note.Note, error) {
 	}
 	content, err := readRegularFile(filepath.Join(dir, "content.md"), artifactfile.MaxFileSize)
 	if errors.Is(err, os.ErrNotExist) {
-		a, legacyErr := readLegacyArtifactMetadata(dir, id)
-		if legacyErr == nil {
-			if a.Kind != artifact.NoteKind {
-				return note.Note{}, errNotNote
-			}
-			return note.Note{}, fmt.Errorf("read note artifact %s: %w", id, err)
-		}
-		if !errors.Is(legacyErr, os.ErrNotExist) {
-			return note.Note{}, fmt.Errorf("read legacy note metadata %s: %w", id, legacyErr)
-		}
 		return note.Note{}, fmt.Errorf("%w: %s", errNoMetadata, id)
 	}
 	if err != nil {
 		return note.Note{}, fmt.Errorf("read note artifact %s: %w", id, err)
 	}
-	if !artifactfile.HasFormatMarker(content) {
-		a, legacyErr := readLegacyArtifactMetadata(dir, id)
-		if legacyErr == nil {
-			if a.Kind != artifact.NoteKind {
-				return note.Note{}, errNotNote
-			}
-			a.CreatedAt = a.CreatedAt.UTC()
-			a.ModifiedAt = a.ModifiedAt.UTC()
-			return note.Note{Artifact: a, Body: string(content)}, nil
-		}
-		if !errors.Is(legacyErr, os.ErrNotExist) {
-			return note.Note{}, fmt.Errorf("read legacy note metadata %s: %w", id, legacyErr)
-		}
-	}
-	metadata, err := artifactfile.ReadMetadataEnvelope(content)
+	metadata, err := artifactfile.ReadMetadata(content)
 	if err != nil {
 		return note.Note{}, fmt.Errorf("read note metadata %s: %w", id, err)
 	}
@@ -920,24 +865,6 @@ func (w *Workspace) readNoteUnlocked(id string) (note.Note, error) {
 	a.CreatedAt = a.CreatedAt.UTC()
 	a.ModifiedAt = a.ModifiedAt.UTC()
 	return note.Note{Artifact: a, Body: file.Body, Blocks: copyPayloadBlocks(file.Blocks, "")}, nil
-}
-
-func readLegacyArtifactMetadata(dir, id string) (artifact.Artifact, error) {
-	data, err := readRegularFile(filepath.Join(dir, "metadata.json"), 1<<20)
-	if err != nil {
-		return artifact.Artifact{}, err
-	}
-	var item artifact.Artifact
-	if err := json.Unmarshal(data, &item); err != nil {
-		return artifact.Artifact{}, fmt.Errorf("decode artifact metadata: %w", err)
-	}
-	if err := item.Validate(); err != nil {
-		return artifact.Artifact{}, fmt.Errorf("validate artifact metadata: %w", err)
-	}
-	if item.ID != id || item.Location != filepath.ToSlash(filepath.Join(".parchment", "artifacts", id, "content.md")) {
-		return artifact.Artifact{}, fmt.Errorf("invalid artifact metadata for %s", id)
-	}
-	return item, nil
 }
 
 func copyPayloadBlocks(blocks map[string]json.RawMessage, excluded string) map[string]json.RawMessage {

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -20,15 +19,9 @@ const documentDataBlock = "parchment-document"
 
 var errNotDocument = errors.New("artifact is not a document")
 
-// validArtifactFileName accepts current and legacy targets in recovery journals.
+// validArtifactFileName accepts the artifact file targeted by recovery journals.
 func validArtifactFileName(name string) bool {
-	switch name {
-	case "content.md", "metadata.json", "layout.json", "changes.json",
-		"spreadsheet.json", "presentation.md":
-		return true
-	default:
-		return document.IsImageName(name)
-	}
+	return name == "content.md"
 }
 
 type embeddedDocumentImage struct {
@@ -458,34 +451,6 @@ func (w *Workspace) saveDocumentLockedWithChanges(ctx context.Context, d documen
 		}
 		return fmt.Errorf("save document files: %w", err)
 	}
-	if err := cleanupLegacyDocumentFiles(dir); err != nil {
-		slog.Warn("document save committed but legacy file cleanup failed", "artifact_id", d.ID, "error", err)
-	}
-	return nil
-}
-
-func cleanupLegacyDocumentFiles(dir string) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return err
-	}
-	removed := false
-	for _, entry := range entries {
-		switch entry.Name() {
-		case "metadata.json", "layout.json", "changes.json":
-		default:
-			if !document.IsImageName(entry.Name()) {
-				continue
-			}
-		}
-		if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove %s: %w", entry.Name(), err)
-		}
-		removed = true
-	}
-	if removed {
-		return syncDirectory(dir)
-	}
 	return nil
 }
 
@@ -551,36 +516,12 @@ func (w *Workspace) readDocumentFileUnlocked(id string, withImages bool) (docume
 	}
 	content, err := readRegularFile(filepath.Join(dir, "content.md"), 64<<20)
 	if errors.Is(err, os.ErrNotExist) {
-		a, legacyErr := readLegacyArtifactMetadata(dir, id)
-		if legacyErr == nil {
-			if a.Kind != artifact.DocumentKind {
-				return document.Document{}, nil, errNotDocument
-			}
-			return document.Document{}, nil, fmt.Errorf("read document artifact %s: %w", id, err)
-		}
-		if !errors.Is(legacyErr, os.ErrNotExist) {
-			return document.Document{}, nil, fmt.Errorf("read legacy document metadata %s: %w", id, legacyErr)
-		}
 		return document.Document{}, nil, fmt.Errorf("%w: %s", errNoMetadata, id)
 	}
 	if err != nil {
 		return document.Document{}, nil, fmt.Errorf("read document artifact %s: %w", id, err)
 	}
-	if !artifactfile.HasFormatMarker(content) {
-		legacy, legacyErr := readLegacyArtifactMetadata(dir, id)
-		if legacyErr == nil {
-			if legacy.Kind != artifact.DocumentKind {
-				return document.Document{}, nil, errNotDocument
-			}
-			return w.readLegacyDocumentFileUnlocked(
-				id, dir, content, withImages, artifactfile.ErrMetadataMissing,
-			)
-		}
-		if !errors.Is(legacyErr, os.ErrNotExist) {
-			return document.Document{}, nil, fmt.Errorf("read legacy document metadata %s: %w", id, legacyErr)
-		}
-	}
-	metadata, err := artifactfile.ReadMetadataEnvelope(content)
+	metadata, err := artifactfile.ReadMetadata(content)
 	if err != nil {
 		return document.Document{}, nil, fmt.Errorf("read document metadata %s: %w", id, err)
 	}
@@ -651,79 +592,6 @@ func (w *Workspace) readDocumentFileUnlocked(id string, withImages bool) (docume
 	return d, payload.Changes, nil
 }
 
-func (w *Workspace) readLegacyDocumentFileUnlocked(
-	id, dir string, content []byte, withImages bool, metadataErr error,
-) (document.Document, []document.Change, error) {
-	a, err := readLegacyArtifactMetadata(dir, id)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return document.Document{}, nil, fmt.Errorf("read document metadata %s: %w", id, metadataErr)
-		}
-		return document.Document{}, nil, fmt.Errorf("read legacy document metadata %s: %w", id, err)
-	}
-	if a.Kind != artifact.DocumentKind {
-		return document.Document{}, nil, errNotDocument
-	}
-	layout := document.DefaultLayout()
-	layoutData, err := readRegularFile(filepath.Join(dir, "layout.json"), 1<<20)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return document.Document{}, nil, fmt.Errorf("read document layout %s: %w", id, err)
-	}
-	if err == nil {
-		if err := json.Unmarshal(layoutData, &layout); err != nil {
-			return document.Document{}, nil, fmt.Errorf("decode document layout %s: %w", id, err)
-		}
-	}
-	if err := layout.Validate(); err != nil {
-		return document.Document{}, nil, fmt.Errorf("validate document layout %s: %w", id, err)
-	}
-	var changes []document.Change
-	changeData, err := readRegularFile(filepath.Join(dir, "changes.json"), artifactfile.MaxFileSize)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return document.Document{}, nil, fmt.Errorf("read document changes %s: %w", id, err)
-	}
-	if err == nil {
-		if err := json.Unmarshal(changeData, &changes); err != nil {
-			return document.Document{}, nil, fmt.Errorf("decode document changes %s: %w", id, err)
-		}
-		if err := validateDocumentChanges(id, changes); err != nil {
-			return document.Document{}, nil, fmt.Errorf("validate document changes %s: %w", id, err)
-		}
-	}
-	a.CreatedAt = a.CreatedAt.UTC()
-	a.ModifiedAt = a.ModifiedAt.UTC()
-	d := document.Document{Artifact: a, Body: string(content), Layout: layout}
-	if withImages {
-		if d.Images, err = readDocumentImages(dir); err != nil {
-			return document.Document{}, nil, fmt.Errorf("read document images %s: %w", id, err)
-		}
-	}
-	return d, changes, nil
-}
-
-func readDocumentImages(dir string) ([]document.Image, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, err
-	}
-	var images []document.Image
-	for _, entry := range entries {
-		if !document.IsImageName(entry.Name()) {
-			continue
-		}
-		data, err := readRegularFile(filepath.Join(dir, entry.Name()), document.MaxImageBytes)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", entry.Name(), err)
-		}
-		img := document.Image{Name: entry.Name(), Data: data}
-		if err := img.Validate(); err != nil {
-			return nil, err
-		}
-		images = append(images, img)
-	}
-	return images, nil
-}
-
 // readRegularFile reads a regular file without following links. A negative
 // limit means no size limit; otherwise larger files are an error.
 func readRegularFile(path string, limit int64) ([]byte, error) {
@@ -745,27 +613,16 @@ func readRegularFile(path string, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-func readArtifactMetadata(path string) (artifact.Artifact, bool, error) {
+func readArtifactMetadata(path string) (artifact.Artifact, error) {
 	file, err := openRegularFile(path)
 	if err != nil {
-		return artifact.Artifact{}, false, err
+		return artifact.Artifact{}, err
 	}
-	marked, err := artifactfile.HasFormatMarkerFrom(file)
-	if closeErr := file.Close(); err == nil && closeErr != nil {
-		return artifact.Artifact{}, false, closeErr
-	}
-	if err != nil {
-		return artifact.Artifact{}, false, err
-	}
-	file, err = openRegularFile(path)
-	if err != nil {
-		return artifact.Artifact{}, false, err
-	}
-	item, metadataErr := artifactfile.ReadMetadataEnvelopeFrom(file)
+	item, metadataErr := artifactfile.ReadMetadataFrom(file)
 	if closeErr := file.Close(); metadataErr == nil && closeErr != nil {
-		return artifact.Artifact{}, false, closeErr
+		return artifact.Artifact{}, closeErr
 	}
-	return item, marked, metadataErr
+	return item, metadataErr
 }
 
 func openRegularFile(path string) (*os.File, error) {

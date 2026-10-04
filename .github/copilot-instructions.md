@@ -29,11 +29,10 @@ Markdown document with an embedded, typed data envelope: its first fenced code
 block is `parchment-meta`, containing the shared artifact metadata as JSON;
 kind-specific data is stored in `parchment-<thing>` fenced blocks, also JSON
 unless a versioned block format explicitly specifies otherwise; the remaining
-content is the human-authored Markdown body, separated from the envelope by an
-`<!-- parchment-body -->` comment in newly written files; older files without
-the separator remain readable. This keeps one inspectable, editable file per
-artifact while allowing structured data such as workbook cells, document
-layout, change history, and base64-encoded embedded images.
+content is the human-authored Markdown body, separated from the envelope by a
+required `<!-- parchment-body -->` comment. This keeps one inspectable,
+editable file per artifact while allowing structured data such as workbook
+cells, document layout, change history, and base64-encoded embedded images.
 `internal/artifactfile` reads and writes the common envelope, and
 `internal/artifact` defines the shared metadata. Parchment renderers hide
 reserved `parchment-*` fences, but preserve ordinary code fences. `internal/search`
@@ -42,6 +41,11 @@ process.
 
 ## Repository-specific conventions
 
+- Parchment has not had its first release and has no legacy artifacts or
+  compatibility obligations. Do not add legacy-format support, migrations, or
+  backwards-compatibility handling for artifact format changes. If format
+  requirements change incompatibly, update the implementation and the
+  checked-in files in `examples/`. Remove this instruction at the first release.
 - Treat this as a local-first modular monolith: the workspace is authoritative,
   and normal operation must work offline without accounts, hosted services,
   telemetry, a daemon, or a custom sync protocol. Keep data inspectable and

@@ -1,5 +1,6 @@
 ```parchment-meta
 {
+  "parchment_format": "parchment-single-file-v1",
   "id": "10000000000000000000000000000001",
   "kind": "note",
   "title": "Trail observations",

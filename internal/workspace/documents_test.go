@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"image"
 	"image/png"
 	"os"
@@ -15,8 +14,6 @@ import (
 	"example.com/parchment/internal/artifactfile"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/note"
-	"example.com/parchment/internal/presentation"
-	"example.com/parchment/internal/spreadsheet"
 )
 
 func testPNG(t *testing.T, shade uint8) []byte {
@@ -218,136 +215,6 @@ func TestDocumentImagesUndoRedoAndCleanup(t *testing.T) {
 	back, err := docs.Get(ctx, created.ID)
 	if err != nil || !document.Equal(back, again) {
 		t.Fatalf("undo delete restored %+v, %v", back, err)
-	}
-}
-
-func TestLegacyDocumentExampleMetadataDoesNotReplaceSidecar(t *testing.T) {
-	ctx := context.Background()
-	root := t.TempDir()
-	ws := openTestWorkspace(t, root)
-	docs := document.NewService(ws, 10)
-	created, err := docs.Create(ctx, document.Draft{Title: "Legacy document", Body: "Original body"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Join(root, ".parchment", "artifacts", created.ID)
-	example := created.Artifact
-	example.ID = "abcdef0123456789abcdef0123456789"
-	example.Location = filepath.ToSlash(filepath.Join(".parchment", "artifacts", example.ID, "content.md"))
-	example.Title = "Embedded example"
-	metadata, err := json.MarshalIndent(example, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	exampleBody := "```parchment-meta\n" + string(metadata) + "\n```\n\n" +
-		"<!-- parchment-body -->\n# Example document\n\n## Slide\n\nExample body\n"
-	sidecar, err := json.Marshal(created.Artifact)
-	if err != nil {
-		t.Fatal(err)
-	}
-	layout, err := json.Marshal(created.Layout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, data := range map[string][]byte{
-		"content.md": []byte(exampleBody), "metadata.json": sidecar, "layout.json": layout,
-	} {
-		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	loaded, err := docs.Get(ctx, created.ID)
-	if err != nil || loaded.Title != created.Title || loaded.Body != exampleBody {
-		t.Fatalf("legacy document with embedded example = %+v, %v", loaded, err)
-	}
-	listed, err := docs.List(ctx)
-	if err != nil || len(listed) != 1 || listed[0].Body != exampleBody {
-		t.Fatalf("legacy document list with embedded example = %+v, %v", listed, err)
-	}
-	markedExample, err := artifactfile.Encode(example, "marked example body", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "content.md"), markedExample, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := docs.Get(ctx, created.ID); err == nil {
-		t.Fatal("marked embedded metadata fell back to the legacy sidecar")
-	}
-}
-
-func TestSavingLegacyDocumentRemovesManagedSidecarsAndImages(t *testing.T) {
-	ctx := context.Background()
-	root := t.TempDir()
-	ws := openTestWorkspace(t, root)
-	docs := document.NewService(ws, 10)
-	created, err := docs.Create(ctx, document.Draft{Title: "Legacy document", Body: "Old body"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Join(root, ".parchment", "artifacts", created.ID)
-	image, err := document.NewImage(testPNG(t, 77))
-	if err != nil {
-		t.Fatal(err)
-	}
-	metadata, err := json.Marshal(created.Artifact)
-	if err != nil {
-		t.Fatal(err)
-	}
-	layout, err := json.Marshal(created.Layout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, data := range map[string][]byte{
-		"content.md": []byte("Old body"), "metadata.json": metadata,
-		"layout.json": layout, image.Name: image.Data,
-	} {
-		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	loaded, err := docs.Get(ctx, created.ID)
-	if err != nil || len(loaded.Images) != 1 {
-		t.Fatalf("legacy document image = %+v, %v", loaded.Images, err)
-	}
-	if _, err := docs.Save(ctx, loaded, document.Draft{
-		Title: loaded.Title, Body: "Updated body", Layout: loaded.Layout,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"metadata.json", "layout.json", image.Name} {
-		if _, err := os.Stat(filepath.Join(dir, name)); !errors.Is(err, os.ErrNotExist) {
-			t.Errorf("legacy sidecar %q remains after save: %v", name, err)
-		}
-	}
-}
-
-func TestDocumentCleanupFailureDoesNotFailCommittedSave(t *testing.T) {
-	ctx := context.Background()
-	root := t.TempDir()
-	ws := openTestWorkspace(t, root)
-	docs := document.NewService(ws, 10)
-	created, err := docs.Create(ctx, document.Draft{Title: "Committed save", Body: "Before"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Join(root, ".parchment", "artifacts", created.ID)
-	layoutPath := filepath.Join(dir, "layout.json")
-	if err := os.Mkdir(layoutPath, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(layoutPath, "unmanaged"), []byte("preserve"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := docs.Save(ctx, created, document.Draft{
-		Title: created.Title, Body: "After", Layout: created.Layout,
-	}); err != nil {
-		t.Fatalf("committed save reported cleanup failure: %v", err)
-	}
-	loaded, err := docs.Get(ctx, created.ID)
-	if err != nil || loaded.Body != "After" {
-		t.Fatalf("committed document = %+v, %v", loaded, err)
 	}
 }
 
@@ -568,332 +435,56 @@ func TestUndoRedoDocumentCreationPreservesChangeHistory(t *testing.T) {
 	}
 }
 
-func TestLegacyNoteAndDocumentArtifactsRemainReadable(t *testing.T) {
+func TestSidecarOnlyArtifactsAreNotLoaded(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	ws := openTestWorkspace(t, root)
 	notes := note.NewService(ws, 10)
 	docs := document.NewService(ws, 10)
-	write := func(path string, data []byte) {
-		t.Helper()
-		if err := os.WriteFile(path, data, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
 
-	legacyNoteBody := "```parchment-footnote\nnot JSON\n```\n\nPlain Markdown note"
-	legacyNote, err := notes.Create(ctx, "Legacy note", legacyNoteBody)
+	createdNote, err := notes.Create(ctx, "Note", "Original note body")
 	if err != nil {
 		t.Fatal(err)
 	}
-	noteDir := filepath.Join(root, ".parchment", "artifacts", legacyNote.ID)
-	noteMetadata, err := json.Marshal(legacyNote.Artifact)
-	if err != nil {
-		t.Fatal(err)
-	}
-	write(filepath.Join(noteDir, "metadata.json"), noteMetadata)
-	write(filepath.Join(noteDir, "content.md"), []byte(legacyNote.Body))
-
-	layout := document.DefaultLayout()
-	layout.Columns = 2
-	legacyDocumentBody := "```parchment-footnote\nnot JSON\n```\n\nIntroduction"
-	created, err := docs.Create(ctx, document.Draft{Title: "Legacy document", Body: legacyDocumentBody, Layout: layout})
-	if err != nil {
-		t.Fatal(err)
-	}
-	withImage, imageName, err := docs.AddImage(ctx, created.ID, "Chart", testPNG(t, 88))
-	if err != nil {
-		t.Fatal(err)
-	}
-	proposal, err := docs.Propose(ctx, withImage, "Legacy proposal", document.Draft{
-		Title: withImage.Title, Body: withImage.Body + "\nProposed text", Layout: withImage.Layout,
-		Images: withImage.Images,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	changes, err := docs.Changes(ctx, created.ID)
-	if err != nil || len(changes) != 1 || changes[0].ID != proposal.ID {
-		t.Fatalf("proposal changes = %+v, %v", changes, err)
-	}
-	docDir := filepath.Join(root, ".parchment", "artifacts", withImage.ID)
-	docMetadata, err := json.Marshal(withImage.Artifact)
-	if err != nil {
-		t.Fatal(err)
-	}
-	layoutData, err := json.Marshal(withImage.Layout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	changeData, err := json.Marshal(changes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	write(filepath.Join(docDir, "metadata.json"), docMetadata)
-	write(filepath.Join(docDir, "layout.json"), layoutData)
-	write(filepath.Join(docDir, "changes.json"), changeData)
-	write(filepath.Join(docDir, "content.md"), []byte(withImage.Body))
-	write(filepath.Join(docDir, imageName), withImage.Images[0].Data)
-
-	legacyDefault, err := docs.Create(ctx, document.Draft{Title: "Legacy default", Body: "Text"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defaultDir := filepath.Join(root, ".parchment", "artifacts", legacyDefault.ID)
-	defaultMetadata, err := json.Marshal(legacyDefault.Artifact)
-	if err != nil {
-		t.Fatal(err)
-	}
-	write(filepath.Join(defaultDir, "metadata.json"), defaultMetadata)
-	write(filepath.Join(defaultDir, "content.md"), []byte(legacyDefault.Body))
-
-	reopened, err := Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	loadedNotes, err := note.NewService(reopened, 10).List(ctx)
-	if err != nil || len(loadedNotes) != 1 || loadedNotes[0].Body != legacyNoteBody {
-		t.Fatalf("legacy notes = %+v, %v", loadedNotes, err)
-	}
-	loadedDocs := document.NewService(reopened, 10)
-	loaded, err := loadedDocs.Get(ctx, withImage.ID)
-	if err != nil || loaded.Body != withImage.Body || loaded.Layout != layout ||
-		len(loaded.Images) != 1 || loaded.Images[0].Name != imageName {
-		t.Fatalf("legacy document = %+v, %v", loaded, err)
-	}
-	loadedChanges, err := loadedDocs.Changes(ctx, withImage.ID)
-	if err != nil || len(loadedChanges) != 1 || loadedChanges[0].ID != proposal.ID {
-		t.Fatalf("legacy document changes = %+v, %v", loadedChanges, err)
-	}
-	defaultDocument, err := loadedDocs.Get(ctx, legacyDefault.ID)
-	if err != nil || defaultDocument.Layout != document.DefaultLayout() {
-		t.Fatalf("legacy document default layout = %+v, %v", defaultDocument.Layout, err)
-	}
-	deckService := presentation.NewService(reopened, 10)
-	if _, err := deckService.Create(ctx, "Current presentation", "# Current presentation\n\n## Slide\n\nBody"); err != nil {
-		t.Fatal(err)
-	}
-	decks, err := deckService.List(ctx)
-	if err != nil || len(decks) != 1 {
-		t.Fatalf("presentations alongside legacy artifacts = %+v, %v", decks, err)
-	}
-	spreadsheetService := spreadsheet.NewService(reopened, 10)
-	if _, err := spreadsheetService.Create(ctx, "Current spreadsheet", [][]spreadsheet.Cell{{{Value: "value"}}}); err != nil {
-		t.Fatal(err)
-	}
-	workbooks, err := spreadsheetService.List(ctx)
-	if err != nil || len(workbooks) != 1 {
-		t.Fatalf("spreadsheets alongside legacy artifacts = %+v, %v", workbooks, err)
-	}
-}
-
-func TestInvalidEmbeddedMetadataDoesNotFallBackToLegacySidecars(t *testing.T) {
-	ctx := context.Background()
-	root := t.TempDir()
-	ws := openTestWorkspace(t, root)
-	write := func(path string, data []byte) {
-		t.Helper()
-		if err := os.WriteFile(path, data, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	corruptMetadata := func(path, title string) {
-		t.Helper()
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		source := string(data)
-		corrupted := strings.Replace(source, `"title": "`+title+`"`, `"title":42`, 1)
-		if corrupted == source {
-			corrupted = strings.Replace(source, `"title":"`+title+`"`, `"title":42`, 1)
-		}
-		if corrupted == source {
-			t.Fatal("embedded metadata title was not found")
-		}
-		write(path, []byte(corrupted))
-	}
-	minifyMetadata := func(path string) {
-		t.Helper()
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		source := string(data)
-		opening := "```parchment-meta\n"
-		start := strings.Index(source, opening)
-		if start < 0 {
-			t.Fatal("embedded metadata opener was not found")
-		}
-		payloadStart := start + len(opening)
-		closing := strings.Index(source[payloadStart:], "\n```")
-		if closing < 0 {
-			t.Fatal("embedded metadata closer was not found")
-		}
-		var compact bytes.Buffer
-		if err := json.Compact(&compact, []byte(source[payloadStart:payloadStart+closing])); err != nil {
-			t.Fatal(err)
-		}
-		source = source[:payloadStart] + compact.String() + source[payloadStart+closing:]
-		write(path, []byte(source))
-	}
-
-	notes := note.NewService(ws, 10)
-	legacyNote, err := notes.Create(ctx, "Legacy note", "Plain Markdown note")
-	if err != nil {
-		t.Fatal(err)
-	}
-	noteDir := filepath.Join(root, ".parchment", "artifacts", legacyNote.ID)
-	noteMetadata, err := json.Marshal(legacyNote.Artifact)
-	if err != nil {
-		t.Fatal(err)
-	}
-	write(filepath.Join(noteDir, "metadata.json"), noteMetadata)
-	write(filepath.Join(noteDir, "content.md"), []byte(legacyNote.Body))
-	if _, err := notes.Rename(ctx, legacyNote.ID, "Current note"); err != nil {
-		t.Fatal(err)
-	}
-	noteContentPath := filepath.Join(noteDir, "content.md")
-	if _, err := os.Stat(filepath.Join(noteDir, "metadata.json")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("legacy note metadata sidecar remains after save: %v", err)
-	}
-	noteContent, err := os.ReadFile(noteContentPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	write(noteContentPath, append([]byte("\n"), noteContent...))
-	migratedNote, err := notes.Get(ctx, legacyNote.ID)
-	if err != nil || migratedNote.Title != "Current note" || migratedNote.Body != legacyNote.Body {
-		t.Fatalf("migrated note after leading blank line = %+v, %v", migratedNote, err)
-	}
-	write(filepath.Join(noteDir, "metadata.json"), noteMetadata)
-	minifyMetadata(noteContentPath)
-	if items, err := notes.List(ctx); err != nil || len(items) != 1 || items[0].Title != "Current note" {
-		t.Fatalf("list minified note with stale sidecar = %+v, %v", items, err)
-	}
-
-	documents := document.NewService(ws, 10)
-	layout := document.DefaultLayout()
-	layout.Columns = 2
-	legacyDocument, err := documents.Create(ctx, document.Draft{
-		Title: "Legacy document", Body: "Plain Markdown", Layout: layout,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	proposal, err := documents.Propose(ctx, legacyDocument, "Existing proposal", document.Draft{
-		Title: legacyDocument.Title, Body: legacyDocument.Body + " proposed", Layout: legacyDocument.Layout,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	documentDir := filepath.Join(root, ".parchment", "artifacts", legacyDocument.ID)
-	documentMetadata, err := json.Marshal(legacyDocument.Artifact)
-	if err != nil {
-		t.Fatal(err)
-	}
-	layoutData, err := json.Marshal(layout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	changeData, err := json.Marshal([]document.Change{proposal})
-	if err != nil {
-		t.Fatal(err)
-	}
-	write(filepath.Join(documentDir, "metadata.json"), documentMetadata)
-	write(filepath.Join(documentDir, "layout.json"), layoutData)
-	write(filepath.Join(documentDir, "changes.json"), changeData)
-	write(filepath.Join(documentDir, "content.md"), []byte(legacyDocument.Body))
-	if _, err := documents.Rename(ctx, legacyDocument.ID, "Current document"); err != nil {
-		t.Fatal(err)
-	}
-	staleLayout := document.DefaultLayout()
-	staleLayout.Columns = 3
-	staleLayoutData, err := json.Marshal(staleLayout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	write(filepath.Join(documentDir, "layout.json"), staleLayoutData)
-	write(filepath.Join(documentDir, "changes.json"), []byte("[]"))
-	write(filepath.Join(documentDir, "metadata.json"), documentMetadata)
-	documentContentPath := filepath.Join(documentDir, "content.md")
-	documentContent, err := os.ReadFile(documentContentPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	write(documentContentPath, append([]byte("\n"), documentContent...))
-	migratedDocument, err := documents.Get(ctx, legacyDocument.ID)
-	if err != nil || migratedDocument.Title != "Current document" || migratedDocument.Body != legacyDocument.Body ||
-		migratedDocument.Layout != layout {
-		t.Fatalf("migrated document after leading blank line = %+v, %v", migratedDocument, err)
-	}
-	migratedChanges, err := documents.Changes(ctx, legacyDocument.ID)
-	if err != nil || len(migratedChanges) != 1 || migratedChanges[0].ID != proposal.ID {
-		t.Fatalf("migrated proposal history after leading blank line = %+v, %v", migratedChanges, err)
-	}
-	minifyMetadata(documentContentPath)
-	if items, err := documents.List(ctx); err != nil || len(items) != 1 ||
-		items[0].Title != "Current document" || items[0].Layout != layout {
-		t.Fatalf("list minified document with stale sidecar = %+v, %v", items, err)
-	}
-	corruptMetadata(documentContentPath, "Current document")
-	if _, err := documents.Get(ctx, legacyDocument.ID); err == nil {
-		t.Fatal("malformed document metadata fell back to the stale sidecar")
-	}
-	corruptMetadata(noteContentPath, "Current note")
-	corruptedNote, err := os.ReadFile(noteContentPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !artifactfile.HasFormatMarker(corruptedNote) {
-		t.Fatalf("corrupted note lost its single-file format marker: %q", corruptedNote[:min(len(corruptedNote), 240)])
-	}
-	if _, err := notes.Get(ctx, legacyNote.ID); err == nil {
-		t.Fatal("malformed note metadata fell back to the stale sidecar")
-	}
-}
-
-func TestMissingContentForKnownLegacyArtifactsIsReported(t *testing.T) {
-	ctx := context.Background()
-	root := t.TempDir()
-	ws := openTestWorkspace(t, root)
-
-	legacyNote, err := note.NewService(ws, 10).Create(ctx, "Missing note body", "body")
-	if err != nil {
-		t.Fatal(err)
-	}
-	noteDir := filepath.Join(root, ".parchment", "artifacts", legacyNote.ID)
-	noteMetadata, err := json.Marshal(legacyNote.Artifact)
+	noteDir := filepath.Join(root, ".parchment", "artifacts", createdNote.ID)
+	noteMetadata, err := json.Marshal(createdNote.Artifact)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(noteDir, "metadata.json"), noteMetadata, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(filepath.Join(noteDir, "content.md")); err != nil {
+	if err := os.WriteFile(filepath.Join(noteDir, "content.md"), []byte(createdNote.Body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ws.Get(ctx, legacyNote.ID); err == nil || errors.Is(err, note.ErrNotFound) {
-		t.Fatalf("missing content for known note returned %v", err)
+	if _, err := notes.Get(ctx, createdNote.ID); err == nil {
+		t.Fatal("loaded note stored in the sidecar format")
 	}
 
-	legacyDocument, err := document.NewService(ws, 10).Create(ctx, document.Draft{Title: "Missing document body", Body: "body"})
+	createdDocument, err := docs.Create(ctx, document.Draft{Title: "Document", Body: "Original document body"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	documentDir := filepath.Join(root, ".parchment", "artifacts", legacyDocument.ID)
-	documentMetadata, err := json.Marshal(legacyDocument.Artifact)
+	documentDir := filepath.Join(root, ".parchment", "artifacts", createdDocument.ID)
+	documentMetadata, err := json.Marshal(createdDocument.Artifact)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(documentDir, "metadata.json"), documentMetadata, 0o600); err != nil {
+	layout, err := json.Marshal(createdDocument.Layout)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(filepath.Join(documentDir, "content.md")); err != nil {
-		t.Fatal(err)
+	for name, data := range map[string][]byte{
+		"metadata.json": documentMetadata,
+		"layout.json":   layout,
+		"content.md":    []byte(createdDocument.Body),
+	} {
+		if err := os.WriteFile(filepath.Join(documentDir, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := ws.GetDocument(ctx, legacyDocument.ID); err == nil || errors.Is(err, document.ErrNotFound) {
-		t.Fatalf("missing content for known document returned %v", err)
+	if _, err := docs.Get(ctx, createdDocument.ID); err == nil {
+		t.Fatal("loaded document stored in the sidecar format")
 	}
 }
 

@@ -1,5 +1,6 @@
 ```parchment-meta
 {
+  "parchment_format": "parchment-single-file-v1",
   "id": "20000000000000000000000000000002",
   "kind": "document",
   "title": "Community Garden Project Brief",

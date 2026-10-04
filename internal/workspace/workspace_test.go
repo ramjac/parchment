@@ -772,68 +772,25 @@ func TestRecoveryRejectsUnexpectedBackupBeforeMutatingFiles(t *testing.T) {
 	}
 }
 
-func TestRecoveryAcceptsLegacyArtifactTransactionTargets(t *testing.T) {
-	dir := t.TempDir()
+func TestRecoveryRejectsFormerSidecarTransactionTargets(t *testing.T) {
 	names := []string{
 		"metadata.json", "layout.json", "changes.json", "spreadsheet.json", "presentation.md",
 		"image-0123456789abcdef.png",
 	}
-	var transaction []transactionFile
 	for _, name := range names {
-		original := []byte("original " + name)
-		backup, err := stageFile(dir, original)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("partial replacement"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		transaction = append(transaction, transactionFile{
-			Name: name, Backup: filepath.Base(backup), HadOld: true,
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			journal, err := json.Marshal([]transactionFile{{Name: name}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, transactionName), journal, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := recoverArtifactFiles(dir); err == nil {
+				t.Fatalf("recovery accepted obsolete transaction target %q", name)
+			}
 		})
-	}
-	journal, err := json.Marshal(transaction)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, transactionName), journal, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := recoverArtifactFiles(dir); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range names {
-		got, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil || string(got) != "original "+name {
-			t.Errorf("recovered %s = %q, %v", name, got, err)
-		}
-	}
-}
-
-func TestOpenRestoresAmbiguousLegacyArtifactDeletion(t *testing.T) {
-	ctx := context.Background()
-	root := t.TempDir()
-	ws := openTestWorkspace(t, root)
-	created, err := note.NewService(ws, 10).Create(ctx, "Deleted", "body")
-	if err != nil {
-		t.Fatal(err)
-	}
-	artifactsDir := filepath.Join(root, ".parchment", "artifacts")
-	dir := filepath.Join(artifactsDir, created.ID)
-	tombstone := filepath.Join(artifactsDir, deletedArtifactPrefix+created.ID)
-	if err := os.Rename(dir, tombstone); err != nil {
-		t.Fatal(err)
-	}
-
-	reopened, err := Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := reopened.Get(ctx, created.ID); err != nil {
-		t.Fatalf("ambiguous legacy deletion did not restore note: %v", err)
-	}
-	if _, err := os.Lstat(tombstone); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("deletion tombstone remains: %v", err)
 	}
 }
 
@@ -1047,164 +1004,50 @@ func TestArtifactListsCheckKindBeforeReadingBodies(t *testing.T) {
 	}
 }
 
-func TestLegacyNoteMayBeginWithMetadataFenceExample(t *testing.T) {
+func TestOpenRecoversReplacementInsideRestoredPendingDeletion(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	ws := openTestWorkspace(t, root)
-	id := "0123456789abcdef0123456789abcdef"
-	dir := filepath.Join(root, ".parchment", "artifacts", id)
-	if err := os.Mkdir(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
-	metadata := artifact.Artifact{
-		ID: id, Kind: artifact.NoteKind, Title: "Legacy",
-		CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
-		Location: filepath.ToSlash(filepath.Join(".parchment", "artifacts", id, "content.md")),
-	}
-	metadataBytes, err := json.Marshal(metadata)
+	created, err := note.NewService(ws, 10).Create(ctx, "Original", "original body")
 	if err != nil {
 		t.Fatal(err)
 	}
-	example := metadata
-	example.ID = "abcdef0123456789abcdef0123456789"
-	example.Title = "Embedded example"
-	example.Location = filepath.ToSlash(filepath.Join(".parchment", "artifacts", example.ID, "content.md"))
-	exampleBytes, err := json.MarshalIndent(example, "", "  ")
+	artifactsDir := filepath.Join(root, ".parchment", "artifacts")
+	dir := filepath.Join(artifactsDir, created.ID)
+	content, err := os.ReadFile(filepath.Join(dir, "content.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := "```parchment-meta\n" + string(exampleBytes) + "\n```\n\n" +
-		"```parchment-note\n{\"legacy\":true}\n```\n\n<!-- parchment-body -->\nLegacy Markdown body\n"
-	if err := os.WriteFile(filepath.Join(dir, "metadata.json"), metadataBytes, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "content.md"), []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	secondID := "1123456789abcdef0123456789abcdef"
-	secondDir := filepath.Join(root, ".parchment", "artifacts", secondID)
-	if err := os.Mkdir(secondDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	secondMetadata := metadata
-	secondMetadata.ID = secondID
-	secondMetadata.Title = "Legacy with invalid metadata example"
-	secondMetadata.Location = filepath.ToSlash(filepath.Join(".parchment", "artifacts", secondID, "content.md"))
-	secondMetadataBytes, err := json.Marshal(secondMetadata)
+	backup, err := stageFile(dir, content)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondBody := "```parchment-meta\n{}\n```\n\n<!-- parchment-body -->\nLegacy body after invalid example\n"
-	if err := os.WriteFile(filepath.Join(secondDir, "metadata.json"), secondMetadataBytes, 0o600); err != nil {
+	journal, err := json.Marshal([]transactionFile{{Name: "content.md", Backup: filepath.Base(backup), HadOld: true}})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(secondDir, "content.md"), []byte(secondBody), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "content.md"), []byte("partial replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, transactionName), journal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(dir, filepath.Join(artifactsDir, pendingArtifactPrefix+created.ID)); err != nil {
 		t.Fatal(err)
 	}
 
-	loaded, err := ws.Get(ctx, id)
-	if err != nil || loaded.Body != body {
-		t.Fatalf("legacy note = %+v, %v", loaded, err)
-	}
-	notes, err := ws.List(ctx)
-	if err != nil || len(notes) != 2 {
-		t.Fatalf("legacy note list = %+v, %v", notes, err)
-	}
-	foundFirst, foundSecond := false, false
-	for _, listed := range notes {
-		foundFirst = foundFirst || listed.ID == id && listed.Body == body
-		foundSecond = foundSecond || listed.ID == secondID && listed.Body == secondBody
-	}
-	if !foundFirst || !foundSecond {
-		t.Fatalf("legacy note examples were not preserved: %+v", notes)
-	}
-	if loaded, err := ws.Get(ctx, secondID); err != nil || loaded.Body != secondBody {
-		t.Fatalf("legacy note with invalid metadata example = %+v, %v", loaded, err)
-	}
-	for _, list := range []func(context.Context) error{
-		func(ctx context.Context) error {
-			_, err := ws.ListDocuments(ctx)
-			return err
-		},
-		func(ctx context.Context) error {
-			_, err := ws.ListPresentations(ctx)
-			return err
-		},
-		func(ctx context.Context) error {
-			_, err := ws.ListSpreadsheets(ctx)
-			return err
-		},
-	} {
-		if err := list(ctx); err != nil {
-			t.Fatalf("unrelated artifact list rejected the legacy note: %v", err)
-		}
-	}
-}
-
-func TestSeparatorFreeEnvelopesLoadAndListForEveryArtifactKind(t *testing.T) {
-	ctx := context.Background()
-	root := t.TempDir()
-	ws := openTestWorkspace(t, root)
-	notes := note.NewService(ws, 10)
-	docs := document.NewService(ws, 10)
-	decks := presentation.NewService(ws, 10)
-	books := spreadsheet.NewService(ws, 10)
-
-	n, err := notes.Create(ctx, "Separator-free note", "Note body")
+	reopened, err := Open(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := docs.Create(ctx, document.Draft{Title: "Separator-free document", Body: "Document body"})
+	if _, err := os.Lstat(filepath.Join(dir, transactionName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("transaction journal remains after Open: %v", err)
+	}
+	loaded, err := reopened.Get(ctx, created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := decks.Create(ctx, "Separator-free presentation", "# Separator-free presentation\n\n## Slide\n\nPresentation body\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := books.Create(ctx, "Separator-free spreadsheet", [][]spreadsheet.Cell{{{Value: "cell"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, item := range []artifact.Artifact{n.Artifact, d.Artifact, p.Artifact, b.Artifact} {
-		path := filepath.Join(root, filepath.FromSlash(item.Location))
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		source := strings.Replace(string(data), "  \"parchment_format\": \"parchment-single-file-v1\",\n", "", 1)
-		if source == string(data) {
-			t.Fatalf("format marker missing from %s", path)
-		}
-		source = strings.Replace(source, "<!-- parchment-body -->\n", "", 1)
-		if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if _, err := notes.Get(ctx, n.ID); err != nil {
-		t.Fatalf("load separator-free note: %v", err)
-	}
-	if _, err := docs.Get(ctx, d.ID); err != nil {
-		t.Fatalf("load separator-free document: %v", err)
-	}
-	if _, err := decks.Get(ctx, p.ID); err != nil {
-		t.Fatalf("load separator-free presentation: %v", err)
-	}
-	if _, err := books.Get(ctx, b.ID); err != nil {
-		t.Fatalf("load separator-free spreadsheet: %v", err)
-	}
-	if items, err := notes.List(ctx); err != nil || len(items) != 1 {
-		t.Fatalf("list separator-free notes = %d, %v", len(items), err)
-	}
-	if items, err := docs.List(ctx); err != nil || len(items) != 1 {
-		t.Fatalf("list separator-free documents = %d, %v", len(items), err)
-	}
-	if items, err := decks.List(ctx); err != nil || len(items) != 1 {
-		t.Fatalf("list separator-free presentations = %d, %v", len(items), err)
-	}
-	if items, err := books.List(ctx); err != nil || len(items) != 1 {
-		t.Fatalf("list separator-free spreadsheets = %d, %v", len(items), err)
+	if loaded.Title != created.Title || loaded.Body != created.Body {
+		t.Fatalf("recovered note = %+v, want original note", loaded)
 	}
 }

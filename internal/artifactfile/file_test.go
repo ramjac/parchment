@@ -80,25 +80,20 @@ func TestReadMetadataDistinguishesMissingFromInvalidEnvelope(t *testing.T) {
 	}
 }
 
-func TestReadMetadataRecognizesLegacyMetadataFenceExamples(t *testing.T) {
-	validMetadata, err := json.Marshal(testArtifact())
+func TestReadMetadataRequiresCurrentFormatMarker(t *testing.T) {
+	metadata, err := json.Marshal(testArtifact())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, source := range []string{
-		"```parchment-meta\n{}\n```\n\nLegacy Markdown body\n",
-		"```parchment-meta\n" + string(validMetadata) + "\n```\n\n" +
-			"```parchment-note\n{\"legacy\":true}\n```\n\nLegacy Markdown body\n",
+	source := "```parchment-meta\n" + string(metadata) + "\n```\n"
+	for _, read := range []func([]byte) (artifact.Artifact, error){
+		ReadMetadata,
+		func(data []byte) (artifact.Artifact, error) {
+			return ReadMetadataFrom(bytes.NewReader(data))
+		},
 	} {
-		for _, read := range []func([]byte) (artifact.Artifact, error){
-			ReadMetadata,
-			func(data []byte) (artifact.Artifact, error) {
-				return ReadMetadataFrom(bytes.NewReader(data))
-			},
-		} {
-			if _, err := read([]byte(source)); !errors.Is(err, ErrMetadataMissing) {
-				t.Fatalf("legacy metadata example error = %v", err)
-			}
+		if _, err := read([]byte(source)); err == nil || errors.Is(err, ErrMetadataMissing) {
+			t.Fatalf("metadata without current format marker error = %v", err)
 		}
 	}
 }
@@ -144,19 +139,15 @@ func TestEncodeDecodePreservesBodyStartingWithReservedFence(t *testing.T) {
 	}
 }
 
-func TestDecodeAcceptsLegacyEnvelopeWithoutBodyBoundary(t *testing.T) {
-	body := "# Legacy artifact\n\nMarkdown body.\n"
+func TestDecodeRequiresBodyBoundary(t *testing.T) {
+	body := "# Example\n\nMarkdown body.\n"
 	data, err := Encode(testArtifact(), body, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacy := strings.Replace(string(data), bodyBoundary+"\n", "", 1)
-	file, err := Decode([]byte(legacy))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if file.Body != "\n"+body {
-		t.Fatalf("body = %q, want %q", file.Body, "\n"+body)
+	withoutBoundary := strings.Replace(string(data), bodyBoundary+"\n", "", 1)
+	if _, err := Decode([]byte(withoutBoundary)); err == nil {
+		t.Fatal("decoded artifact without body separator")
 	}
 }
 
@@ -195,20 +186,6 @@ func TestDecodeSkipsMultipleSeparatingBlankLinesAndPreservesBodyWhitespace(t *te
 		t.Fatalf("decoded envelope = blocks %v, body %q", file.Blocks, file.Body)
 	}
 
-	var legacy bytes.Buffer
-	metadata, err := json.Marshal(testArtifact())
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeBlock(&legacy, metadataBlock, metadata)
-	legacy.WriteString("\n\n  Legacy body\n")
-	file, err = Decode(legacy.Bytes())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if file.Body != "\n\n  Legacy body\n" {
-		t.Fatalf("legacy body whitespace = %q", file.Body)
-	}
 }
 
 func TestReadMetadataFromStopsAfterMetadataBlock(t *testing.T) {
@@ -272,7 +249,7 @@ func TestReadMetadataFromPreservesOversizedMetadataOpeningLine(t *testing.T) {
 	}
 }
 
-func TestFormatMarkerDetectionParsesMinifiedMetadata(t *testing.T) {
+func TestReadMetadataParsesMinifiedCurrentMetadata(t *testing.T) {
 	data, err := Encode(testArtifact(), "body", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -286,12 +263,9 @@ func TestFormatMarkerDetectionParsesMinifiedMetadata(t *testing.T) {
 	if minified == string(data) {
 		t.Fatal("format marker was not found")
 	}
-	if !HasFormatMarker([]byte(minified)) {
-		t.Fatal("byte-based detector missed minified format marker")
-	}
-	marked, err := HasFormatMarkerFrom(strings.NewReader(minified))
-	if err != nil || !marked {
-		t.Fatalf("streaming detector = %v, %v", marked, err)
+	item, err := ReadMetadata([]byte(minified))
+	if err != nil || item.ID != testArtifact().ID {
+		t.Fatalf("read minified current metadata = %+v, %v", item, err)
 	}
 }
 

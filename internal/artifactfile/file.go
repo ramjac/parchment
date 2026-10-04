@@ -32,7 +32,7 @@ type File struct {
 }
 
 type metadataEnvelope struct {
-	Format string `json:"parchment_format,omitempty"`
+	Format string `json:"parchment_format"`
 	artifact.Artifact
 }
 
@@ -94,6 +94,7 @@ func Decode(data []byte) (File, error) {
 		return File{}, err
 	}
 	file := File{Artifact: item, Blocks: make(map[string]json.RawMessage)}
+	foundBodyBoundary := false
 	for offset < len(source) {
 		probe := offset
 		for {
@@ -112,6 +113,7 @@ func Decode(data []byte) (File, error) {
 		line, end := nextLine(source, probe)
 		if strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r") == bodyBoundary {
 			offset = end
+			foundBodyBoundary = true
 			break
 		}
 		block, isBlock := parseOpening(line)
@@ -134,6 +136,9 @@ func Decode(data []byte) (File, error) {
 		file.Blocks[block.name] = append(json.RawMessage(nil), payload...)
 		offset = after
 	}
+	if !foundBodyBoundary {
+		return File{}, errors.New("artifact body separator is missing")
+	}
 	file.Body = strings.Clone(source[offset:])
 	return file, nil
 }
@@ -146,86 +151,16 @@ func ReadMetadata(data []byte) (artifact.Artifact, error) {
 	}
 	source := string(data)
 	item, _, err := readMetadata(source)
-	if (err != nil || !metadataHasFormatMarker(source)) && isLegacyMetadataExample(source) {
-		return artifact.Artifact{}, fmt.Errorf("%w: it must be the first Markdown block", ErrMetadataMissing)
-	}
 	return item, err
-}
-
-// ReadMetadataEnvelope reads the leading metadata of a single-file artifact,
-// including older envelopes that omit a body separator.
-func ReadMetadataEnvelope(data []byte) (artifact.Artifact, error) {
-	if len(data) > MaxFileSize {
-		return artifact.Artifact{}, fmt.Errorf("artifact file is larger than %d MiB", MaxFileSize>>20)
-	}
-	source := string(data)
-	item, _, err := readMetadata(source)
-	if err != nil && isLegacyMetadataExample(source) && !metadataHasFormatMarker(source) {
-		return artifact.Artifact{}, fmt.Errorf("%w: it must be the first Markdown block", ErrMetadataMissing)
-	}
-	return item, err
-}
-
-// HasFormatMarker reports whether data begins with the current single-file
-// artifact metadata marker.
-func HasFormatMarker(data []byte) bool {
-	return metadataHasFormatMarker(string(data))
-}
-
-// HasFormatMarkerFrom inspects only the leading metadata block for its format
-// marker.
-func HasFormatMarkerFrom(input io.Reader) (bool, error) {
-	reader := bufio.NewReader(io.LimitReader(input, MaxFileSize+1))
-	var prefix strings.Builder
-	var consumed int64
-	var block opening
-	haveBlock := false
-	for {
-		line, err := reader.ReadString('\n')
-		consumed += int64(len(line))
-		if consumed > MaxFileSize {
-			return false, fmt.Errorf("artifact metadata is larger than %d MiB", MaxFileSize>>20)
-		}
-		if !haveBlock {
-			if isBlankLine(line) {
-				prefix.WriteString(line)
-			} else {
-				var ok bool
-				block, ok = parseOpening(line)
-				if !ok || block.name != metadataBlock {
-					return false, nil
-				}
-				haveBlock = true
-				prefix.WriteString(line)
-			}
-		} else {
-			prefix.WriteString(line)
-			if isFenceClose(line, block.marker[:1], len(block.marker)) {
-				return metadataHasFormatMarker(prefix.String()), nil
-			}
-		}
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return false, nil
-			}
-			return false, fmt.Errorf("read Parchment metadata marker: %w", err)
-		}
-	}
 }
 
 // ReadMetadataFrom reads only the leading metadata block from an artifact
 // stream, without loading its structured payloads or Markdown body.
 func ReadMetadataFrom(input io.Reader) (artifact.Artifact, error) {
-	return readMetadataFrom(input, false)
+	return readMetadataFrom(input)
 }
 
-// ReadMetadataEnvelopeFrom reads leading metadata while also accepting
-// separator-free single-file artifact envelopes.
-func ReadMetadataEnvelopeFrom(input io.Reader) (artifact.Artifact, error) {
-	return readMetadataFrom(input, true)
-}
-
-func readMetadataFrom(input io.Reader, allowSeparatorFree bool) (artifact.Artifact, error) {
+func readMetadataFrom(input io.Reader) (artifact.Artifact, error) {
 	reader := bufio.NewReader(io.LimitReader(input, MaxFileSize+1))
 	var prefix strings.Builder
 	var lineBuffer strings.Builder
@@ -252,7 +187,7 @@ func readMetadataFrom(input io.Reader, allowSeparatorFree bool) (artifact.Artifa
 				block, haveBlock = parseOpening(line)
 				if !haveBlock || block.name != metadataBlock {
 					prefix.WriteString(line)
-					return readMetadataBytes(prefix.String(), allowSeparatorFree)
+					return readMetadataBytes(prefix.String())
 				}
 				openingLineIncomplete = true
 				continue
@@ -267,7 +202,7 @@ func readMetadataFrom(input io.Reader, allowSeparatorFree bool) (artifact.Artifa
 				block, ok = parseOpening(line)
 				if !ok || block.name != metadataBlock {
 					prefix.WriteString(line)
-					return readMetadataBytes(prefix.String(), allowSeparatorFree)
+					return readMetadataBytes(prefix.String())
 				}
 				haveBlock = true
 				prefix.WriteString(line)
@@ -282,213 +217,20 @@ func readMetadataFrom(input io.Reader, allowSeparatorFree bool) (artifact.Artifa
 			if openingLineIncomplete {
 				openingLineIncomplete = false
 			} else if isFenceClose(line, block.marker[:1], len(block.marker)) {
-				item, _, metadataErr := readMetadata(prefix.String())
-				if metadataErr == nil {
-					if metadataHasFormatMarker(prefix.String()) || allowSeparatorFree {
-						return item, nil
-					}
-					continuation, probeErr := hasEnvelopeContinuationFrom(reader, &consumed)
-					if probeErr != nil {
-						return artifact.Artifact{}, fmt.Errorf("inspect artifact format: %w", probeErr)
-					}
-					if continuation {
-						return item, nil
-					}
-					return artifact.Artifact{}, fmt.Errorf("%w: it must be the first Markdown block", ErrMetadataMissing)
-				}
-				if metadataHasFormatMarker(prefix.String()) {
-					return artifact.Artifact{}, metadataErr
-				}
-				continuation, probeErr := hasEnvelopeContinuationFrom(reader, &consumed)
-				if probeErr != nil {
-					return artifact.Artifact{}, fmt.Errorf("inspect artifact format: %w", probeErr)
-				}
-				if !continuation {
-					return artifact.Artifact{}, fmt.Errorf("%w: it must be the first Markdown block", ErrMetadataMissing)
-				}
-				return artifact.Artifact{}, metadataErr
+				return readMetadataBytes(prefix.String())
 			}
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return readMetadataBytes(prefix.String(), allowSeparatorFree)
+				return readMetadataBytes(prefix.String())
 			}
 			return artifact.Artifact{}, fmt.Errorf("read Parchment metadata: %w", err)
 		}
 	}
 }
 
-func readMetadataBytes(source string, allowSeparatorFree bool) (artifact.Artifact, error) {
-	if allowSeparatorFree {
-		item, _, err := readMetadata(source)
-		if err != nil && isLegacyMetadataExample(source) && !metadataHasFormatMarker(source) {
-			return artifact.Artifact{}, fmt.Errorf("%w: it must be the first Markdown block", ErrMetadataMissing)
-		}
-		return item, err
-	}
+func readMetadataBytes(source string) (artifact.Artifact, error) {
 	return ReadMetadata([]byte(source))
-}
-
-func isLegacyMetadataExample(source string) bool {
-	start := 0
-	for start < len(source) {
-		line, end := nextLine(source, start)
-		if !isBlankLine(line) {
-			break
-		}
-		start = end
-	}
-	if start == len(source) {
-		return false
-	}
-	line, _ := nextLine(source, start)
-	block, ok := parseOpening(line)
-	if !ok || block.name != metadataBlock {
-		return false
-	}
-	_, after, err := readBlock(source, start, block)
-	return err == nil && !hasEnvelopeContinuation(source, after)
-}
-
-func metadataHasFormatMarker(source string) bool {
-	start := 0
-	for start < len(source) {
-		line, end := nextLine(source, start)
-		if !isBlankLine(line) {
-			break
-		}
-		start = end
-	}
-	if start == len(source) {
-		return false
-	}
-	line, _ := nextLine(source, start)
-	block, ok := parseOpening(line)
-	if !ok || block.name != metadataBlock {
-		return false
-	}
-	payload, _, err := readBlock(source, start, block)
-	if err != nil {
-		return false
-	}
-	decoder := json.NewDecoder(bytes.NewReader(payload))
-	token, err := decoder.Token()
-	if err != nil || token != json.Delim('{') {
-		return false
-	}
-	for decoder.More() {
-		keyToken, err := decoder.Token()
-		if err != nil {
-			return false
-		}
-		key, ok := keyToken.(string)
-		if !ok {
-			return false
-		}
-		var value json.RawMessage
-		if err := decoder.Decode(&value); err != nil {
-			return false
-		}
-		if key == envelopeFormatField {
-			var format string
-			return json.Unmarshal(value, &format) == nil && format == envelopeFormat
-		}
-	}
-	return false
-}
-
-func hasEnvelopeContinuation(source string, offset int) bool {
-	for offset < len(source) {
-		line, next := nextLine(source, offset)
-		offset = next
-		if isBlankLine(line) {
-			continue
-		}
-		if strings.TrimSpace(line) == bodyBoundary {
-			return true
-		}
-		block, ok := parseOpening(line)
-		if !ok || !strings.HasPrefix(block.name, "parchment-") {
-			return false
-		}
-		_, after, err := readBlock(source, offset, block)
-		if err != nil {
-			return false
-		}
-		offset = after
-	}
-	return false
-}
-
-func hasEnvelopeContinuationFrom(reader *bufio.Reader, consumed *int64) (bool, error) {
-	for {
-		line, complete, err := readProbeLine(reader, consumed)
-		if !complete {
-			if errors.Is(err, io.EOF) {
-				return false, nil
-			}
-			return false, err
-		}
-		if isBlankLine(line) {
-			if errors.Is(err, io.EOF) {
-				return false, nil
-			}
-			if err != nil {
-				return false, err
-			}
-			continue
-		}
-		if strings.TrimSpace(line) == bodyBoundary {
-			return true, nil
-		}
-		block, ok := parseOpening(line)
-		if !ok || !strings.HasPrefix(block.name, "parchment-") {
-			return false, nil
-		}
-		for {
-			line, complete, err = readProbeLine(reader, consumed)
-			if !complete {
-				if errors.Is(err, io.EOF) {
-					return false, nil
-				}
-				if err != nil {
-					return false, err
-				}
-				continue
-			}
-			if isFenceClose(line, block.marker[:1], len(block.marker)) {
-				break
-			}
-			if errors.Is(err, io.EOF) {
-				return false, nil
-			}
-			if err != nil {
-				return false, err
-			}
-		}
-	}
-}
-
-func readProbeLine(reader *bufio.Reader, consumed *int64) (string, bool, error) {
-	var line strings.Builder
-	oversized := false
-	for {
-		part, err := reader.ReadSlice('\n')
-		*consumed += int64(len(part))
-		if *consumed > MaxFileSize {
-			return "", false, fmt.Errorf("artifact metadata is larger than %d MiB", MaxFileSize>>20)
-		}
-		if !oversized && line.Len()+len(part) <= 4<<10 {
-			line.Write(part)
-		} else {
-			oversized = true
-			line.Reset()
-		}
-		if errors.Is(err, bufio.ErrBufferFull) {
-			continue
-		}
-		return line.String(), !oversized, err
-	}
 }
 
 func readMetadata(source string) (artifact.Artifact, int, error) {
@@ -522,7 +264,7 @@ func readMetadata(source string) (artifact.Artifact, int, error) {
 	if err := json.Unmarshal(metadataBytes, &envelope); err != nil {
 		return artifact.Artifact{}, 0, fmt.Errorf("decode Parchment metadata: %w", err)
 	}
-	if envelope.Format != "" && envelope.Format != envelopeFormat {
+	if envelope.Format != envelopeFormat {
 		return artifact.Artifact{}, 0, fmt.Errorf("unsupported artifact format %q", envelope.Format)
 	}
 	item := envelope.Artifact
