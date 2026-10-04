@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"example.com/parchment/internal/artifactfile"
 )
 
 // PageBreakMarkup starts a new page. Layout directives are HTML comments so
@@ -84,6 +86,7 @@ type run struct {
 // splitRuns divides a Markdown body at layout directives. Directives inside
 // fenced code blocks are ordinary text.
 func splitRuns(body string, defaultColumns int) []run {
+	body = artifactfile.StripPrivateBlocks(body)
 	columns := defaultColumns
 	current := run{columns: columns}
 	var runs []run

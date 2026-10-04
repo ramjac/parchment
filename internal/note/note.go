@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -18,7 +19,8 @@ import (
 // Note is a Markdown artifact with the shared workspace metadata envelope.
 type Note struct {
 	artifact.Artifact
-	Body string `json:"-"`
+	Body   string                     `json:"-"`
+	Blocks map[string]json.RawMessage `json:"-"`
 }
 
 // Repository is the persistence boundary required by note operations.
@@ -218,7 +220,19 @@ func cloneNote(n *Note) *Note {
 	clone := *n
 	clone.Tags = append([]string(nil), n.Tags...)
 	clone.Links = append([]string(nil), n.Links...)
+	clone.Blocks = cloneBlocks(n.Blocks)
 	return &clone
+}
+
+func cloneBlocks(blocks map[string]json.RawMessage) map[string]json.RawMessage {
+	if len(blocks) == 0 {
+		return nil
+	}
+	clone := make(map[string]json.RawMessage, len(blocks))
+	for name, payload := range blocks {
+		clone[name] = append(json.RawMessage(nil), payload...)
+	}
+	return clone
 }
 
 type noteOperation struct {

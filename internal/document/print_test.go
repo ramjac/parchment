@@ -98,6 +98,25 @@ func TestBreaksAtEndAndInsideCodeFencesDoNotAddPages(t *testing.T) {
 	}
 }
 
+func TestParchmentPayloadFencesAreHiddenDuringPrint(t *testing.T) {
+	body := "Visible text.\n\n```parchment-meta\n{\"title\":\"private\"}\n```\n\n" +
+		"```parchment-document\n{\"layout\":{\"columns\":4}}\n```\n\n" +
+		"```go\nfmt.Println(\"visible code\")\n```\n"
+	pages, err := Paginate(testDocument(body, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	printed := strings.Join(pages[0].Lines, "\n")
+	for _, hidden := range []string{"parchment-meta", "private", "parchment-document", "columns"} {
+		if strings.Contains(printed, hidden) {
+			t.Fatalf("private Parchment block %q appeared in print: %s", hidden, printed)
+		}
+	}
+	if !strings.Contains(printed, "Visible text.") || !strings.Contains(printed, "fmt.Println") {
+		t.Fatalf("ordinary Markdown content was hidden: %s", printed)
+	}
+}
+
 func TestLongTextFlowsAcrossPages(t *testing.T) {
 	var body strings.Builder
 	for i := 0; i < 120; i++ {

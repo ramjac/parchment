@@ -8,10 +8,11 @@ import (
 	"path/filepath"
 
 	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/artifactfile"
 	"example.com/parchment/internal/spreadsheet"
 )
 
-const spreadsheetName = "spreadsheet.json"
+const spreadsheetName = "content.md"
 
 // ListSpreadsheets implements the spreadsheet repository interface.
 func (w *Workspace) ListSpreadsheets(ctx context.Context) ([]spreadsheet.Spreadsheet, error) {
@@ -191,12 +192,22 @@ func (w *Workspace) readSpreadsheetUnlocked(id string) (spreadsheet.Spreadsheet,
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return spreadsheet.Spreadsheet{}, errors.New("spreadsheet storage path is not a directory")
 	}
-	data, err := readRegularFile(filepath.Join(dir, spreadsheetName), 32<<20)
+	data, err := readRegularFile(filepath.Join(dir, spreadsheetName), artifactfile.MaxFileSize)
 	if errors.Is(err, os.ErrNotExist) {
 		return spreadsheet.Spreadsheet{}, spreadsheet.ErrNotFound
 	}
 	if err != nil {
 		return spreadsheet.Spreadsheet{}, fmt.Errorf("read spreadsheet %s: %w", id, err)
+	}
+	metadata, err := artifactfile.ReadMetadata(data)
+	if err != nil {
+		return spreadsheet.Spreadsheet{}, fmt.Errorf("read spreadsheet metadata %s: %w", id, err)
+	}
+	if metadata.ID != id {
+		return spreadsheet.Spreadsheet{}, fmt.Errorf("invalid spreadsheet metadata for %s", id)
+	}
+	if metadata.Kind != artifact.SpreadsheetKind {
+		return spreadsheet.Spreadsheet{}, spreadsheet.ErrNotFound
 	}
 	book, err := spreadsheet.Decode(data)
 	if err != nil {

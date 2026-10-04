@@ -24,11 +24,21 @@ the CLI, TUI, and storage implementation. `internal/history` provides bounded,
 in-memory undo/redo for successful service changes.
 
 An initialized workspace stores versioned `parchment.toml` at its root and
-artifacts under `.parchment/artifacts/<id>/`. `internal/artifact` defines the
-metadata shared by artifact kinds. Existing notes and documents currently keep
-metadata and content in separate files; spreadsheets use a self-contained
-workbook file. `internal/search` searches notes directly through the
-repository, without an index or background process.
+artifacts under `.parchment/artifacts/<id>/content.md`. A Parchment file is a
+Markdown document with an embedded, typed data envelope: its first fenced code
+block is `parchment-meta`, containing the shared artifact metadata as JSON;
+kind-specific data is stored in `parchment-<thing>` fenced blocks, also JSON
+unless a versioned block format explicitly specifies otherwise; the remaining
+content is the human-authored Markdown body, separated from the envelope by an
+`<!-- parchment-body -->` comment in newly written files; older files without
+the separator remain readable. This keeps one inspectable, editable file per
+artifact while allowing structured data such as workbook cells, document
+layout, change history, and base64-encoded embedded images.
+`internal/artifactfile` reads and writes the common envelope, and
+`internal/artifact` defines the shared metadata. Parchment renderers hide
+reserved `parchment-*` fences, but preserve ordinary code fences. `internal/search`
+searches notes directly through the repository, without an index or background
+process.
 
 ## Repository-specific conventions
 
@@ -53,24 +63,35 @@ repository, without an index or background process.
   introduce a universal child-component interface until multiple real
   components need it.
 - Persist artifact IDs as 32-character lowercase hex strings. An artifact's
-  `Location` must be its canonical workspace-relative file path. Existing notes
-  currently use `.parchment/artifacts/<id>/content.md` until the planned
-  single-file format rework.
+  `Location` must be `.parchment/artifacts/<id>/content.md`.
 - Generally, persist each artifact as one human-readable file. Keep its shared
   metadata, content, comments or annotations, and change-tracking data together
   so a text editor can inspect the complete artifact without opening sidecars.
-  The expected exception is separate autosave/recovery data used to restore
-  unsaved work. Do not add other per-artifact sidecar files for new formats.
-  Reworking the existing split note/document formats into this shape is planned
-  future work; this pre-release repository has no released user data requiring
-  migration compatibility.
-- Use the artifact's canonical file as its `Location` for new artifact formats.
-  Workspace writes use a temporary file followed by sync and rename; preserve
+  Store metadata in the first `parchment-meta` fenced JSON block. Store
+  structured data in kind-specific `parchment-<thing>` fenced blocks, normally
+  JSON; encode binary content such as images as base64 in these blocks. Keep
+  ordinary prose and formatting in the Markdown body. The expected exception
+  is separate autosave/recovery data used to restore unsaved work. Do not add
+  other per-artifact sidecar files.
+- Workspace writes use a temporary file followed by sync and rename; preserve
   the restrictive file and directory permissions used by the workspace
   package.
 - Keep Markdown as canonical note content; rendered Markdown belongs to the
   view layer and must never replace persisted content. Keep import/export
   formats separate from domain models.
+- A document or presentation may select one font for the entire artifact, not
+  per section. Font selection applies to printer-oriented or rendered output
+  only. Do not apply artifact font settings to terminal output: TUI and terminal
+  previews use the font configured by the user's terminal emulator.
+- Hide fenced blocks whose info string begins with `parchment-` when rendering
+  Markdown, while preserving ordinary code fences and all canonical source.
+  Currently, the artifact parser reads structured blocks only when grouped
+  after `parchment-meta` and before the visible body. The renderer hides
+  `parchment-*` fences wherever they occur, but a block placed among body
+  paragraphs is not interpreted as structured data yet. For example,
+  contextual `parchment-footnote` blocks and Markdown-link footnote references
+  are not supported; preserve such blocks as source unless implementing
+  explicit parsing, validation, and rendering semantics for them.
 - Artifact timestamps are UTC. Config files are versioned TOML (`version = 1`);
   the user config is loaded before workspace config, with environment
   overrides applied afterward. Workspace selection also supports the

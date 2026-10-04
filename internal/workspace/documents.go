@@ -11,19 +11,33 @@ import (
 	"reflect"
 
 	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/artifactfile"
 	"example.com/parchment/internal/document"
 )
 
-const layoutName = "layout.json"
-const changesName = "changes.json"
+const documentDataBlock = "parchment-document"
 
 var errNotDocument = errors.New("artifact is not a document")
 
 // validArtifactFileName lists the files an artifact transaction may touch.
 func validArtifactFileName(name string) bool {
-	return name == "content.md" || name == metadataName || name == layoutName ||
-		name == changesName || name == "spreadsheet.json" || name == "presentation.md" ||
-		document.IsImageName(name)
+	return name == "content.md"
+}
+
+type embeddedDocumentImage struct {
+	Name string `json:"name"`
+	Data []byte `json:"data"`
+}
+
+type documentFileData struct {
+	Layout  document.Layout         `json:"layout"`
+	Changes []document.Change       `json:"changes,omitempty"`
+	Images  []embeddedDocumentImage `json:"images,omitempty"`
+}
+
+type documentFileDataWithoutImages struct {
+	Layout  document.Layout   `json:"layout"`
+	Changes []document.Change `json:"changes,omitempty"`
 }
 
 // ListDocuments implements the document repository interface. Embedded image
@@ -277,35 +291,23 @@ func (w *Workspace) saveDocumentLockedWithChanges(ctx context.Context, d documen
 	if err := d.Layout.Validate(); err != nil {
 		return err
 	}
-	metadata, err := json.MarshalIndent(d.Artifact, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode document metadata: %w", err)
-	}
-	layout, err := json.MarshalIndent(d.Layout, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode document layout: %w", err)
-	}
-	files := []stagedArtifactFile{
-		{name: "content.md", data: []byte(d.Body)},
-		{name: layoutName, data: append(layout, '\n')},
-		{name: metadataName, data: append(metadata, '\n')},
-	}
-	if changes != nil {
-		changeData, err := encodeDocumentChanges(d.ID, changes)
-		if err != nil {
+	payload := documentFileData{Layout: d.Layout}
+	seenImages := map[string]bool{}
+	for _, img := range d.Images {
+		if err := img.Validate(); err != nil {
 			return err
 		}
-		files = append(files, stagedArtifactFile{name: changesName, data: changeData})
-	}
-	keep := map[string]bool{}
-	for _, img := range d.Images {
-		if !document.IsImageName(img.Name) {
-			return fmt.Errorf("invalid document image name %q", img.Name)
+		if seenImages[img.Name] {
+			return fmt.Errorf("duplicate document image %s", img.Name)
 		}
-		keep[img.Name] = true
-		files = append(files, stagedArtifactFile{name: img.Name, data: img.Data})
+		seenImages[img.Name] = true
+		payload.Images = append(payload.Images, embeddedDocumentImage{Name: img.Name, Data: img.Data})
 	}
-
+	if changes != nil {
+		if err := validateDocumentChanges(d.ID, changes); err != nil {
+			return err
+		}
+	}
 	dir := filepath.Join(w.root, ".parchment", "artifacts", d.ID)
 	created := false
 	if err := os.Mkdir(dir, 0o700); err != nil {
@@ -339,8 +341,30 @@ func (w *Workspace) saveDocumentLockedWithChanges(ctx context.Context, d documen
 			}
 			return fmt.Errorf("inspect existing document before save: %w", err)
 		}
+		if changes == nil {
+			var err error
+			changes, err = w.readDocumentChangesUnlocked(d.ID)
+			if err != nil {
+				return err
+			}
+		}
 	}
-	if err := replaceArtifactFiles(ctx, dir, files); err != nil {
+	payload.Changes = changes
+	blocks := make(map[string]any, len(d.Blocks)+1)
+	for name, block := range d.Blocks {
+		blocks[name] = block
+	}
+	blocks[documentDataBlock] = payload
+	data, err := artifactfile.Encode(d.Artifact, d.Body, blocks)
+	if err != nil {
+		if created {
+			if cleanupErr := os.Remove(dir); cleanupErr != nil {
+				return fmt.Errorf("encode document artifact: %w (also failed to remove new artifact directory: %v)", err, cleanupErr)
+			}
+		}
+		return fmt.Errorf("encode document artifact: %w", err)
+	}
+	if err := replaceArtifactFiles(ctx, dir, []stagedArtifactFile{{name: "content.md", data: data}}); err != nil {
 		if created {
 			if cleanupErr := os.Remove(dir); cleanupErr != nil {
 				return fmt.Errorf("save document files: %w (also failed to remove new artifact directory: %v)", err, cleanupErr)
@@ -348,22 +372,27 @@ func (w *Workspace) saveDocumentLockedWithChanges(ctx context.Context, d documen
 		}
 		return fmt.Errorf("save document files: %w", err)
 	}
-	removeStaleImages(dir, keep)
+	return nil
+}
+
+func validateDocumentChanges(id string, changes []document.Change) error {
+	seen := map[string]bool{}
+	for _, change := range changes {
+		if err := change.Validate(); err != nil {
+			return err
+		}
+		if change.DocumentID != id || seen[change.ID] {
+			return errors.New("invalid document change list")
+		}
+		seen[change.ID] = true
+	}
 	return nil
 }
 
 func (w *Workspace) readDocumentChangesUnlocked(id string) ([]document.Change, error) {
-	path := filepath.Join(w.root, ".parchment", "artifacts", id, changesName)
-	data, err := readRegularFile(path, -1)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
+	_, changes, err := w.readDocumentFileUnlocked(id, false)
 	if err != nil {
-		return nil, fmt.Errorf("read document changes %s: %w", id, err)
-	}
-	var changes []document.Change
-	if err := json.Unmarshal(data, &changes); err != nil {
-		return nil, fmt.Errorf("decode document changes %s: %w", id, err)
+		return nil, err
 	}
 	seen := map[string]bool{}
 	for _, change := range changes {
@@ -379,141 +408,116 @@ func (w *Workspace) readDocumentChangesUnlocked(id string) ([]document.Change, e
 }
 
 func (w *Workspace) writeDocumentChangesLocked(ctx context.Context, id string, changes []document.Change) error {
-	data, err := encodeDocumentChanges(id, changes)
+	current, err := w.readDocumentUnlocked(id, true)
 	if err != nil {
 		return err
 	}
-	dir := filepath.Join(w.root, ".parchment", "artifacts", id)
-	if err := replaceArtifactFiles(ctx, dir, []stagedArtifactFile{{name: changesName, data: data}}); err != nil {
+	if err := w.saveDocumentLockedWithChanges(ctx, current, changes); err != nil {
 		return fmt.Errorf("save document changes: %w", err)
 	}
 	return nil
 }
 
-func encodeDocumentChanges(id string, changes []document.Change) ([]byte, error) {
-	for _, change := range changes {
-		if change.DocumentID != id {
-			return nil, errors.New("document change belongs to a different artifact")
-		}
-		if err := change.Validate(); err != nil {
-			return nil, err
-		}
-	}
-	data, err := json.MarshalIndent(changes, "", "  ")
-	if err != nil {
-		return nil, fmt.Errorf("encode document changes: %w", err)
-	}
-	return append(data, '\n'), nil
-}
-
-// removeStaleImages deletes managed image files that the saved document no
-// longer embeds. The save has already committed, so a failure here only
-// leaves an unreferenced file behind.
-func removeStaleImages(dir string, keep map[string]bool) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	removed := false
-	for _, entry := range entries {
-		if !entry.Type().IsRegular() || !document.IsImageName(entry.Name()) || keep[entry.Name()] {
-			continue
-		}
-		if os.Remove(filepath.Join(dir, entry.Name())) == nil {
-			removed = true
-		}
-	}
-	if removed {
-		_ = syncDirectory(dir)
-	}
-}
-
 func (w *Workspace) readDocumentUnlocked(id string, withImages bool) (document.Document, error) {
+	item, _, err := w.readDocumentFileUnlocked(id, withImages)
+	return item, err
+}
+
+func (w *Workspace) readDocumentFileUnlocked(id string, withImages bool) (document.Document, []document.Change, error) {
 	dir := filepath.Join(w.root, ".parchment", "artifacts", id)
 	info, err := os.Lstat(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return document.Document{}, fmt.Errorf("%w: %s", errNoMetadata, id)
+			return document.Document{}, nil, fmt.Errorf("%w: %s", errNoMetadata, id)
 		}
-		return document.Document{}, err
+		return document.Document{}, nil, err
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return document.Document{}, errors.New("document storage path is not a directory")
+		return document.Document{}, nil, errors.New("document storage path is not a directory")
 	}
-	metadata, err := readRegularFile(filepath.Join(dir, metadataName), 1<<20)
+	content, err := readRegularFile(filepath.Join(dir, "content.md"), 64<<20)
 	if errors.Is(err, os.ErrNotExist) {
-		return document.Document{}, fmt.Errorf("%w: %s", errNoMetadata, id)
+		return document.Document{}, nil, fmt.Errorf("%w: %s", errNoMetadata, id)
 	}
 	if err != nil {
-		return document.Document{}, fmt.Errorf("read document metadata %s: %w", id, err)
+		return document.Document{}, nil, fmt.Errorf("read document artifact %s: %w", id, err)
 	}
-	var a artifact.Artifact
-	if err := json.Unmarshal(metadata, &a); err != nil {
-		return document.Document{}, fmt.Errorf("decode artifact metadata %s: %w", id, err)
+	metadata, err := artifactfile.ReadMetadata(content)
+	if err != nil {
+		return document.Document{}, nil, fmt.Errorf("read document metadata %s: %w", id, err)
 	}
-	if err := a.Validate(); err != nil {
-		return document.Document{}, fmt.Errorf("validate artifact metadata %s: %w", id, err)
+	if metadata.ID != id {
+		return document.Document{}, nil, fmt.Errorf("invalid document metadata for %s", id)
 	}
+	if metadata.Kind != artifact.DocumentKind {
+		return document.Document{}, nil, errNotDocument
+	}
+	file, err := artifactfile.Decode(content)
+	if err != nil {
+		return document.Document{}, nil, fmt.Errorf("decode document artifact %s: %w", id, err)
+	}
+	a := file.Artifact
 	if a.ID != id {
-		return document.Document{}, fmt.Errorf("invalid document metadata for %s", id)
+		return document.Document{}, nil, fmt.Errorf("invalid document metadata for %s", id)
 	}
 	if a.Kind != artifact.DocumentKind {
-		return document.Document{}, errNotDocument
+		return document.Document{}, nil, errNotDocument
 	}
 	if a.Location != filepath.ToSlash(filepath.Join(".parchment", "artifacts", id, "content.md")) {
-		return document.Document{}, fmt.Errorf("invalid document metadata for %s", id)
+		return document.Document{}, nil, fmt.Errorf("invalid document metadata for %s", id)
 	}
-	content, err := readRegularFile(filepath.Join(dir, "content.md"), -1)
-	if err != nil {
-		return document.Document{}, fmt.Errorf("read document content %s: %w", id, err)
+	payloadJSON, ok := file.Blocks[documentDataBlock]
+	if !ok {
+		return document.Document{}, nil, errors.New("document data block is missing")
 	}
-	layout := document.DefaultLayout()
-	layoutData, err := readRegularFile(filepath.Join(dir, layoutName), 1<<20)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-	case err != nil:
-		return document.Document{}, fmt.Errorf("read document layout %s: %w", id, err)
-	default:
-		if err := json.Unmarshal(layoutData, &layout); err != nil {
-			return document.Document{}, fmt.Errorf("decode document layout %s: %w", id, err)
+	var payload documentFileData
+	if withImages {
+		if err := json.Unmarshal(payloadJSON, &payload); err != nil {
+			return document.Document{}, nil, fmt.Errorf("decode document data %s: %w", id, err)
 		}
-		if err := layout.Validate(); err != nil {
-			return document.Document{}, fmt.Errorf("validate document layout %s: %w", id, err)
+	} else {
+		var lightweight documentFileDataWithoutImages
+		if err := json.Unmarshal(payloadJSON, &lightweight); err != nil {
+			return document.Document{}, nil, fmt.Errorf("decode document data %s: %w", id, err)
 		}
+		payload.Layout = lightweight.Layout
+		payload.Changes = lightweight.Changes
+	}
+	if payload.Layout == (document.Layout{}) {
+		payload.Layout = document.DefaultLayout()
+	}
+	if err := payload.Layout.Validate(); err != nil {
+		return document.Document{}, nil, fmt.Errorf("validate document layout %s: %w", id, err)
+	}
+	seenChanges := map[string]bool{}
+	for _, change := range payload.Changes {
+		if err := change.Validate(); err != nil {
+			return document.Document{}, nil, fmt.Errorf("validate document change %s: %w", change.ID, err)
+		}
+		if change.DocumentID != id || seenChanges[change.ID] {
+			return document.Document{}, nil, fmt.Errorf("invalid document change list for %s", id)
+		}
+		seenChanges[change.ID] = true
 	}
 	a.CreatedAt = a.CreatedAt.UTC()
 	a.ModifiedAt = a.ModifiedAt.UTC()
-	d := document.Document{Artifact: a, Body: string(content), Layout: layout}
-	if withImages {
-		if d.Images, err = readDocumentImages(dir); err != nil {
-			return document.Document{}, fmt.Errorf("read document images %s: %w", id, err)
-		}
+	d := document.Document{
+		Artifact: a, Body: file.Body, Layout: payload.Layout,
+		Blocks: copyPayloadBlocks(file.Blocks, documentDataBlock),
 	}
-	return d, nil
-}
-
-// readDocumentImages loads managed image files in name order.
-func readDocumentImages(dir string) ([]document.Image, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, err
-	}
-	var images []document.Image
-	for _, entry := range entries {
-		if !document.IsImageName(entry.Name()) {
-			continue
-		}
-		data, err := readRegularFile(filepath.Join(dir, entry.Name()), document.MaxImageBytes)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", entry.Name(), err)
-		}
-		img := document.Image{Name: entry.Name(), Data: data}
+	seenImages := map[string]bool{}
+	for _, imageData := range payload.Images {
+		img := document.Image{Name: imageData.Name, Data: imageData.Data}
 		if err := img.Validate(); err != nil {
-			return nil, err
+			return document.Document{}, nil, fmt.Errorf("validate document image %s: %w", img.Name, err)
 		}
-		images = append(images, img)
+		if seenImages[img.Name] {
+			return document.Document{}, nil, fmt.Errorf("duplicate document image %s", img.Name)
+		}
+		seenImages[img.Name] = true
+		d.Images = append(d.Images, img)
 	}
-	return images, nil
+	return d, payload.Changes, nil
 }
 
 // readRegularFile reads a regular file without following links. A negative
