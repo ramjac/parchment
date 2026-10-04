@@ -14,9 +14,14 @@ import (
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/artifactfile"
+	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/note"
+	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/search"
+	"example.com/parchment/internal/spreadsheet"
 )
+
+const testExtensionBlock = "parchment-extension"
 
 func openTestWorkspace(t *testing.T, root string) *Workspace {
 	t.Helper()
@@ -28,6 +33,108 @@ func openTestWorkspace(t *testing.T, root string) *Workspace {
 		t.Fatal(err)
 	}
 	return ws
+}
+
+func addTestPayloadBlock(t *testing.T, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := artifactfile.Decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks := make(map[string]any, len(file.Blocks)+1)
+	for name, payload := range file.Blocks {
+		blocks[name] = payload
+	}
+	blocks[testExtensionBlock] = json.RawMessage(`{"value":"preserved"}`)
+	data, err = artifactfile.Encode(file.Artifact, file.Body, blocks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func requireTestPayloadBlock(t *testing.T, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := artifactfile.Decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var block struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(file.Blocks[testExtensionBlock], &block); err != nil {
+		t.Fatal(err)
+	}
+	if block.Value != "preserved" {
+		t.Fatalf("extension block = %s", file.Blocks[testExtensionBlock])
+	}
+}
+
+func TestArtifactEditsPreserveAdditionalPayloadBlocks(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	contentPath := func(id string) string {
+		return filepath.Join(root, ".parchment", "artifacts", id, "content.md")
+	}
+
+	notes := note.NewService(ws, 10)
+	n, err := notes.Create(ctx, "Note", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addTestPayloadBlock(t, contentPath(n.ID))
+	if _, err := notes.Rename(ctx, n.ID, "Renamed note"); err != nil {
+		t.Fatal(err)
+	}
+	requireTestPayloadBlock(t, contentPath(n.ID))
+
+	documents := document.NewService(ws, 10)
+	d, err := documents.Create(ctx, document.Draft{Title: "Document", Body: "body"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addTestPayloadBlock(t, contentPath(d.ID))
+	if _, err := documents.Rename(ctx, d.ID, "Renamed document"); err != nil {
+		t.Fatal(err)
+	}
+	requireTestPayloadBlock(t, contentPath(d.ID))
+
+	sheets := spreadsheet.NewService(ws, 10)
+	book, err := sheets.Create(ctx, "Workbook", [][]spreadsheet.Cell{{{Value: "before"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addTestPayloadBlock(t, contentPath(book.ID))
+	if _, err := sheets.SetCell(ctx, book.ID, 1, 1, spreadsheet.Cell{Value: "after"}); err != nil {
+		t.Fatal(err)
+	}
+	requireTestPayloadBlock(t, contentPath(book.ID))
+
+	decks := presentation.NewService(ws, 10)
+	deck, err := decks.Create(ctx, "Presentation", "# Presentation\n\n## Slide 1\n\nbefore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addTestPayloadBlock(t, contentPath(deck.ID))
+	current, err := decks.Get(ctx, deck.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decks.Update(ctx, current, "# Presentation\n\n## Slide 1\n\nafter"); err != nil {
+		t.Fatal(err)
+	}
+	requireTestPayloadBlock(t, contentPath(deck.ID))
 }
 
 func TestWorkspacePersistsInspectableNotesAndStableIDs(t *testing.T) {

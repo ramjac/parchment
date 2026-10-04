@@ -285,7 +285,11 @@ func (w *Workspace) saveLocked(ctx context.Context, n note.Note) error {
 	if n.Location != filepath.ToSlash(filepath.Join(".parchment", "artifacts", n.ID, "content.md")) {
 		return errors.New("invalid note content location")
 	}
-	data, err := artifactfile.Encode(n.Artifact, n.Body, nil)
+	blocks := make(map[string]any, len(n.Blocks))
+	for name, payload := range n.Blocks {
+		blocks[name] = payload
+	}
+	data, err := artifactfile.Encode(n.Artifact, n.Body, blocks)
 	if err != nil {
 		return fmt.Errorf("encode note artifact: %w", err)
 	}
@@ -825,7 +829,21 @@ func (w *Workspace) readNoteUnlocked(id string) (note.Note, error) {
 	}
 	a.CreatedAt = a.CreatedAt.UTC()
 	a.ModifiedAt = a.ModifiedAt.UTC()
-	return note.Note{Artifact: a, Body: file.Body}, nil
+	return note.Note{Artifact: a, Body: file.Body, Blocks: copyPayloadBlocks(file.Blocks, "")}, nil
+}
+
+func copyPayloadBlocks(blocks map[string]json.RawMessage, excluded string) map[string]json.RawMessage {
+	var copied map[string]json.RawMessage
+	for name, payload := range blocks {
+		if name == excluded {
+			continue
+		}
+		if copied == nil {
+			copied = make(map[string]json.RawMessage, len(blocks))
+		}
+		copied[name] = append(json.RawMessage(nil), payload...)
+	}
+	return copied
 }
 
 func withArtifactLock(ctx context.Context, artifactsDir, id string, operation func() error) error {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -26,6 +27,7 @@ type Document struct {
 	Body   string
 	Layout Layout
 	Images []Image
+	Blocks map[string]json.RawMessage `json:"-"`
 }
 
 // Draft is the editable part of a document.
@@ -559,6 +561,12 @@ func cloneDocument(d *Document) *Document {
 	clone.Images = make([]Image, len(d.Images))
 	for i, img := range d.Images {
 		clone.Images[i] = Image{Name: img.Name, Data: append([]byte(nil), img.Data...)}
+	}
+	if d.Blocks != nil {
+		clone.Blocks = make(map[string]json.RawMessage, len(d.Blocks))
+		for name, payload := range d.Blocks {
+			clone.Blocks[name] = append(json.RawMessage(nil), payload...)
+		}
 	}
 	return &clone
 }

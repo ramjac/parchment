@@ -35,6 +35,11 @@ type documentFileData struct {
 	Images  []embeddedDocumentImage `json:"images,omitempty"`
 }
 
+type documentFileDataWithoutImages struct {
+	Layout  document.Layout   `json:"layout"`
+	Changes []document.Change `json:"changes,omitempty"`
+}
+
 // ListDocuments implements the document repository interface. Embedded image
 // data is omitted; GetDocument returns complete documents.
 func (w *Workspace) ListDocuments(ctx context.Context) ([]document.Document, error) {
@@ -345,7 +350,12 @@ func (w *Workspace) saveDocumentLockedWithChanges(ctx context.Context, d documen
 		}
 	}
 	payload.Changes = changes
-	data, err := artifactfile.Encode(d.Artifact, d.Body, map[string]any{documentDataBlock: payload})
+	blocks := make(map[string]any, len(d.Blocks)+1)
+	for name, block := range d.Blocks {
+		blocks[name] = block
+	}
+	blocks[documentDataBlock] = payload
+	data, err := artifactfile.Encode(d.Artifact, d.Body, blocks)
 	if err != nil {
 		if created {
 			if cleanupErr := os.Remove(dir); cleanupErr != nil {
@@ -380,7 +390,7 @@ func validateDocumentChanges(id string, changes []document.Change) error {
 }
 
 func (w *Workspace) readDocumentChangesUnlocked(id string) ([]document.Change, error) {
-	_, changes, err := w.readDocumentFileUnlocked(id, true)
+	_, changes, err := w.readDocumentFileUnlocked(id, false)
 	if err != nil {
 		return nil, err
 	}
@@ -461,8 +471,17 @@ func (w *Workspace) readDocumentFileUnlocked(id string, withImages bool) (docume
 		return document.Document{}, nil, errors.New("document data block is missing")
 	}
 	var payload documentFileData
-	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
-		return document.Document{}, nil, fmt.Errorf("decode document data %s: %w", id, err)
+	if withImages {
+		if err := json.Unmarshal(payloadJSON, &payload); err != nil {
+			return document.Document{}, nil, fmt.Errorf("decode document data %s: %w", id, err)
+		}
+	} else {
+		var lightweight documentFileDataWithoutImages
+		if err := json.Unmarshal(payloadJSON, &lightweight); err != nil {
+			return document.Document{}, nil, fmt.Errorf("decode document data %s: %w", id, err)
+		}
+		payload.Layout = lightweight.Layout
+		payload.Changes = lightweight.Changes
 	}
 	if payload.Layout == (document.Layout{}) {
 		payload.Layout = document.DefaultLayout()
@@ -482,7 +501,10 @@ func (w *Workspace) readDocumentFileUnlocked(id string, withImages bool) (docume
 	}
 	a.CreatedAt = a.CreatedAt.UTC()
 	a.ModifiedAt = a.ModifiedAt.UTC()
-	d := document.Document{Artifact: a, Body: file.Body, Layout: payload.Layout}
+	d := document.Document{
+		Artifact: a, Body: file.Body, Layout: payload.Layout,
+		Blocks: copyPayloadBlocks(file.Blocks, documentDataBlock),
+	}
 	seenImages := map[string]bool{}
 	for _, imageData := range payload.Images {
 		img := document.Image{Name: imageData.Name, Data: imageData.Data}
@@ -493,9 +515,7 @@ func (w *Workspace) readDocumentFileUnlocked(id string, withImages bool) (docume
 			return document.Document{}, nil, fmt.Errorf("duplicate document image %s", img.Name)
 		}
 		seenImages[img.Name] = true
-		if withImages {
-			d.Images = append(d.Images, img)
-		}
+		d.Images = append(d.Images, img)
 	}
 	return d, payload.Changes, nil
 }

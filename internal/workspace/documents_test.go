@@ -97,6 +97,57 @@ func TestDocumentPersistsDefaultLayoutInMarkdownArtifact(t *testing.T) {
 	}
 }
 
+func TestListDocumentsDoesNotDecodeEmbeddedImages(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	service := document.NewService(ws, 10)
+	created, err := service.Create(ctx, document.Draft{Title: "Images", Body: "body"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, ".parchment", "artifacts", created.ID, "content.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := artifactfile.Decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(file.Blocks[documentDataBlock], &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload["images"] = json.RawMessage(`[{"name":"broken.png","data":"!"}]`)
+	file.Blocks[documentDataBlock], err = json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks := make(map[string]any, len(file.Blocks))
+	for name, block := range file.Blocks {
+		blocks[name] = block
+	}
+	data, err = artifactfile.Encode(file.Artifact, file.Body, blocks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := service.List(ctx)
+	if err != nil || len(listed) != 1 || len(listed[0].Images) != 0 {
+		t.Fatalf("listed documents = %+v, %v", listed, err)
+	}
+	if _, err := ws.readDocumentChangesUnlocked(created.ID); err != nil {
+		t.Fatalf("reading document changes decoded embedded image data: %v", err)
+	}
+	if _, err := service.Get(ctx, created.ID); err == nil {
+		t.Fatal("Get accepted invalid embedded image data")
+	}
+}
+
 func TestDocumentImagesUndoRedoAndCleanup(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

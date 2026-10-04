@@ -41,6 +41,7 @@ type Presentation struct {
 	artifact.Artifact
 	Version int
 	Source  string
+	Blocks  map[string]json.RawMessage `json:"-"`
 }
 
 type fileContent struct {
@@ -320,9 +321,12 @@ func Encode(item Presentation) ([]byte, error) {
 	if err := Validate(item); err != nil {
 		return nil, err
 	}
-	return artifactfile.Encode(item.Artifact, item.Source, map[string]any{
-		"parchment-presentation": fileContent{Version: item.Version},
-	})
+	blocks := make(map[string]any, len(item.Blocks)+1)
+	for name, payload := range item.Blocks {
+		blocks[name] = payload
+	}
+	blocks["parchment-presentation"] = fileContent{Version: item.Version}
+	return artifactfile.Encode(item.Artifact, item.Source, blocks)
 }
 
 // Decode reads metadata and Markdown from a single presentation file.
@@ -345,7 +349,10 @@ func Decode(data []byte) (Presentation, error) {
 	if payload.Version != FileVersion {
 		return Presentation{}, fmt.Errorf("unsupported presentation file version %d", payload.Version)
 	}
-	item := Presentation{Artifact: file.Artifact, Version: payload.Version, Source: file.Body}
+	item := Presentation{
+		Artifact: file.Artifact, Version: payload.Version, Source: file.Body,
+		Blocks: cloneBlocksExcept(file.Blocks, "parchment-presentation"),
+	}
 	item.CreatedAt = item.CreatedAt.UTC()
 	item.ModifiedAt = item.ModifiedAt.UTC()
 	if err := Validate(item); err != nil {
@@ -376,7 +383,33 @@ func Preview(deck Deck) string {
 func clonePresentation(item Presentation) Presentation {
 	item.Tags = append([]string(nil), item.Tags...)
 	item.Links = append([]string(nil), item.Links...)
+	item.Blocks = cloneBlocks(item.Blocks)
 	return item
+}
+
+func cloneBlocks(blocks map[string]json.RawMessage) map[string]json.RawMessage {
+	return cloneBlocksExcept(blocks)
+}
+
+func cloneBlocksExcept(blocks map[string]json.RawMessage, excluded ...string) map[string]json.RawMessage {
+	if len(blocks) == 0 {
+		return nil
+	}
+	exclude := make(map[string]bool, len(excluded))
+	for _, name := range excluded {
+		exclude[name] = true
+	}
+	clone := make(map[string]json.RawMessage, len(blocks))
+	for name, payload := range blocks {
+		if exclude[name] {
+			continue
+		}
+		clone[name] = append(json.RawMessage(nil), payload...)
+	}
+	if len(clone) == 0 {
+		return nil
+	}
+	return clone
 }
 
 func Equal(left, right Presentation) bool { return reflect.DeepEqual(left, right) }
