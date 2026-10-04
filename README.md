@@ -52,8 +52,8 @@ and editable with ordinary filesystem tools. Copying, archiving, or versioning
 the workspace with standard tools is sufficient for a local backup.
 
 Initial artifact metadata recognizes the `note`, `document`, `spreadsheet`,
-`presentation`, and `image` kinds. Notes, documents, and spreadsheets have
-application behavior; presentations and images are not yet implemented.
+`presentation`, and `image` kinds. Notes, documents, spreadsheets, and basic
+presentations have application behavior; image editing is not yet implemented.
 
 ### Documents
 
@@ -139,6 +139,40 @@ stateless across invocations. The JSON workbook is Parchment's canonical
 format, not a CSV file that third-party spreadsheet applications can open
 directly.
 
+### Presentations
+
+A presentation is stored as one Markdown text file at
+`.parchment/artifacts/<id>/presentation.md`. A leading HTML comment embeds the
+versioned shared artifact metadata; the rest is editable Markdown. The initial
+syntax follows Go present's Markdown conventions: `#` gives the deck title,
+`##` begins a slide, `###` adds a subsection, `//` begins an ignored comment,
+and `: ` begins a speaker-note line. Speaker notes and comments remain in the
+source but are omitted from the plain-text preview.
+
+```markdown
+# Product Update
+
+Presenter Name
+
+## What changed
+
+- Faster search
+- Local-first storage
+
+: Mention the upcoming release date.
+
+## Questions
+
+Thank you.
+```
+
+Use `presentation create <title> --body-file slides.md` to add a deck,
+`presentation show <id>` to inspect its source, and
+`presentation preview <id>` for a slide-separated plain-text preview.
+`presentation edit <id> --body-file slides.md` replaces the Markdown source.
+The parser preserves Markdown for later rendering but does not yet render it;
+embedded media and Go present command directives are not implemented.
+
 ## Configuration
 
 User configuration is read from the platform's standard user configuration
@@ -194,10 +228,10 @@ not survive a restart.
 
 ## Future work
 
-This repository currently implements notes, documents, and basic spreadsheets.
+This repository currently implements notes, documents, basic spreadsheets,
+and basic Markdown presentations.
 The broader suite is planned to add:
 
-- Working presentation features using the shared workspace and artifact metadata.
 - Basic image-editing features using the shared workspace and artifact metadata.
 - Shared artifact navigation and organization, including links and
   attachments, plus import and export.
