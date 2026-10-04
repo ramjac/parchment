@@ -212,6 +212,9 @@ The broader suite is planned to add:
   configuration settings.
 - Persistent undo/redo, if introduced, with explicit storage and migration
   semantics. History currently lasts only for the running process.
+- Rework note and document storage into single human-readable artifact files
+  containing their metadata, content, comments or annotations, and change
+  tracking, consistent with the spreadsheet format.
 - Make the default directory for storing Parchment artifacts a non-hidden folder and also make the default directory path configurable. Generally assume that Parchment artifacts might be read by other applications; especially text file and markdown interpreters.
 - Background auto-save and recovery from auto-save so that in the event Parchment crashes or is force closed, any changes since the last save can be optionally recovered.
 - Examples directory with examples of each of the types of artifacts.
