@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/note"
 	"example.com/parchment/internal/search"
 )
@@ -83,10 +84,22 @@ type Model struct {
 	errMessage          string
 	newOperationContext func() (context.Context, context.CancelFunc)
 	cancelOperation     context.CancelFunc
+	documents           *documentsScreen
+	documentsActive     bool
+}
+
+// Option customizes the interactive model.
+type Option func(*Model)
+
+// WithDocuments adds the documents screen, reached from notes with Tab.
+func WithDocuments(service *document.Service) Option {
+	return func(m *Model) {
+		m.documents = newDocumentsScreen(service, m.theme, m.newOperationContext)
+	}
 }
 
 // NewModel creates the interactive notes model for a workspace.
-func NewModel(service *note.Service, repository note.Repository, workspaceName, workspacePath string) Model {
+func NewModel(service *note.Service, repository note.Repository, workspaceName, workspacePath string, options ...Option) Model {
 	title := textinput.New()
 	title.Prompt = "Title: "
 	title.CharLimit = 200
@@ -100,7 +113,7 @@ func NewModel(service *note.Service, repository note.Repository, workspaceName, 
 	searchField.Placeholder = "Search notes"
 	searchField.CharLimit = 200
 	preview := viewport.New(0, 0)
-	return Model{
+	m := Model{
 		service: service, repository: repository, workspaceName: workspaceName, workspacePath: workspacePath,
 		titleInput: title, bodyInput: body, searchInput: searchField, preview: preview,
 		pending: true, canUndo: service.CanUndo(), canRedo: service.CanRedo(),
@@ -112,6 +125,10 @@ func NewModel(service *note.Service, repository note.Repository, workspaceName, 
 			border:  lipgloss.AdaptiveColor{Light: "#b8b4c7", Dark: "#55516a"},
 		},
 	}
+	for _, option := range options {
+		option(&m)
+	}
+	return m
 }
 
 // Init loads the initial note list.
@@ -121,6 +138,11 @@ func (m *Model) Init() tea.Cmd {
 
 // Update applies a terminal message to the notes screen.
 func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	if m.documents != nil {
+		if handled, cmd := m.updateDocuments(message); handled {
+			return m, cmd
+		}
+	}
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -282,6 +304,11 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, command
 	}
+	if key == "tab" && m.mode == browsing && m.documents != nil {
+		m.documentsActive = true
+		m.documents.resize(m.width, m.height)
+		return m, m.documents.init()
+	}
 	if m.mode == searching {
 		switch key {
 		case "esc":
@@ -387,6 +414,9 @@ func (m Model) View() string {
 	}
 	header := lipgloss.NewStyle().Bold(true).Foreground(m.theme.primary).
 		Render("parchment  ·  " + sanitizeTerminalLine(m.workspaceName) + "  ·  " + sanitizeTerminalLine(m.workspacePath))
+	if m.documentsActive {
+		return m.documents.view(header)
+	}
 	if m.mode == editing {
 		state := "Editing"
 		if m.dirty() {
@@ -724,12 +754,34 @@ func sanitizeTerminalText(value string) string {
 }
 
 // Run starts the full-screen terminal application.
-func Run(ctx context.Context, service *note.Service, repository note.Repository, workspaceName, workspacePath string) error {
-	model := NewModel(service, repository, workspaceName, workspacePath)
+func Run(ctx context.Context, service *note.Service, repository note.Repository, workspaceName, workspacePath string, options ...Option) error {
+	model := NewModel(service, repository, workspaceName, workspacePath, options...)
 	model.newOperationContext = func() (context.Context, context.CancelFunc) {
 		return context.WithCancel(ctx)
+	}
+	if model.documents != nil {
+		model.documents.newOperationContext = model.newOperationContext
 	}
 	program := tea.NewProgram(&model, tea.WithAltScreen(), tea.WithContext(ctx))
 	_, err := program.Run()
 	return err
+}
+
+// updateDocuments routes messages to the documents screen when it is active or
+// when a document operation result arrives.
+func (m *Model) updateDocuments(message tea.Msg) (bool, tea.Cmd) {
+	if size, ok := message.(tea.WindowSizeMsg); ok {
+		m.documents.resize(size.Width, size.Height)
+		return false, nil
+	}
+	_, isResult := message.(documentMessage)
+	if !isResult && !m.documentsActive {
+		return false, nil
+	}
+	cmd, leave := m.documents.update(message)
+	if leave && !m.documents.busy() {
+		m.documentsActive = false
+		return true, m.loadNotes()
+	}
+	return true, cmd
 }

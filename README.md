@@ -50,8 +50,44 @@ ordinary filesystem tools. Copying, archiving, or versioning the workspace
 with standard tools is sufficient for a local backup.
 
 Initial artifact metadata recognizes the `note`, `document`, `spreadsheet`,
-`presentation`, and `image` kinds. Only notes have application behavior in
-this milestone; the other kinds are not yet implemented.
+`presentation`, and `image` kinds. Notes and documents have application
+behavior; the other kinds are not yet implemented.
+
+### Documents
+
+Documents are a separate feature from notes, stored the same way but with
+multi-page printing in mind. A document artifact directory contains
+`metadata.json` (kind `document`), the canonical Markdown `content.md`, an
+optional `layout.json` (page size, orientation, margins in millimeters, column
+count, header, footer, page-number placement), and any embedded images as
+`image-<hash>.png|jpg|gif`, referenced from the Markdown with ordinary image
+links. Page and section breaks are HTML comments so other Markdown tools ignore
+them: `<!-- parchment:page-break -->` and
+`<!-- parchment:section-break columns=2 [continuous] -->`. Headers and footers
+are `left|center|right` text with `{title}`, `{page}`, and `{pages}` tokens.
+
+Printing renders monospaced pages (10 characters and 6 lines per inch) with
+margins, columns, headers, footers, and page numbers, separated by form feeds:
+
+```sh
+parchment document create "Report" --body-file report.md --columns 2 --footer "{title}|{page}/{pages}"
+parchment document print <id> | lpr
+```
+
+Document commands (`parchment document`, alias `doc`): `list`, `create`,
+`show`, `edit`, `rename`, `tag-add`, `tag-remove`, `layout`, `page-break`,
+`section-break`, `image`, `print`, `search`, and `delete --yes`. In the
+interactive shell, press `Tab` on the notes screen to switch to documents (and
+back). The document editor always shows a toolbar above the text with buttons
+for save, preview, close, text formatting (bold, italic, strikethrough, code,
+headings, lists, quote, link, rule, image) and page setup (page and section
+breaks, columns, margins, page size, orientation, header, footer, page
+numbers). Click a button, press `F2` and use the arrow keys with `Enter`, or
+use the `Alt` shortcuts (`B` bold, `I` italic, `C` code, `1`–`3` headings,
+`L`/`N` lists, `Q` quote, `K` link, `M` image, `P` page break, `S` section
+break). `F5` previews the printed
+pages and `Ctrl+S` saves. Document changes, including images, support undo
+and redo like notes.
 
 ## Configuration
 
@@ -108,11 +144,14 @@ not survive a restart.
 
 ## Future work
 
-This repository currently implements the notes slice. The broader suite is
+This repository currently implements notes and documents. The broader suite is
 planned to add:
 
-- Working document, spreadsheet, presentation, and basic image-editing
-  features using the shared workspace and artifact metadata.
+- Change tracking for documents (recording, reviewing, accepting, and
+  rejecting edits).
+- Working spreadsheet features using the shared workspace and artifact metadata.
+- Working presentation features using the shared workspace and artifact metadata.
+- Basic image-editing features using the shared workspace and artifact metadata.
 - Shared artifact navigation and organization, including links and
   attachments, plus import and export.
 - Backup operations and optional provider integrations. Any future Perkeep
