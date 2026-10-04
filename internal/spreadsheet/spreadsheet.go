@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/artifactfile"
@@ -274,19 +275,32 @@ func Normalize(book *Spreadsheet) error {
 	if book.Kind != artifact.SpreadsheetKind {
 		return errors.New("artifact is not a spreadsheet")
 	}
+	if !utf8.ValidString(book.Title) {
+		return errors.New("spreadsheet title must be valid UTF-8")
+	}
 	book.CreatedAt = book.CreatedAt.UTC()
 	book.ModifiedAt = book.ModifiedAt.UTC()
 	if len(book.Sheets) == 0 || len(book.Sheets) > MaxSheets {
 		return fmt.Errorf("spreadsheet must have between 1 and %d sheets", MaxSheets)
 	}
-	names := map[string]bool{}
+	var names []string
 	for i := range book.Sheets {
 		sheet := &book.Sheets[i]
 		sheet.Name = strings.TrimSpace(sheet.Name)
-		if sheet.Name == "" || len(sheet.Name) > 128 || names[strings.ToLower(sheet.Name)] {
+		if !utf8.ValidString(sheet.Name) {
+			return errors.New("sheet names must be valid UTF-8")
+		}
+		duplicate := false
+		for _, name := range names {
+			if strings.EqualFold(name, sheet.Name) {
+				duplicate = true
+				break
+			}
+		}
+		if sheet.Name == "" || len(sheet.Name) > 128 || duplicate {
 			return errors.New("sheet names must be non-empty, at most 128 characters, and unique")
 		}
-		names[strings.ToLower(sheet.Name)] = true
+		names = append(names, sheet.Name)
 		if len(sheet.Rows) == 0 {
 			sheet.Rows = [][]Cell{{{}}}
 		}
@@ -305,7 +319,10 @@ func Normalize(book *Spreadsheet) error {
 			}
 		}
 	}
-	evaluator := evaluator{book: book, visiting: make(map[cellCoordinate]bool), cache: make(map[cellCoordinate]float64)}
+	evaluator := evaluator{
+		book: book, visiting: make(map[cellCoordinate]bool),
+		cache: make(map[cellCoordinate]float64), depth: make(map[cellCoordinate]int),
+	}
 	for sheetIndex := range book.Sheets {
 		for row := range book.Sheets[sheetIndex].Rows {
 			for column, cell := range book.Sheets[sheetIndex].Rows[row] {
@@ -323,6 +340,9 @@ func Normalize(book *Spreadsheet) error {
 }
 
 func validateCell(cell Cell) error {
+	if !utf8.ValidString(cell.Value) || !utf8.ValidString(cell.Formula) {
+		return errors.New("cell text must be valid UTF-8")
+	}
 	if cell.Formula != "" && cell.Value != "" {
 		return errors.New("cell cannot contain both a value and a formula")
 	}
@@ -428,6 +448,18 @@ func (o spreadsheetOperation) transition(ctx context.Context, expected, target *
 
 // Equal reports whether two spreadsheets have the same persisted value.
 func Equal(left, right Spreadsheet) bool {
+	if len(left.Tags) == 0 {
+		left.Tags = nil
+	}
+	if len(right.Tags) == 0 {
+		right.Tags = nil
+	}
+	if len(left.Links) == 0 {
+		left.Links = nil
+	}
+	if len(right.Links) == 0 {
+		right.Links = nil
+	}
 	return reflect.DeepEqual(left, right)
 }
 

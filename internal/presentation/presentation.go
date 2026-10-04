@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/artifactfile"
@@ -166,11 +168,14 @@ func Parse(source string) (Deck, error) {
 	lineNumber := 0
 	inFence := false
 	fenceMarker := ""
+	fenceListIndent := 0
+	var listIndents []int
+	listIndent := 0
 	var current *Slide
 	var header, body, notes strings.Builder
 	flush := func() {
 		if current != nil {
-			current.Body = strings.TrimSpace(body.String())
+			current.Body = strings.Trim(body.String(), "\r\n")
 			current.Notes = strings.TrimSpace(notes.String())
 			deck.Slides = append(deck.Slides, *current)
 			current = nil
@@ -186,15 +191,80 @@ func Parse(source string) (Deck, error) {
 			line = strings.TrimPrefix(line, "\uFEFF")
 			trimmed = strings.TrimSpace(line)
 		}
-		if marker := markdownFence(trimmed); marker != "" {
+		if deck.Title == "" && trimmed != "" &&
+			(isIndentedCode(line) || !strings.HasPrefix(trimmed, "# ")) {
+			return Deck{}, fmt.Errorf("line %d: presentation must begin with a '# Title' heading", lineNumber)
+		}
+		if len(listIndents) > 0 {
+			listIndent = listIndents[len(listIndents)-1]
+		} else {
+			listIndent = 0
+		}
+		listContent, itemIndent, isListItem := listItemContent(line, listIndent)
+		marker := markdownFence(trimmed)
+		markerIndent := 0
+		if inFence && fenceListIndent > 0 {
+			if trimmed != "" && leadingSpaces(line) < fenceListIndent {
+				inFence, fenceMarker, fenceListIndent = false, "", 0
+			} else if isListItem {
+				marker = ""
+			} else if leadingSpaces(line) >= fenceListIndent {
+				content := line[fenceListIndent:]
+				if !hasFourSpaceFenceIndent(content) {
+					marker = markdownFence(strings.TrimSpace(content))
+				} else {
+					marker = ""
+				}
+				markerIndent = fenceListIndent
+			} else {
+				marker = ""
+			}
+		}
+		if !inFence {
+			if isListItem {
+				for len(listIndents) > 0 && listIndents[len(listIndents)-1] >= itemIndent {
+					listIndents = listIndents[:len(listIndents)-1]
+				}
+				listIndents = append(listIndents, itemIndent)
+				if !hasFourSpaceFenceIndent(listContent) {
+					marker, markerIndent = markdownFence(strings.TrimSpace(listContent)), itemIndent
+				} else {
+					marker = ""
+				}
+			} else if trimmed != "" {
+				for len(listIndents) > 0 && leadingSpaces(line) < listIndents[len(listIndents)-1] {
+					listIndents = listIndents[:len(listIndents)-1]
+				}
+			}
+			if len(listIndents) > 0 {
+				listIndent = listIndents[len(listIndents)-1]
+			} else {
+				listIndent = 0
+			}
+			if !isListItem && listIndent > 0 && leadingSpaces(line) >= listIndent {
+				content := line[listIndent:]
+				if !hasFourSpaceFenceIndent(content) {
+					marker = markdownFence(strings.TrimSpace(content))
+				} else {
+					marker = ""
+				}
+				markerIndent = listIndent
+			} else if !isListItem && marker == "" && !isIndentedCode(line) {
+				marker = markdownFence(trimmed)
+			}
+		}
+		listContinuation := !isListItem && listIndent > 0 && leadingSpaces(line) >= listIndent
+		if marker != "" && (!isIndentedCode(line) || markerIndent > 0) {
 			if !inFence {
-				inFence, fenceMarker = true, marker
+				inFence, fenceMarker, fenceListIndent = true, marker, markerIndent
 			} else if marker[0] == fenceMarker[0] && len(marker) >= len(fenceMarker) &&
 				strings.TrimSpace(trimmed[len(marker):]) == "" {
-				inFence, fenceMarker = false, ""
+				inFence, fenceMarker, fenceListIndent = false, "", 0
 			}
 			if current != nil {
 				body.WriteString(line + "\n")
+			} else if deck.Title != "" {
+				header.WriteString(line + "\n")
 			}
 			continue
 		}
@@ -214,14 +284,15 @@ func Parse(source string) (Deck, error) {
 			}
 			continue
 		}
-		if strings.HasPrefix(trimmed, "# ") {
+		if strings.HasPrefix(trimmed, "# ") && !listContinuation {
 			if deck.Title != "" || current != nil {
 				return Deck{}, fmt.Errorf("line %d: only one top-level presentation title is allowed", lineNumber)
 			}
 			deck.Title = strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))
 			continue
 		}
-		if strings.HasPrefix(trimmed, "## ") && !strings.HasPrefix(trimmed, "### ") {
+		if strings.HasPrefix(trimmed, "## ") && !strings.HasPrefix(trimmed, "### ") &&
+			!listContinuation {
 			flush()
 			title := strings.TrimSpace(strings.TrimPrefix(trimmed, "## "))
 			title = stripAnchor(title)
@@ -266,12 +337,12 @@ func Parse(source string) (Deck, error) {
 	if len(deck.Slides) == 0 {
 		return Deck{}, errors.New("presentation must contain at least one '## Slide' heading")
 	}
-	deck.Header = strings.TrimSpace(header.String())
+	deck.Header = strings.Trim(header.String(), "\r\n")
 	return deck, nil
 }
 
 func isIndentedCode(line string) bool {
-	return strings.HasPrefix(line, "\t") || strings.HasPrefix(line, "    ")
+	return hasFourSpaceFenceIndent(line)
 }
 
 func markdownFence(line string) string {
@@ -285,7 +356,65 @@ func markdownFence(line string) string {
 	if i < 3 {
 		return ""
 	}
+	if line[0] == '`' && strings.ContainsRune(line[i:], '`') {
+		return ""
+	}
 	return line[:i]
+}
+
+func listItemContent(line string, parentIndent int) (string, int, bool) {
+	maxIndent := 3 + parentIndent
+	indent := 0
+	for indent < len(line) && indent <= maxIndent && line[indent] == ' ' {
+		indent++
+	}
+	if indent > maxIndent || indent == len(line) {
+		return "", 0, false
+	}
+	end := indent
+	if line[end] == '-' || line[end] == '+' || line[end] == '*' {
+		end++
+	} else {
+		digits := end
+		for end < len(line) && line[end] >= '0' && line[end] <= '9' && end-digits < 10 {
+			end++
+		}
+		if end == digits || end == len(line) || line[end] != '.' && line[end] != ')' {
+			return "", 0, false
+		}
+		end++
+	}
+	if end == len(line) || line[end] != ' ' && line[end] != '\t' {
+		return "", 0, false
+	}
+	end++
+	return line[end:], end, true
+}
+
+func leadingSpaces(line string) int {
+	indent := 0
+	for indent < len(line) && line[indent] == ' ' {
+		indent++
+	}
+	return indent
+}
+
+func hasFourSpaceFenceIndent(line string) bool {
+	indent := 0
+	for i := 0; i < len(line); i++ {
+		switch line[i] {
+		case ' ':
+			indent++
+			if indent >= 4 {
+				return true
+			}
+		case '\t':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func stripAnchor(title string) string {
@@ -305,6 +434,9 @@ func Validate(item Presentation) error {
 	}
 	if item.Version != FileVersion {
 		return fmt.Errorf("unsupported presentation version %d", item.Version)
+	}
+	if !utf8.ValidString(item.Source) {
+		return errors.New("presentation source must be valid UTF-8")
 	}
 	deck, err := Parse(item.Source)
 	if err != nil {
@@ -377,7 +509,12 @@ func Preview(deck Deck) string {
 			output.WriteByte('\n')
 		}
 	}
-	return output.String()
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) && r != '\n' && r != '\r' && r != '\t' && r != '\f' {
+			return -1
+		}
+		return r
+	}, output.String())
 }
 
 func clonePresentation(item Presentation) Presentation {
@@ -412,7 +549,21 @@ func cloneBlocksExcept(blocks map[string]json.RawMessage, excluded ...string) ma
 	return clone
 }
 
-func Equal(left, right Presentation) bool { return reflect.DeepEqual(left, right) }
+func Equal(left, right Presentation) bool {
+	if len(left.Tags) == 0 {
+		left.Tags = nil
+	}
+	if len(right.Tags) == 0 {
+		right.Tags = nil
+	}
+	if len(left.Links) == 0 {
+		left.Links = nil
+	}
+	if len(right.Links) == 0 {
+		right.Links = nil
+	}
+	return reflect.DeepEqual(left, right)
+}
 
 func (s *Service) change(ctx context.Context, before, after *Presentation, description string) error {
 	return s.history.Execute(ctx, presentationOperation{

@@ -31,6 +31,16 @@ func (w *Workspace) ListPresentations(ctx context.Context) ([]presentation.Prese
 		}
 		var item presentation.Presentation
 		err := withArtifactLock(ctx, root, entry.Name(), func() error {
+			metadata, err := w.readArtifactMetadataUnlocked(entry.Name())
+			if errors.Is(err, errNoMetadata) {
+				return presentation.ErrNotFound
+			}
+			if err != nil {
+				return err
+			}
+			if metadata.Kind != artifact.PresentationKind {
+				return presentation.ErrNotFound
+			}
 			var readErr error
 			item, readErr = w.readPresentationUnlocked(entry.Name())
 			return readErr

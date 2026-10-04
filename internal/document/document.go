@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/history"
@@ -73,6 +74,8 @@ type Repository interface {
 	ListDocuments(context.Context) ([]Document, error)
 	GetDocument(context.Context, string) (Document, error)
 	TransitionDocument(context.Context, string, *Document, *Document) error
+	TransitionDocumentWithChanges(context.Context, string, *Document, *Document, []Change) error
+	DeleteDocument(context.Context, string, Document) ([]Change, error)
 	ListDocumentChanges(context.Context, string) ([]Change, error)
 	ProposeDocumentChange(context.Context, string, Document, Change) error
 	TransitionDocumentChange(context.Context, string, string, Change, Change, *Document, *Document) error
@@ -112,11 +115,8 @@ func (s *Service) Get(ctx context.Context, id string) (Document, error) {
 // Propose records a title, Markdown, or layout edit for later review without
 // changing the live document. Proposals may retain or remove embedded images,
 // but cannot add or replace their data.
-func (s *Service) Propose(ctx context.Context, id, description string, draft Draft) (Change, error) {
-	before, err := s.repository.GetDocument(ctx, id)
-	if err != nil {
-		return Change{}, err
-	}
+func (s *Service) Propose(ctx context.Context, before Document, description string, draft Draft) (Change, error) {
+	id := before.ID
 	for _, proposedImage := range draft.Images {
 		found := false
 		for _, existingImage := range before.Images {
@@ -291,6 +291,9 @@ func validArtifactID(id string) bool {
 }
 
 func validateSnapshot(s ChangeSnapshot) error {
+	if !utf8.ValidString(s.Title) || !utf8.ValidString(s.Body) {
+		return errors.New("document snapshot text must be valid UTF-8")
+	}
 	if strings.TrimSpace(s.Title) == "" {
 		return errors.New("title is required")
 	}
@@ -463,7 +466,10 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	return s.change(ctx, &before, nil, "Delete document")
+	return s.history.Execute(ctx, &documentOperation{
+		repository: s.repository, before: cloneDocument(&before), description: "Delete document",
+		captureChanges: true, restoreChanges: true,
+	})
 }
 
 // Undo reverses the most recent document change.
@@ -521,6 +527,9 @@ func (s *Service) apply(ctx context.Context, expected Document, description stri
 // references, so the artifact directory holds only images in use.
 func normalize(d *Document) error {
 	d.Title = strings.TrimSpace(d.Title)
+	if !utf8.ValidString(d.Title) || !utf8.ValidString(d.Body) {
+		return errors.New("document title and body must be valid UTF-8")
+	}
 	if d.Title == "" {
 		return errors.New("document title is required")
 	}
@@ -546,7 +555,7 @@ func normalize(d *Document) error {
 }
 
 func (s *Service) change(ctx context.Context, before, after *Document, description string) error {
-	return s.history.Execute(ctx, documentOperation{
+	return s.history.Execute(ctx, &documentOperation{
 		repository: s.repository, before: cloneDocument(before), after: cloneDocument(after), description: description,
 	})
 }
@@ -572,10 +581,13 @@ func cloneDocument(d *Document) *Document {
 }
 
 type documentOperation struct {
-	repository  Repository
-	before      *Document
-	after       *Document
-	description string
+	repository     Repository
+	before         *Document
+	after          *Document
+	description    string
+	changes        []Change
+	captureChanges bool
+	restoreChanges bool
 }
 
 type documentChangeAcceptance struct {
@@ -606,19 +618,42 @@ func (o *documentChangeAcceptance) Undo(ctx context.Context) error {
 
 func (o *documentChangeAcceptance) Description() string { return "Accept document change" }
 
-func (o documentOperation) Apply(ctx context.Context) error {
+func (o *documentOperation) Apply(ctx context.Context) error {
+	if o.captureChanges && o.before != nil && o.after == nil {
+		changes, err := o.repository.DeleteDocument(ctx, o.before.ID, *o.before)
+		if err != nil {
+			return err
+		}
+		o.changes = changes
+		return nil
+	}
+	if o.restoreChanges && o.before == nil && o.after != nil {
+		return o.repository.TransitionDocumentWithChanges(ctx, o.after.ID, nil, o.after, o.changes)
+	}
 	return o.transition(ctx, o.before, o.after)
 }
 
-func (o documentOperation) Undo(ctx context.Context) error {
+func (o *documentOperation) Undo(ctx context.Context) error {
+	if o.before == nil && o.after != nil {
+		changes, err := o.repository.DeleteDocument(ctx, o.after.ID, *o.after)
+		if err != nil {
+			return err
+		}
+		o.changes = changes
+		o.restoreChanges = true
+		return nil
+	}
 	return o.transition(ctx, o.after, o.before)
 }
 
-func (o documentOperation) Description() string { return o.description }
+func (o *documentOperation) Description() string { return o.description }
 
 func (o documentOperation) transition(ctx context.Context, expected, target *Document) error {
 	switch {
 	case o.before != nil:
+		if o.restoreChanges && expected == nil && target != nil {
+			return o.repository.TransitionDocumentWithChanges(ctx, o.before.ID, expected, target, o.changes)
+		}
 		return o.repository.TransitionDocument(ctx, o.before.ID, expected, target)
 	case o.after != nil:
 		return o.repository.TransitionDocument(ctx, o.after.ID, expected, target)

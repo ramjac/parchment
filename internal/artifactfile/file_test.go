@@ -1,7 +1,9 @@
 package artifactfile
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +50,73 @@ func TestEncodeDecodePreservesMarkdownAndStructuredBlocks(t *testing.T) {
 	}
 }
 
+func TestReadMetadataDistinguishesMissingFromInvalidEnvelope(t *testing.T) {
+	if _, err := ReadMetadata([]byte("# Plain Markdown\n")); !errors.Is(err, ErrMetadataMissing) {
+		t.Fatalf("missing metadata error = %v", err)
+	}
+	if _, err := ReadMetadata([]byte("```parchment-meta\nnot JSON\n```\n\n<!-- parchment-body -->\nbody\n")); err == nil ||
+		errors.Is(err, ErrMetadataMissing) {
+		t.Fatalf("invalid metadata error = %v", err)
+	}
+	if _, err := ReadMetadata([]byte("```parchment-note\n{}\n```\n")); !errors.Is(err, ErrMetadataMissing) {
+		t.Fatalf("non-metadata leading fence error = %v", err)
+	}
+	if _, err := ReadMetadata([]byte("```parchment-meta extra\n{}\n```\n")); err == nil ||
+		errors.Is(err, ErrMetadataMissing) {
+		t.Fatalf("malformed metadata opening error = %v", err)
+	}
+	data, err := Encode(testArtifact(), "body", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	padded := append([]byte("\n\n"), data...)
+	metadata, err := ReadMetadata(padded)
+	if err != nil || metadata.ID != testArtifact().ID {
+		t.Fatalf("metadata after leading blank lines = %+v, %v", metadata, err)
+	}
+	file, err := Decode(padded)
+	if err != nil || file.Body != "body" {
+		t.Fatalf("decoded artifact after leading blank lines = %+v, %v", file, err)
+	}
+}
+
+func TestReadMetadataRequiresCurrentFormatMarker(t *testing.T) {
+	metadata, err := json.Marshal(testArtifact())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := "```parchment-meta\n" + string(metadata) + "\n```\n"
+	for _, read := range []func([]byte) (artifact.Artifact, error){
+		ReadMetadata,
+		func(data []byte) (artifact.Artifact, error) {
+			return ReadMetadataFrom(bytes.NewReader(data))
+		},
+	} {
+		if _, err := read([]byte(source)); err == nil || errors.Is(err, ErrMetadataMissing) {
+			t.Fatalf("metadata without current format marker error = %v", err)
+		}
+	}
+}
+
+func TestReadMetadataRejectsCorruptEmbeddedMetadata(t *testing.T) {
+	for _, continuation := range []string{
+		"<!-- parchment-body -->\nbody\n",
+		"```parchment-document\n{}\n```\n\n<!-- parchment-body -->\nbody\n",
+	} {
+		source := "```parchment-meta\n{}\n```\n\n" + continuation
+		for _, read := range []func([]byte) (artifact.Artifact, error){
+			ReadMetadata,
+			func(data []byte) (artifact.Artifact, error) {
+				return ReadMetadataFrom(bytes.NewReader(data))
+			},
+		} {
+			if _, err := read([]byte(source)); err == nil || errors.Is(err, ErrMetadataMissing) {
+				t.Fatalf("corrupt embedded metadata error = %v", err)
+			}
+		}
+	}
+}
+
 func TestEncodeDecodePreservesBodyStartingWithReservedFence(t *testing.T) {
 	for _, body := range []string{
 		"```parchment-footnote\nnot JSON\n```\n",
@@ -70,19 +139,133 @@ func TestEncodeDecodePreservesBodyStartingWithReservedFence(t *testing.T) {
 	}
 }
 
-func TestDecodeAcceptsLegacyEnvelopeWithoutBodyBoundary(t *testing.T) {
-	body := "# Legacy artifact\n\nMarkdown body.\n"
+func TestDecodeRequiresBodyBoundary(t *testing.T) {
+	body := "# Example\n\nMarkdown body.\n"
 	data, err := Encode(testArtifact(), body, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacy := strings.Replace(string(data), bodyBoundary+"\n", "", 1)
-	file, err := Decode([]byte(legacy))
+	withoutBoundary := strings.Replace(string(data), bodyBoundary+"\n", "", 1)
+	if _, err := Decode([]byte(withoutBoundary)); err == nil {
+		t.Fatal("decoded artifact without body separator")
+	}
+}
+
+func TestEncodePreservesRawBlockFormatting(t *testing.T) {
+	raw := json.RawMessage(`{"compact":true,"nested":{"count":2}}`)
+	data, err := Encode(testArtifact(), "", map[string]any{"parchment-note": raw})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if file.Body != body {
-		t.Fatalf("body = %q, want %q", file.Body, body)
+	if !bytes.Contains(data, raw) {
+		t.Fatalf("raw JSON block was reformatted:\n%s", data)
+	}
+	file, err := Decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(file.Blocks["parchment-note"], raw) {
+		t.Fatalf("decoded block = %s, want %s", file.Blocks["parchment-note"], raw)
+	}
+}
+
+func TestDecodeSkipsMultipleSeparatingBlankLinesAndPreservesBodyWhitespace(t *testing.T) {
+	encoded, err := Encode(testArtifact(), "Markdown body\n", map[string]any{
+		"parchment-note": map[string]string{"kind": "note"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	multiple := strings.Replace(string(encoded), "\n\n```parchment-note", "\n\n\n\n```parchment-note", 1)
+	multiple = strings.Replace(multiple, "\n\n"+bodyBoundary, "\n\n\n\n"+bodyBoundary, 1)
+	file, err := Decode([]byte(multiple))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := file.Blocks["parchment-note"]; !ok || file.Body != "Markdown body\n" {
+		t.Fatalf("decoded envelope = blocks %v, body %q", file.Blocks, file.Body)
+	}
+
+}
+
+func TestReadMetadataFromStopsAfterMetadataBlock(t *testing.T) {
+	data, err := Encode(testArtifact(), strings.Repeat("body ", 200_000), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := bytes.NewReader(append([]byte("\n\n"), data...))
+	got, err := ReadMetadataFrom(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != testArtifact().ID {
+		t.Fatalf("metadata ID = %q", got.ID)
+	}
+	if reader.Len() == 0 {
+		t.Fatal("metadata reader consumed the artifact body")
+	}
+}
+
+func TestReadMetadataFromStopsAtNonMetadataFirstLine(t *testing.T) {
+	reader := bytes.NewReader([]byte(strings.Repeat("body", 250_000)))
+	_, err := ReadMetadataFrom(reader)
+	if !errors.Is(err, ErrMetadataMissing) {
+		t.Fatalf("non-envelope metadata error = %v", err)
+	}
+	if reader.Len() == 0 {
+		t.Fatal("metadata reader consumed a long Markdown line")
+	}
+}
+
+func TestReadMetadataFromPreservesOversizedMetadataLines(t *testing.T) {
+	metadata := testArtifact()
+	metadata.Title = strings.Repeat("x", 10_000)
+	data, err := Encode(metadata, "body", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadMetadataFrom(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != metadata.Title {
+		t.Fatal("metadata line was not preserved")
+	}
+}
+
+func TestReadMetadataFromPreservesOversizedMetadataOpeningLine(t *testing.T) {
+	data, err := Encode(testArtifact(), "body", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opener := "```parchment-meta" + strings.Repeat(" ", 5_000) + "\n"
+	data = []byte(strings.Replace(string(data), "```parchment-meta\n", opener, 1))
+	got, err := ReadMetadataFrom(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != testArtifact().ID {
+		t.Fatalf("metadata ID = %q", got.ID)
+	}
+}
+
+func TestReadMetadataParsesMinifiedCurrentMetadata(t *testing.T) {
+	data, err := Encode(testArtifact(), "body", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	minified := strings.Replace(
+		string(data),
+		`"parchment_format": "parchment-single-file-v1"`,
+		`"parchment_format":"parchment-single-file-v1"`,
+		1,
+	)
+	if minified == string(data) {
+		t.Fatal("format marker was not found")
+	}
+	item, err := ReadMetadata([]byte(minified))
+	if err != nil || item.ID != testArtifact().ID {
+		t.Fatalf("read minified current metadata = %+v, %v", item, err)
 	}
 }
 
@@ -94,6 +277,121 @@ func TestStripPrivateBlocksPreservesOrdinaryCodeFences(t *testing.T) {
 	}
 	if !strings.Contains(got, "```go\n```parchment-example\nvisible\n```\n```") {
 		t.Fatalf("ordinary code fence content was removed: %q", got)
+	}
+}
+
+func TestStripPrivateBlocksRecognizesQuotedFences(t *testing.T) {
+	markdown := "> ```parchment-secret\n> hidden\n> ```\n\n" +
+		"> > ~~~parchment-deep\n> > hidden deep\n> > ~~~\n\n" +
+		"> ```go\n> ```parchment-example\n> visible\n> ```\n> ```\n"
+	got := StripPrivateBlocks(markdown)
+	if strings.Contains(got, "parchment-secret") || strings.Contains(got, "hidden") {
+		t.Fatalf("quoted Parchment block was rendered: %q", got)
+	}
+	if !strings.Contains(got, "> ```go\n> ```parchment-example\n> visible\n> ```\n> ```") {
+		t.Fatalf("ordinary quoted code fence content was removed: %q", got)
+	}
+}
+
+func TestStripPrivateBlocksTracksFenceContainers(t *testing.T) {
+	markdown := "~~~parchment-secret\nsecret-before\n> ~~~\nsecret-after\n~~~\n\n" +
+		"~~~go\n> ~~~\n```parchment-example\nvisible\n~~~\n\n" +
+		"- ```parchment-list-secret\n  list-hidden\n  ```\n" +
+		"- ```go\n  ```parchment-list-example\n  list-visible\n  ```\n"
+	got := StripPrivateBlocks(markdown)
+	for _, hidden := range []string{"parchment-secret", "secret-before", "secret-after",
+		"parchment-list-secret", "list-hidden"} {
+		if strings.Contains(got, hidden) {
+			t.Fatalf("reserved block content %q was rendered: %q", hidden, got)
+		}
+	}
+	for _, visible := range []string{"~~~go\n> ~~~\n```parchment-example\nvisible\n~~~",
+		"- ```go\n  ```parchment-list-example\n  list-visible\n  ```"} {
+		if !strings.Contains(got, visible) {
+			t.Fatalf("ordinary fenced content was removed: %q", got)
+		}
+	}
+}
+
+func TestStripPrivateBlocksResetsAtContainerExit(t *testing.T) {
+	markdown := "> ```parchment-quote\n> quoted-hidden\n\noutside-quote\n\n" +
+		"- ```parchment-list\n  listed-hidden\n\noutside-list\n\n" +
+		"    ```parchment-not-a-fence\n    visible-indented-code\n"
+	got := StripPrivateBlocks(markdown)
+	for _, hidden := range []string{"parchment-quote", "quoted-hidden", "parchment-list", "listed-hidden"} {
+		if strings.Contains(got, hidden) {
+			t.Fatalf("unterminated container fence leaked %q: %q", hidden, got)
+		}
+	}
+	for _, visible := range []string{"outside-quote", "outside-list", "```parchment-not-a-fence", "visible-indented-code"} {
+		if !strings.Contains(got, visible) {
+			t.Fatalf("content outside a fence was lost (%q): %q", visible, got)
+		}
+	}
+}
+
+func TestStripPrivateBlocksRecognizesFencesOnListContinuations(t *testing.T) {
+	markdown := "10. Item\n\n    ```parchment-deep-list\n    deeply-hidden\n    ```\n\n" +
+		"    ```go\n    ```parchment-list-example\n    list-visible\n    ```\n"
+	got := StripPrivateBlocks(markdown)
+	if strings.Contains(got, "parchment-deep-list") || strings.Contains(got, "deeply-hidden") {
+		t.Fatalf("deep list-contained reserved fence was rendered: %q", got)
+	}
+	if !strings.Contains(got, "    ```go\n    ```parchment-list-example\n    list-visible\n    ```") {
+		t.Fatalf("ordinary list-contained code fence was removed: %q", got)
+	}
+}
+
+func TestStripPrivateBlocksRecognizesNestedListFences(t *testing.T) {
+	markdown := "- Parent\n    - Child\n      ```parchment-nested-secret\n      nested-hidden\n      ```\n" +
+		"    - Ordinary\n      ```go\n      ```parchment-nested-example\n      nested-visible\n      ```\n"
+	got := StripPrivateBlocks(markdown)
+	for _, hidden := range []string{"parchment-nested-secret", "nested-hidden"} {
+		if strings.Contains(got, hidden) {
+			t.Fatalf("nested reserved block leaked %q: %q", hidden, got)
+		}
+	}
+	for _, visible := range []string{"- Parent", "    - Ordinary", "```go", "parchment-nested-example", "nested-visible"} {
+		if !strings.Contains(got, visible) {
+			t.Fatalf("ordinary nested code block lost %q: %q", visible, got)
+		}
+	}
+}
+
+func TestStripPrivateBlocksPreservesListFenceStateAcrossBlankLines(t *testing.T) {
+	markdown := "- ````go\n  code before\n\n  ```parchment-example\n  visible example\n  ```\n  ````\n"
+	got := StripPrivateBlocks(markdown)
+	for _, want := range []string{"````go", "```parchment-example", "visible example", "````"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("ordinary list code fence lost %q: %q", want, got)
+		}
+	}
+}
+
+func TestStripPrivateBlocksResetsAtListContinuationExit(t *testing.T) {
+	markdown := "- Item\n\n  ```parchment-secret\n  hidden continuation\nOutside the list\n"
+	got := StripPrivateBlocks(markdown)
+	if strings.Contains(got, "parchment-secret") || strings.Contains(got, "hidden continuation") {
+		t.Fatalf("list-continuation reserved fence was rendered: %q", got)
+	}
+	if !strings.Contains(got, "Outside the list") {
+		t.Fatalf("content after the list was hidden: %q", got)
+	}
+}
+
+func TestStripPrivateBlocksRecognizesNestedListBlockquoteFences(t *testing.T) {
+	markdown := "- > ```parchment-secret\n  > nested-hidden\n  > ```\n\n" +
+		"- > ```go\n  > ```parchment-example\n  > nested-visible\n  > ```\n"
+	got := StripPrivateBlocks(markdown)
+	for _, hidden := range []string{"parchment-secret", "nested-hidden"} {
+		if strings.Contains(got, hidden) {
+			t.Fatalf("nested reserved block leaked %q: %q", hidden, got)
+		}
+	}
+	for _, visible := range []string{"- > ```go", "> ```parchment-example", "> nested-visible", "> ```"} {
+		if !strings.Contains(got, visible) {
+			t.Fatalf("ordinary nested code block lost %q: %q", visible, got)
+		}
 	}
 }
 

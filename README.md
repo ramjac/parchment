@@ -47,11 +47,10 @@ workspace configuration; artifacts live under
 `.parchment/artifacts/<stable-id>/content.md`. Every supported artifact is one
 Markdown file. It begins with a `parchment-meta` fenced code block containing
 the shared metadata as JSON. Structured artifact data uses additional
-`parchment-<thing>` JSON code blocks before the visible Markdown body. New files
-separate the envelope from the body with an `<!-- parchment-body -->` comment,
-so a body can safely begin with a reserved code fence; readers still accept
-older files without this separator. Parchment renderers hide these reserved
-blocks while ordinary Markdown remains readable.
+`parchment-<thing>` JSON code blocks before the visible Markdown body. The
+envelope and body are separated by a required `<!-- parchment-body -->`
+comment, so a body can safely begin with a reserved code fence. Parchment
+renderers hide these reserved blocks while ordinary Markdown remains readable.
 Metadata timestamps are UTC RFC 3339 values. Copying, archiving, or versioning
 the workspace with standard tools is sufficient for a local backup.
 
@@ -250,7 +249,29 @@ This repository currently implements notes, documents, basic spreadsheets,
 and basic Markdown presentations.
 The broader suite is planned to add:
 
-- Basic image-editing features using the shared workspace and artifact metadata.
+- Make the default directory for storing Parchment artifacts a non-hidden folder and also make the default directory path configurable. Generally assume that Parchment artifacts might be read by other applications; especially text file and markdown interpreters.
+- Background auto-save and recovery from auto-save so that in the event Parchment crashes or is force closed, any changes since the last save can be optionally recovered.
+- Read and work with plain Markdown files that lack Parchment metadata, without
+  adding `parchment-meta` or other `parchment-*` blocks to them. Provide an
+  explicit, opt-in "convert to Parchment artifact" operation; only that
+  conversion adds Parchment metadata and structured blocks to the file.
+- Shorter, friendlier artifact IDs and paths. The current 32-character hex IDs
+  produce long paths such as
+  `.parchment/artifacts/40000000000000000000000000000004/content.md`. Consider
+  a compact format that starts with a letter and drops the zeros between that
+  letter and the first significant digit, so artifacts don't need long runs of
+  padding zeros. Update the format and checked-in examples together; before
+  the first release, format changes do not require migration or backwards
+  compatibility.
+- Reader-friendly artifact layout. Artifacts currently place all `parchment-*`
+  blocks, including large base64-encoded images, before the visible Markdown
+  body, so someone opening the file in a text editor must scroll past them.
+  Keep `parchment-meta` as the first block, but move other structured blocks
+  to the end of the file after the body, behind a clear trailing separator.
+  This requires the artifact parser to read trailing structured blocks (it
+  currently reads them only between `parchment-meta` and the body), to keep
+  reading the existing leading layout, and to avoid treating body content as
+  structured data.
 - Shared artifact navigation and organization, including links and
   attachments, plus import and export.
 - Backup operations and optional provider integrations. Any future Perkeep
@@ -264,8 +285,7 @@ The broader suite is planned to add:
   configuration settings.
 - Persistent undo/redo, if introduced, with explicit storage and migration
   semantics. History currently lasts only for the running process.
-- Make the default directory for storing Parchment artifacts a non-hidden folder and also make the default directory path configurable. Generally assume that Parchment artifacts might be read by other applications; especially text file and markdown interpreters.
-- Background auto-save and recovery from auto-save so that in the event Parchment crashes or is force closed, any changes since the last save can be optionally recovered.
+- Basic image-editing features using the shared workspace and artifact metadata.
 
 ## Development
 

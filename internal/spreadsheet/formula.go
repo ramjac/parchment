@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Evaluate calculates one cell. Empty referenced cells evaluate to zero;
@@ -17,7 +18,10 @@ func Evaluate(book *Spreadsheet, sheetIndex, row, column int) (float64, error) {
 		column < 1 || column > MaxColumns {
 		return 0, errors.New("cell coordinates are outside the workbook")
 	}
-	e := evaluator{book: book, visiting: make(map[cellCoordinate]bool), cache: make(map[cellCoordinate]float64)}
+	e := evaluator{
+		book: book, visiting: make(map[cellCoordinate]bool),
+		cache: make(map[cellCoordinate]float64), depth: make(map[cellCoordinate]int),
+	}
 	return e.cell(sheetIndex, row, column)
 }
 
@@ -27,6 +31,8 @@ type evaluator struct {
 	book     *Spreadsheet
 	visiting map[cellCoordinate]bool
 	cache    map[cellCoordinate]float64
+	depth    map[cellCoordinate]int
+	depths   []int
 }
 
 type cellCoordinate struct {
@@ -40,13 +46,15 @@ func (e *evaluator) cell(sheetIndex, row, column int) (float64, error) {
 	}
 	coordinate := cellCoordinate{sheet: sheetIndex, row: row, column: column}
 	if value, ok := e.cache[coordinate]; ok {
+		depth := e.depth[coordinate]
+		if len(e.visiting)+depth > maxFormulaDepth {
+			return 0, fmt.Errorf("formula dependency depth exceeds %d", maxFormulaDepth)
+		}
+		e.recordDependencyDepth(depth)
 		return value, nil
 	}
 	if e.visiting[coordinate] {
 		return 0, fmt.Errorf("circular reference at %s", CellName(row, column))
-	}
-	if len(e.visiting) >= maxFormulaDepth {
-		return 0, fmt.Errorf("formula dependency depth exceeds %d", maxFormulaDepth)
 	}
 	cell := e.book.Sheets[sheetIndex].Rows[row-1][column-1]
 	if cell.Formula == "" {
@@ -60,8 +68,15 @@ func (e *evaluator) cell(sheetIndex, row, column int) (float64, error) {
 		e.cache[coordinate] = value
 		return value, nil
 	}
+	if len(e.visiting) >= maxFormulaDepth {
+		return 0, fmt.Errorf("formula dependency depth exceeds %d", maxFormulaDepth)
+	}
 	e.visiting[coordinate] = true
-	defer delete(e.visiting, coordinate)
+	e.depths = append(e.depths, 0)
+	defer func() {
+		delete(e.visiting, coordinate)
+		e.depths = e.depths[:len(e.depths)-1]
+	}()
 	parser := formulaParser{input: strings.TrimSpace(strings.TrimPrefix(cell.Formula, "=")),
 		evaluator: e, sheet: sheetIndex}
 	value, err := parser.parseExpression()
@@ -75,8 +90,23 @@ func (e *evaluator) cell(sheetIndex, row, column int) (float64, error) {
 	if math.IsNaN(value) || math.IsInf(value, 0) {
 		return 0, errors.New("formula result is not finite")
 	}
+	depth := e.depths[len(e.depths)-1] + 1
+	e.depth[coordinate] = depth
+	if parent := len(e.depths) - 2; parent >= 0 && depth > e.depths[parent] {
+		e.depths[parent] = depth
+	}
 	e.cache[coordinate] = value
 	return value, nil
+}
+
+func (e *evaluator) recordDependencyDepth(depth int) {
+	if len(e.depths) == 0 {
+		return
+	}
+	parent := len(e.depths) - 1
+	if depth > e.depths[parent] {
+		e.depths[parent] = depth
+	}
 }
 
 type formulaParser struct {
@@ -88,8 +118,12 @@ type formulaParser struct {
 }
 
 func (p *formulaParser) skipSpace() {
-	for p.position < len(p.input) && unicode.IsSpace(rune(p.input[p.position])) {
-		p.position++
+	for p.position < len(p.input) {
+		r, size := utf8.DecodeRuneInString(p.input[p.position:])
+		if !unicode.IsSpace(r) {
+			return
+		}
+		p.position += size
 	}
 }
 
@@ -254,6 +288,11 @@ func isDigit(value byte) bool { return value >= '0' && value <= '9' }
 func shiftCellReferences(formula string, fromRow, fromColumn int) string {
 	var result strings.Builder
 	for i := 0; i < len(formula); {
+		if isDecimalExponent(formula, i) {
+			result.WriteByte(formula[i])
+			i++
+			continue
+		}
 		if !isLetter(formula[i]) || i > 0 && (isLetter(formula[i-1]) || isDigit(formula[i-1])) {
 			result.WriteByte(formula[i])
 			i++
@@ -288,4 +327,16 @@ func shiftCellReferences(formula string, fromRow, fromColumn int) string {
 		i = end
 	}
 	return result.String()
+}
+
+func isDecimalExponent(formula string, index int) bool {
+	if index < 2 || (formula[index] != 'e' && formula[index] != 'E') ||
+		formula[index-1] != '.' || !isDigit(formula[index-2]) {
+		return false
+	}
+	next := index + 1
+	if next < len(formula) && (formula[next] == '+' || formula[next] == '-') {
+		next++
+	}
+	return next < len(formula) && isDigit(formula[next])
 }

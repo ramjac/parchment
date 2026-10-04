@@ -1,5 +1,6 @@
 ```parchment-meta
 {
+  "parchment_format": "parchment-single-file-v1",
   "id": "40000000000000000000000000000004",
   "kind": "presentation",
   "title": "Product Update",

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/artifactfile"
@@ -70,6 +71,25 @@ Second slide.
 	}
 }
 
+func TestPreviewStripsTerminalControlsButKeepsLayoutSeparators(t *testing.T) {
+	deck := Deck{
+		Title:  "Title\x1b[2J",
+		Header: "Header\x07",
+		Slides: []Slide{{Title: "Slide\u009b31m", Body: "Body\twith tab\n"}},
+	}
+	preview := Preview(deck)
+	for _, r := range preview {
+		if unicode.IsControl(r) && r != '\n' && r != '\r' && r != '\t' && r != '\f' {
+			t.Errorf("preview retained terminal control U+%04X: %q", r, preview)
+		}
+	}
+	for _, want := range []string{"Title[2J", "Header", "Slide31m", "Body\twith tab", "\f"} {
+		if !strings.Contains(preview, want) {
+			t.Errorf("preview lost %q: %q", want, preview)
+		}
+	}
+}
+
 func TestEncodeDecodeSinglePresentationFile(t *testing.T) {
 	item := testPresentation()
 	data, err := Encode(item)
@@ -91,12 +111,22 @@ func TestEncodeDecodeSinglePresentationFile(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidUTF8Source(t *testing.T) {
+	item := testPresentation()
+	item.Source = "# Demo\n\n## Slide\n" + string([]byte{0xff})
+	if err := Validate(item); err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
+		t.Fatalf("invalid presentation source returned %v", err)
+	}
+}
+
 func TestParserRejectsInvalidSlideStructure(t *testing.T) {
 	for _, source := range []string{
 		"Missing title\n\n## Slide\n",
 		"# No slides\n",
 		"# Title\n\n## \n",
 		"# Title\n\n## Slide\n```go\nunclosed",
+		"```go\ncode before title\n```\n\n# Title\n\n## Slide\nBody\n",
+		"    # Indented heading\n\n# Title\n\n## Slide\nBody\n",
 	} {
 		if _, err := Parse(source); err == nil {
 			t.Errorf("Parse(%q) accepted invalid source", source)
@@ -112,6 +142,176 @@ func TestLongerMarkdownFenceCannotCloseOnShorterFence(t *testing.T) {
 	}
 	if len(deck.Slides) != 2 || !strings.Contains(deck.Slides[0].Body, "## still code") {
 		t.Fatalf("fenced headings were parsed as slides: %+v", deck)
+	}
+}
+
+func TestParseFencedCodeOpenedAfterListMarker(t *testing.T) {
+	for _, test := range []struct {
+		name, fence, code, close string
+	}{
+		{"bullet", "- ~~~go", "  ## not a slide", "  ~~~"},
+		{"ordered", "10. ~~~go", "    ## not a slide", "    ~~~"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := "# Code talk\n\n## Example\n\n" + test.fence + "\n" +
+				test.code + "\n" + test.close + "\n\n## After\n\nDone.\n"
+			deck, err := Parse(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(deck.Slides) != 2 {
+				t.Fatalf("parsed %d slides, want 2", len(deck.Slides))
+			}
+			for _, want := range []string{test.fence, "## not a slide", test.close} {
+				if !strings.Contains(deck.Slides[0].Body, want) {
+					t.Errorf("first slide body missing %q:\n%s", want, deck.Slides[0].Body)
+				}
+			}
+		})
+	}
+}
+
+func TestIndentedFenceContentDoesNotCloseListFence(t *testing.T) {
+	for _, contentIndent := range []string{"      ", "  \t"} {
+		source := "# List fence\n\n## Example\n\n- ```go\n" + contentIndent +
+			"```\n  ```\n"
+		deck, err := Parse(source)
+		if err != nil {
+			t.Fatalf("Parse with code indentation %q: %v", contentIndent, err)
+		}
+		if len(deck.Slides) != 1 || !strings.Contains(deck.Slides[0].Body, contentIndent+"```") {
+			t.Fatalf("indented fence content was lost: %+v", deck)
+		}
+	}
+}
+
+func TestIndentedCodeFenceInListContinuationIsNotAnOpener(t *testing.T) {
+	source := "# Indented list code\n\n## Example\n\n- Item\n      ```go\n"
+	deck, err := Parse(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deck.Slides) != 1 || !strings.Contains(deck.Slides[0].Body, "      ```go") {
+		t.Fatalf("indented list code was not preserved: %+v", deck)
+	}
+}
+
+func TestMixedSpaceTabIndentationIsIndentedCode(t *testing.T) {
+	source := "# Mixed indentation\n\n## Example\n\n \t## code, not a slide\n \t# code, not a title\n \t```go\n \t## still code\n \t```\n"
+	deck, err := Parse(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deck.Slides) != 1 {
+		t.Fatalf("parsed %d slides, want 1", len(deck.Slides))
+	}
+	for _, want := range []string{" \t## code, not a slide", " \t# code, not a title", " \t```go", " \t## still code", " \t```"} {
+		if !strings.Contains(deck.Slides[0].Body, want) {
+			t.Errorf("slide body missing %q:\n%s", want, deck.Slides[0].Body)
+		}
+	}
+}
+
+func TestExcessListIndentationDoesNotOpenFence(t *testing.T) {
+	source := "# Indented list fence\n\n## Example\n\n-     ```go\n"
+	deck, err := Parse(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deck.Slides) != 1 || !strings.Contains(deck.Slides[0].Body, "-     ```go") {
+		t.Fatalf("excess list indentation was not preserved as code: %+v", deck)
+	}
+}
+
+func TestParseFencedCodeInDeeplyIndentedNestedList(t *testing.T) {
+	source := "# Nested lists\n\n## Example\n\n- Parent\n    - ```go\n      fmt.Println(\"nested\")\n      ```\n"
+	deck, err := Parse(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deck.Slides) != 1 {
+		t.Fatalf("parsed %d slides, want 1", len(deck.Slides))
+	}
+	for _, want := range []string{"    - ```go", "fmt.Println(\"nested\")", "      ```"} {
+		if !strings.Contains(deck.Slides[0].Body, want) {
+			t.Errorf("nested-list slide body missing %q:\n%s", want, deck.Slides[0].Body)
+		}
+	}
+}
+
+func TestParseKeepsHeadingsInListContinuationsOnCurrentSlide(t *testing.T) {
+	source := "# List content\n\n## First slide\n\n- Item\n\n  ## Nested heading\n  # Nested title\n\n## Second slide\n\nEnd\n"
+	deck, err := Parse(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deck.Slides) != 2 {
+		t.Fatalf("parsed %d slides, want 2", len(deck.Slides))
+	}
+	for _, want := range []string{"  ## Nested heading", "  # Nested title"} {
+		if !strings.Contains(deck.Slides[0].Body, want) {
+			t.Errorf("first slide lost list heading %q:\n%s", want, deck.Slides[0].Body)
+		}
+	}
+}
+
+func TestParseRestoresParentListContextAfterDedent(t *testing.T) {
+	source := "# Nested list content\n\n## First slide\n\n- Outer\n  - Inner\n  ## Outer detail\n  # Outer title\n\n## Second slide\n\nEnd\n"
+	deck, err := Parse(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deck.Slides) != 2 {
+		t.Fatalf("parsed %d slides, want 2", len(deck.Slides))
+	}
+	for _, want := range []string{"  ## Outer detail", "  # Outer title"} {
+		if !strings.Contains(deck.Slides[0].Body, want) {
+			t.Errorf("outer list continuation lost %q:\n%s", want, deck.Slides[0].Body)
+		}
+	}
+}
+
+func TestParsePreservesInlineTripleBackticks(t *testing.T) {
+	source := "# Inline code\n\n## Slide\n\nText with ```inline code``` in the middle.\n"
+	deck, err := Parse(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deck.Slides) != 1 || !strings.Contains(deck.Slides[0].Body, "```inline code```") {
+		t.Fatalf("inline backticks were not kept as slide text: %+v", deck)
+	}
+}
+
+func TestIndentedFenceIsCodeAndHeaderFencesArePreserved(t *testing.T) {
+	source := "# Code talk\n\n```go\nsample()\n```\n\n## Example\n\n    ```\n    ## not a slide\n    ```\n\n## After\n\nDone.\n"
+	deck, err := Parse(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deck.Slides) != 2 {
+		t.Fatalf("parsed %d slides, want 2", len(deck.Slides))
+	}
+	for _, want := range []string{"```go", "sample()", "```"} {
+		if !strings.Contains(deck.Header, want) {
+			t.Errorf("header missing fenced Markdown %q:\n%s", want, deck.Header)
+		}
+	}
+	if !strings.Contains(deck.Slides[0].Body, "    ## not a slide") {
+		t.Fatalf("indented code was not retained in the slide: %q", deck.Slides[0].Body)
+	}
+}
+
+func TestParsePreservesIndentationAtMarkdownBoundaries(t *testing.T) {
+	source := "# Indented\n\n    header code\n\n## Slide\n\n    slide code\n"
+	deck, err := Parse(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(deck.Header, "    header code") {
+		t.Fatalf("header indentation was lost: %q", deck.Header)
+	}
+	if got := deck.Slides[0].Body; !strings.HasPrefix(got, "    slide code") {
+		t.Fatalf("slide body indentation was lost: %q", got)
 	}
 }
 
@@ -212,5 +412,15 @@ func TestMetadataBlockIsInspectable(t *testing.T) {
 	}
 	if file.Artifact.Title != "Demo" || file.Artifact.Kind != artifact.PresentationKind {
 		t.Fatalf("embedded metadata = %+v", file.Artifact)
+	}
+}
+
+func TestEqualTreatsEmptyMetadataSlicesAsNil(t *testing.T) {
+	left := testPresentation()
+	right := left
+	right.Tags = []string{}
+	right.Links = []string{}
+	if !Equal(left, right) {
+		t.Fatal("empty tags and links should equal nil slices")
 	}
 }

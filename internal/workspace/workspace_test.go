@@ -137,6 +137,30 @@ func TestArtifactEditsPreserveAdditionalPayloadBlocks(t *testing.T) {
 	requireTestPayloadBlock(t, contentPath(deck.ID))
 }
 
+func TestCompactExtensionBlockSurvivesRenameUndo(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	service := note.NewService(ws, 10)
+	created, err := service.Create(ctx, "Compact block", "Body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, filepath.FromSlash(created.Location))
+	addTestPayloadBlock(t, path)
+	if _, err := service.Rename(ctx, created.ID, "Renamed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Undo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := service.Get(ctx, created.ID)
+	if err != nil || restored.Title != created.Title {
+		t.Fatalf("note after undo = %+v, %v", restored, err)
+	}
+	requireTestPayloadBlock(t, path)
+}
+
 func TestWorkspacePersistsInspectableNotesAndStableIDs(t *testing.T) {
 	root := t.TempDir()
 	if err := Init(root); err != nil {
@@ -497,6 +521,39 @@ func TestSaveFailurePreservesExistingArtifact(t *testing.T) {
 	}
 }
 
+func TestNoteCleanupFailureDoesNotFailCommittedRename(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	service := note.NewService(ws, 10)
+	created, err := service.Create(ctx, "Before", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, ".parchment", "artifacts", created.ID)
+	metadataDir := filepath.Join(dir, "metadata.json")
+	if err := os.Mkdir(metadataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(metadataDir, "unmanaged"), []byte("preserve"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Rename(ctx, created.ID, "After"); err != nil {
+		t.Fatalf("committed rename reported cleanup failure: %v", err)
+	}
+	renamed, err := service.Get(ctx, created.ID)
+	if err != nil || renamed.Title != "After" {
+		t.Fatalf("renamed note = %+v, %v", renamed, err)
+	}
+	if _, err := service.Undo(ctx); err != nil {
+		t.Fatalf("rename was not recorded for undo: %v", err)
+	}
+	restored, err := service.Get(ctx, created.ID)
+	if err != nil || restored.Title != "Before" {
+		t.Fatalf("undo after committed rename = %+v, %v", restored, err)
+	}
+}
+
 func TestFailedCreateDoesNotLeaveArtifactDirectory(t *testing.T) {
 	root := t.TempDir()
 	ws := openTestWorkspace(t, root)
@@ -691,7 +748,7 @@ func TestRecoveryRejectsUnexpectedBackupBeforeMutatingFiles(t *testing.T) {
 	}
 	journal, err := json.Marshal([]transactionFile{
 		{Name: "content.md", Backup: filepath.Base(backup), HadOld: true},
-		{Name: "unexpected.md", Backup: "../../../../victim", HadOld: false},
+		{Name: "metadata.json", Backup: "../../../../victim", HadOld: false},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -715,30 +772,25 @@ func TestRecoveryRejectsUnexpectedBackupBeforeMutatingFiles(t *testing.T) {
 	}
 }
 
-func TestOpenRestoresAmbiguousLegacyArtifactDeletion(t *testing.T) {
-	ctx := context.Background()
-	root := t.TempDir()
-	ws := openTestWorkspace(t, root)
-	created, err := note.NewService(ws, 10).Create(ctx, "Deleted", "body")
-	if err != nil {
-		t.Fatal(err)
+func TestRecoveryRejectsFormerSidecarTransactionTargets(t *testing.T) {
+	names := []string{
+		"metadata.json", "layout.json", "changes.json", "spreadsheet.json", "presentation.md",
+		"image-0123456789abcdef.png",
 	}
-	artifactsDir := filepath.Join(root, ".parchment", "artifacts")
-	dir := filepath.Join(artifactsDir, created.ID)
-	tombstone := filepath.Join(artifactsDir, deletedArtifactPrefix+created.ID)
-	if err := os.Rename(dir, tombstone); err != nil {
-		t.Fatal(err)
-	}
-
-	reopened, err := Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := reopened.Get(ctx, created.ID); err != nil {
-		t.Fatalf("ambiguous legacy deletion did not restore note: %v", err)
-	}
-	if _, err := os.Lstat(tombstone); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("deletion tombstone remains: %v", err)
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			journal, err := json.Marshal([]transactionFile{{Name: name}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, transactionName), journal, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := recoverArtifactFiles(dir); err == nil {
+				t.Fatalf("recovery accepted obsolete transaction target %q", name)
+			}
+		})
 	}
 }
 
@@ -888,5 +940,114 @@ func TestNoteRepositoryIgnoresOtherArtifactKinds(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "content.md")); err != nil {
 		t.Fatalf("Delete changed non-note artifact file: %v", err)
+	}
+}
+
+func TestArtifactListsCheckKindBeforeReadingBodies(t *testing.T) {
+	listers := []struct {
+		kind artifact.Kind
+		list func(context.Context, *Workspace) (int, error)
+	}{
+		{artifact.NoteKind, func(ctx context.Context, ws *Workspace) (int, error) {
+			items, err := ws.List(ctx)
+			return len(items), err
+		}},
+		{artifact.DocumentKind, func(ctx context.Context, ws *Workspace) (int, error) {
+			items, err := ws.ListDocuments(ctx)
+			return len(items), err
+		}},
+		{artifact.PresentationKind, func(ctx context.Context, ws *Workspace) (int, error) {
+			items, err := ws.ListPresentations(ctx)
+			return len(items), err
+		}},
+		{artifact.SpreadsheetKind, func(ctx context.Context, ws *Workspace) (int, error) {
+			items, err := ws.ListSpreadsheets(ctx)
+			return len(items), err
+		}},
+	}
+	for i, source := range listers {
+		t.Run(string(source.kind), func(t *testing.T) {
+			root := t.TempDir()
+			ws := openTestWorkspace(t, root)
+			id := fmt.Sprintf("%032x", i+1)
+			now := time.Now().UTC()
+			item := artifact.Artifact{
+				ID: id, Kind: source.kind, Title: "Large", CreatedAt: now, ModifiedAt: now,
+				FormatVersion: artifact.FormatVersion,
+				Location:      filepath.ToSlash(filepath.Join(".parchment", "artifacts", id, "content.md")),
+			}
+			data, err := artifactfile.Encode(item, "body", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := filepath.Join(root, ".parchment", "artifacts", id)
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "content.md")
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Truncate(path, artifactfile.MaxFileSize+1); err != nil {
+				t.Fatal(err)
+			}
+			for _, list := range listers {
+				if list.kind == source.kind {
+					continue
+				}
+				count, err := list.list(context.Background(), ws)
+				if err != nil || count != 0 {
+					t.Fatalf("%s list read a foreign artifact body: count=%d err=%v", list.kind, count, err)
+				}
+			}
+		})
+	}
+}
+
+func TestOpenRecoversReplacementInsideRestoredPendingDeletion(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	created, err := note.NewService(ws, 10).Create(ctx, "Original", "original body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactsDir := filepath.Join(root, ".parchment", "artifacts")
+	dir := filepath.Join(artifactsDir, created.ID)
+	content, err := os.ReadFile(filepath.Join(dir, "content.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup, err := stageFile(dir, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := json.Marshal([]transactionFile{{Name: "content.md", Backup: filepath.Base(backup), HadOld: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "content.md"), []byte("partial replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, transactionName), journal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(dir, filepath.Join(artifactsDir, pendingArtifactPrefix+created.ID)); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, transactionName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("transaction journal remains after Open: %v", err)
+	}
+	loaded, err := reopened.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Title != created.Title || loaded.Body != created.Body {
+		t.Fatalf("recovered note = %+v, want original note", loaded)
 	}
 }

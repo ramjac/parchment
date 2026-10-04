@@ -46,6 +46,33 @@ func TestSingleFileWorkbookEncodesMetadataCellsAndFormulas(t *testing.T) {
 	}
 }
 
+func TestNormalizeRejectsNamesThatSheetIndexTreatsAsEqual(t *testing.T) {
+	book := formulaChain(0)
+	book.Sheets = []Sheet{
+		{Name: "Σ", Rows: [][]Cell{{{Value: "first"}}}},
+		{Name: "ς", Rows: [][]Cell{{{Value: "second"}}}},
+	}
+	if err := Normalize(&book); err == nil {
+		t.Fatal("sheet names equivalent under EqualFold were accepted")
+	}
+}
+
+func TestNormalizeRejectsInvalidUTF8SheetNames(t *testing.T) {
+	book := formulaChain(0)
+	book.Sheets[0].Name = string([]byte{0xff})
+	if err := Normalize(&book); err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
+		t.Fatalf("invalid UTF-8 sheet name returned %v", err)
+	}
+}
+
+func TestNormalizeRejectsInvalidUTF8Title(t *testing.T) {
+	book := formulaChain(0)
+	book.Title += string([]byte{0xff})
+	if err := Normalize(&book); err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
+		t.Fatalf("invalid UTF-8 workbook title returned %v", err)
+	}
+}
+
 func TestFormulaArithmeticReferencesAndCycles(t *testing.T) {
 	book := Spreadsheet{
 		Artifact: artifact.Artifact{
@@ -80,6 +107,18 @@ func TestFormulaArithmeticReferencesAndCycles(t *testing.T) {
 	}
 	if err := Normalize(&book); err == nil {
 		t.Fatal("workbook with a circular formula was accepted")
+	}
+}
+
+func TestFormulaParserSkipsUnicodeWhitespace(t *testing.T) {
+	book := formulaChain(0)
+	book.Sheets[0].Rows[0][0] = Cell{Formula: "=1\u00a0+2"}
+	if err := Normalize(&book); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Evaluate(&book, 0, 1, 1)
+	if err != nil || got != 3 {
+		t.Fatalf("formula with non-breaking space = %v, %v; want 3", got, err)
 	}
 }
 
@@ -135,6 +174,71 @@ func TestCellCoordinates(t *testing.T) {
 		if _, _, err := CellCoordinates(invalid); err == nil {
 			t.Errorf("CellCoordinates(%q) accepted invalid reference", invalid)
 		}
+	}
+}
+
+func TestFormulaReferenceShiftsPreserveDecimalExponents(t *testing.T) {
+	for _, formula := range []string{"=1.e3", "=1.e+3", "=1.E-3"} {
+		if got := shiftCellReferences(formula, 1, 1); got != formula {
+			t.Errorf("shiftCellReferences(%q) = %q", formula, got)
+		}
+	}
+}
+
+func TestNormalizeRejectsDeepFormulaChainsRegardlessOfCacheOrder(t *testing.T) {
+	book := formulaChain(maxFormulaDepth + 1)
+	if err := Normalize(&book); err == nil || !strings.Contains(err.Error(), "dependency depth") {
+		t.Fatalf("Normalize accepted an over-deep formula chain: %v", err)
+	}
+}
+
+func TestFormulaDepthBoundaryAgreesBetweenNormalizeAndEvaluate(t *testing.T) {
+	book := formulaChain(maxFormulaDepth)
+	value, err := Evaluate(&book, 0, len(book.Sheets[0].Rows), 1)
+	if err != nil || value != 1 {
+		t.Fatalf("Evaluate at the depth limit = %v, %v", value, err)
+	}
+	if err := Normalize(&book); err != nil {
+		t.Fatalf("Normalize rejected a chain at the depth limit: %v", err)
+	}
+	value, err = Evaluate(&book, 0, len(book.Sheets[0].Rows), 1)
+	if err != nil || value != 1 {
+		t.Fatalf("Evaluate after Normalize = %v, %v", value, err)
+	}
+}
+
+func formulaChain(formulas int) Spreadsheet {
+	rows := make([][]Cell, formulas+1)
+	rows[0] = []Cell{{Value: "1"}}
+	for row := 2; row <= len(rows); row++ {
+		rows[row-1] = []Cell{{Formula: "=" + CellName(row-1, 1)}}
+	}
+	return Spreadsheet{
+		Artifact: artifact.Artifact{
+			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.SpreadsheetKind,
+			Title: "Deep formulas", FormatVersion: artifact.FormatVersion,
+			Location:  ".parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+			CreatedAt: fixedTime, ModifiedAt: fixedTime,
+		},
+		Version: FileVersion, Sheets: []Sheet{{Name: "Sheet1", Rows: rows}},
+	}
+}
+
+func TestEqualTreatsEmptyMetadataSlicesAsNil(t *testing.T) {
+	left := Spreadsheet{
+		Artifact: artifact.Artifact{
+			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.SpreadsheetKind,
+			Title: "Metadata", FormatVersion: artifact.FormatVersion,
+			Location:  ".parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+			CreatedAt: fixedTime, ModifiedAt: fixedTime,
+		},
+		Version: FileVersion, Sheets: []Sheet{{Name: "Sheet1", Rows: [][]Cell{{{Value: "1"}}}}},
+	}
+	right := left
+	right.Tags = []string{}
+	right.Links = []string{}
+	if !Equal(left, right) {
+		t.Fatal("empty tags and links should equal nil slices")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -53,29 +54,14 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 				if err != nil {
 					return err
 				}
-				info, statErr := file.Stat()
-				if statErr != nil {
-					return errors.Join(statErr, file.Close())
-				}
-				if info.Size() > 32<<20 {
-					return errors.Join(errors.New("CSV input is larger than 32 MiB"), file.Close())
-				}
-				reader := csv.NewReader(file)
-				reader.FieldsPerRecord = -1
-				records, readErr := reader.ReadAll()
+				var readErr error
+				rows, readErr = readSpreadsheetCSV(file, 32<<20)
 				closeErr := file.Close()
 				if readErr != nil {
-					return fmt.Errorf("read CSV input: %w", readErr)
+					return errors.Join(readErr, closeErr)
 				}
 				if closeErr != nil {
 					return fmt.Errorf("close CSV input: %w", closeErr)
-				}
-				for _, record := range records {
-					row := make([]spreadsheet.Cell, len(record))
-					for i, value := range record {
-						row[i] = spreadsheet.Cell{Value: value}
-					}
-					rows = append(rows, row)
 				}
 			}
 			book, err := service.Create(cmd.Context(), args[0], rows)
@@ -229,4 +215,37 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 	}
 	deleteCommand.Flags().Bool("yes", false, "confirm permanent deletion")
 	group.AddCommand(deleteCommand)
+}
+
+func readSpreadsheetCSV(input io.Reader, maxBytes int64) ([][]spreadsheet.Cell, error) {
+	limited := &io.LimitedReader{R: input, N: maxBytes + 1}
+	reader := csv.NewReader(limited)
+	reader.FieldsPerRecord = -1
+	var rows [][]spreadsheet.Cell
+	for {
+		record, err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			if limited.N == 0 {
+				return nil, fmt.Errorf("CSV input is larger than %d bytes", maxBytes)
+			}
+			return rows, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read CSV input: %w", err)
+		}
+		if limited.N == 0 {
+			return nil, fmt.Errorf("CSV input is larger than %d bytes", maxBytes)
+		}
+		if len(rows) >= spreadsheet.MaxRows {
+			return nil, fmt.Errorf("CSV input cannot exceed %d rows", spreadsheet.MaxRows)
+		}
+		if len(record) > spreadsheet.MaxColumns {
+			return nil, fmt.Errorf("CSV input cannot exceed %d columns", spreadsheet.MaxColumns)
+		}
+		row := make([]spreadsheet.Cell, len(record))
+		for i, value := range record {
+			row[i] = spreadsheet.Cell{Value: value}
+		}
+		rows = append(rows, row)
+	}
 }

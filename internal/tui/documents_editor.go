@@ -356,7 +356,7 @@ func (s *documentsScreen) save() tea.Cmd {
 	service, creating, proposing, snapshot := s.service, s.creating, s.proposing, s.snapshot
 	return func() tea.Msg {
 		if proposing {
-			change, err := service.Propose(ctx, snapshot.ID, "TUI edit", draft)
+			change, err := service.Propose(ctx, snapshot, "TUI edit", draft)
 			return documentProposedMsg{change: change, err: err}
 		}
 		var d document.Document
