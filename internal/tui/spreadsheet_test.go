@@ -8,7 +8,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"example.com/parchment/internal/spreadsheet"
-	"example.com/parchment/internal/workspace"
 )
 
 // driveSheet sends a message and feeds command results back into the model.
@@ -67,7 +66,7 @@ func sheetKey(name string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(name)}
 }
 
-func newSheetModel(t *testing.T, rows [][]spreadsheet.Cell) (*spreadsheetModel, *spreadsheet.Service, *workspace.Workspace, string) {
+func newSheetModel(t *testing.T, rows [][]spreadsheet.Cell) (*spreadsheetModel, *spreadsheet.Service, *memoryRepository, string) {
 	t.Helper()
 	ws := openTestWorkspace(t)
 	service := spreadsheet.NewService(ws, 10)

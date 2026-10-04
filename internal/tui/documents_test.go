@@ -51,7 +51,7 @@ func newDocumentsModel(t *testing.T) (*Model, *document.Service) {
 	t.Helper()
 	ws := openTestWorkspace(t)
 	docs := document.NewService(ws, 10)
-	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root(), WithDocuments(docs))
+	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test", WithDocuments(docs))
 	m := &model
 	drive(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	drive(t, m, notesLoadedMsg{})
@@ -66,7 +66,7 @@ func TestInitialDocumentOptionOpensMatchingDocument(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root(),
+	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test",
 		WithDocuments(service), WithInitialDocument(created.ID))
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	model = *updated.(*Model)
@@ -577,7 +577,7 @@ func TestDocumentOutlineNavigation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root(),
+	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test",
 		WithDocuments(service), WithInitialDocument(created.ID), WithSingleDocumentFile())
 	m := &model
 	drive(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})

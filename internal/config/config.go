@@ -11,10 +11,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-const (
-	Version            = 1
-	DefaultArtifactDir = "parchment/artifacts"
-)
+const Version = 1
 
 // Settings is the fully resolved application configuration.
 type Settings struct {
@@ -31,7 +28,7 @@ type fileConfig struct {
 	Editor    *string `toml:"editor"`
 	Theme     *string `toml:"theme"`
 	UndoLimit *int    `toml:"undo_limit"`
-	Logging struct {
+	Logging   struct {
 		Level  *string `toml:"level"`
 		Format *string `toml:"format"`
 	} `toml:"logging"`
@@ -46,7 +43,7 @@ type fileConfig struct {
 func Load(userPath string) (Settings, error) {
 	settings := Settings{
 		Editor: "vi", Theme: "adaptive", UndoLimit: 100,
-		LogLevel:    "warn", LogFormat: "text",
+		LogLevel: "warn", LogFormat: "text",
 	}
 	if userPath != "" {
 		cfg, err := read(userPath)
@@ -60,16 +57,6 @@ func Load(userPath string) (Settings, error) {
 		return Settings{}, errors.New("undo_limit must be between 1 and 10000")
 	}
 	return settings, nil
-}
-
-// ValidateArtifactDir returns a normalized workspace-relative artifact directory.
-func ValidateArtifactDir(value string) (string, error) {
-	clean := filepath.Clean(filepath.FromSlash(strings.TrimSpace(value)))
-	if clean == "" || clean == "." || filepath.IsAbs(clean) || filepath.VolumeName(clean) != "" ||
-		clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("workspace artifact_dir must be a non-empty path within the workspace")
-	}
-	return filepath.ToSlash(clean), nil
 }
 
 // UserConfigPath returns the platform-appropriate user configuration path.

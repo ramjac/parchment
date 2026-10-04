@@ -34,19 +34,6 @@ func TestLoadPrecedenceAndValidation(t *testing.T) {
 	}
 }
 
-func TestArtifactDirectoryValidation(t *testing.T) {
-	for _, invalid := range []string{"", ".", "../outside", "nested/../../outside", "/absolute/path"} {
-		if _, err := ValidateArtifactDir(invalid); err == nil {
-			t.Errorf("ValidateArtifactDir(%q) succeeded", invalid)
-		}
-	}
-	for _, valid := range []string{"parchment/artifacts", "notes", "nested/../artifacts"} {
-		if _, err := ValidateArtifactDir(valid); err != nil {
-			t.Errorf("ValidateArtifactDir(%q): %v", valid, err)
-		}
-	}
-}
-
 func TestUserConfigPathUsesPerUserParchmentTOML(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

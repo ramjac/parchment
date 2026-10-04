@@ -19,7 +19,7 @@ import (
 
 func TestResponsiveMinimumAndHelpModal(t *testing.T) {
 	ws := openTestWorkspace(t)
-	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())
+	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test")
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 30, Height: 8})
 	model = *updated.(*Model)
 	if view := model.View(); !strings.Contains(view, "too small") || !strings.Contains(view, "press q") {
@@ -130,7 +130,7 @@ func TestInitialNoteOptionSelectsAndPreviewsNote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	model := NewModel(service, ws, "test", ws.Root(), WithInitialNote(target.ID))
+	model := NewModel(service, ws, "test", "/tmp/test", WithInitialNote(target.ID))
 	message := model.Init()()
 	updated, _ := model.Update(message)
 	model = *updated.(*Model)
@@ -140,22 +140,9 @@ func TestInitialNoteOptionSelectsAndPreviewsNote(t *testing.T) {
 	}
 }
 
-func openTestWorkspace(t *testing.T) *workspace.Workspace {
-	t.Helper()
-	root := t.TempDir()
-	if err := workspace.Init(root); err != nil {
-		t.Fatal(err)
-	}
-	ws, err := workspace.Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return ws
-}
-
 func TestPendingCtrlCCancelsOperationAndQuits(t *testing.T) {
 	ws := openTestWorkspace(t)
-	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())
+	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test")
 	opCtx, cancel := context.WithCancel(context.Background())
 	model.pending = true
 	model.cancelOperation = cancel
@@ -174,7 +161,7 @@ func TestPendingCtrlCCancelsOperationAndQuits(t *testing.T) {
 
 func TestMinimumSizeQuitCancelsPendingOperation(t *testing.T) {
 	ws := openTestWorkspace(t)
-	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())
+	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test")
 	opCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	model.pending = true
@@ -192,7 +179,7 @@ func TestMinimumSizeQuitCancelsPendingOperation(t *testing.T) {
 
 func TestPendingSaveCancellationKeepsEditorOpen(t *testing.T) {
 	ws := openTestWorkspace(t)
-	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())
+	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test")
 	opCtx, cancel := context.WithCancel(context.Background())
 	model.mode = editing
 	model.pending = true
@@ -218,7 +205,7 @@ func TestPendingSaveCancellationKeepsEditorOpen(t *testing.T) {
 
 func TestNarrowListKeepsSelectedNoteVisible(t *testing.T) {
 	ws := openTestWorkspace(t)
-	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())
+	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test")
 	model.width, model.height, model.selected = 50, 12, 15
 	for i := range 30 {
 		model.notes = append(model.notes, note.Note{Artifact: artifact.Artifact{Title: fmt.Sprintf("Note %02d", i)}})
@@ -284,7 +271,7 @@ func TestEditRefusesNotesThatEditorWouldNormalize(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ws := openTestWorkspace(t)
-			model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())
+			model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test")
 			model.width, model.height = 100, 20
 			model.pending = false
 			model.notes = []note.Note{{
@@ -314,7 +301,7 @@ func TestEditSaveRejectsConcurrentExternalChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	model := NewModel(service, ws, "test", ws.Root())
+	model := NewModel(service, ws, "test", "/tmp/test")
 	model.pending = false
 	model.notes = []note.Note{created}
 	model.width, model.height = 100, 20
@@ -353,7 +340,7 @@ func TestEditSaveRejectsConcurrentExternalChange(t *testing.T) {
 
 func TestPreviewCanScrollInWideLayout(t *testing.T) {
 	ws := openTestWorkspace(t)
-	model := NewModel(note.NewService(ws, 10), ws, "test", ws.Root())
+	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test")
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 16})
 	model = *updated.(*Model)
 	body := make([]string, 30)
@@ -389,7 +376,7 @@ func TestReloadPreservesActiveSearch(t *testing.T) {
 	if _, err := service.Create(ctx, "Other note", "unrelated"); err != nil {
 		t.Fatal(err)
 	}
-	model := NewModel(service, ws, "test", ws.Root())
+	model := NewModel(service, ws, "test", "/tmp/test")
 	model.searchActive = true
 	model.searchQuery = "needle"
 	model.errMessage = "previous failure"
