@@ -548,13 +548,33 @@ func TestInvalidEmbeddedMetadataDoesNotFallBackToLegacySidecars(t *testing.T) {
 	if _, err := notes.Rename(ctx, legacyNote.ID, "Current note"); err != nil {
 		t.Fatal(err)
 	}
-	corruptMetadata(filepath.Join(noteDir, "content.md"))
+	noteContentPath := filepath.Join(noteDir, "content.md")
+	noteContent, err := os.ReadFile(noteContentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(noteContentPath, append([]byte("\n"), noteContent...))
+	migratedNote, err := notes.Get(ctx, legacyNote.ID)
+	if err != nil || migratedNote.Title != "Current note" || migratedNote.Body != legacyNote.Body {
+		t.Fatalf("migrated note after leading blank line = %+v, %v", migratedNote, err)
+	}
+	corruptMetadata(noteContentPath)
 	if _, err := notes.Get(ctx, legacyNote.ID); err == nil {
 		t.Fatal("malformed note metadata fell back to the stale sidecar")
 	}
 
 	documents := document.NewService(ws, 10)
-	legacyDocument, err := documents.Create(ctx, document.Draft{Title: "Legacy document", Body: "Plain Markdown"})
+	layout := document.DefaultLayout()
+	layout.Columns = 2
+	legacyDocument, err := documents.Create(ctx, document.Draft{
+		Title: "Legacy document", Body: "Plain Markdown", Layout: layout,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := documents.Propose(ctx, legacyDocument, "Existing proposal", document.Draft{
+		Title: legacyDocument.Title, Body: legacyDocument.Body + " proposed", Layout: legacyDocument.Layout,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -563,12 +583,45 @@ func TestInvalidEmbeddedMetadataDoesNotFallBackToLegacySidecars(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	layoutData, err := json.Marshal(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changeData, err := json.Marshal([]document.Change{proposal})
+	if err != nil {
+		t.Fatal(err)
+	}
 	write(filepath.Join(documentDir, "metadata.json"), documentMetadata)
+	write(filepath.Join(documentDir, "layout.json"), layoutData)
+	write(filepath.Join(documentDir, "changes.json"), changeData)
 	write(filepath.Join(documentDir, "content.md"), []byte(legacyDocument.Body))
 	if _, err := documents.Rename(ctx, legacyDocument.ID, "Current document"); err != nil {
 		t.Fatal(err)
 	}
-	corruptMetadata(filepath.Join(documentDir, "content.md"))
+	staleLayout := document.DefaultLayout()
+	staleLayout.Columns = 3
+	staleLayoutData, err := json.Marshal(staleLayout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join(documentDir, "layout.json"), staleLayoutData)
+	write(filepath.Join(documentDir, "changes.json"), []byte("[]"))
+	documentContentPath := filepath.Join(documentDir, "content.md")
+	documentContent, err := os.ReadFile(documentContentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(documentContentPath, append([]byte("\n"), documentContent...))
+	migratedDocument, err := documents.Get(ctx, legacyDocument.ID)
+	if err != nil || migratedDocument.Title != "Current document" || migratedDocument.Body != legacyDocument.Body ||
+		migratedDocument.Layout != layout {
+		t.Fatalf("migrated document after leading blank line = %+v, %v", migratedDocument, err)
+	}
+	migratedChanges, err := documents.Changes(ctx, legacyDocument.ID)
+	if err != nil || len(migratedChanges) != 1 || migratedChanges[0].ID != proposal.ID {
+		t.Fatalf("migrated proposal history after leading blank line = %+v, %v", migratedChanges, err)
+	}
+	corruptMetadata(documentContentPath)
 	if _, err := documents.Get(ctx, legacyDocument.ID); err == nil {
 		t.Fatal("malformed document metadata fell back to the stale sidecar")
 	}

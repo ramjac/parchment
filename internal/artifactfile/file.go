@@ -140,7 +140,18 @@ func ReadMetadata(data []byte) (artifact.Artifact, error) {
 }
 
 func readMetadata(source string) (artifact.Artifact, int, error) {
-	line, _ := nextLine(source, 0)
+	start := 0
+	for start < len(source) {
+		line, end := nextLine(source, start)
+		if !isBlankLine(line) {
+			break
+		}
+		start = end
+	}
+	if start == len(source) {
+		return artifact.Artifact{}, 0, fmt.Errorf("%w: it must be the first Markdown block", ErrMetadataMissing)
+	}
+	line, _ := nextLine(source, start)
 	opening, ok := parseOpening(line)
 	if !ok || opening.name != metadataBlock {
 		if _, info, isFence := parseFence(line); isFence {
@@ -151,7 +162,7 @@ func readMetadata(source string) (artifact.Artifact, int, error) {
 		}
 		return artifact.Artifact{}, 0, fmt.Errorf("%w: it must be the first Markdown block", ErrMetadataMissing)
 	}
-	metadataBytes, offset, err := readBlock(source, 0, opening)
+	metadataBytes, offset, err := readBlock(source, start, opening)
 	if err != nil {
 		return artifact.Artifact{}, 0, fmt.Errorf("read Parchment metadata: %w", err)
 	}

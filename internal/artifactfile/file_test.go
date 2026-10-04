@@ -65,6 +65,19 @@ func TestReadMetadataDistinguishesMissingFromInvalidEnvelope(t *testing.T) {
 		errors.Is(err, ErrMetadataMissing) {
 		t.Fatalf("malformed metadata opening error = %v", err)
 	}
+	data, err := Encode(testArtifact(), "body", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	padded := append([]byte("\n\n"), data...)
+	metadata, err := ReadMetadata(padded)
+	if err != nil || metadata.ID != testArtifact().ID {
+		t.Fatalf("metadata after leading blank lines = %+v, %v", metadata, err)
+	}
+	file, err := Decode(padded)
+	if err != nil || file.Body != "body" {
+		t.Fatalf("decoded artifact after leading blank lines = %+v, %v", file, err)
+	}
 }
 
 func TestEncodeDecodePreservesBodyStartingWithReservedFence(t *testing.T) {
