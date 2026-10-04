@@ -167,6 +167,7 @@ func Parse(source string) (Deck, error) {
 	inFence := false
 	fenceMarker := ""
 	fenceListIndent := 0
+	var listIndents []int
 	listIndent := 0
 	var current *Slide
 	var header, body, notes strings.Builder
@@ -192,6 +193,11 @@ func Parse(source string) (Deck, error) {
 			(isIndentedCode(line) || !strings.HasPrefix(trimmed, "# ")) {
 			return Deck{}, fmt.Errorf("line %d: presentation must begin with a '# Title' heading", lineNumber)
 		}
+		if len(listIndents) > 0 {
+			listIndent = listIndents[len(listIndents)-1]
+		} else {
+			listIndent = 0
+		}
 		listContent, itemIndent, isListItem := listItemContent(line, listIndent)
 		marker := markdownFence(trimmed)
 		markerIndent := 0
@@ -209,9 +215,19 @@ func Parse(source string) (Deck, error) {
 		}
 		if !inFence {
 			if isListItem {
-				listIndent = itemIndent
+				for len(listIndents) > 0 && listIndents[len(listIndents)-1] >= itemIndent {
+					listIndents = listIndents[:len(listIndents)-1]
+				}
+				listIndents = append(listIndents, itemIndent)
 				marker, markerIndent = markdownFence(strings.TrimSpace(listContent)), itemIndent
-			} else if trimmed != "" && leadingSpaces(line) < listIndent {
+			} else if trimmed != "" {
+				for len(listIndents) > 0 && leadingSpaces(line) < listIndents[len(listIndents)-1] {
+					listIndents = listIndents[:len(listIndents)-1]
+				}
+			}
+			if len(listIndents) > 0 {
+				listIndent = listIndents[len(listIndents)-1]
+			} else {
 				listIndent = 0
 			}
 			if !isListItem && listIndent > 0 && leadingSpaces(line) >= listIndent {
@@ -322,6 +338,9 @@ func markdownFence(line string) string {
 		i++
 	}
 	if i < 3 {
+		return ""
+	}
+	if line[0] == '`' && strings.ContainsRune(line[i:], '`') {
 		return ""
 	}
 	return line[:i]

@@ -175,6 +175,33 @@ func TestParseKeepsHeadingsInListContinuationsOnCurrentSlide(t *testing.T) {
 	}
 }
 
+func TestParseRestoresParentListContextAfterDedent(t *testing.T) {
+	source := "# Nested list content\n\n## First slide\n\n- Outer\n  - Inner\n  ## Outer detail\n  # Outer title\n\n## Second slide\n\nEnd\n"
+	deck, err := Parse(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deck.Slides) != 2 {
+		t.Fatalf("parsed %d slides, want 2", len(deck.Slides))
+	}
+	for _, want := range []string{"  ## Outer detail", "  # Outer title"} {
+		if !strings.Contains(deck.Slides[0].Body, want) {
+			t.Errorf("outer list continuation lost %q:\n%s", want, deck.Slides[0].Body)
+		}
+	}
+}
+
+func TestParsePreservesInlineTripleBackticks(t *testing.T) {
+	source := "# Inline code\n\n## Slide\n\nText with ```inline code``` in the middle.\n"
+	deck, err := Parse(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deck.Slides) != 1 || !strings.Contains(deck.Slides[0].Body, "```inline code```") {
+		t.Fatalf("inline backticks were not kept as slide text: %+v", deck)
+	}
+}
+
 func TestIndentedFenceIsCodeAndHeaderFencesArePreserved(t *testing.T) {
 	source := "# Code talk\n\n```go\nsample()\n```\n\n## Example\n\n    ```\n    ## not a slide\n    ```\n\n## After\n\nDone.\n"
 	deck, err := Parse(source)
