@@ -173,6 +173,13 @@ Use `presentation create <title> --body-file slides.md` to add a deck,
 The parser preserves Markdown for later rendering but does not yet render it;
 embedded media and Go present command directives are not implemented.
 
+## Examples
+
+The [`examples/`](examples/) directory contains starter content for notes,
+documents, spreadsheets, presentations, and images. Its README shows how to
+create those artifacts in a sample workspace. The image is embedded in the
+document because standalone image editing is not implemented yet.
+
 ## Configuration
 
 User configuration is read from the platform's standard user configuration
@@ -251,7 +258,6 @@ The broader suite is planned to add:
   tracking, consistent with the spreadsheet format.
 - Make the default directory for storing Parchment artifacts a non-hidden folder and also make the default directory path configurable. Generally assume that Parchment artifacts might be read by other applications; especially text file and markdown interpreters.
 - Background auto-save and recovery from auto-save so that in the event Parchment crashes or is force closed, any changes since the last save can be optionally recovered.
-- Examples directory with examples of each of the types of artifacts.
 
 ## Development
 
