@@ -1,0 +1,425 @@
+package presentation
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"reflect"
+	"sort"
+	"strings"
+	"time"
+
+	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/history"
+)
+
+const FileVersion = 1
+
+var ErrNotFound = errors.New("presentation not found")
+
+// Slide is a Markdown section with presentation-only speaker notes.
+type Slide struct {
+	Title string
+	Body  string
+	Notes string
+}
+
+// Deck contains the parsed presentation structure.
+type Deck struct {
+	Title  string
+	Header string
+	Slides []Slide
+}
+
+// Presentation stores a complete Markdown presentation in one file.
+type Presentation struct {
+	artifact.Artifact
+	Version int
+	Source  string
+}
+
+type fileHeader struct {
+	Version  int               `json:"version"`
+	Artifact artifact.Artifact `json:"artifact"`
+}
+
+// Repository persists presentations as single-file artifacts.
+type Repository interface {
+	ListPresentations(context.Context) ([]Presentation, error)
+	GetPresentation(context.Context, string) (Presentation, error)
+	TransitionPresentation(context.Context, string, *Presentation, *Presentation) error
+}
+
+// Service applies presentation changes and tracks undo and redo in memory.
+type Service struct {
+	repository Repository
+	history    *history.Stack
+	now        func() time.Time
+}
+
+func NewService(repository Repository, undoLimit int) *Service {
+	return &Service{
+		repository: repository, history: history.New(undoLimit),
+		now: func() time.Time { return time.Now().UTC() },
+	}
+}
+
+func (s *Service) List(ctx context.Context) ([]Presentation, error) {
+	items, err := s.repository.ListPresentations(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].ModifiedAt.After(items[j].ModifiedAt)
+	})
+	return items, nil
+}
+
+func (s *Service) Get(ctx context.Context, id string) (Presentation, error) {
+	return s.repository.GetPresentation(ctx, id)
+}
+
+func (s *Service) Create(ctx context.Context, title, source string) (Presentation, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return Presentation{}, errors.New("presentation title is required")
+	}
+	if strings.TrimSpace(source) == "" {
+		source = "# " + title + "\n\n## Slide 1\n\n"
+	}
+	deck, err := Parse(source)
+	if err != nil {
+		return Presentation{}, err
+	}
+	if deck.Title != title {
+		return Presentation{}, fmt.Errorf("Markdown title %q does not match presentation title %q", deck.Title, title)
+	}
+	idBytes := make([]byte, 16)
+	if _, err := rand.Read(idBytes); err != nil {
+		return Presentation{}, fmt.Errorf("generate presentation ID: %w", err)
+	}
+	id := hex.EncodeToString(idBytes)
+	now := s.now().UTC()
+	item := Presentation{
+		Artifact: artifact.Artifact{
+			ID: id, Kind: artifact.PresentationKind, Title: title,
+			CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
+			Location: ".parchment/artifacts/" + id + "/presentation.md",
+		},
+		Version: FileVersion, Source: source,
+	}
+	if err := Validate(item); err != nil {
+		return Presentation{}, err
+	}
+	if err := s.change(ctx, nil, &item, "Create presentation"); err != nil {
+		return Presentation{}, err
+	}
+	return clonePresentation(item), nil
+}
+
+// Update replaces the presentation source if expected still matches storage.
+func (s *Service) Update(ctx context.Context, expected Presentation, source string) (Presentation, error) {
+	deck, err := Parse(source)
+	if err != nil {
+		return Presentation{}, err
+	}
+	if expected.Source == source && expected.Title == deck.Title {
+		return expected, nil
+	}
+	after := clonePresentation(expected)
+	after.Title = deck.Title
+	after.Source = source
+	after.ModifiedAt = s.now().UTC()
+	if err := Validate(after); err != nil {
+		return Presentation{}, err
+	}
+	if err := s.change(ctx, &expected, &after, "Edit presentation"); err != nil {
+		return Presentation{}, err
+	}
+	return clonePresentation(after), nil
+}
+
+func (s *Service) Delete(ctx context.Context, id string) error {
+	before, err := s.repository.GetPresentation(ctx, id)
+	if err != nil {
+		return err
+	}
+	return s.change(ctx, &before, nil, "Delete presentation")
+}
+
+func (s *Service) Undo(ctx context.Context) (string, error) { return s.history.Undo(ctx) }
+func (s *Service) Redo(ctx context.Context) (string, error) { return s.history.Redo(ctx) }
+
+// Parse parses the presentation-oriented subset of Go present's Markdown
+// syntax: an H1 title, H2 slide headings, H3 subsections, // comments, and
+// : speaker-note lines. Markdown text is preserved for the view layer.
+func Parse(source string) (Deck, error) {
+	var deck Deck
+	scanner := bufio.NewScanner(strings.NewReader(source))
+	scanner.Buffer(make([]byte, 4096), 4<<20)
+	lineNumber := 0
+	inFence := false
+	fenceMarker := ""
+	var current *Slide
+	var header, body, notes strings.Builder
+	flush := func() {
+		if current != nil {
+			current.Body = strings.TrimSpace(body.String())
+			current.Notes = strings.TrimSpace(notes.String())
+			deck.Slides = append(deck.Slides, *current)
+			current = nil
+			body.Reset()
+			notes.Reset()
+		}
+	}
+	for scanner.Scan() {
+		lineNumber++
+		line := strings.TrimSuffix(scanner.Text(), "\r")
+		trimmed := strings.TrimSpace(line)
+		if lineNumber == 1 {
+			line = strings.TrimPrefix(line, "\uFEFF")
+			trimmed = strings.TrimSpace(line)
+		}
+		if marker := markdownFence(trimmed); marker != "" {
+			if !inFence {
+				inFence, fenceMarker = true, marker
+			} else if marker[0] == fenceMarker[0] && len(marker) >= len(fenceMarker) &&
+				strings.TrimSpace(trimmed[len(marker):]) == "" {
+				inFence, fenceMarker = false, ""
+			}
+			if current != nil {
+				body.WriteString(line + "\n")
+			}
+			continue
+		}
+		if inFence {
+			if current != nil {
+				body.WriteString(line + "\n")
+			} else if deck.Title != "" {
+				header.WriteString(line + "\n")
+			}
+			continue
+		}
+		if isIndentedCode(line) {
+			if current != nil {
+				body.WriteString(line + "\n")
+			} else if deck.Title != "" {
+				header.WriteString(line + "\n")
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "# ") {
+			if deck.Title != "" || current != nil {
+				return Deck{}, fmt.Errorf("line %d: only one top-level presentation title is allowed", lineNumber)
+			}
+			deck.Title = strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))
+			continue
+		}
+		if strings.HasPrefix(trimmed, "## ") && !strings.HasPrefix(trimmed, "### ") {
+			flush()
+			title := strings.TrimSpace(strings.TrimPrefix(trimmed, "## "))
+			title = stripAnchor(title)
+			if title == "" {
+				return Deck{}, fmt.Errorf("line %d: slide title is required", lineNumber)
+			}
+			current = &Slide{Title: title}
+			continue
+		}
+		if deck.Title == "" {
+			if trimmed != "" {
+				return Deck{}, fmt.Errorf("line %d: presentation must begin with a '# Title' heading", lineNumber)
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		if strings.HasPrefix(line, ": ") {
+			if current == nil {
+				return Deck{}, fmt.Errorf("line %d: speaker notes must follow a slide heading", lineNumber)
+			}
+			notes.WriteString(strings.TrimPrefix(line, ": ") + "\n")
+			continue
+		}
+		if current != nil {
+			body.WriteString(line + "\n")
+		} else {
+			header.WriteString(line + "\n")
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return Deck{}, fmt.Errorf("read presentation Markdown: %w", err)
+	}
+	if inFence {
+		return Deck{}, errors.New("presentation contains an unclosed fenced code block")
+	}
+	flush()
+	if deck.Title == "" {
+		return Deck{}, errors.New("presentation title is required as a '# Title' heading")
+	}
+	if len(deck.Slides) == 0 {
+		return Deck{}, errors.New("presentation must contain at least one '## Slide' heading")
+	}
+	deck.Header = strings.TrimSpace(header.String())
+	return deck, nil
+}
+
+func isIndentedCode(line string) bool {
+	return strings.HasPrefix(line, "\t") || strings.HasPrefix(line, "    ")
+}
+
+func markdownFence(line string) string {
+	if len(line) < 3 || (line[0] != '`' && line[0] != '~') {
+		return ""
+	}
+	i := 1
+	for i < len(line) && line[i] == line[0] {
+		i++
+	}
+	if i < 3 {
+		return ""
+	}
+	return line[:i]
+}
+
+func stripAnchor(title string) string {
+	if index := strings.LastIndex(title, " {#"); index >= 0 && strings.HasSuffix(title, "}") {
+		return strings.TrimSpace(title[:index])
+	}
+	return title
+}
+
+// Validate checks the shared artifact envelope and the embedded Markdown.
+func Validate(item Presentation) error {
+	if err := item.Artifact.Validate(); err != nil {
+		return err
+	}
+	if item.Kind != artifact.PresentationKind {
+		return errors.New("artifact is not a presentation")
+	}
+	if item.Version != FileVersion {
+		return fmt.Errorf("unsupported presentation version %d", item.Version)
+	}
+	deck, err := Parse(item.Source)
+	if err != nil {
+		return err
+	}
+	if deck.Title != item.Title {
+		return errors.New("presentation metadata title does not match Markdown title")
+	}
+	return nil
+}
+
+// Encode writes a self-contained Markdown file with metadata in an HTML comment.
+func Encode(item Presentation) ([]byte, error) {
+	if err := Validate(item); err != nil {
+		return nil, err
+	}
+	header, err := json.Marshal(fileHeader{Version: FileVersion, Artifact: item.Artifact})
+	if err != nil {
+		return nil, fmt.Errorf("encode presentation metadata: %w", err)
+	}
+	var data bytes.Buffer
+	data.WriteString("<!-- parchment: ")
+	data.Write(header)
+	data.WriteString(" -->\n")
+	data.WriteString(item.Source)
+	return data.Bytes(), nil
+}
+
+// Decode reads metadata and Markdown from a single presentation file.
+func Decode(data []byte) (Presentation, error) {
+	line, source, ok := bytes.Cut(data, []byte{'\n'})
+	line = bytes.TrimSuffix(line, []byte{'\r'})
+	if !ok || !bytes.HasPrefix(line, []byte("<!-- parchment: ")) || !bytes.HasSuffix(line, []byte(" -->")) {
+		return Presentation{}, errors.New("presentation metadata comment is missing or malformed")
+	}
+	headerData := bytes.TrimSuffix(bytes.TrimPrefix(line, []byte("<!-- parchment: ")), []byte(" -->"))
+	var header fileHeader
+	if err := json.Unmarshal(headerData, &header); err != nil {
+		return Presentation{}, fmt.Errorf("decode presentation metadata: %w", err)
+	}
+	if header.Version != FileVersion {
+		return Presentation{}, fmt.Errorf("unsupported presentation file version %d", header.Version)
+	}
+	item := Presentation{Artifact: header.Artifact, Version: header.Version, Source: string(source)}
+	item.CreatedAt = item.CreatedAt.UTC()
+	item.ModifiedAt = item.ModifiedAt.UTC()
+	if err := Validate(item); err != nil {
+		return Presentation{}, fmt.Errorf("validate presentation: %w", err)
+	}
+	return item, nil
+}
+
+// Preview returns slide text without speaker notes or comments. It deliberately
+// leaves Markdown syntax intact rather than storing rendered output.
+func Preview(deck Deck) string {
+	var output strings.Builder
+	fmt.Fprintf(&output, "%s\n%s\n", deck.Title, strings.Repeat("=", len([]rune(deck.Title))))
+	if deck.Header != "" {
+		output.WriteString("\n" + deck.Header + "\n")
+	}
+	for _, slide := range deck.Slides {
+		output.WriteString("\n\f\n")
+		fmt.Fprintf(&output, "%s\n%s\n\n", slide.Title, strings.Repeat("=", len([]rune(slide.Title))))
+		output.WriteString(slide.Body)
+		if !strings.HasSuffix(slide.Body, "\n") {
+			output.WriteByte('\n')
+		}
+	}
+	return output.String()
+}
+
+func clonePresentation(item Presentation) Presentation {
+	item.Tags = append([]string(nil), item.Tags...)
+	item.Links = append([]string(nil), item.Links...)
+	return item
+}
+
+func Equal(left, right Presentation) bool { return reflect.DeepEqual(left, right) }
+
+func (s *Service) change(ctx context.Context, before, after *Presentation, description string) error {
+	return s.history.Execute(ctx, presentationOperation{
+		repository: s.repository, before: clonePresentationPointer(before),
+		after: clonePresentationPointer(after), description: description,
+	})
+}
+
+func clonePresentationPointer(item *Presentation) *Presentation {
+	if item == nil {
+		return nil
+	}
+	clone := clonePresentation(*item)
+	return &clone
+}
+
+type presentationOperation struct {
+	repository  Repository
+	before      *Presentation
+	after       *Presentation
+	description string
+}
+
+func (o presentationOperation) Apply(ctx context.Context) error {
+	return o.transition(ctx, o.before, o.after)
+}
+func (o presentationOperation) Undo(ctx context.Context) error {
+	return o.transition(ctx, o.after, o.before)
+}
+func (o presentationOperation) Description() string { return o.description }
+func (o presentationOperation) transition(ctx context.Context, expected, target *Presentation) error {
+	id := ""
+	if o.before != nil {
+		id = o.before.ID
+	} else if o.after != nil {
+		id = o.after.ID
+	} else {
+		return errors.New("presentation operation has no artifact")
+	}
+	return o.repository.TransitionPresentation(ctx, id, expected, target)
+}

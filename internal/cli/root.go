@@ -14,6 +14,7 @@ import (
 	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/note"
+	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/search"
 	"example.com/parchment/internal/spreadsheet"
 	"example.com/parchment/internal/tui"
@@ -173,6 +174,7 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 
 	addDocumentCommands(root, streams)
 	addSpreadsheetCommands(root, streams)
+	addPresentationCommands(root, streams)
 
 	root.AddCommand(&cobra.Command{
 		Use: "search <query>", Short: "Search note titles, Markdown, and tags", Args: cobra.ExactArgs(1),
@@ -254,6 +256,14 @@ func openSpreadsheets(cmd *cobra.Command) (*workspace.Workspace, *spreadsheet.Se
 		return nil, nil, err
 	}
 	return ws, spreadsheet.NewService(ws, settings.UndoLimit), nil
+}
+
+func openPresentations(cmd *cobra.Command) (*workspace.Workspace, *presentation.Service, error) {
+	ws, settings, err := openWorkspace(cmd)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ws, presentation.NewService(ws, settings.UndoLimit), nil
 }
 
 func openWorkspace(cmd *cobra.Command) (*workspace.Workspace, config.Settings, error) {
