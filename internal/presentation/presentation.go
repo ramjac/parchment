@@ -186,7 +186,11 @@ func Parse(source string) (Deck, error) {
 			line = strings.TrimPrefix(line, "\uFEFF")
 			trimmed = strings.TrimSpace(line)
 		}
-		if marker := markdownFence(trimmed); marker != "" && !isIndentedCode(line) {
+		marker := markdownFence(trimmed)
+		if marker == "" && !inFence && !isIndentedCode(line) {
+			marker = markdownFenceAfterListMarker(line)
+		}
+		if marker != "" && !isIndentedCode(line) {
 			if !inFence {
 				inFence, fenceMarker = true, marker
 			} else if marker[0] == fenceMarker[0] && len(marker) >= len(fenceMarker) &&
@@ -288,6 +292,37 @@ func markdownFence(line string) string {
 		return ""
 	}
 	return line[:i]
+}
+
+func markdownFenceAfterListMarker(line string) string {
+	indent := 0
+	for indent < len(line) && indent < 4 && line[indent] == ' ' {
+		indent++
+	}
+	if indent > 3 || indent == len(line) {
+		return ""
+	}
+	end := indent
+	if line[end] == '-' || line[end] == '+' || line[end] == '*' {
+		end++
+	} else {
+		digits := end
+		for end < len(line) && line[end] >= '0' && line[end] <= '9' && end-digits < 10 {
+			end++
+		}
+		if end == digits || end == len(line) || line[end] != '.' && line[end] != ')' {
+			return ""
+		}
+		end++
+	}
+	if end == len(line) || line[end] != ' ' && line[end] != '\t' {
+		return ""
+	}
+	end++
+	for end < len(line) && (line[end] == ' ' || line[end] == '\t') {
+		end++
+	}
+	return markdownFence(strings.TrimSpace(line[end:]))
 }
 
 func stripAnchor(title string) string {

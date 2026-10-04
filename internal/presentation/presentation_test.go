@@ -115,6 +115,22 @@ func TestLongerMarkdownFenceCannotCloseOnShorterFence(t *testing.T) {
 	}
 }
 
+func TestParseFencedCodeOpenedAfterListMarker(t *testing.T) {
+	source := "# Code talk\n\n## Example\n\n- ~~~go\n  ## not a slide\n  ~~~\n\n## After\n\nDone.\n"
+	deck, err := Parse(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deck.Slides) != 2 {
+		t.Fatalf("parsed %d slides, want 2", len(deck.Slides))
+	}
+	for _, want := range []string{"- ~~~go", "## not a slide", "  ~~~"} {
+		if !strings.Contains(deck.Slides[0].Body, want) {
+			t.Errorf("first slide body missing %q:\n%s", want, deck.Slides[0].Body)
+		}
+	}
+}
+
 func TestIndentedFenceIsCodeAndHeaderFencesArePreserved(t *testing.T) {
 	source := "# Code talk\n\n```go\nsample()\n```\n\n## Example\n\n    ```\n    ## not a slide\n    ```\n\n## After\n\nDone.\n"
 	deck, err := Parse(source)

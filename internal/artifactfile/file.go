@@ -172,7 +172,6 @@ func ReadMetadataFrom(input io.Reader) (artifact.Artifact, error) {
 					prefix.WriteString(line)
 					return ReadMetadata([]byte(prefix.String()))
 				}
-				lineBuffer.Reset()
 				openingLineIncomplete = true
 				continue
 			}
@@ -258,22 +257,41 @@ func StripPrivateBlocks(markdown string) string {
 	var output strings.Builder
 	fence := ""
 	var containers fenceContainers
+	var lists []listContainer
 	skipping := false
 	for offset := 0; offset < len(markdown); {
 		line, next := nextLine(markdown, offset)
+		containerLine, blockquotes := stripBlockquotePrefixes(line)
 		if fence != "" {
-			if isFenceCloseInContainers(line, containers, fence[:1], len(fence)) {
+			if !fenceContainerActive(line, containers) {
+				fence, containers, skipping = "", fenceContainers{}, false
+			} else if isFenceCloseInContainers(line, containers, fence[:1], len(fence)) {
 				if !skipping {
 					output.WriteString(line)
 				}
 				fence, containers, skipping = "", fenceContainers{}, false
-			} else if !skipping {
-				output.WriteString(line)
+				offset = next
+				continue
+			} else {
+				if !skipping {
+					output.WriteString(line)
+				}
+				offset = next
+				continue
 			}
-			offset = next
-			continue
 		}
+		lists = updateListContainers(lists, containerLine, blockquotes)
 		block, context, ok := parseContainerFence(line)
+		if !ok {
+			if indent, inList := listContinuationIndent(lists, blockquotes, containerLine); inList {
+				content := stripIndent(containerLine, indent)
+				if marker, info, fenced := parseFence(content); fenced {
+					block = opening{marker: marker, name: info}
+					context = fenceContainers{blockquotes: blockquotes, listIndent: indent}
+					ok = true
+				}
+			}
+		}
 		if ok {
 			fence = block.marker
 			containers = context
@@ -295,6 +313,11 @@ type fenceContainers struct {
 	listIndent  int
 }
 
+type listContainer struct {
+	blockquotes int
+	indent      int
+}
+
 func parseContainerFence(line string) (opening, fenceContainers, bool) {
 	line, blockquotes := stripBlockquotePrefixes(line)
 	if marker, info, ok := parseFence(line); ok {
@@ -306,6 +329,54 @@ func parseContainerFence(line string) (opening, fenceContainers, bool) {
 	}
 	return opening{marker: marker, name: info},
 		fenceContainers{blockquotes: blockquotes, listIndent: indent}, true
+}
+
+func updateListContainers(lists []listContainer, line string, blockquotes int) []listContainer {
+	for len(lists) > 0 && lists[len(lists)-1].blockquotes > blockquotes {
+		lists = lists[:len(lists)-1]
+	}
+	if isBlankLine(line) {
+		return lists
+	}
+	if _, indent, ok := stripListMarker(line); ok {
+		for len(lists) > 0 && lists[len(lists)-1].blockquotes == blockquotes &&
+			lists[len(lists)-1].indent >= indent {
+			lists = lists[:len(lists)-1]
+		}
+		return append(lists, listContainer{blockquotes: blockquotes, indent: indent})
+	}
+	leading := leadingSpaces(line)
+	for len(lists) > 0 && lists[len(lists)-1].blockquotes == blockquotes &&
+		lists[len(lists)-1].indent > leading {
+		lists = lists[:len(lists)-1]
+	}
+	return lists
+}
+
+func listContinuationIndent(lists []listContainer, blockquotes int, line string) (int, bool) {
+	leading := leadingSpaces(line)
+	for i := len(lists) - 1; i >= 0; i-- {
+		if lists[i].blockquotes <= blockquotes && lists[i].indent <= leading {
+			return lists[i].indent, true
+		}
+	}
+	return 0, false
+}
+
+func leadingSpaces(line string) int {
+	text := strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+	indent := 0
+	for indent < len(text) && text[indent] == ' ' {
+		indent++
+	}
+	return indent
+}
+
+func stripIndent(line string, indent int) string {
+	if indent == 0 {
+		return line
+	}
+	return line[indent:]
 }
 
 func parseListItemFence(line string) (string, string, int, bool) {
@@ -362,17 +433,24 @@ func isFenceCloseInContainers(line string, containers fenceContainers, marker st
 		return false
 	}
 	if containers.listIndent > 0 {
-		text := strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
-		indent := 0
-		for indent < len(text) && text[indent] == ' ' {
-			indent++
-		}
+		indent := leadingSpaces(line)
 		if indent < containers.listIndent {
 			return false
 		}
 		line = line[containers.listIndent:]
 	}
 	return isFenceClose(line, marker, minLength)
+}
+
+func fenceContainerActive(line string, containers fenceContainers) bool {
+	line, blockquotes := stripBlockquotePrefixes(line)
+	if blockquotes < containers.blockquotes {
+		return false
+	}
+	if blockquotes > containers.blockquotes || containers.listIndent == 0 || isBlankLine(line) {
+		return true
+	}
+	return leadingSpaces(line) >= containers.listIndent
 }
 
 func stripBlockquotePrefixes(line string) (string, int) {

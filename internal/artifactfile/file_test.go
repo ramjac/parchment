@@ -214,6 +214,22 @@ func TestReadMetadataFromPreservesOversizedMetadataLines(t *testing.T) {
 	}
 }
 
+func TestReadMetadataFromPreservesOversizedMetadataOpeningLine(t *testing.T) {
+	data, err := Encode(testArtifact(), "body", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opener := "```parchment-meta" + strings.Repeat(" ", 5_000) + "\n"
+	data = []byte(strings.Replace(string(data), "```parchment-meta\n", opener, 1))
+	got, err := ReadMetadataFrom(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != testArtifact().ID {
+		t.Fatalf("metadata ID = %q", got.ID)
+	}
+}
+
 func TestStripPrivateBlocksPreservesOrdinaryCodeFences(t *testing.T) {
 	markdown := "before\n\n```parchment-secret\nhidden\n```\n\n```go\n```parchment-example\nvisible\n```\n```\nafter\n"
 	got := StripPrivateBlocks(markdown)
@@ -255,6 +271,35 @@ func TestStripPrivateBlocksTracksFenceContainers(t *testing.T) {
 		if !strings.Contains(got, visible) {
 			t.Fatalf("ordinary fenced content was removed: %q", got)
 		}
+	}
+}
+
+func TestStripPrivateBlocksResetsAtContainerExit(t *testing.T) {
+	markdown := "> ```parchment-quote\n> quoted-hidden\n\noutside-quote\n\n" +
+		"- ```parchment-list\n  listed-hidden\n\noutside-list\n\n" +
+		"    ```parchment-not-a-fence\n    visible-indented-code\n"
+	got := StripPrivateBlocks(markdown)
+	for _, hidden := range []string{"parchment-quote", "quoted-hidden", "parchment-list", "listed-hidden"} {
+		if strings.Contains(got, hidden) {
+			t.Fatalf("unterminated container fence leaked %q: %q", hidden, got)
+		}
+	}
+	for _, visible := range []string{"outside-quote", "outside-list", "```parchment-not-a-fence", "visible-indented-code"} {
+		if !strings.Contains(got, visible) {
+			t.Fatalf("content outside a fence was lost (%q): %q", visible, got)
+		}
+	}
+}
+
+func TestStripPrivateBlocksRecognizesFencesOnListContinuations(t *testing.T) {
+	markdown := "10. Item\n\n    ```parchment-deep-list\n    deeply-hidden\n    ```\n\n" +
+		"    ```go\n    ```parchment-list-example\n    list-visible\n    ```\n"
+	got := StripPrivateBlocks(markdown)
+	if strings.Contains(got, "parchment-deep-list") || strings.Contains(got, "deeply-hidden") {
+		t.Fatalf("deep list-contained reserved fence was rendered: %q", got)
+	}
+	if !strings.Contains(got, "    ```go\n    ```parchment-list-example\n    list-visible\n    ```") {
+		t.Fatalf("ordinary list-contained code fence was removed: %q", got)
 	}
 }
 
