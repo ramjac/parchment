@@ -192,14 +192,11 @@ func (w *Workspace) readPresentationUnlocked(id string) (presentation.Presentati
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return presentation.Presentation{}, errors.New("presentation storage path is not a directory")
 	}
-	data, err := readRegularFile(filepath.Join(dir, presentationName), artifactfile.MaxFileSize)
+	path := filepath.Join(dir, presentationName)
+	metadata, err := readArtifactMetadata(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return presentation.Presentation{}, presentation.ErrNotFound
 	}
-	if err != nil {
-		return presentation.Presentation{}, fmt.Errorf("read presentation %s: %w", id, err)
-	}
-	metadata, err := artifactfile.ReadMetadata(data)
 	if err != nil {
 		return presentation.Presentation{}, fmt.Errorf("read presentation metadata %s: %w", id, err)
 	}
@@ -208,6 +205,13 @@ func (w *Workspace) readPresentationUnlocked(id string) (presentation.Presentati
 	}
 	if metadata.Kind != artifact.PresentationKind {
 		return presentation.Presentation{}, presentation.ErrNotFound
+	}
+	data, err := readRegularFile(path, artifactfile.MaxFileSize)
+	if errors.Is(err, os.ErrNotExist) {
+		return presentation.Presentation{}, presentation.ErrNotFound
+	}
+	if err != nil {
+		return presentation.Presentation{}, fmt.Errorf("read presentation %s: %w", id, err)
 	}
 	item, err := presentation.Decode(data)
 	if err != nil {

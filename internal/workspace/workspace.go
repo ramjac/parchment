@@ -796,14 +796,11 @@ func (w *Workspace) readNoteUnlocked(id string) (note.Note, error) {
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return note.Note{}, errors.New("note storage path is not a directory")
 	}
-	content, err := readRegularFile(filepath.Join(dir, "content.md"), artifactfile.MaxFileSize)
+	contentPath := filepath.Join(dir, "content.md")
+	metadata, err := readArtifactMetadata(contentPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return note.Note{}, fmt.Errorf("%w: %s", errNoMetadata, id)
 	}
-	if err != nil {
-		return note.Note{}, fmt.Errorf("read note artifact %s: %w", id, err)
-	}
-	metadata, err := artifactfile.ReadMetadata(content)
 	if err != nil {
 		return note.Note{}, fmt.Errorf("read note metadata %s: %w", id, err)
 	}
@@ -812,6 +809,13 @@ func (w *Workspace) readNoteUnlocked(id string) (note.Note, error) {
 	}
 	if metadata.Kind != artifact.NoteKind {
 		return note.Note{}, errNotNote
+	}
+	content, err := readRegularFile(contentPath, artifactfile.MaxFileSize)
+	if errors.Is(err, os.ErrNotExist) {
+		return note.Note{}, fmt.Errorf("%w: %s", errNoMetadata, id)
+	}
+	if err != nil {
+		return note.Note{}, fmt.Errorf("read note artifact %s: %w", id, err)
 	}
 	file, err := artifactfile.Decode(content)
 	if err != nil {
@@ -844,6 +848,23 @@ func copyPayloadBlocks(blocks map[string]json.RawMessage, excluded string) map[s
 		copied[name] = append(json.RawMessage(nil), payload...)
 	}
 	return copied
+}
+
+func readArtifactMetadata(path string) (artifact.Artifact, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return artifact.Artifact{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return artifact.Artifact{}, errors.New("artifact content is not a regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return artifact.Artifact{}, err
+	}
+	metadata, readErr := artifactfile.ReadMetadataFrom(file)
+	closeErr := file.Close()
+	return metadata, errors.Join(readErr, closeErr)
 }
 
 func withArtifactLock(ctx context.Context, artifactsDir, id string, operation func() error) error {

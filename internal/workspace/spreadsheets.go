@@ -192,14 +192,11 @@ func (w *Workspace) readSpreadsheetUnlocked(id string) (spreadsheet.Spreadsheet,
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return spreadsheet.Spreadsheet{}, errors.New("spreadsheet storage path is not a directory")
 	}
-	data, err := readRegularFile(filepath.Join(dir, spreadsheetName), artifactfile.MaxFileSize)
+	path := filepath.Join(dir, spreadsheetName)
+	metadata, err := readArtifactMetadata(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return spreadsheet.Spreadsheet{}, spreadsheet.ErrNotFound
 	}
-	if err != nil {
-		return spreadsheet.Spreadsheet{}, fmt.Errorf("read spreadsheet %s: %w", id, err)
-	}
-	metadata, err := artifactfile.ReadMetadata(data)
 	if err != nil {
 		return spreadsheet.Spreadsheet{}, fmt.Errorf("read spreadsheet metadata %s: %w", id, err)
 	}
@@ -208,6 +205,13 @@ func (w *Workspace) readSpreadsheetUnlocked(id string) (spreadsheet.Spreadsheet,
 	}
 	if metadata.Kind != artifact.SpreadsheetKind {
 		return spreadsheet.Spreadsheet{}, spreadsheet.ErrNotFound
+	}
+	data, err := readRegularFile(path, artifactfile.MaxFileSize)
+	if errors.Is(err, os.ErrNotExist) {
+		return spreadsheet.Spreadsheet{}, spreadsheet.ErrNotFound
+	}
+	if err != nil {
+		return spreadsheet.Spreadsheet{}, fmt.Errorf("read spreadsheet %s: %w", id, err)
 	}
 	book, err := spreadsheet.Decode(data)
 	if err != nil {

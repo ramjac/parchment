@@ -435,14 +435,11 @@ func (w *Workspace) readDocumentFileUnlocked(id string, withImages bool) (docume
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return document.Document{}, nil, errors.New("document storage path is not a directory")
 	}
-	content, err := readRegularFile(filepath.Join(dir, "content.md"), 64<<20)
+	contentPath := filepath.Join(dir, "content.md")
+	metadata, err := readArtifactMetadata(contentPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return document.Document{}, nil, fmt.Errorf("%w: %s", errNoMetadata, id)
 	}
-	if err != nil {
-		return document.Document{}, nil, fmt.Errorf("read document artifact %s: %w", id, err)
-	}
-	metadata, err := artifactfile.ReadMetadata(content)
 	if err != nil {
 		return document.Document{}, nil, fmt.Errorf("read document metadata %s: %w", id, err)
 	}
@@ -451,6 +448,13 @@ func (w *Workspace) readDocumentFileUnlocked(id string, withImages bool) (docume
 	}
 	if metadata.Kind != artifact.DocumentKind {
 		return document.Document{}, nil, errNotDocument
+	}
+	content, err := readRegularFile(contentPath, 64<<20)
+	if errors.Is(err, os.ErrNotExist) {
+		return document.Document{}, nil, fmt.Errorf("%w: %s", errNoMetadata, id)
+	}
+	if err != nil {
+		return document.Document{}, nil, fmt.Errorf("read document artifact %s: %w", id, err)
 	}
 	file, err := artifactfile.Decode(content)
 	if err != nil {

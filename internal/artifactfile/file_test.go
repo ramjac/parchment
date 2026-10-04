@@ -1,6 +1,7 @@
 package artifactfile
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -83,6 +84,48 @@ func TestDecodeAcceptsLegacyEnvelopeWithoutBodyBoundary(t *testing.T) {
 	}
 	if file.Body != body {
 		t.Fatalf("body = %q, want %q", file.Body, body)
+	}
+}
+
+func TestDecodeAllowsBlankLinesBetweenEnvelopeBlocks(t *testing.T) {
+	body := "# Example\n\nVisible body.\n"
+	data, err := Encode(testArtifact(), body, map[string]any{
+		"parchment-note":      map[string]string{"name": "note"},
+		"parchment-extension": map[string]string{"name": "extension"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := strings.Replace(string(data), "\n\n```parchment-note\n", "\n\n\n\n```parchment-note\n", 1)
+	file, err := Decode([]byte(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if file.Body != body {
+		t.Fatalf("body = %q, want %q", file.Body, body)
+	}
+	if len(file.Blocks) != 2 {
+		t.Fatalf("blocks = %v, want both payload blocks", file.Blocks)
+	}
+}
+
+func TestReadMetadataFromDoesNotReadPayloads(t *testing.T) {
+	data, err := Encode(testArtifact(), "body", map[string]any{
+		"parchment-note": map[string]string{"value": strings.Repeat("x", 32<<10)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := bytes.NewReader(data)
+	metadata, err := ReadMetadataFrom(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.ID != testArtifact().ID {
+		t.Fatalf("metadata ID = %q", metadata.ID)
+	}
+	if reader.Len() == 0 {
+		t.Fatal("metadata reader consumed the payload")
 	}
 }
 

@@ -1,10 +1,12 @@
 package artifactfile
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 
@@ -77,22 +79,41 @@ func Decode(data []byte) (File, error) {
 		probe := offset
 		line, end := nextLine(source, probe)
 		if isBlankLine(line) {
+			bodyOffset := end
 			probe = end
+			for probe < len(source) {
+				line, end = nextLine(source, probe)
+				if !isBlankLine(line) {
+					break
+				}
+				probe = end
+			}
 			if probe == len(source) {
+				offset = bodyOffset
+				break
+			}
+			if isBodyBoundary(line) {
+				offset = end
+				break
+			}
+			block, isBlock := parseOpening(line)
+			if !isParchmentBlock(block, isBlock) {
+				offset = bodyOffset
+				break
+			}
+			offset = probe
+		} else {
+			if isBodyBoundary(line) {
+				offset = end
+				break
+			}
+			block, isBlock := parseOpening(line)
+			if !isParchmentBlock(block, isBlock) {
 				offset = probe
 				break
 			}
 		}
-		line, end = nextLine(source, probe)
-		if strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r") == bodyBoundary {
-			offset = end
-			break
-		}
-		block, isBlock := parseOpening(line)
-		if !isBlock || !strings.HasPrefix(block.name, "parchment-") {
-			offset = probe
-			break
-		}
+		block, _ := parseOpening(line)
 		if block.name == metadataBlock {
 			return File{}, errors.New("duplicate Parchment metadata block")
 		}
@@ -106,7 +127,7 @@ func Decode(data []byte) (File, error) {
 		if !json.Valid(payload) {
 			return File{}, fmt.Errorf("%s block must contain JSON", block.name)
 		}
-		file.Blocks[block.name] = append(json.RawMessage(nil), payload...)
+		file.Blocks[block.name] = json.RawMessage(payload)
 		offset = after
 	}
 	file.Body = strings.Clone(source[offset:])
@@ -123,6 +144,38 @@ func ReadMetadata(data []byte) (artifact.Artifact, error) {
 	return item, err
 }
 
+// ReadMetadataFrom reads only the leading metadata block from an artifact.
+func ReadMetadataFrom(source io.Reader) (artifact.Artifact, error) {
+	reader := bufio.NewReader(source)
+	total := 0
+	line, err := readBoundedLine(reader, &total)
+	if err != nil {
+		return artifact.Artifact{}, err
+	}
+	opening, ok := parseOpening(line)
+	if !ok || opening.name != metadataBlock {
+		return artifact.Artifact{}, errors.New("Parchment metadata block must be the first Markdown block")
+	}
+	var metadata bytes.Buffer
+	for {
+		line, err = readBoundedLine(reader, &total)
+		if errors.Is(err, io.EOF) {
+			return artifact.Artifact{}, errors.New("read Parchment metadata: closing code fence is missing")
+		}
+		if err != nil {
+			return artifact.Artifact{}, fmt.Errorf("read Parchment metadata: %w", err)
+		}
+		if isFenceClose(line, opening.marker[:1], len(opening.marker)) {
+			data := bytes.TrimSuffix(metadata.Bytes(), []byte("\n"))
+			data = bytes.TrimSuffix(data, []byte("\r"))
+			return decodeMetadata(data)
+		}
+		if _, err := metadata.WriteString(line); err != nil {
+			return artifact.Artifact{}, err
+		}
+	}
+}
+
 func readMetadata(source string) (artifact.Artifact, int, error) {
 	line, _ := nextLine(source, 0)
 	opening, ok := parseOpening(line)
@@ -133,16 +186,43 @@ func readMetadata(source string) (artifact.Artifact, int, error) {
 	if err != nil {
 		return artifact.Artifact{}, 0, fmt.Errorf("read Parchment metadata: %w", err)
 	}
+	item, err := decodeMetadata(metadataBytes)
+	return item, offset, err
+}
+
+func decodeMetadata(metadataBytes []byte) (artifact.Artifact, error) {
 	var item artifact.Artifact
 	if err := json.Unmarshal(metadataBytes, &item); err != nil {
-		return artifact.Artifact{}, 0, fmt.Errorf("decode Parchment metadata: %w", err)
+		return artifact.Artifact{}, fmt.Errorf("decode Parchment metadata: %w", err)
 	}
 	if err := item.Validate(); err != nil {
-		return artifact.Artifact{}, 0, fmt.Errorf("validate Parchment metadata: %w", err)
+		return artifact.Artifact{}, fmt.Errorf("validate Parchment metadata: %w", err)
 	}
 	item.CreatedAt = item.CreatedAt.UTC()
 	item.ModifiedAt = item.ModifiedAt.UTC()
-	return item, offset, nil
+	return item, nil
+}
+
+func readBoundedLine(reader *bufio.Reader, total *int) (string, error) {
+	var line []byte
+	for {
+		part, err := reader.ReadSlice('\n')
+		*total += len(part)
+		if *total > MaxFileSize {
+			return "", fmt.Errorf("artifact metadata block is larger than %d MiB", MaxFileSize>>20)
+		}
+		line = append(line, part...)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if errors.Is(err, io.EOF) && len(line) > 0 {
+			return string(line), nil
+		}
+		if err != nil {
+			return "", err
+		}
+		return string(line), nil
+	}
 }
 
 // StripPrivateBlocks removes all fenced blocks whose info string starts with
@@ -208,6 +288,15 @@ func parseOpening(line string) (opening, bool) {
 		return opening{}, false
 	}
 	return opening{name: name[0], marker: marker}, true
+}
+
+func isBodyBoundary(line string) bool {
+	line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+	return line == bodyBoundary
+}
+
+func isParchmentBlock(block opening, ok bool) bool {
+	return ok && strings.HasPrefix(block.name, "parchment-")
 }
 
 func parseFence(line string) (string, string, bool) {

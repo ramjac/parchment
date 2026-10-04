@@ -137,6 +137,38 @@ func TestArtifactEditsPreserveAdditionalPayloadBlocks(t *testing.T) {
 	requireTestPayloadBlock(t, contentPath(deck.ID))
 }
 
+func TestArtifactListsSkipOversizedArtifactsOfOtherKinds(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := openTestWorkspace(t, root)
+	n, err := note.NewService(ws, 1).Create(ctx, "Large note", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, ".parchment", "artifacts", n.ID, "content.md")
+	file, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(artifactfile.MaxFileSize + 1); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if items, err := ws.ListDocuments(ctx); err != nil || len(items) != 0 {
+		t.Fatalf("documents = %d, %v", len(items), err)
+	}
+	if items, err := ws.ListPresentations(ctx); err != nil || len(items) != 0 {
+		t.Fatalf("presentations = %d, %v", len(items), err)
+	}
+	if items, err := ws.ListSpreadsheets(ctx); err != nil || len(items) != 0 {
+		t.Fatalf("spreadsheets = %d, %v", len(items), err)
+	}
+}
+
 func TestWorkspacePersistsInspectableNotesAndStableIDs(t *testing.T) {
 	root := t.TempDir()
 	if err := Init(root); err != nil {
