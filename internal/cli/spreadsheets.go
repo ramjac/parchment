@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -16,41 +17,19 @@ import (
 
 func addSpreadsheetCommands(root *cobra.Command, streams output) {
 	group := &cobra.Command{Use: "spreadsheet", Aliases: []string{"sheet"}, Short: "Create and manage text spreadsheets"}
-	root.AddCommand(group)
-
-	group.AddCommand(&cobra.Command{
-		Use: "list", Aliases: []string{"ls"}, Short: "List spreadsheets", Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			_, service, err := openSpreadsheets(cmd)
-			if err != nil {
-				return err
-			}
-			books, err := service.List(cmd.Context())
-			if err != nil {
-				return err
-			}
-			for _, book := range books {
-				sheet := book.Sheets[0]
-				if _, err := fmt.Fprintf(streams.out, "%s\t%s\t%d sheets\t%d x %d\n",
-					book.ID, strconv.Quote(book.Title), len(book.Sheets), len(sheet.Rows), len(sheet.Rows[0])); err != nil {
-					return err
-				}
-			}
-			return nil
-		},
-	})
+	root.AddCommand(groupCommand(group))
 
 	create := &cobra.Command{
-		Use: "create <title>", Short: "Create a spreadsheet", Args: cobra.ExactArgs(1),
+		Use: "create <file>", Short: "Create a spreadsheet file", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openSpreadsheets(cmd)
 			if err != nil {
 				return err
 			}
-			path, _ := cmd.Flags().GetString("csv-file")
+			csvPath, _ := cmd.Flags().GetString("csv-file")
 			var rows [][]spreadsheet.Cell
-			if path != "" {
-				file, err := os.Open(path)
+			if csvPath != "" {
+				file, err := os.Open(csvPath)
 				if err != nil {
 					return err
 				}
@@ -64,19 +43,24 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 					return fmt.Errorf("close CSV input: %w", closeErr)
 				}
 			}
-			book, err := service.Create(cmd.Context(), args[0], rows)
+			path, err := filepath.Abs(args[0])
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintln(streams.out, book.ID)
+			book, err := service.Create(cmd.Context(), path, titleFlag(cmd, path), rows)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(streams.out, book.Path)
 			return err
 		},
 	}
+	create.Flags().String("title", "", "spreadsheet title (defaults to the file name)")
 	create.Flags().String("csv-file", "", "initialize cells from a CSV file")
 	group.AddCommand(create)
 
 	group.AddCommand(&cobra.Command{
-		Use: "show <id>", Short: "Show the complete text workbook", Args: cobra.ExactArgs(1),
+		Use: "show <file>", Short: "Show the complete text workbook", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openSpreadsheets(cmd)
 			if err != nil {
@@ -96,7 +80,7 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 	})
 
 	cell := &cobra.Command{
-		Use: "cell <id> <A1-reference> [value-or-formula]", Short: "Read or set a cell",
+		Use: "cell <file> <A1-reference> [value-or-formula]", Short: "Read or set a cell",
 		Args: cobra.RangeArgs(2, 3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openSpreadsheets(cmd)
@@ -173,7 +157,7 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 	} {
 		operation := operation
 		command := &cobra.Command{
-			Use: operation.name + " <id> <index>", Short: "Insert a spreadsheet " + strings.TrimPrefix(operation.name, "insert-"),
+			Use: operation.name + " <file> <index>", Short: "Insert a spreadsheet " + strings.TrimPrefix(operation.name, "insert-"),
 			Args: cobra.ExactArgs(2),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				index, err := strconv.Atoi(args[1])
@@ -188,7 +172,7 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 		group.AddCommand(command)
 	}
 	group.AddCommand(&cobra.Command{
-		Use: "add-sheet <id> <name>", Short: "Add a named worksheet", Args: cobra.ExactArgs(2),
+		Use: "add-sheet <file> <name>", Short: "Add a named worksheet", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openSpreadsheets(cmd)
 			if err != nil {
@@ -199,22 +183,6 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 		},
 	})
 
-	deleteCommand := &cobra.Command{
-		Use: "delete <id>", Short: "Permanently delete a spreadsheet", Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			yes, _ := cmd.Flags().GetBool("yes")
-			if !yes {
-				return errors.New("deletion requires --yes")
-			}
-			_, service, err := openSpreadsheets(cmd)
-			if err != nil {
-				return err
-			}
-			return service.Delete(cmd.Context(), args[0])
-		},
-	}
-	deleteCommand.Flags().Bool("yes", false, "confirm permanent deletion")
-	group.AddCommand(deleteCommand)
 }
 
 func readSpreadsheetCSV(input io.Reader, maxBytes int64) ([][]spreadsheet.Cell, error) {

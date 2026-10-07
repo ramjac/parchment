@@ -6,8 +6,7 @@
   "title": "Product Update",
   "created_at": "2026-01-15T09:00:00Z",
   "modified_at": "2026-01-15T09:00:00Z",
-  "format_version": 1,
-  "location": "artifacts/40000000000000000000000000000004/content.md"
+  "format_version": 1
 }
 ```
 
@@ -25,10 +24,10 @@ Parchment team
 
 ## What shipped
 
-- A local-first workspace for everyday artifacts.
+- A local-first home for everyday artifacts.
 - Notes, multi-page documents, formula-enabled spreadsheets, and presentations.
 
-: Point out that the workspace remains ordinary files on disk.
+: Point out that every artifact remains an ordinary file on disk.
 
 ## What is next
 

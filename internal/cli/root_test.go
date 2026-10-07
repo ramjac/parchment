@@ -4,194 +4,178 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 )
 
-func TestWorkspaceAndNoteCLI(t *testing.T) {
+type cliRunner struct {
+	t    *testing.T
+	home string
+	dir  string
+}
+
+// newCLI isolates the CLI from the real home directory and returns a runner
+// whose working directory is an ordinary temporary folder.
+func newCLI(t *testing.T) cliRunner {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	t.Setenv("APPDATA", home)
-	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("PARCHMENT_WORKSPACE", "")
+	t.Setenv("PARCHMENT_CONFIG", "")
 	t.Setenv("PARCHMENT_UNDO_LIMIT", "100")
-	root := t.TempDir()
+	dir := t.TempDir()
+	t.Chdir(dir)
+	return cliRunner{t: t, home: home, dir: dir}
+}
 
-	run := func(args ...string) (string, error) {
-		t.Helper()
-		var stdout, stderr bytes.Buffer
-		cmd := New(&stdout, &stderr)
-		cmd.SetArgs(append([]string{"--workspace", root}, args...))
-		err := cmd.Execute()
-		return stdout.String(), err
-	}
+func (c cliRunner) run(args ...string) (string, error) {
+	c.t.Helper()
+	var stdout, stderr bytes.Buffer
+	cmd := New(&stdout, &stderr)
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	return stdout.String(), err
+}
 
-	if output, err := run("init"); err != nil {
-		t.Fatalf("init: %v (%s)", err, output)
-	}
-	output, err := run("note", "create", "CLI test", "--body", "searchable content")
+func (c cliRunner) must(args ...string) string {
+	c.t.Helper()
+	out, err := c.run(args...)
 	if err != nil {
-		t.Fatal(err)
+		c.t.Fatalf("%v: %v", args, err)
 	}
-	id := strings.TrimSpace(output)
-	if len(id) != 32 {
-		t.Fatalf("created ID = %q", id)
+	return out
+}
+
+func TestNoteCLI(t *testing.T) {
+	c := newCLI(t)
+	output := c.must("note", "create", "ideas.md", "--body", "first content")
+	path := filepath.Join(c.dir, "ideas.md")
+	if got := strings.TrimSpace(output); got != path {
+		t.Fatalf("create printed %q, want %q", got, path)
 	}
-	if _, err := run("note", "add", id, "terminal"); err != nil {
-		t.Fatal(err)
-	}
-	searchResults, err := run("search", "terminal")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(searchResults, id) {
-		t.Fatalf("search output = %q", searchResults)
-	}
-	if _, err := run("note", "edit", id, "--title", "Renamed", "--body", "updated content"); err != nil {
-		t.Fatal(err)
-	}
-	shown, err := run("note", "show", id)
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.must("note", "add", "ideas.md", "terminal")
+	c.must("note", "edit", path, "--title", "Renamed", "--body", "updated content")
+	shown := c.must("note", "show", "ideas.md")
 	if !strings.Contains(shown, "# Renamed") || !strings.Contains(shown, "updated content") {
 		t.Fatalf("show output = %q", shown)
 	}
-	if _, err := run("note", "delete", id); err == nil {
-		t.Fatal("delete succeeded without explicit confirmation")
-	}
-	if _, err := run("note", "delete", id, "--yes"); err != nil {
+	data, err := os.ReadFile(path)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(root + "/artifacts/" + id); !os.IsNotExist(err) {
-		t.Fatalf("deleted artifact storage exists: %v", err)
+	if !strings.HasPrefix(string(data), "```parchment-meta\n") || !strings.Contains(string(data), `"terminal"`) ||
+		strings.Contains(string(data), "location") {
+		t.Fatalf("note file = %s", data)
+	}
+	if _, err := c.run("note", "create", "ideas.md"); err == nil {
+		t.Fatal("create overwrote an existing file")
+	}
+	for _, removed := range [][]string{{"note", "list"}, {"search", "x"}, {"note", "delete", "ideas.md", "--yes"}} {
+		if _, err := c.run(removed...); err == nil {
+			t.Fatalf("removed command %v still runs", removed)
+		}
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("note file missing: %v", err)
 	}
 }
 
-func TestCLIListAndSearchEscapeTerminalFields(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("APPDATA", home)
-	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("PARCHMENT_WORKSPACE", "")
-	t.Setenv("PARCHMENT_UNDO_LIMIT", "100")
-	root := t.TempDir()
-	run := func(args ...string) (string, error) {
-		t.Helper()
-		var stdout, stderr bytes.Buffer
-		cmd := New(&stdout, &stderr)
-		cmd.SetArgs(append([]string{"--workspace", root}, args...))
-		err := cmd.Execute()
-		return stdout.String(), err
+func TestNoteCreateTitleDefaultsToFileName(t *testing.T) {
+	c := newCLI(t)
+	c.must("note", "create", "Meeting notes.md")
+	if shown := c.must("note", "show", "Meeting notes.md"); !strings.HasPrefix(shown, "# Meeting notes\n") {
+		t.Fatalf("show = %q", shown)
 	}
-
-	if _, err := run("init"); err != nil {
-		t.Fatal(err)
-	}
-	title := "unsafe\n\x1b[2Jtitle needle"
-	created, err := run("note", "create", title)
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := strings.TrimSpace(created)
-	if _, err := run("note", "add", id, "unsafe\n\x1b]52;c;payload\a"); err != nil {
-		t.Fatal(err)
-	}
-
-	listing, err := run("note", "list")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.ContainsAny(listing, "\x1b\a") || strings.Count(listing, "\n") != 1 {
-		t.Fatalf("list output contains raw controls or forged rows: %q", listing)
-	}
-	if !strings.Contains(listing, strconv.Quote(title)) {
-		t.Fatalf("list output did not quote title: %q", listing)
-	}
-	searchResults, err := run("search", "needle")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.ContainsAny(searchResults, "\x1b\a") || strings.Count(searchResults, "\n") != 1 {
-		t.Fatalf("search output contains raw controls or forged rows: %q", searchResults)
-	}
-	if !strings.Contains(searchResults, strconv.Quote(title)) {
-		t.Fatalf("search output did not quote title: %q", searchResults)
+	c.must("note", "create", "other.md", "--title", "Explicit")
+	if shown := c.must("note", "show", "other.md"); !strings.HasPrefix(shown, "# Explicit\n") {
+		t.Fatalf("show = %q", shown)
 	}
 }
 
 func TestCLIEditChangesOnlySpecifiedFields(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("APPDATA", home)
-	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("PARCHMENT_WORKSPACE", "")
-	t.Setenv("PARCHMENT_UNDO_LIMIT", "100")
-	root := t.TempDir()
-	run := func(args ...string) (string, error) {
-		t.Helper()
-		var stdout, stderr bytes.Buffer
-		cmd := New(&stdout, &stderr)
-		cmd.SetArgs(append([]string{"--workspace", root}, args...))
-		err := cmd.Execute()
-		return stdout.String(), err
-	}
-
-	if _, err := run("init"); err != nil {
-		t.Fatal(err)
-	}
-	created, err := run("note", "create", "Original title", "--body", "Original body")
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := strings.TrimSpace(created)
-	if _, err := run("note", "edit", id, "--title", "New title"); err != nil {
-		t.Fatal(err)
-	}
-	shown, err := run("note", "show", id)
-	if err != nil {
-		t.Fatal(err)
-	}
+	c := newCLI(t)
+	c.must("note", "create", "note.md", "--title", "Original title", "--body", "Original body")
+	c.must("note", "edit", "note.md", "--title", "New title")
+	shown := c.must("note", "show", "note.md")
 	if !strings.Contains(shown, "# New title") || !strings.Contains(shown, "Original body") {
 		t.Fatalf("title-only edit changed unspecified body: %q", shown)
 	}
-	if _, err := run("note", "edit", id, "--body", "New body"); err != nil {
-		t.Fatal(err)
-	}
-	shown, err = run("note", "show", id)
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.must("note", "edit", "note.md", "--body", "New body")
+	shown = c.must("note", "show", "note.md")
 	if !strings.Contains(shown, "# New title") || !strings.Contains(shown, "New body") {
 		t.Fatalf("body-only edit changed unspecified title: %q", shown)
 	}
 }
 
-func TestOpenRejectsSymlinkedWorkspaceConfigBeforeParsing(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("APPDATA", home)
-	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("PARCHMENT_WORKSPACE", "")
-	t.Setenv("PARCHMENT_UNDO_LIMIT", "100")
-	root := t.TempDir()
-	target := filepath.Join(t.TempDir(), "config")
-	if err := os.WriteFile(target, []byte("not valid TOML = ["), 0o600); err != nil {
+func TestCLIKeepsOnlyConfigAndStateInHome(t *testing.T) {
+	c := newCLI(t)
+	c.must("note", "create", "local.md")
+	configPath := filepath.Join(c.home, ".parchment", "parchment.toml")
+	if data, err := os.ReadFile(configPath); err != nil || string(data) != "version = 1\n" {
+		t.Fatalf("default config = %q, %v", data, err)
+	}
+	entries, err := os.ReadDir(c.dir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "local.md" {
+		t.Fatalf("working directory entries = %v, %v", entries, err)
+	}
+	stateEntries, err := os.ReadDir(filepath.Join(c.home, ".parchment"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(target, filepath.Join(root, "parchment.toml")); err != nil {
-		t.Skipf("symlink creation unavailable: %v", err)
+	for _, entry := range stateEntries {
+		if strings.HasSuffix(entry.Name(), ".md") || entry.Name() == "artifacts" {
+			t.Fatalf("state directory holds artifacts: %s", entry.Name())
+		}
 	}
-	var stdout, stderr bytes.Buffer
-	cmd := New(&stdout, &stderr)
-	cmd.SetArgs([]string{"--workspace", root, "note", "list"})
-	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
-		t.Fatalf("CLI error = %v, want non-regular marker error before TOML parsing", err)
+
+	custom := filepath.Join(t.TempDir(), "custom.toml")
+	t.Setenv("PARCHMENT_CONFIG", custom)
+	if _, err := c.run("note", "show", "local.md"); err == nil {
+		t.Fatal("missing PARCHMENT_CONFIG file did not fail")
+	}
+}
+
+func TestCLIRejectsWrongKindAndPlainMarkdown(t *testing.T) {
+	c := newCLI(t)
+	c.must("document", "create", "report.md")
+	if _, err := c.run("note", "show", "report.md"); err == nil || !strings.Contains(err.Error(), "document") {
+		t.Fatalf("note show on a document = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(c.dir, "plain.md"), []byte("# Just Markdown\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.run("note", "edit", "plain.md", "--body", "x"); err == nil {
+		t.Fatal("edited a plain Markdown file that is not a Parchment artifact")
+	}
+	if data, _ := os.ReadFile(filepath.Join(c.dir, "plain.md")); string(data) != "# Just Markdown\n" {
+		t.Fatalf("plain Markdown file changed: %q", data)
+	}
+}
+
+func TestResolveTUITarget(t *testing.T) {
+	c := newCLI(t)
+	c.must("note", "create", "note.md")
+	c.must("spreadsheet", "create", "sheet.md")
+	path, kind, err := resolveTUITarget("note.md", "")
+	if err != nil || kind != "note" || path != filepath.Join(c.dir, "note.md") {
+		t.Fatalf("existing note = %q, %q, %v", path, kind, err)
+	}
+	if _, _, err := resolveTUITarget("note.md", "document"); err == nil {
+		t.Fatal("--kind document accepted for a note")
+	}
+	if _, _, err := resolveTUITarget("sheet.md", ""); err == nil || !strings.Contains(err.Error(), "parchment spreadsheet") {
+		t.Fatalf("spreadsheet in TUI = %v", err)
+	}
+	if _, kind, err := resolveTUITarget("new.md", ""); err != nil || kind != "" {
+		t.Fatalf("missing file without --kind = %q, %v", kind, err)
+	}
+	if _, kind, err := resolveTUITarget("new.md", "document"); err != nil || kind != "document" {
+		t.Fatalf("missing file with --kind = %q, %v", kind, err)
+	}
+	if _, _, err := resolveTUITarget("new.md", "spreadsheet"); err == nil {
+		t.Fatal("--kind spreadsheet accepted")
+	}
+	if _, err := os.Stat(filepath.Join(c.dir, "new.md")); !os.IsNotExist(err) {
+		t.Fatalf("resolving a target created the file: %v", err)
 	}
 }

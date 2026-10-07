@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 
+	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/recovery"
 )
@@ -58,12 +59,10 @@ func (s *documentsScreen) marginName() string {
 // toolbarButtons lists the controls shown above the editor. Labels for page
 // settings show the current value.
 func (s *documentsScreen) toolbarButtons() []toolbarButton {
-	saveLabel, saveAction := "Save", "save"
-	if s.proposing {
-		saveLabel, saveAction = "Propose", "propose"
-	}
-	buttons := []toolbarButton{
-		{"File", saveLabel, saveAction, "Ctrl+S"},
+	return []toolbarButton{
+		{"File", "Save", "save", "Ctrl+S"},
+		{"File", "Propose", "propose", "F3"},
+		{"File", "Changes", "changes", "F4"},
 		{"File", "Preview", "preview", "F5"},
 		{"File", "Close", "close", "Esc"},
 		{"Text", "B", "bold", "Alt+B"},
@@ -89,16 +88,6 @@ func (s *documentsScreen) toolbarButtons() []toolbarButton {
 		{"Page", "Footer", "footer", ""},
 		{"Page", "Page #: " + s.layout.PageNumbers, "numbers-pos", ""},
 	}
-	if s.proposing {
-		kept := buttons[:0]
-		for _, button := range buttons {
-			if button.action != "image" {
-				kept = append(kept, button)
-			}
-		}
-		buttons = kept
-	}
-	return buttons
 }
 
 // buttonLayout wraps the toolbar to the available width. It is used for both
@@ -159,95 +148,79 @@ func (s *documentsScreen) toolbarView() string {
 	return strings.Join(lines, "\n")
 }
 
-func (s *documentsScreen) startCreate() tea.Cmd {
-	id, err := newRecoveryID()
-	if err != nil {
-		s.errMessage = "Start autosave: " + err.Error()
-		return nil
-	}
-	s.creating, s.proposing = true, false
-	s.autosaveID = id
-	s.snapshot = document.Document{}
-	s.layout = document.DefaultLayout()
-	s.images = nil
-	return s.beginEditor("", "")
-}
-
-func (s *documentsScreen) startEdit(d document.Document) tea.Cmd {
-	// Refuse documents the editor widgets would truncate or alter; saving
-	// after any edit would otherwise overwrite the full stored text.
+// startEdit opens d in the editor. It refuses documents the editor widgets
+// would truncate or alter; saving after any edit would otherwise overwrite the
+// full stored text.
+func (s *documentsScreen) startEdit(d document.Document) (tea.Cmd, bool) {
 	s.titleInput.SetValue(d.Title)
 	s.body.SetValue(d.Body)
 	if s.titleInput.Value() != d.Title || s.body.Value() != d.Body {
 		s.titleInput.SetValue("")
 		s.body.SetValue("")
-		s.errMessage = "This document exceeds editor limits or contains text the editor cannot preserve; edit it with `parchment document edit`"
+		s.errMessage = "This document exceeds editor limits or contains text the editor cannot preserve; edit it with `parchment document edit` or a text editor"
 		s.status = ""
-		return nil
+		return nil, false
 	}
-	id, err := newRecoveryID()
-	if err != nil {
-		s.errMessage = "Start autosave: " + err.Error()
-		return nil
-	}
-	s.creating, s.proposing = false, false
-	s.autosaveID = id
+	s.loadDocument(d)
+	s.prompt, s.previewing, s.showChanges, s.reviewing = promptNone, false, false, false
+	s.toolbarIndex = 0
+	s.errMessage, s.status = "", ""
+	s.layoutEditor()
+	s.startDocumentAutosaveSession()
+	return tea.Batch(s.focusTitle(), tea.EnableMouseCellMotion, s.scheduleDocumentAutosave(s.autosaveSession)), true
+}
+
+// loadDocument makes d the saved state of the editor.
+func (s *documentsScreen) loadDocument(d document.Document) {
 	s.snapshot = d
 	s.layout = d.Layout
 	if s.layout == (document.Layout{}) {
 		s.layout = document.DefaultLayout()
 	}
 	s.images = d.Images
-	return s.beginEditor(d.Title, d.Body)
-}
-
-func (s *documentsScreen) beginEditor(title, body string) tea.Cmd {
-	s.startDocumentAutosaveSession()
-	s.mode = documentEditing
-	s.titleInput.SetValue(title)
-	s.body.SetValue(body)
+	s.titleInput.SetValue(d.Title)
+	s.titleInput.CursorEnd()
+	s.body.SetValue(d.Body)
 	s.body.CursorStart()
 	s.original = s.currentDraft()
-	s.prompt, s.previewing, s.discardWarning = promptNone, false, false
-	s.toolbarIndex = 0
-	s.errMessage, s.status = "", ""
-	s.layoutEditor()
-	return tea.Batch(s.focusTitle(), tea.EnableMouseCellMotion, s.scheduleDocumentAutosave(s.autosaveSession))
+	s.discardWarning = false
 }
 
-func (s *documentsScreen) stopEditing(status string) tea.Cmd {
-	s.mode, s.creating, s.proposing, s.prompt, s.previewing, s.discardWarning = documentBrowsing, false, false, promptNone, false, false
-	s.status, s.errMessage = status, ""
+// close discards the autosaved draft and quits.
+func (s *documentsScreen) close() tea.Cmd {
 	s.stopDocumentAutosave()
-	cmds := []tea.Cmd{tea.DisableMouse}
-	if s.recoveryStore != nil && s.autosaveID != "" {
-		store, id := s.recoveryStore, s.autosaveID
-		cmds = append(cmds, func() tea.Msg {
-			return documentRecoveryDeletedMsg{err: store.DeleteRecovery(context.Background(), id)}
-		})
-	}
-	return tea.Batch(cmds...)
+	return tea.Sequence(tea.DisableMouse, closeEditor(s.recoveryStore, s.path))
 }
 
-func (s *documentsScreen) restoreRecovery(draft recovery.Draft, data documentRecoveryData) tea.Cmd {
-	s.autosaveID = draft.ID
-	s.creating, s.proposing, s.snapshot = draft.Created, draft.Proposal, data.Snapshot
-	s.snapshot.Blocks = cloneRawMessages(data.SnapshotBlocks)
-	s.layout, s.images = data.Draft.Layout, data.Draft.Images
-	if s.creating {
-		s.snapshot = document.Document{}
+// requestClose quits, first asking for confirmation when edits are unsaved.
+func (s *documentsScreen) requestClose(again string) tea.Cmd {
+	if s.dirty() && !s.discardWarning {
+		s.discardWarning = true
+		s.status = "Unsaved changes: Ctrl+S saves, " + again + " again discards and quits"
+		return nil
 	}
-	cmd := s.beginEditor(data.Draft.Title, data.Draft.Body)
-	if s.creating {
-		s.original = editorDraft{}
-	} else {
-		s.original = editorDraft{
-			title: s.snapshot.Title, body: s.snapshot.Body,
-			layout: s.snapshot.Layout, images: imageKey(s.snapshot.Images),
-		}
+	return s.close()
+}
+
+// restoreRecovery opens the editor with an autosaved draft, keeping the saved
+// state the draft started from so saving still detects later edits.
+func (s *documentsScreen) restoreRecovery(data documentRecoveryData) (tea.Cmd, bool) {
+	snapshot := data.Snapshot
+	snapshot.Blocks, snapshot.Path = cloneRawMessages(data.SnapshotBlocks), s.path
+	cmd, ok := s.startEdit(snapshot)
+	if !ok {
+		return nil, false
+	}
+	s.titleInput.SetValue(data.Draft.Title)
+	s.titleInput.CursorEnd()
+	s.body.SetValue(data.Draft.Body)
+	s.body.CursorStart()
+	s.layout, s.images = data.Draft.Layout, data.Draft.Images
+	if s.layout == (document.Layout{}) {
+		s.layout = document.DefaultLayout()
 	}
 	s.status = "Recovered unsaved document draft"
-	return cmd
+	return cmd, true
 }
 
 func (s *documentsScreen) startDocumentAutosaveSession() {
@@ -291,8 +264,7 @@ func (s *documentsScreen) saveDocumentRecovery(session uint64) tea.Cmd {
 	s.autosaveCancel = cancel
 	store := s.recoveryStore
 	draft := recovery.Draft{
-		ID: s.autosaveID, Kind: "document", Artifact: s.snapshot.ID,
-		Created: s.creating, Proposal: s.proposing, Title: s.titleInput.Value(),
+		Path: s.path, Kind: string(artifact.DocumentKind), Title: s.titleInput.Value(),
 		UpdatedAt: time.Now().UTC(),
 	}
 	return func() tea.Msg {
@@ -364,25 +336,32 @@ func (s *documentsScreen) updateEditorKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		return nil
 	}
-	if key != "esc" {
+	if key != "esc" && key != "ctrl+c" {
 		s.discardWarning = false
 	}
 	switch key {
 	case "ctrl+s":
 		return s.save()
+	case "f3":
+		return s.propose()
+	case "f4":
+		return s.loadChanges()
 	case "f5":
 		s.openPreview()
 		return nil
+	case "ctrl+z", "ctrl+r":
+		if s.dirty() {
+			s.status = "Save or discard your edits before undo or redo"
+			return nil
+		}
+		return s.history(key == "ctrl+z")
+	case "ctrl+c":
+		return s.requestClose("Esc")
 	case "esc":
 		if s.focus == focusToolbar {
 			return s.focusBody()
 		}
-		if s.dirty() && !s.discardWarning {
-			s.discardWarning = true
-			s.status = "Unsaved changes: Ctrl+S saves, Esc again discards"
-			return nil
-		}
-		return s.stopEditing("Edit closed")
+		return s.requestClose("Esc")
 	case "tab":
 		switch s.focus {
 		case focusTitle:
@@ -438,7 +417,7 @@ func (s *documentsScreen) updateToolbarKey(key string) tea.Cmd {
 }
 
 func (s *documentsScreen) updateMouse(msg tea.MouseMsg) tea.Cmd {
-	if s.mode != documentEditing || s.pending || s.prompt != promptNone || s.previewing {
+	if s.pending || s.showChanges || s.prompt != promptNone || s.previewing {
 		return nil
 	}
 	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
@@ -464,30 +443,43 @@ func (s *documentsScreen) save() tea.Cmd {
 	s.pending = true
 	s.errMessage = ""
 	ctx := s.startOperation()
-	service, creating, proposing, snapshot := s.service, s.creating, s.proposing, s.snapshot
-	store, recoveryID := s.recoveryStore, s.autosaveID
+	service, snapshot, store, path := s.service, s.snapshot, s.recoveryStore, s.path
 	return func() tea.Msg {
-		if proposing {
-			change, err := service.Propose(ctx, snapshot, "TUI edit", draft)
-			var cleanupErr error
-			if err == nil && store != nil {
-				cleanupErr = store.DeleteRecovery(context.Background(), recoveryID)
-			}
-			return documentProposedMsg{change: change, err: err, cleanupErr: cleanupErr}
-		}
-		var d document.Document
-		var err error
-		if creating {
-			d, err = service.Create(ctx, draft)
-		} else {
-			d, err = service.Save(ctx, snapshot, draft)
-		}
+		d, err := service.Save(ctx, snapshot, draft)
 		var cleanupErr error
 		if err == nil && store != nil {
-			cleanupErr = store.DeleteRecovery(context.Background(), recoveryID)
+			cleanupErr = store.DeleteRecovery(context.Background(), path)
 		}
 		return documentSavedMsg{document: d, err: err, cleanupErr: cleanupErr}
 	}
+}
+
+// propose records the unsaved edits as a proposal for review instead of
+// saving them. The editor then returns to the saved document and shows the
+// file's proposals.
+func (s *documentsScreen) propose() tea.Cmd {
+	if s.pending {
+		return nil
+	}
+	if !s.dirty() {
+		s.status = "Edit the document first; Propose records your unsaved edits for review"
+		return nil
+	}
+	draft := document.Draft{Title: s.titleInput.Value(), Body: s.body.Value(), Layout: s.layout, Images: s.images}
+	service, snapshot, store, path := s.service, s.snapshot, s.recoveryStore, s.path
+	return s.reload(true, func(ctx context.Context) (string, error) {
+		change, err := service.Propose(ctx, snapshot, "TUI edit", draft)
+		if err != nil {
+			return "", err
+		}
+		description := "Proposal recorded: " + change.ID
+		if store != nil {
+			if err := store.DeleteRecovery(context.Background(), path); err != nil {
+				description += " (could not remove recovery draft: " + err.Error() + ")"
+			}
+		}
+		return description, nil
+	})
 }
 
 func (s *documentsScreen) openPreview() {
@@ -508,23 +500,16 @@ func (s *documentsScreen) act(action string) tea.Cmd {
 	case "save":
 		return s.save()
 	case "propose":
-		return s.save()
+		return s.propose()
+	case "changes":
+		return s.loadChanges()
 	case "image":
-		if s.proposing {
-			s.errMessage = "Embedded images cannot be added to a proposal"
-			return nil
-		}
 		return s.openPrompt(promptImage, "Image file path (PNG, JPEG, GIF): ", "")
 	case "preview":
 		s.openPreview()
 		return nil
 	case "close":
-		if s.dirty() && !s.discardWarning {
-			s.discardWarning = true
-			s.status = "Unsaved changes: Ctrl+S saves, Close again discards"
-			return nil
-		}
-		return s.stopEditing("Edit closed")
+		return s.requestClose("Close")
 	case "columns":
 		s.layout.Columns = s.layout.Columns%document.MaxColumns + 1
 	case "margins":
@@ -709,18 +694,11 @@ func (s *documentsScreen) currentLineEmpty() bool {
 }
 
 func (s *documentsScreen) editorView(header string) string {
-	state := "Editing"
-	if s.proposing {
-		state = "Proposing a change"
-	}
+	state := "Editing document"
 	if s.dirty() {
 		state += " • unsaved"
 	}
-	saveHint := "Ctrl+S saves"
-	if s.proposing {
-		saveHint = "Ctrl+S records proposal"
-	}
-	state += "  ·  Tab switches Title/Body/Toolbar  ·  F2 toolbar  ·  " + saveHint
+	state += "  ·  Tab switches Title/Body/Toolbar  ·  F2 toolbar  ·  Ctrl+S saves  ·  F3 proposes  ·  F4 changes  ·  Esc quits"
 	if s.previewing {
 		page := ""
 		if len(s.editPages) > 0 {

@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -52,7 +51,6 @@ type fileContent struct {
 
 // Repository persists presentations as single-file artifacts.
 type Repository interface {
-	ListPresentations(context.Context) ([]Presentation, error)
 	GetPresentation(context.Context, string) (Presentation, error)
 	TransitionPresentation(context.Context, string, *Presentation, *Presentation) error
 }
@@ -71,22 +69,13 @@ func NewService(repository Repository, undoLimit int) *Service {
 	}
 }
 
-func (s *Service) List(ctx context.Context) ([]Presentation, error) {
-	items, err := s.repository.ListPresentations(ctx)
-	if err != nil {
-		return nil, err
-	}
-	sort.SliceStable(items, func(i, j int) bool {
-		return items[i].ModifiedAt.After(items[j].ModifiedAt)
-	})
-	return items, nil
+// Get loads the presentation stored at path.
+func (s *Service) Get(ctx context.Context, path string) (Presentation, error) {
+	return s.repository.GetPresentation(ctx, path)
 }
 
-func (s *Service) Get(ctx context.Context, id string) (Presentation, error) {
-	return s.repository.GetPresentation(ctx, id)
-}
-
-func (s *Service) Create(ctx context.Context, title, source string) (Presentation, error) {
+// Create writes a new presentation file at path. Creation is not undoable.
+func (s *Service) Create(ctx context.Context, path, title, source string) (Presentation, error) {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		return Presentation{}, errors.New("presentation title is required")
@@ -107,22 +96,18 @@ func (s *Service) Create(ctx context.Context, title, source string) (Presentatio
 	}
 	id := hex.EncodeToString(idBytes)
 	now := s.now().UTC()
-	location := "artifacts/" + id + "/content.md"
-	if provider, ok := s.repository.(artifact.LocationProvider); ok {
-		location = provider.ArtifactLocation(id)
-	}
 	item := Presentation{
 		Artifact: artifact.Artifact{
 			ID: id, Kind: artifact.PresentationKind, Title: title,
 			CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
-			Location: location,
+			Path: path,
 		},
 		Version: FileVersion, Source: source,
 	}
 	if err := Validate(item); err != nil {
 		return Presentation{}, err
 	}
-	if err := s.change(ctx, nil, &item, "Create presentation"); err != nil {
+	if err := s.repository.TransitionPresentation(ctx, path, nil, &item); err != nil {
 		return Presentation{}, err
 	}
 	return clonePresentation(item), nil
@@ -148,14 +133,6 @@ func (s *Service) Update(ctx context.Context, expected Presentation, source stri
 		return Presentation{}, err
 	}
 	return clonePresentation(after), nil
-}
-
-func (s *Service) Delete(ctx context.Context, id string) error {
-	before, err := s.repository.GetPresentation(ctx, id)
-	if err != nil {
-		return err
-	}
-	return s.change(ctx, &before, nil, "Delete presentation")
 }
 
 func (s *Service) Undo(ctx context.Context) (string, error) { return s.history.Undo(ctx) }
@@ -599,13 +576,8 @@ func (o presentationOperation) Undo(ctx context.Context) error {
 }
 func (o presentationOperation) Description() string { return o.description }
 func (o presentationOperation) transition(ctx context.Context, expected, target *Presentation) error {
-	id := ""
-	if o.before != nil {
-		id = o.before.ID
-	} else if o.after != nil {
-		id = o.after.ID
-	} else {
-		return errors.New("presentation operation has no artifact")
+	if o.before == nil || o.after == nil {
+		return errors.New("presentation operation must have a before and after value")
 	}
-	return o.repository.TransitionPresentation(ctx, id, expected, target)
+	return o.repository.TransitionPresentation(ctx, o.before.Path, expected, target)
 }

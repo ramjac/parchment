@@ -1,16 +1,15 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"github.com/spf13/cobra"
 
 	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/search"
 )
 
 func addDocumentCommands(root *cobra.Command, streams output) {
@@ -20,30 +19,10 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			"breaks, embedded images, headers, footers, page numbers, and margins. Use\n" +
 			"`document print` for printer-ready text.",
 	}
-	root.AddCommand(docs)
-
-	docs.AddCommand(&cobra.Command{
-		Use: "list", Aliases: []string{"ls"}, Short: "List documents", Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			_, service, err := openDocuments(cmd)
-			if err != nil {
-				return err
-			}
-			documents, err := service.List(cmd.Context())
-			if err != nil {
-				return err
-			}
-			for _, d := range documents {
-				if _, err := fmt.Fprintf(streams.out, "%s\t%s\t%s\n", d.ID, strconv.Quote(d.Title), quoteFields(d.Tags)); err != nil {
-					return err
-				}
-			}
-			return nil
-		},
-	})
+	root.AddCommand(groupCommand(docs))
 
 	create := &cobra.Command{
-		Use: "create <title>", Short: "Create a document", Args: cobra.ExactArgs(1),
+		Use: "create <file>", Short: "Create a document file", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
 			if err != nil {
@@ -57,20 +36,25 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			if err := applyLayoutFlags(cmd, &layout); err != nil {
 				return err
 			}
-			d, err := service.Create(cmd.Context(), document.Draft{Title: args[0], Body: body, Layout: layout})
+			path, err := filepath.Abs(args[0])
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(streams.out, "%s\n", d.ID)
+			d, err := service.Create(cmd.Context(), path, document.Draft{Title: titleFlag(cmd, path), Body: body, Layout: layout})
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(streams.out, "%s\n", d.Path)
 			return err
 		},
 	}
+	create.Flags().String("title", "", "document title (defaults to the file name)")
 	addBodyFlags(create)
 	addLayoutFlags(create)
 	docs.AddCommand(create)
 
 	docs.AddCommand(&cobra.Command{
-		Use: "show <id>", Short: "Show a document's Markdown", Args: cobra.ExactArgs(1),
+		Use: "show <file>", Short: "Show a document's Markdown", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
 			if err != nil {
@@ -86,7 +70,7 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 	})
 
 	edit := &cobra.Command{
-		Use: "edit <id>", Short: "Replace a document title or body", Args: cobra.ExactArgs(1),
+		Use: "edit <file>", Short: "Replace a document title or body", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
 			if err != nil {
@@ -115,7 +99,7 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 	docs.AddCommand(edit)
 
 	propose := &cobra.Command{
-		Use: "propose <id>", Short: "Record a document edit for review", Args: cobra.ExactArgs(1),
+		Use: "propose <file>", Short: "Record a document edit for review", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
 			if err != nil {
@@ -158,7 +142,7 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 	docs.AddCommand(propose)
 
 	docs.AddCommand(&cobra.Command{
-		Use: "changes <id>", Short: "List proposed and resolved document edits", Args: cobra.ExactArgs(1),
+		Use: "changes <file>", Short: "List proposed and resolved document edits", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
 			if err != nil {
@@ -180,7 +164,7 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 	})
 
 	docs.AddCommand(&cobra.Command{
-		Use: "review <id> <change-id>", Short: "Review a proposed document edit", Args: cobra.ExactArgs(2),
+		Use: "review <file> <change-id>", Short: "Review a proposed document edit", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
 			if err != nil {
@@ -200,7 +184,7 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 	})
 
 	docs.AddCommand(&cobra.Command{
-		Use: "accept <id> <change-id>", Short: "Accept and apply a proposed document edit", Args: cobra.ExactArgs(2),
+		Use: "accept <file> <change-id>", Short: "Accept and apply a proposed document edit", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
 			if err != nil {
@@ -211,7 +195,7 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 		},
 	})
 	docs.AddCommand(&cobra.Command{
-		Use: "reject <id> <change-id>", Short: "Reject a proposed document edit", Args: cobra.ExactArgs(2),
+		Use: "reject <file> <change-id>", Short: "Reject a proposed document edit", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
 			if err != nil {
@@ -222,7 +206,7 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 	})
 
 	docs.AddCommand(&cobra.Command{
-		Use: "rename <id> <title>", Short: "Rename a document", Args: cobra.ExactArgs(2),
+		Use: "rename <file> <title>", Short: "Rename a document", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
 			if err != nil {
@@ -236,7 +220,7 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 	for _, action := range []string{"add", "remove"} {
 		action := action
 		docs.AddCommand(&cobra.Command{
-			Use: "tag-" + action + " <id> <tag>", Short: map[string]string{"add": "Add", "remove": "Remove"}[action] + " a document tag",
+			Use: "tag-" + action + " <file> <tag>", Short: map[string]string{"add": "Add", "remove": "Remove"}[action] + " a document tag",
 			Args: cobra.ExactArgs(2),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				_, service, err := openDocuments(cmd)
@@ -252,7 +236,7 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 	}
 
 	layoutCommand := &cobra.Command{
-		Use: "layout <id>", Short: "Show or change page layout",
+		Use: "layout <file>", Short: "Show or change page layout",
 		Long: "Show a document's page layout, or change the layout fields given as flags.\n" +
 			"Margins are in millimeters. Header and footer text may contain {title}, {page},\n" +
 			"and {pages}, and \"|\" separates left, center, and right parts.",
@@ -286,13 +270,13 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 	docs.AddCommand(layoutCommand)
 
 	docs.AddCommand(&cobra.Command{
-		Use: "page-break <id>", Short: "Append a page break", Args: cobra.ExactArgs(1),
+		Use: "page-break <file>", Short: "Append a page break", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return appendMarkup(cmd, args[0], "Insert page break", document.PageBreakMarkup)
 		},
 	})
 	sectionBreak := &cobra.Command{
-		Use: "section-break <id>", Short: "Append a section break with a column count", Args: cobra.ExactArgs(1),
+		Use: "section-break <file>", Short: "Append a section break with a column count", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			columns, _ := cmd.Flags().GetInt("columns")
 			if columns < 1 || columns > document.MaxColumns {
@@ -307,7 +291,7 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 	docs.AddCommand(sectionBreak)
 
 	image := &cobra.Command{
-		Use: "image <id> <file>", Short: "Embed a PNG, JPEG, or GIF image at the end of a document", Args: cobra.ExactArgs(2),
+		Use: "image <file> <image-file>", Short: "Embed a PNG, JPEG, or GIF image at the end of a document", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
 			if err != nil {
@@ -330,10 +314,10 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 	docs.AddCommand(image)
 
 	printCommand := &cobra.Command{
-		Use: "print <id>", Short: "Render printer-ready paginated text", Args: cobra.ExactArgs(1),
+		Use: "print <file>", Short: "Render printer-ready paginated text", Args: cobra.ExactArgs(1),
 		Long: "Render the document as monospaced pages with margins, columns, headers, footers,\n" +
 			"and page numbers. Pages are separated by form feeds, so the output can be sent\n" +
-			"directly to a printer, for example `parchment document print <id> | lpr`.",
+			"directly to a printer, for example `parchment document print <file> | lpr`.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
 			if err != nil {
@@ -357,41 +341,6 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 	printCommand.Flags().StringP("output", "o", "", "write to a file instead of standard output")
 	docs.AddCommand(printCommand)
 
-	deleteCommand := &cobra.Command{
-		Use: "delete <id>", Short: "Permanently delete a document", Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if yes, _ := cmd.Flags().GetBool("yes"); !yes {
-				return errors.New("deletion requires --yes")
-			}
-			_, service, err := openDocuments(cmd)
-			if err != nil {
-				return err
-			}
-			return service.Delete(cmd.Context(), args[0])
-		},
-	}
-	deleteCommand.Flags().Bool("yes", false, "confirm permanent deletion")
-	docs.AddCommand(deleteCommand)
-
-	docs.AddCommand(&cobra.Command{
-		Use: "search <query>", Short: "Search document titles, Markdown, and tags", Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ws, _, err := openDocuments(cmd)
-			if err != nil {
-				return err
-			}
-			results, err := search.Documents(cmd.Context(), ws, args[0])
-			if err != nil {
-				return err
-			}
-			for _, d := range results {
-				if _, err := fmt.Fprintf(streams.out, "%s\t%s\n", d.ID, strconv.Quote(d.Title)); err != nil {
-					return err
-				}
-			}
-			return nil
-		},
-	})
 }
 
 func addBodyFlags(cmd *cobra.Command) {

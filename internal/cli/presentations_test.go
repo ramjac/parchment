@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,38 +8,16 @@ import (
 )
 
 func TestPresentationCLI(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("APPDATA", home)
-	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("PARCHMENT_WORKSPACE", "")
-	root := t.TempDir()
+	c := newCLI(t)
+	must, run := c.must, c.run
 	sourcePath := filepath.Join(t.TempDir(), "talk.md")
 	source := "# A Talk\n\n## Welcome\n\nHello **everyone**.\n// private comment\n: speaker note\n\n## Wrap Up\n\nThanks.\n"
 	if err := os.WriteFile(sourcePath, []byte(source), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	run := func(args ...string) (string, error) {
-		t.Helper()
-		var stdout, stderr bytes.Buffer
-		cmd := New(&stdout, &stderr)
-		cmd.SetArgs(append([]string{"--workspace", root}, args...))
-		err := cmd.Execute()
-		return stdout.String(), err
-	}
-	must := func(args ...string) string {
-		t.Helper()
-		out, err := run(args...)
-		if err != nil {
-			t.Fatalf("%v: %v", args, err)
-		}
-		return out
-	}
-	must("init")
-	id := strings.TrimSpace(must("presentation", "create", "A Talk", "--body-file", sourcePath))
-	if len(id) != 32 {
-		t.Fatalf("presentation ID = %q", id)
+	id := "talk.md"
+	if out := strings.TrimSpace(must("presentation", "create", id, "--body-file", sourcePath)); !strings.HasSuffix(out, id) {
+		t.Fatalf("create printed %q", out)
 	}
 	if got := must("presentation", "show", id); got != source {
 		t.Fatalf("show source = %q, want %q", got, source)
@@ -54,9 +31,6 @@ func TestPresentationCLI(t *testing.T) {
 	if strings.Contains(preview, "speaker note") || strings.Contains(preview, "private comment") {
 		t.Fatalf("preview exposed notes or comments:\n%s", preview)
 	}
-	if out := must("presentation", "list"); !strings.Contains(out, id) || !strings.Contains(out, "2 slides") {
-		t.Fatalf("presentation list = %q", out)
-	}
 	editedPath := filepath.Join(t.TempDir(), "edited.md")
 	editedSource := "# Renamed Talk\n\n## Welcome\n\nUpdated text.\n"
 	if err := os.WriteFile(editedPath, []byte(editedSource), 0o600); err != nil {
@@ -66,11 +40,11 @@ func TestPresentationCLI(t *testing.T) {
 	if out := must("presentation", "show", id); out != editedSource {
 		t.Fatalf("edited source = %q", out)
 	}
-	if _, err := run("presentation", "create", "Mismatch", "--body-file", sourcePath); err == nil {
+	if _, err := run("presentation", "create", "mismatch.md", "--title", "Mismatch", "--body-file", sourcePath); err == nil {
 		t.Fatal("mismatched Markdown title was accepted")
 	}
-	must("presentation", "delete", id, "--yes")
-	if out := must("presentation", "list"); strings.Contains(out, id) {
-		t.Fatalf("deleted presentation still listed: %q", out)
+	must("presentation", "create", "blank.md")
+	if out := must("presentation", "show", "blank.md"); !strings.HasPrefix(out, "# blank\n") {
+		t.Fatalf("default presentation source = %q", out)
 	}
 }

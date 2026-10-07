@@ -6,8 +6,7 @@
   "title": "Community Garden Project Brief",
   "created_at": "2026-01-15T09:00:00Z",
   "modified_at": "2026-01-15T09:00:00Z",
-  "format_version": 1,
-  "location": "artifacts/20000000000000000000000000000002/content.md"
+  "format_version": 1
 }
 ```
 

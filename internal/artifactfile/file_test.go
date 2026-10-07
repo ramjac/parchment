@@ -16,7 +16,6 @@ func testArtifact() artifact.Artifact {
 	return artifact.Artifact{
 		ID: "0123456789abcdef0123456789abcdef", Kind: artifact.NoteKind, Title: "Example",
 		CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
-		Location: "artifacts/0123456789abcdef0123456789abcdef/content.md",
 	}
 }
 

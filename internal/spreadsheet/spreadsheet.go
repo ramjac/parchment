@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -82,7 +81,6 @@ type fileContent struct {
 
 // Repository persists spreadsheets as individual artifacts.
 type Repository interface {
-	ListSpreadsheets(context.Context) ([]Spreadsheet, error)
 	GetSpreadsheet(context.Context, string) (Spreadsheet, error)
 	TransitionSpreadsheet(context.Context, string, *Spreadsheet, *Spreadsheet) error
 }
@@ -101,22 +99,13 @@ func NewService(repository Repository, undoLimit int) *Service {
 	}
 }
 
-func (s *Service) List(ctx context.Context) ([]Spreadsheet, error) {
-	sheets, err := s.repository.ListSpreadsheets(ctx)
-	if err != nil {
-		return nil, err
-	}
-	sort.SliceStable(sheets, func(i, j int) bool {
-		return sheets[i].ModifiedAt.After(sheets[j].ModifiedAt)
-	})
-	return sheets, nil
+// Get loads the spreadsheet stored at path.
+func (s *Service) Get(ctx context.Context, path string) (Spreadsheet, error) {
+	return s.repository.GetSpreadsheet(ctx, path)
 }
 
-func (s *Service) Get(ctx context.Context, id string) (Spreadsheet, error) {
-	return s.repository.GetSpreadsheet(ctx, id)
-}
-
-func (s *Service) Create(ctx context.Context, title string, rows [][]Cell) (Spreadsheet, error) {
+// Create writes a new spreadsheet file at path. Creation is not undoable.
+func (s *Service) Create(ctx context.Context, path, title string, rows [][]Cell) (Spreadsheet, error) {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		return Spreadsheet{}, errors.New("spreadsheet title is required")
@@ -127,39 +116,35 @@ func (s *Service) Create(ctx context.Context, title string, rows [][]Cell) (Spre
 	}
 	id := hex.EncodeToString(idBytes)
 	now := s.now().UTC()
-	location := "artifacts/" + id + "/content.md"
-	if provider, ok := s.repository.(artifact.LocationProvider); ok {
-		location = provider.ArtifactLocation(id)
-	}
 	sheet := Spreadsheet{
 		Artifact: artifact.Artifact{
 			ID: id, Kind: artifact.SpreadsheetKind, Title: title,
 			CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
-			Location: location,
+			Path: path,
 		},
 		Version: FileVersion, Sheets: []Sheet{{Name: "Sheet1", Rows: cloneRows(rows)}},
 	}
 	if err := Normalize(&sheet); err != nil {
 		return Spreadsheet{}, err
 	}
-	if err := s.change(ctx, nil, &sheet, "Create spreadsheet"); err != nil {
+	if err := s.repository.TransitionSpreadsheet(ctx, path, nil, &sheet); err != nil {
 		return Spreadsheet{}, err
 	}
 	return cloneSpreadsheet(sheet), nil
 }
 
-func (s *Service) SetCell(ctx context.Context, id string, row, column int, cell Cell) (Spreadsheet, error) {
-	return s.SetCellInSheet(ctx, id, "Sheet1", row, column, cell)
+func (s *Service) SetCell(ctx context.Context, path string, row, column int, cell Cell) (Spreadsheet, error) {
+	return s.SetCellInSheet(ctx, path, "Sheet1", row, column, cell)
 }
 
-func (s *Service) SetCellInSheet(ctx context.Context, id, name string, row, column int, cell Cell) (Spreadsheet, error) {
+func (s *Service) SetCellInSheet(ctx context.Context, path, name string, row, column int, cell Cell) (Spreadsheet, error) {
 	if row < 1 || row > MaxRows || column < 1 || column > MaxColumns {
 		return Spreadsheet{}, fmt.Errorf("cell coordinates must be within %d rows and %d columns", MaxRows, MaxColumns)
 	}
 	if err := validateCell(cell); err != nil {
 		return Spreadsheet{}, err
 	}
-	return s.modify(ctx, id, "Set cell", func(sheet *Spreadsheet) error {
+	return s.modify(ctx, path, "Set cell", func(sheet *Spreadsheet) error {
 		index, err := SheetIndex(*sheet, name)
 		if err != nil {
 			return err
@@ -178,12 +163,12 @@ func (s *Service) SetCellInSheet(ctx context.Context, id, name string, row, colu
 	})
 }
 
-func (s *Service) InsertRow(ctx context.Context, id string, row int) (Spreadsheet, error) {
-	return s.InsertRowInSheet(ctx, id, "Sheet1", row)
+func (s *Service) InsertRow(ctx context.Context, path string, row int) (Spreadsheet, error) {
+	return s.InsertRowInSheet(ctx, path, "Sheet1", row)
 }
 
-func (s *Service) InsertRowInSheet(ctx context.Context, id, name string, row int) (Spreadsheet, error) {
-	return s.modify(ctx, id, "Insert row", func(sheet *Spreadsheet) error {
+func (s *Service) InsertRowInSheet(ctx context.Context, path, name string, row int) (Spreadsheet, error) {
+	return s.modify(ctx, path, "Insert row", func(sheet *Spreadsheet) error {
 		index, err := SheetIndex(*sheet, name)
 		if err != nil {
 			return err
@@ -201,12 +186,12 @@ func (s *Service) InsertRowInSheet(ctx context.Context, id, name string, row int
 	})
 }
 
-func (s *Service) InsertColumn(ctx context.Context, id string, column int) (Spreadsheet, error) {
-	return s.InsertColumnInSheet(ctx, id, "Sheet1", column)
+func (s *Service) InsertColumn(ctx context.Context, path string, column int) (Spreadsheet, error) {
+	return s.InsertColumnInSheet(ctx, path, "Sheet1", column)
 }
 
-func (s *Service) InsertColumnInSheet(ctx context.Context, id, name string, column int) (Spreadsheet, error) {
-	return s.modify(ctx, id, "Insert column", func(sheet *Spreadsheet) error {
+func (s *Service) InsertColumnInSheet(ctx context.Context, path, name string, column int) (Spreadsheet, error) {
+	return s.modify(ctx, path, "Insert column", func(sheet *Spreadsheet) error {
 		index, err := SheetIndex(*sheet, name)
 		if err != nil {
 			return err
@@ -226,19 +211,11 @@ func (s *Service) InsertColumnInSheet(ctx context.Context, id, name string, colu
 	})
 }
 
-func (s *Service) AddSheet(ctx context.Context, id, name string) (Spreadsheet, error) {
-	return s.modify(ctx, id, "Add sheet", func(book *Spreadsheet) error {
+func (s *Service) AddSheet(ctx context.Context, path, name string) (Spreadsheet, error) {
+	return s.modify(ctx, path, "Add sheet", func(book *Spreadsheet) error {
 		book.Sheets = append(book.Sheets, Sheet{Name: name, Rows: [][]Cell{{{}}}})
 		return nil
 	})
-}
-
-func (s *Service) Delete(ctx context.Context, id string) error {
-	before, err := s.repository.GetSpreadsheet(ctx, id)
-	if err != nil {
-		return err
-	}
-	return s.change(ctx, &before, nil, "Delete spreadsheet")
 }
 
 func (s *Service) Undo(ctx context.Context) (string, error) { return s.history.Undo(ctx) }
@@ -246,8 +223,8 @@ func (s *Service) Redo(ctx context.Context) (string, error) { return s.history.R
 func (s *Service) CanUndo() bool                            { return s.history.CanUndo() }
 func (s *Service) CanRedo() bool                            { return s.history.CanRedo() }
 
-func (s *Service) modify(ctx context.Context, id, description string, edit func(*Spreadsheet) error) (Spreadsheet, error) {
-	before, err := s.repository.GetSpreadsheet(ctx, id)
+func (s *Service) modify(ctx context.Context, path, description string, edit func(*Spreadsheet) error) (Spreadsheet, error) {
+	before, err := s.repository.GetSpreadsheet(ctx, path)
 	if err != nil {
 		return Spreadsheet{}, err
 	}
@@ -439,15 +416,10 @@ func (o spreadsheetOperation) Undo(ctx context.Context) error {
 }
 func (o spreadsheetOperation) Description() string { return o.description }
 func (o spreadsheetOperation) transition(ctx context.Context, expected, target *Spreadsheet) error {
-	id := ""
-	if o.before != nil {
-		id = o.before.ID
-	} else if o.after != nil {
-		id = o.after.ID
-	} else {
-		return errors.New("spreadsheet operation has no artifact")
+	if o.before == nil || o.after == nil {
+		return errors.New("spreadsheet operation must have a before and after value")
 	}
-	return o.repository.TransitionSpreadsheet(ctx, id, expected, target)
+	return o.repository.TransitionSpreadsheet(ctx, o.before.Path, expected, target)
 }
 
 // Equal reports whether two spreadsheets have the same persisted value.

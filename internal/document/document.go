@@ -71,11 +71,12 @@ type Change struct {
 
 // Repository is the persistence boundary required by document operations.
 type Repository interface {
-	ListDocuments(context.Context) ([]Document, error)
+	// GetDocument reads the document stored at a file path.
 	GetDocument(context.Context, string) (Document, error)
+	// TransitionDocument replaces the document at a path only if it still
+	// matches expected, preserving recorded changes. A nil expected value
+	// creates a new file.
 	TransitionDocument(context.Context, string, *Document, *Document) error
-	TransitionDocumentWithChanges(context.Context, string, *Document, *Document, []Change) error
-	DeleteDocument(context.Context, string, Document) ([]Change, error)
 	ListDocumentChanges(context.Context, string) ([]Change, error)
 	ProposeDocumentChange(context.Context, string, Document, Change) error
 	TransitionDocumentChange(context.Context, string, string, Change, Change, *Document, *Document) error
@@ -94,29 +95,15 @@ func NewService(repository Repository, undoLimit int) *Service {
 	return &Service{repository: repository, history: history.New(undoLimit), now: func() time.Time { return time.Now().UTC() }}
 }
 
-// List returns documents ordered by most recently modified first. Embedded
-// image data is not necessarily loaded; use Get for a complete document.
-func (s *Service) List(ctx context.Context) ([]Document, error) {
-	documents, err := s.repository.ListDocuments(ctx)
-	if err != nil {
-		return nil, err
-	}
-	sort.SliceStable(documents, func(i, j int) bool {
-		return documents[i].ModifiedAt.After(documents[j].ModifiedAt)
-	})
-	return documents, nil
-}
-
-// Get loads one document, including embedded images, by its artifact ID.
-func (s *Service) Get(ctx context.Context, id string) (Document, error) {
-	return s.repository.GetDocument(ctx, id)
+// Get loads the document stored at path, including embedded images.
+func (s *Service) Get(ctx context.Context, path string) (Document, error) {
+	return s.repository.GetDocument(ctx, path)
 }
 
 // Propose records a title, Markdown, or layout edit for later review without
 // changing the live document. Proposals may retain or remove embedded images,
 // but cannot add or replace their data.
 func (s *Service) Propose(ctx context.Context, before Document, description string, draft Draft) (Change, error) {
-	id := before.ID
 	for _, proposedImage := range draft.Images {
 		found := false
 		for _, existingImage := range before.Images {
@@ -147,22 +134,22 @@ func (s *Service) Propose(ctx context.Context, before Document, description stri
 		return Change{}, fmt.Errorf("generate document change ID: %w", err)
 	}
 	change := Change{
-		ID: hex.EncodeToString(idBytes), DocumentID: id, Description: description,
+		ID: hex.EncodeToString(idBytes), DocumentID: before.ID, Description: description,
 		CreatedAt: s.now().UTC(), Status: ChangePending,
 		Before: snapshot(before), After: snapshot(*after),
 	}
 	if err := change.Validate(); err != nil {
 		return Change{}, err
 	}
-	if err := s.repository.ProposeDocumentChange(ctx, id, before, change); err != nil {
+	if err := s.repository.ProposeDocumentChange(ctx, before.Path, before, change); err != nil {
 		return Change{}, err
 	}
 	return change, nil
 }
 
 // Changes returns the recorded proposals for a document, newest first.
-func (s *Service) Changes(ctx context.Context, id string) ([]Change, error) {
-	changes, err := s.repository.ListDocumentChanges(ctx, id)
+func (s *Service) Changes(ctx context.Context, path string) ([]Change, error) {
+	changes, err := s.repository.ListDocumentChanges(ctx, path)
 	if err != nil {
 		return nil, err
 	}
@@ -173,20 +160,20 @@ func (s *Service) Changes(ctx context.Context, id string) ([]Change, error) {
 }
 
 // GetChange returns one recorded proposal by ID.
-func (s *Service) GetChange(ctx context.Context, id, changeID string) (Change, error) {
-	return s.getChange(ctx, id, changeID)
+func (s *Service) GetChange(ctx context.Context, path, changeID string) (Change, error) {
+	return s.getChange(ctx, path, changeID)
 }
 
 // Accept applies a pending proposal if its original document state is still live.
-func (s *Service) Accept(ctx context.Context, id, changeID string) (Document, error) {
-	change, err := s.getChange(ctx, id, changeID)
+func (s *Service) Accept(ctx context.Context, path, changeID string) (Document, error) {
+	change, err := s.getChange(ctx, path, changeID)
 	if err != nil {
 		return Document{}, err
 	}
 	if change.Status != ChangePending {
 		return Document{}, errors.New("document change is not pending")
 	}
-	before, err := s.repository.GetDocument(ctx, id)
+	before, err := s.repository.GetDocument(ctx, path)
 	if err != nil {
 		return Document{}, err
 	}
@@ -213,8 +200,8 @@ func (s *Service) Accept(ctx context.Context, id, changeID string) (Document, er
 }
 
 // Reject marks a pending proposal as rejected without changing the document.
-func (s *Service) Reject(ctx context.Context, id, changeID string) error {
-	change, err := s.getChange(ctx, id, changeID)
+func (s *Service) Reject(ctx context.Context, path, changeID string) error {
+	change, err := s.getChange(ctx, path, changeID)
 	if err != nil {
 		return err
 	}
@@ -225,11 +212,11 @@ func (s *Service) Reject(ctx context.Context, id, changeID string) error {
 	rejected.Status = ChangeRejected
 	now := s.now().UTC()
 	rejected.ResolvedAt = &now
-	return s.repository.TransitionDocumentChange(ctx, id, changeID, change, rejected, nil, nil)
+	return s.repository.TransitionDocumentChange(ctx, path, changeID, change, rejected, nil, nil)
 }
 
-func (s *Service) getChange(ctx context.Context, id, changeID string) (Change, error) {
-	changes, err := s.repository.ListDocumentChanges(ctx, id)
+func (s *Service) getChange(ctx context.Context, path, changeID string) (Change, error) {
+	changes, err := s.repository.ListDocumentChanges(ctx, path)
 	if err != nil {
 		return Change{}, err
 	}
@@ -349,8 +336,9 @@ func applySnapshot(d *Document, s ChangeSnapshot) {
 	d.Images = images
 }
 
-// Create adds a document. A zero Layout selects DefaultLayout.
-func (s *Service) Create(ctx context.Context, draft Draft) (Document, error) {
+// Create writes a new document file at path. A zero Layout selects
+// DefaultLayout. Creation is not undoable; Parchment never deletes files.
+func (s *Service) Create(ctx context.Context, path string, draft Draft) (Document, error) {
 	idBytes := make([]byte, 16)
 	if _, err := rand.Read(idBytes); err != nil {
 		return Document{}, fmt.Errorf("generate document ID: %w", err)
@@ -360,19 +348,15 @@ func (s *Service) Create(ctx context.Context, draft Draft) (Document, error) {
 	if draft.Layout == (Layout{}) {
 		draft.Layout = DefaultLayout()
 	}
-	location := "artifacts/" + id + "/content.md"
-	if provider, ok := s.repository.(artifact.LocationProvider); ok {
-		location = provider.ArtifactLocation(id)
-	}
 	d := Document{Artifact: artifact.Artifact{
 		ID: id, Kind: artifact.DocumentKind, CreatedAt: now, ModifiedAt: now,
-		FormatVersion: artifact.FormatVersion, Location: location,
+		FormatVersion: artifact.FormatVersion, Path: path,
 	}}
 	applyDraft(&d, draft)
 	if err := normalize(&d); err != nil {
 		return Document{}, err
 	}
-	if err := s.change(ctx, nil, &d, "Create document"); err != nil {
+	if err := s.repository.TransitionDocument(ctx, path, nil, &d); err != nil {
 		return Document{}, err
 	}
 	return d, nil
@@ -388,25 +372,25 @@ func (s *Service) Save(ctx context.Context, expected Document, draft Draft) (Doc
 }
 
 // Modify changes the latest stored version of a document as one undoable change.
-func (s *Service) Modify(ctx context.Context, id, description string, edit func(*Document) error) (Document, error) {
-	before, err := s.repository.GetDocument(ctx, id)
+func (s *Service) Modify(ctx context.Context, path, description string, edit func(*Document) error) (Document, error) {
+	before, err := s.repository.GetDocument(ctx, path)
 	if err != nil {
 		return Document{}, err
 	}
 	return s.apply(ctx, before, description, edit)
 }
 
-// Rename changes a document's title without changing its ID.
-func (s *Service) Rename(ctx context.Context, id, title string) (Document, error) {
-	return s.Modify(ctx, id, "Rename document", func(d *Document) error {
+// Rename changes a document's title without changing its file or ID.
+func (s *Service) Rename(ctx context.Context, path, title string) (Document, error) {
+	return s.Modify(ctx, path, "Rename document", func(d *Document) error {
 		d.Title = title
 		return nil
 	})
 }
 
 // SetLayout replaces the page layout.
-func (s *Service) SetLayout(ctx context.Context, id string, layout Layout) (Document, error) {
-	return s.Modify(ctx, id, "Change page layout", func(d *Document) error {
+func (s *Service) SetLayout(ctx context.Context, path string, layout Layout) (Document, error) {
+	return s.Modify(ctx, path, "Change page layout", func(d *Document) error {
 		d.Layout = layout
 		return nil
 	})
@@ -414,12 +398,12 @@ func (s *Service) SetLayout(ctx context.Context, id string, layout Layout) (Docu
 
 // AddImage embeds an image and appends it to the end of the body. It returns
 // the updated document and the embedded image's stable name.
-func (s *Service) AddImage(ctx context.Context, id, alt string, data []byte) (Document, string, error) {
+func (s *Service) AddImage(ctx context.Context, path, alt string, data []byte) (Document, string, error) {
 	img, err := NewImage(data)
 	if err != nil {
 		return Document{}, "", err
 	}
-	updated, err := s.Modify(ctx, id, "Insert image", func(d *Document) error {
+	updated, err := s.Modify(ctx, path, "Insert image", func(d *Document) error {
 		*d = WithImage(*d, img)
 		d.Body = strings.TrimRight(d.Body, "\n") + "\n\n" + ImageMarkdown(alt, img.Name) + "\n"
 		return nil
@@ -428,12 +412,12 @@ func (s *Service) AddImage(ctx context.Context, id, alt string, data []byte) (Do
 }
 
 // AddTag adds a unique tag to a document.
-func (s *Service) AddTag(ctx context.Context, id, tag string) error {
+func (s *Service) AddTag(ctx context.Context, path, tag string) error {
 	tag = strings.TrimSpace(tag)
 	if tag == "" {
 		return errors.New("tag is required")
 	}
-	_, err := s.Modify(ctx, id, "Add tag", func(d *Document) error {
+	_, err := s.Modify(ctx, path, "Add tag", func(d *Document) error {
 		for _, existing := range d.Tags {
 			if existing == tag {
 				return nil
@@ -446,12 +430,12 @@ func (s *Service) AddTag(ctx context.Context, id, tag string) error {
 }
 
 // RemoveTag removes a tag from a document.
-func (s *Service) RemoveTag(ctx context.Context, id, tag string) error {
+func (s *Service) RemoveTag(ctx context.Context, path, tag string) error {
 	tag = strings.TrimSpace(tag)
 	if tag == "" {
 		return errors.New("tag is required")
 	}
-	_, err := s.Modify(ctx, id, "Remove tag", func(d *Document) error {
+	_, err := s.Modify(ctx, path, "Remove tag", func(d *Document) error {
 		kept := d.Tags[:0:0]
 		for _, existing := range d.Tags {
 			if existing != tag {
@@ -462,18 +446,6 @@ func (s *Service) RemoveTag(ctx context.Context, id, tag string) error {
 		return nil
 	})
 	return err
-}
-
-// Delete removes a document and records enough information to restore it.
-func (s *Service) Delete(ctx context.Context, id string) error {
-	before, err := s.repository.GetDocument(ctx, id)
-	if err != nil {
-		return err
-	}
-	return s.history.Execute(ctx, &documentOperation{
-		repository: s.repository, before: cloneDocument(&before), description: "Delete document",
-		captureChanges: true, restoreChanges: true,
-	})
 }
 
 // Undo reverses the most recent document change.
@@ -528,7 +500,7 @@ func (s *Service) apply(ctx context.Context, expected Document, description stri
 }
 
 // normalize validates a document and prunes images that the body no longer
-// references, so the artifact directory holds only images in use.
+// references, so the file holds only images in use.
 func normalize(d *Document) error {
 	d.Title = strings.TrimSpace(d.Title)
 	if !utf8.ValidString(d.Title) || !utf8.ValidString(d.Body) {
@@ -585,13 +557,10 @@ func cloneDocument(d *Document) *Document {
 }
 
 type documentOperation struct {
-	repository     Repository
-	before         *Document
-	after          *Document
-	description    string
-	changes        []Change
-	captureChanges bool
-	restoreChanges bool
+	repository  Repository
+	before      *Document
+	after       *Document
+	description string
 }
 
 type documentChangeAcceptance struct {
@@ -606,9 +575,9 @@ type documentChangeAcceptance struct {
 
 func (o *documentChangeAcceptance) Apply(ctx context.Context) error {
 	if o.resolved {
-		return o.repository.TransitionDocument(ctx, o.before.ID, &o.before, &o.after)
+		return o.repository.TransitionDocument(ctx, o.before.Path, &o.before, &o.after)
 	}
-	if err := o.repository.TransitionDocumentChange(ctx, o.before.ID, o.changeID,
+	if err := o.repository.TransitionDocumentChange(ctx, o.before.Path, o.changeID,
 		o.beforeChange, o.afterChange, &o.before, &o.after); err != nil {
 		return err
 	}
@@ -617,52 +586,26 @@ func (o *documentChangeAcceptance) Apply(ctx context.Context) error {
 }
 
 func (o *documentChangeAcceptance) Undo(ctx context.Context) error {
-	return o.repository.TransitionDocument(ctx, o.before.ID, &o.after, &o.before)
+	return o.repository.TransitionDocument(ctx, o.before.Path, &o.after, &o.before)
 }
 
 func (o *documentChangeAcceptance) Description() string { return "Accept document change" }
 
 func (o *documentOperation) Apply(ctx context.Context) error {
-	if o.captureChanges && o.before != nil && o.after == nil {
-		changes, err := o.repository.DeleteDocument(ctx, o.before.ID, *o.before)
-		if err != nil {
-			return err
-		}
-		o.changes = changes
-		return nil
-	}
-	if o.restoreChanges && o.before == nil && o.after != nil {
-		return o.repository.TransitionDocumentWithChanges(ctx, o.after.ID, nil, o.after, o.changes)
-	}
 	return o.transition(ctx, o.before, o.after)
 }
 
 func (o *documentOperation) Undo(ctx context.Context) error {
-	if o.before == nil && o.after != nil {
-		changes, err := o.repository.DeleteDocument(ctx, o.after.ID, *o.after)
-		if err != nil {
-			return err
-		}
-		o.changes = changes
-		o.restoreChanges = true
-		return nil
-	}
 	return o.transition(ctx, o.after, o.before)
 }
 
 func (o *documentOperation) Description() string { return o.description }
 
 func (o documentOperation) transition(ctx context.Context, expected, target *Document) error {
-	switch {
-	case o.before != nil:
-		if o.restoreChanges && expected == nil && target != nil {
-			return o.repository.TransitionDocumentWithChanges(ctx, o.before.ID, expected, target, o.changes)
-		}
-		return o.repository.TransitionDocument(ctx, o.before.ID, expected, target)
-	case o.after != nil:
-		return o.repository.TransitionDocument(ctx, o.after.ID, expected, target)
+	if o.before == nil || o.after == nil {
+		return errors.New("document operation must have a before and after value")
 	}
-	return errors.New("document operation has no artifact")
+	return o.repository.TransitionDocument(ctx, o.before.Path, expected, target)
 }
 
 // Equal reports whether two documents have the same persisted value.

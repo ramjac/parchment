@@ -14,7 +14,6 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/document"
@@ -22,49 +21,32 @@ import (
 )
 
 // documentMessage marks results of document operations, which are routed to
-// the documents screen even if the user has since switched screens.
+// the document screen.
 type documentMessage interface{ isDocumentMessage() }
 
-type documentsLoadedMsg struct {
-	documents []document.Document
-	err       error
-}
-type documentLoadedMsg struct {
-	document document.Document
-	proposal bool
-	err      error
-}
 type documentSavedMsg struct {
 	document   document.Document
 	err        error
 	cleanupErr error
 }
-type documentDeletedMsg struct{ err error }
-type documentHistoryMsg struct {
+
+// documentReloadedMsg reports an operation that changed the file, together
+// with the file's current document and proposals.
+type documentReloadedMsg struct {
 	description string
+	document    document.Document
+	changes     []document.Change
+	showChanges bool
+	cleanupErr  error
 	err         error
 }
 type documentChangesLoadedMsg struct {
 	changes []document.Change
 	err     error
 }
-type documentProposedMsg struct {
-	change     document.Change
-	err        error
-	cleanupErr error
-}
-type documentChangeUpdatedMsg struct {
-	description string
-	err         error
-}
 type imageLoadedMsg struct {
 	image document.Image
 	alt   string
-	err   error
-}
-type documentRecoveryReadyMsg struct {
-	draft recovery.Draft
-	data  documentRecoveryData
 	err   error
 }
 type documentAutosaveTickMsg struct{ session uint64 }
@@ -72,34 +54,21 @@ type documentAutosaveFinishedMsg struct {
 	session uint64
 	err     error
 }
-type documentRecoveryDeletedMsg struct{ err error }
 
+// documentRecoveryData is the autosaved document editor state: the saved
+// document the edits started from and the unsaved draft.
 type documentRecoveryData struct {
 	Snapshot       document.Document          `json:"snapshot"`
 	SnapshotBlocks map[string]json.RawMessage `json:"snapshot_blocks,omitempty"`
 	Draft          document.Draft             `json:"draft"`
 }
 
-func (documentsLoadedMsg) isDocumentMessage()          {}
-func (documentLoadedMsg) isDocumentMessage()           {}
 func (documentSavedMsg) isDocumentMessage()            {}
-func (documentDeletedMsg) isDocumentMessage()          {}
-func (documentHistoryMsg) isDocumentMessage()          {}
+func (documentReloadedMsg) isDocumentMessage()         {}
 func (documentChangesLoadedMsg) isDocumentMessage()    {}
-func (documentProposedMsg) isDocumentMessage()         {}
-func (documentChangeUpdatedMsg) isDocumentMessage()    {}
 func (imageLoadedMsg) isDocumentMessage()              {}
-func (documentRecoveryReadyMsg) isDocumentMessage()    {}
 func (documentAutosaveTickMsg) isDocumentMessage()     {}
 func (documentAutosaveFinishedMsg) isDocumentMessage() {}
-func (documentRecoveryDeletedMsg) isDocumentMessage()  {}
-
-type documentMode int
-
-const (
-	documentBrowsing documentMode = iota
-	documentEditing
-)
 
 type editorFocus int
 
@@ -120,44 +89,32 @@ const (
 	promptSection
 )
 
-// documentsScreen is the interactive documents list, print preview, and
-// editor. It owns UI state only; document rules live in the document service.
+// documentsScreen edits one document file and reviews its proposed changes.
+// It owns UI state only; document rules live in the document service.
 type documentsScreen struct {
-	service           *document.Service
-	theme             theme
-	width, height     int
-	mode              documentMode
-	documents         []document.Document
-	selected          int
-	showPreview       bool
-	showChanges       bool
-	changesDocumentID string
-	reviewing         bool
-	changes           []document.Change
-	selectedChange    int
-	previewPages      []document.Page
-	previewPage       int
-	preview           viewport.Model
-	changeReview      viewport.Model
-	confirmDelete     bool
-	help              bool
-	pending           bool
-	canUndo           bool
-	canRedo           bool
-	status            string
-	errMessage        string
+	service        *document.Service
+	path           string
+	theme          theme
+	width, height  int
+	showChanges    bool
+	reviewing      bool
+	changes        []document.Change
+	selectedChange int
+	changeReview   viewport.Model
+	pending        bool
+	canUndo        bool
+	canRedo        bool
+	status         string
+	errMessage     string
 
 	newOperationContext func() (context.Context, context.CancelFunc)
 	cancelOperation     context.CancelFunc
 	recoveryStore       recovery.Store
-	autosaveID          string
 	autosaveSession     uint64
 	autosaveCancel      context.CancelFunc
 	autosaveScheduler   func(uint64) tea.Cmd
 
 	// Editor state.
-	creating       bool
-	proposing      bool
 	snapshot       document.Document
 	titleInput     textinput.Model
 	body           textarea.Model
@@ -179,7 +136,7 @@ type editorDraft struct {
 	layout              document.Layout
 }
 
-func newDocumentsScreen(service *document.Service, t theme, newContext func() (context.Context, context.CancelFunc)) *documentsScreen {
+func newDocumentsScreen(service *document.Service, path string, t theme, newContext func() (context.Context, context.CancelFunc)) *documentsScreen {
 	title := textinput.New()
 	title.Prompt = "Title: "
 	title.CharLimit = 200
@@ -192,33 +149,23 @@ func newDocumentsScreen(service *document.Service, t theme, newContext func() (c
 	prompt := textinput.New()
 	prompt.CharLimit = document.MaxRunningTextLength * 2
 	return &documentsScreen{
-		service: service, theme: t, titleInput: title, body: body, promptInput: prompt,
-		preview: viewport.New(0, 0), changeReview: viewport.New(0, 0), newOperationContext: newContext,
+		service: service, path: path, theme: t, titleInput: title, body: body, promptInput: prompt,
+		changeReview: viewport.New(0, 0), newOperationContext: newContext,
 		canUndo: service.CanUndo(), canRedo: service.CanRedo(), layout: document.DefaultLayout(),
 	}
 }
 
-func (s *documentsScreen) init() tea.Cmd { return s.loadDocuments() }
-
 func (s *documentsScreen) resize(width, height int) {
 	s.width, s.height = width, height
-	s.resizePreview()
 	s.resizeChangeReview()
 	s.layoutEditor()
 }
 
-// busy reports whether leaving the screen would lose work or interrupt an operation.
-func (s *documentsScreen) busy() bool { return s.pending || s.mode == documentEditing }
-
-func (s *documentsScreen) update(message tea.Msg) (tea.Cmd, bool) {
+func (s *documentsScreen) update(message tea.Msg) tea.Cmd {
 	switch msg := message.(type) {
-	case documentRecoveryDeletedMsg:
-		if msg.err != nil {
-			s.errMessage = msg.err.Error()
-		}
 	case documentAutosaveTickMsg:
-		if msg.session == s.autosaveSession && s.mode == documentEditing {
-			return s.saveDocumentRecovery(msg.session), false
+		if msg.session == s.autosaveSession {
+			return s.saveDocumentRecovery(msg.session)
 		}
 	case documentAutosaveFinishedMsg:
 		if msg.session == s.autosaveSession {
@@ -229,294 +176,156 @@ func (s *documentsScreen) update(message tea.Msg) (tea.Cmd, bool) {
 			if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 				s.errMessage = "Autosave failed: " + msg.err.Error()
 			}
-			if s.mode == documentEditing {
-				return s.scheduleDocumentAutosave(msg.session), false
-			}
+			return s.scheduleDocumentAutosave(msg.session)
 		}
-	case documentsLoadedMsg:
-		s.finishOperation()
-		s.pending = false
-		if msg.err != nil {
-			s.errMessage = msg.err.Error()
-		} else {
-			s.errMessage = ""
-			s.documents = msg.documents
-			s.clampSelection()
-			s.refreshPreview()
-		}
-		s.refreshHistory()
-		if msg.err == nil && s.showChanges && s.changesDocumentID != "" {
-			return s.loadChanges(s.changesDocumentID), false
-		}
-	case documentLoadedMsg:
-		s.finishOperation()
-		s.pending = false
-		if msg.err != nil {
-			s.errMessage = msg.err.Error()
-			return nil, false
-		}
-		cmd := s.startEdit(msg.document)
-		if s.mode == documentEditing {
-			s.proposing = msg.proposal
-		}
-		return cmd, false
 	case documentSavedMsg:
 		s.finishOperation()
+		s.pending = false
 		s.refreshHistory()
 		if msg.err != nil {
-			s.pending = false
 			if isCancelled(msg.err) {
 				s.errMessage, s.status = "", "Save cancelled; unsaved changes remain"
 			} else {
 				s.errMessage = msg.err.Error()
 			}
 			s.startDocumentAutosaveSession()
-			return s.scheduleDocumentAutosave(s.autosaveSession), false
+			return s.scheduleDocumentAutosave(s.autosaveSession)
 		}
-		s.mode, s.creating = documentBrowsing, false
+		s.loadDocument(msg.document)
 		s.errMessage, s.status = "", "Saved “"+msg.document.Title+"”"
 		if msg.cleanupErr != nil {
 			s.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
 		}
-		return tea.Batch(tea.DisableMouse, s.loadDocuments()), false
-	case documentProposedMsg:
+		s.startDocumentAutosaveSession()
+		return s.scheduleDocumentAutosave(s.autosaveSession)
+	case documentReloadedMsg:
 		s.finishOperation()
 		s.pending = false
+		s.refreshHistory()
 		if msg.err != nil {
 			s.errMessage = msg.err.Error()
 			s.startDocumentAutosaveSession()
-			return s.scheduleDocumentAutosave(s.autosaveSession), false
+			return s.scheduleDocumentAutosave(s.autosaveSession)
 		}
-		s.mode, s.proposing = documentBrowsing, false
-		s.errMessage, s.status = "", "Proposal recorded: "+msg.change.ID
+		if !s.dirty() || msg.showChanges {
+			// The proposal recorded the edits, so the editor returns to the
+			// saved document.
+			s.loadDocument(msg.document)
+		} else {
+			s.snapshot = msg.document
+		}
+		s.changes = msg.changes
+		s.selectedChange = max(min(s.selectedChange, len(s.changes)-1), 0)
+		if msg.showChanges {
+			s.showChanges, s.reviewing = true, false
+		}
+		if s.reviewing {
+			s.setChangeReviewContent()
+		}
+		s.errMessage, s.status = "", msg.description
 		if msg.cleanupErr != nil {
 			s.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
 		}
-		return tea.Batch(tea.DisableMouse, s.loadChanges(msg.change.DocumentID)), false
+		s.startDocumentAutosaveSession()
+		return s.scheduleDocumentAutosave(s.autosaveSession)
 	case documentChangesLoadedMsg:
 		s.finishOperation()
 		s.pending = false
 		if msg.err != nil {
 			s.errMessage = msg.err.Error()
-			return nil, false
+			return nil
 		}
 		s.changes = msg.changes
 		s.selectedChange = max(min(s.selectedChange, len(s.changes)-1), 0)
 		s.showChanges, s.reviewing = true, false
 		s.errMessage = ""
-	case documentChangeUpdatedMsg:
-		s.finishOperation()
-		s.pending = false
-		s.refreshHistory()
-		if msg.err != nil {
-			s.errMessage = msg.err.Error()
-			return nil, false
-		}
-		s.status, s.errMessage = msg.description, ""
-		if s.changesDocumentID != "" {
-			return s.loadDocuments(), false
-		}
-	case documentDeletedMsg:
-		s.finishOperation()
-		s.refreshHistory()
-		s.confirmDelete = false
-		if msg.err != nil {
-			s.pending = false
-			s.errMessage = msg.err.Error()
-			return nil, false
-		}
-		s.errMessage, s.status = "", "Document deleted"
-		return s.loadDocuments(), false
-	case documentHistoryMsg:
-		s.finishOperation()
-		s.refreshHistory()
-		if msg.err != nil {
-			s.pending = false
-			s.errMessage = msg.err.Error()
-			return nil, false
-		}
-		s.errMessage, s.status = "", msg.description
-		return s.loadDocuments(), false
 	case imageLoadedMsg:
 		s.finishOperation()
 		s.pending = false
 		if errors.Is(msg.err, context.Canceled) {
 			s.errMessage, s.status = "", "Image insert cancelled"
-			return nil, false
+			return nil
 		}
 		if msg.err != nil {
 			s.errMessage = msg.err.Error()
-			return nil, false
+			return nil
 		}
 		s.errMessage = ""
 		s.images = document.WithImage(document.Document{Images: s.images}, msg.image).Images
-		alt := msg.alt
-		s.insertBlock(document.ImageMarkdown(alt, msg.image.Name))
+		s.insertBlock(document.ImageMarkdown(msg.alt, msg.image.Name))
 		s.status = "Inserted image " + msg.image.Name
 		cmd := s.focusBody()
 		s.layoutEditor()
-		return cmd, false
+		return cmd
 	case tea.KeyMsg:
-		cmd, leave := s.updateKey(msg)
+		cmd := s.updateKey(msg)
 		s.layoutEditor()
-		return cmd, leave
+		return cmd
 	case tea.MouseMsg:
 		cmd := s.updateMouse(msg)
 		s.layoutEditor()
-		return cmd, false
+		return cmd
 	}
-	return nil, false
+	return nil
 }
 
 func isCancelled(err error) bool {
 	return err != nil && strings.Contains(err.Error(), context.Canceled.Error())
 }
 
-func (s *documentsScreen) updateKey(msg tea.KeyMsg) (tea.Cmd, bool) {
+func (s *documentsScreen) updateKey(msg tea.KeyMsg) tea.Cmd {
 	key := msg.String()
-	if (s.width < 40 || s.height < 10) && key == "q" && s.mode == documentBrowsing {
-		s.cancelPending()
-		return tea.Quit, false
+	if s.width < 40 || s.height < 10 {
+		if key == "q" && !s.pending && !s.dirty() {
+			return s.close()
+		}
+		return nil
 	}
 	if s.pending {
-		if key == "ctrl+c" || key == "q" {
+		if key == "ctrl+c" {
 			s.cancelPending()
-			if s.mode == documentEditing {
-				s.status = "Cancelling…"
-				return nil, false
-			}
-			return tea.Quit, false
+			s.status = "Cancelling…"
+			return nil
 		}
 		s.status = "Please wait for the current operation to finish"
-		return nil, false
+		return nil
 	}
-	if key == "ctrl+c" {
-		if s.mode == documentEditing {
-			if s.dirty() {
-				s.status = "Unsaved changes: Ctrl+S saves, Esc twice discards"
-				return nil, false
-			}
-			return s.stopEditing("Edit closed"), false
-		}
-		return tea.Quit, false
-	}
-	if s.mode == documentEditing {
-		return s.updateEditorKey(msg), false
-	}
-	return s.updateBrowseKey(msg)
-}
-
-func (s *documentsScreen) updateBrowseKey(msg tea.KeyMsg) (tea.Cmd, bool) {
-	key := msg.String()
 	if s.showChanges {
-		return s.updateChangesKey(msg), false
+		return s.updateChangesKey(msg)
 	}
-	if s.confirmDelete {
-		switch key {
-		case "y":
-			if d, ok := s.selectedDocument(); ok {
-				s.pending = true
-				ctx := s.startOperation()
-				service := s.service
-				return func() tea.Msg { return documentDeletedMsg{err: service.Delete(ctx, d.ID)} }, false
-			}
-			s.confirmDelete = false
-		case "n", "esc":
-			s.confirmDelete = false
-			s.status = "Deletion cancelled"
-		}
-		return nil, false
-	}
-	if s.help {
-		if key == "?" || key == "esc" {
-			s.help = false
-		}
-		return nil, false
-	}
-	if s.showPreview {
-		switch key {
-		case "up", "k", "down", "j", "pgup", "pgdown", "home", "end":
-			s.preview, _ = s.preview.Update(msg)
-			return nil, false
-		}
-	}
-	switch key {
-	case "q":
-		return tea.Quit, false
-	case "tab":
-		return nil, true
-	case "c":
-		if d, ok := s.selectedDocument(); ok {
-			s.pending = true
-			ctx := s.startOperation()
-			service := s.service
-			return func() tea.Msg {
-				full, err := service.Get(ctx, d.ID)
-				return documentLoadedMsg{document: full, proposal: true, err: err}
-			}, false
-		}
-	case "v":
-		if d, ok := s.selectedDocument(); ok {
-			return s.loadChanges(d.ID), false
-		}
-	case "?":
-		s.help = true
-	case "esc", "left":
-		s.showPreview = false
-	case "right", "enter":
-		s.showPreview = true
-		s.resizePreview()
-	case "[", "]":
-		if len(s.previewPages) > 0 {
-			step := 1
-			if key == "[" {
-				step = -1
-			}
-			s.previewPage = (s.previewPage + step + len(s.previewPages)) % len(s.previewPages)
-			s.showPreviewPage()
-		}
-	case "n":
-		return s.startCreate(), false
-	case "e":
-		if d, ok := s.selectedDocument(); ok {
-			s.pending = true
-			ctx := s.startOperation()
-			service := s.service
-			return func() tea.Msg {
-				full, err := service.Get(ctx, d.ID)
-				return documentLoadedMsg{document: full, proposal: false, err: err}
-			}, false
-		}
-	case "d":
-		if _, ok := s.selectedDocument(); ok {
-			s.confirmDelete = true
-		}
-	case "u", "ctrl+z":
-		return s.history("Undid ", s.service.Undo), false
-	case "ctrl+r":
-		return s.history("Redid ", s.service.Redo), false
-	case "up", "k":
-		if !s.showPreview && s.selected > 0 {
-			s.selected--
-			s.refreshPreview()
-		}
-	case "down", "j":
-		if !s.showPreview && s.selected+1 < len(s.documents) {
-			s.selected++
-			s.refreshPreview()
-		}
-	}
-	return nil, false
+	return s.updateEditorKey(msg)
 }
 
-func (s *documentsScreen) loadChanges(id string) tea.Cmd {
+// loadChanges opens the list of proposals recorded in this file.
+func (s *documentsScreen) loadChanges() tea.Cmd {
 	s.pending = true
-	s.changesDocumentID = id
 	ctx := s.startOperation()
-	service := s.service
+	service, path := s.service, s.path
 	return func() tea.Msg {
-		changes, err := service.Changes(ctx, id)
+		changes, err := service.Changes(ctx, path)
 		return documentChangesLoadedMsg{changes: changes, err: err}
+	}
+}
+
+// reload runs an operation that changes the file, then reads the document and
+// its proposals back.
+func (s *documentsScreen) reload(showChanges bool, run func(context.Context) (string, error)) tea.Cmd {
+	s.stopDocumentAutosave()
+	s.pending = true
+	s.errMessage = ""
+	ctx := s.startOperation()
+	service, path := s.service, s.path
+	return func() tea.Msg {
+		description, err := run(ctx)
+		if err != nil {
+			return documentReloadedMsg{err: err}
+		}
+		d, err := service.Get(ctx, path)
+		if err != nil {
+			return documentReloadedMsg{err: err}
+		}
+		changes, err := service.Changes(ctx, path)
+		return documentReloadedMsg{description: description, document: d, changes: changes, showChanges: showChanges, err: err}
 	}
 }
 
@@ -533,25 +342,27 @@ func (s *documentsScreen) updateChangesKey(msg tea.KeyMsg) tea.Cmd {
 			if !ok || change.Status != document.ChangePending {
 				break
 			}
-			s.pending = true
-			ctx := s.startOperation()
-			service := s.service
+			if key == "a" && s.dirty() {
+				s.status = "Save or discard your edits before accepting a proposal"
+				return nil
+			}
+			service, path := s.service, s.path
 			if key == "a" {
-				return func() tea.Msg {
-					_, err := service.Accept(ctx, change.DocumentID, change.ID)
-					return documentChangeUpdatedMsg{description: "Proposal accepted", err: err}
-				}
+				return s.reload(false, func(ctx context.Context) (string, error) {
+					_, err := service.Accept(ctx, path, change.ID)
+					return "Proposal accepted", err
+				})
 			}
-			return func() tea.Msg {
-				err := service.Reject(ctx, change.DocumentID, change.ID)
-				return documentChangeUpdatedMsg{description: "Proposal rejected", err: err}
-			}
+			return s.reload(false, func(ctx context.Context) (string, error) {
+				return "Proposal rejected", service.Reject(ctx, path, change.ID)
+			})
 		}
 		return nil
 	}
 	switch key {
-	case "esc", "left":
+	case "esc", "left", "f4":
 		s.showChanges = false
+		return s.focusBody()
 	case "up", "k":
 		if s.selectedChange > 0 {
 			s.selectedChange--
@@ -623,23 +434,16 @@ func (s *documentsScreen) selectedChangeValue() (document.Change, bool) {
 	return s.changes[s.selectedChange], true
 }
 
-func (s *documentsScreen) history(prefix string, run func(context.Context) (string, error)) tea.Cmd {
-	s.pending = true
-	ctx := s.startOperation()
-	return func() tea.Msg {
-		description, err := run(ctx)
-		return documentHistoryMsg{description: prefix + strings.ToLower(description), err: err}
-	}
-}
-
-func (s *documentsScreen) loadDocuments() tea.Cmd {
-	s.pending = true
-	ctx := s.startOperation()
+func (s *documentsScreen) history(undo bool) tea.Cmd {
 	service := s.service
-	return func() tea.Msg {
-		documents, err := service.List(ctx)
-		return documentsLoadedMsg{documents: documents, err: err}
-	}
+	return s.reload(false, func(ctx context.Context) (string, error) {
+		run, prefix := service.Redo, "Redid "
+		if undo {
+			run, prefix = service.Undo, "Undid "
+		}
+		description, err := run(ctx)
+		return prefix + strings.ToLower(description), err
+	})
 }
 
 func (s *documentsScreen) startOperation() context.Context {
@@ -665,47 +469,6 @@ func (s *documentsScreen) refreshHistory() {
 	s.canUndo, s.canRedo = s.service.CanUndo(), s.service.CanRedo()
 }
 
-func (s *documentsScreen) selectedDocument() (document.Document, bool) {
-	if s.selected < 0 || s.selected >= len(s.documents) {
-		return document.Document{}, false
-	}
-	return s.documents[s.selected], true
-}
-
-func (s *documentsScreen) clampSelection() {
-	s.selected = max(min(s.selected, len(s.documents)-1), 0)
-}
-
-// refreshPreview paginates the selected document for the print preview.
-func (s *documentsScreen) refreshPreview() {
-	s.previewPages, s.previewPage = nil, 0
-	if d, ok := s.selectedDocument(); ok {
-		pages, err := document.Paginate(d)
-		if err == nil {
-			s.previewPages = pages
-		}
-	}
-	s.resizePreview()
-}
-
-func (s *documentsScreen) resizePreview() {
-	width, height := s.width-4, s.height-8
-	if s.width >= 80 {
-		width, height = s.width-s.width/3-8, s.height-10
-	}
-	s.preview.Width, s.preview.Height = max(width, 1), max(height, 1)
-	s.showPreviewPage()
-}
-
-func (s *documentsScreen) showPreviewPage() {
-	if s.previewPage >= len(s.previewPages) {
-		s.preview.SetContent("")
-		return
-	}
-	s.preview.SetContent(pageText(s.previewPages[s.previewPage], s.preview.Width))
-	s.preview.GotoTop()
-}
-
 func pageText(page document.Page, width int) string {
 	lines := make([]string, len(page.Lines))
 	for i, line := range page.Lines {
@@ -714,96 +477,17 @@ func pageText(page document.Page, width int) string {
 	return strings.Join(lines, "\n")
 }
 
-// view renders the documents screen below the shared header.
+// view renders the document screen below the shared header.
 func (s *documentsScreen) view(header string) string {
-	if s.mode == documentEditing {
-		return s.editorView(header)
-	}
 	if s.showChanges {
 		return s.viewChanges(header)
 	}
-	if s.help {
-		return header + "\n\n" +
-			"Documents\n\n" +
-			"↑/↓ or j/k   Select document\n" +
-			"Enter        Focus print preview (↑/↓ scroll)\n" +
-			"[ / ]        Previous / next page in the preview\n" +
-			"n            New document\n" +
-			"e            Edit document\n" +
-			"c            Propose an edit    v  Review proposals\n" +
-			"d            Delete document (confirmation required)\n" +
-			"u / Ctrl+Z   Undo    Ctrl+R  Redo\n" +
-			"Tab          Switch to notes\n" +
-			"?            Close help    q  Quit" + s.statusLine()
-	}
-	if s.width < 80 {
-		return s.viewNarrow(header)
-	}
-	return s.viewWide(header)
-}
-
-func (s *documentsScreen) viewNarrow(header string) string {
-	if s.showPreview {
-		if _, ok := s.selectedDocument(); ok {
-			return header + "\n" + s.preview.View() + "\n\n↑/↓ scroll  ·  [ ] page " + s.pageLabel() + "  ·  Esc returns" + s.statusLine()
-		}
-	}
-	var b strings.Builder
-	visible := max(s.height-8, 1)
-	start := visibleWindowStart(len(s.documents), s.selected, visible)
-	end := min(start+visible, len(s.documents))
-	b.WriteString(header + "\n\nDocuments\n")
-	if len(s.documents) == 0 {
-		b.WriteString("  No documents yet. Press n to create one.\n")
-	}
-	for i := start; i < end; i++ {
-		marker := "  "
-		if i == s.selected {
-			marker = "> "
-		}
-		fmt.Fprintf(&b, "%s%s\n", marker, sanitizeTerminalLine(s.documents[i].Title))
-	}
-	b.WriteString("\nEnter preview  ·  n new  ·  c propose  ·  v changes  ·  Tab notes  ·  ? help")
-	return b.String() + s.statusLine()
-}
-
-func (s *documentsScreen) viewWide(header string) string {
-	listWidth := max(s.width/3, 24)
-	previewWidth := max(s.width-listWidth-4, 30)
-	visible := max((s.height-9)/2, 1)
-	start := visibleWindowStart(len(s.documents), s.selected, visible)
-	end := min(start+visible, len(s.documents))
-	var list strings.Builder
-	list.WriteString("Documents\n")
-	if len(s.documents) == 0 {
-		list.WriteString("\nNo documents yet.\nPress n to create one.")
-	}
-	for i := start; i < end; i++ {
-		marker := "  "
-		if i == s.selected {
-			marker = "› "
-		}
-		fmt.Fprintf(&list, "%s%s\n", marker, sanitizeTerminalLine(s.documents[i].Title))
-	}
-	pane := func(width int, content string) string {
-		return lipgloss.NewStyle().Width(width).Height(s.height-5).Border(lipgloss.NormalBorder()).
-			BorderForeground(s.theme.border).Padding(0, 1).Render(content)
-	}
-	content := "Select a document to preview its printed pages."
-	if _, ok := s.selectedDocument(); ok {
-		content = "Page " + s.pageLabel() + "\n" + s.preview.View()
-	}
-	footer := "↑/↓ select  Enter focus preview  [ ] page  n new  e edit  c propose  v changes  d delete  Tab notes  ? help  q quit"
-	if s.showPreview {
-		footer = "↑/↓ scroll  [ ] page  Esc return to list  n new  e edit  c propose  v changes  d delete  Tab notes  ? help  q quit"
-	}
-	return header + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, pane(listWidth, list.String()), pane(previewWidth, content)) +
-		"\n" + footer + s.statusLine()
+	return s.editorView(header)
 }
 
 func (s *documentsScreen) viewChanges(header string) string {
 	var b strings.Builder
-	b.WriteString(header + "\n\nDocument changes\n")
+	b.WriteString(header + "\n\nProposed changes to this document\n")
 	if s.reviewing {
 		change, ok := s.selectedChangeValue()
 		if ok {
@@ -830,7 +514,7 @@ func (s *documentsScreen) viewChanges(header string) string {
 			}
 			fmt.Fprintf(&b, "%s%s  %s  %s\n", marker, change.Status, change.ID, sanitizeTerminalLine(change.Description))
 		}
-		b.WriteString("\n↑/↓ select  Enter review  ·  Esc return")
+		b.WriteString("\n↑/↓ select  Enter review  ·  Esc returns to the editor")
 	}
 	return b.String() + s.statusLine()
 }
@@ -841,13 +525,6 @@ func changeLayoutDescription(layout document.Layout) string {
 		layout.Margins.Top, layout.Margins.Right, layout.Margins.Bottom, layout.Margins.Left,
 		sanitizeTerminalText(layout.Header), sanitizeTerminalText(layout.Footer),
 		sanitizeTerminalLine(layout.PageNumbers))
-}
-
-func (s *documentsScreen) pageLabel() string {
-	if len(s.previewPages) == 0 {
-		return "–"
-	}
-	return fmt.Sprintf("%d/%d", s.previewPage+1, len(s.previewPages))
 }
 
 func (s *documentsScreen) statusLine() string {
@@ -861,9 +538,6 @@ func (s *documentsScreen) statusLine() string {
 	message := s.status
 	if s.errMessage != "" {
 		message = "Error: " + s.errMessage
-	}
-	if s.confirmDelete {
-		message = "Delete this document permanently? y confirms, n or Esc cancels"
 	}
 	if message == "" {
 		message = "Ready"
@@ -909,4 +583,20 @@ func readImageCommand(ctx context.Context, path string) tea.Cmd {
 
 func hasControl(value string) bool {
 	return strings.ContainsFunc(value, func(r rune) bool { return unicode.IsControl(r) && r != '\n' })
+}
+
+// visibleWindowStart returns the first index of a list window of the given
+// size that keeps selected visible.
+func visibleWindowStart(total, selected, visible int) int {
+	if total <= visible {
+		return 0
+	}
+	start := selected - visible/2
+	if start < 0 {
+		return 0
+	}
+	if end := start + visible; end > total {
+		return total - visible
+	}
+	return start
 }

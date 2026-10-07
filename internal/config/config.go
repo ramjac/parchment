@@ -15,15 +15,12 @@ const Version = 1
 
 // Settings is the fully resolved application configuration.
 type Settings struct {
-	Editor             string
-	Theme              string
-	UndoLimit          int
-	WorkspacePath      string
-	WorkspaceDiscovery string
-	ArtifactDirectory  string
-	LogLevel           string
-	LogFormat          string
-	LocalBackup        string
+	Editor      string
+	Theme       string
+	UndoLimit   int
+	LogLevel    string
+	LogFormat   string
+	LocalBackup string
 }
 
 type fileConfig struct {
@@ -31,12 +28,7 @@ type fileConfig struct {
 	Editor    *string `toml:"editor"`
 	Theme     *string `toml:"theme"`
 	UndoLimit *int    `toml:"undo_limit"`
-	Workspace struct {
-		Path              *string `toml:"path"`
-		Discovery         *string `toml:"discovery"`
-		ArtifactDirectory *string `toml:"artifact_directory"`
-	} `toml:"workspace"`
-	Logging struct {
+	Logging   struct {
 		Level  *string `toml:"level"`
 		Format *string `toml:"format"`
 	} `toml:"logging"`
@@ -47,17 +39,16 @@ type fileConfig struct {
 	} `toml:"backup"`
 }
 
-// Load resolves user then workspace TOML, followed by environment overrides.
-func Load(userPath, workspacePath string) (Settings, error) {
+const defaultFile = "version = 1\n"
+
+// Load resolves built-in defaults, the TOML file at path, and environment
+// overrides. A missing file leaves the defaults in place.
+func Load(path string) (Settings, error) {
 	settings := Settings{
-		Editor: "vi", Theme: "adaptive", UndoLimit: 100, WorkspaceDiscovery: "parents",
-		ArtifactDirectory: "artifacts",
-		LogLevel:          "warn", LogFormat: "text",
+		Editor: "vi", Theme: "adaptive", UndoLimit: 100,
+		LogLevel: "warn", LogFormat: "text",
 	}
-	for _, path := range []string{userPath, workspacePath} {
-		if path == "" {
-			continue
-		}
+	if path != "" {
 		cfg, err := read(path)
 		if err != nil {
 			return Settings{}, err
@@ -68,22 +59,57 @@ func Load(userPath, workspacePath string) (Settings, error) {
 	if settings.UndoLimit < 1 || settings.UndoLimit > 10000 {
 		return Settings{}, errors.New("undo_limit must be between 1 and 10000")
 	}
-	if settings.WorkspaceDiscovery != "parents" && settings.WorkspaceDiscovery != "disabled" {
-		return Settings{}, fmt.Errorf("unsupported workspace discovery mode %q", settings.WorkspaceDiscovery)
-	}
-	if err := validateArtifactDirectory(settings.ArtifactDirectory); err != nil {
-		return Settings{}, err
-	}
 	return settings, nil
 }
 
-// UserConfigPath returns the platform-appropriate user configuration path.
-func UserConfigPath() (string, error) {
-	dir, err := os.UserConfigDir()
+// Directory returns the per-user Parchment directory, ~/.parchment. It holds
+// the configuration file and application state such as autosave recovery
+// drafts. It never holds artifacts.
+func Directory() (string, error) {
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("find user config directory: %w", err)
+		return "", fmt.Errorf("find home directory: %w", err)
 	}
-	return filepath.Join(dir, "parchment", "config.toml"), nil
+	return filepath.Join(home, ".parchment"), nil
+}
+
+// Path returns the configuration file path: PARCHMENT_CONFIG when set,
+// otherwise parchment.toml in Directory.
+func Path() (string, error) {
+	if value := os.Getenv("PARCHMENT_CONFIG"); value != "" {
+		return filepath.Abs(value)
+	}
+	dir, err := Directory()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "parchment.toml"), nil
+}
+
+// EnsureDefault creates a minimal versioned configuration file at path, and
+// its parent directory with owner-only permissions, when the file is missing.
+func EnsureDefault(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("create config %s: %w", path, err)
+	}
+	if _, err := file.WriteString(defaultFile); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return fmt.Errorf("write config %s: %w", path, err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return fmt.Errorf("write config %s: %w", path, err)
+	}
+	return file.Close()
 }
 
 func read(path string) (fileConfig, error) {
@@ -114,15 +140,6 @@ func apply(settings *Settings, cfg fileConfig) {
 	if cfg.UndoLimit != nil {
 		settings.UndoLimit = *cfg.UndoLimit
 	}
-	if cfg.Workspace.Path != nil {
-		settings.WorkspacePath = *cfg.Workspace.Path
-	}
-	if cfg.Workspace.Discovery != nil {
-		settings.WorkspaceDiscovery = *cfg.Workspace.Discovery
-	}
-	if cfg.Workspace.ArtifactDirectory != nil {
-		settings.ArtifactDirectory = *cfg.Workspace.ArtifactDirectory
-	}
 	if cfg.Logging.Level != nil {
 		settings.LogLevel = *cfg.Logging.Level
 	}
@@ -148,24 +165,10 @@ func applyEnvironment(settings *Settings) {
 			settings.UndoLimit = 0
 		}
 	}
-	if value, ok := os.LookupEnv("PARCHMENT_ARTIFACT_DIRECTORY"); ok {
-		settings.ArtifactDirectory = value
-	}
 	if value, ok := os.LookupEnv("PARCHMENT_LOG_LEVEL"); ok {
 		settings.LogLevel = strings.ToLower(value)
 	}
 	if value, ok := os.LookupEnv("PARCHMENT_LOG_FORMAT"); ok {
 		settings.LogFormat = strings.ToLower(value)
 	}
-}
-
-func validateArtifactDirectory(path string) error {
-	if path == "" || filepath.IsAbs(path) || filepath.VolumeName(path) != "" {
-		return errors.New("workspace.artifact_directory must be a non-empty relative path")
-	}
-	clean := filepath.Clean(path)
-	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return errors.New("workspace.artifact_directory must stay within the workspace")
-	}
-	return nil
 }

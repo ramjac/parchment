@@ -6,8 +6,7 @@
   "title": "Trail observations",
   "created_at": "2026-01-15T09:00:00Z",
   "modified_at": "2026-01-15T09:00:00Z",
-  "format_version": 1,
-  "location": "artifacts/10000000000000000000000000000001/content.md"
+  "format_version": 1
 }
 ```
 

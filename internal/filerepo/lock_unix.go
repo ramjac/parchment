@@ -1,6 +1,6 @@
 //go:build android || darwin || dragonfly || freebsd || illumos || ios || linux || netbsd || openbsd || solaris
 
-package workspace
+package filerepo
 
 import (
 	"context"

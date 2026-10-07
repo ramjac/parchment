@@ -319,7 +319,7 @@ func TestUpdateUsesExpectedSnapshotAndUndoRedo(t *testing.T) {
 	ctx := context.Background()
 	repository := newMemoryRepository()
 	service := NewService(repository, 10)
-	item, err := service.Create(ctx, "Demo", "# Demo\n\n## Start\n\nBefore\n")
+	item, err := service.Create(ctx, "demo.md", "Demo", "# Demo\n\n## Start\n\nBefore\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,14 +334,14 @@ func TestUpdateUsesExpectedSnapshotAndUndoRedo(t *testing.T) {
 	if _, err := service.Undo(ctx); err != nil {
 		t.Fatal(err)
 	}
-	undone, err := service.Get(ctx, item.ID)
+	undone, err := service.Get(ctx, item.Path)
 	if err != nil || undone.Source != item.Source {
 		t.Fatalf("undo = %+v, %v", undone, err)
 	}
 	if _, err := service.Redo(ctx); err != nil {
 		t.Fatal(err)
 	}
-	redone, err := service.Get(ctx, item.ID)
+	redone, err := service.Get(ctx, item.Path)
 	if err != nil || redone.Source != updated.Source {
 		t.Fatalf("redo = %+v, %v", redone, err)
 	}
@@ -359,7 +359,6 @@ func testPresentation() Presentation {
 			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.PresentationKind,
 			Title: "Demo", CreatedAt: testNow, ModifiedAt: testNow,
 			FormatVersion: artifact.FormatVersion,
-			Location:      "artifacts/0123456789abcdef0123456789abcdef/content.md",
 		},
 		Version: FileVersion, Source: "# Demo\n\n## Slide 1\n\nHello.\n",
 	}
@@ -369,13 +368,6 @@ type memoryRepository struct{ items map[string]Presentation }
 
 func newMemoryRepository() *memoryRepository {
 	return &memoryRepository{items: make(map[string]Presentation)}
-}
-func (r *memoryRepository) ListPresentations(context.Context) ([]Presentation, error) {
-	items := make([]Presentation, 0, len(r.items))
-	for _, item := range r.items {
-		items = append(items, clonePresentation(item))
-	}
-	return items, nil
 }
 func (r *memoryRepository) GetPresentation(_ context.Context, id string) (Presentation, error) {
 	item, ok := r.items[id]

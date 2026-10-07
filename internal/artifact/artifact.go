@@ -18,7 +18,7 @@ const (
 	FormatVersion         = 1
 )
 
-// Artifact contains metadata shared by every workspace artifact type.
+// Artifact contains metadata shared by every artifact type.
 type Artifact struct {
 	ID            string    `json:"id"`
 	Kind          Kind      `json:"kind"`
@@ -26,14 +26,11 @@ type Artifact struct {
 	CreatedAt     time.Time `json:"created_at"`
 	ModifiedAt    time.Time `json:"modified_at"`
 	FormatVersion int       `json:"format_version"`
-	Location      string    `json:"location"`
 	Tags          []string  `json:"tags,omitempty"`
 	Links         []string  `json:"links,omitempty"`
-}
-
-// LocationProvider supplies the workspace-relative artifact path for a new ID.
-type LocationProvider interface {
-	ArtifactLocation(id string) string
+	// Path is the file the artifact was read from or will be written to. It
+	// identifies the artifact to repositories and is not persisted.
+	Path string `json:"-"`
 }
 
 // Validate checks the common metadata required for a persisted artifact.
@@ -53,9 +50,6 @@ func (a Artifact) Validate() error {
 	}
 	if a.FormatVersion != FormatVersion {
 		return fmt.Errorf("unsupported artifact format version %d", a.FormatVersion)
-	}
-	if a.Location == "" {
-		return errors.New("artifact location is required")
 	}
 	return nil
 }

@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -17,35 +18,10 @@ func addPresentationCommands(root *cobra.Command, streams output) {
 		Use: "presentation", Aliases: []string{"pres"},
 		Short: "Create and manage Markdown slide presentations",
 	}
-	root.AddCommand(group)
-
-	group.AddCommand(&cobra.Command{
-		Use: "list", Aliases: []string{"ls"}, Short: "List presentations", Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			_, service, err := openPresentations(cmd)
-			if err != nil {
-				return err
-			}
-			items, err := service.List(cmd.Context())
-			if err != nil {
-				return err
-			}
-			for _, item := range items {
-				deck, err := presentation.Parse(item.Source)
-				if err != nil {
-					return err
-				}
-				if _, err := fmt.Fprintf(streams.out, "%s\t%s\t%d slides\n",
-					item.ID, strconv.Quote(item.Title), len(deck.Slides)); err != nil {
-					return err
-				}
-			}
-			return nil
-		},
-	})
+	root.AddCommand(groupCommand(group))
 
 	create := &cobra.Command{
-		Use: "create <title>", Short: "Create a presentation", Args: cobra.ExactArgs(1),
+		Use: "create <file>", Short: "Create a presentation file", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openPresentations(cmd)
 			if err != nil {
@@ -55,19 +31,32 @@ func addPresentationCommands(root *cobra.Command, streams output) {
 			if err != nil {
 				return err
 			}
-			item, err := service.Create(cmd.Context(), args[0], source)
+			path, err := filepath.Abs(args[0])
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintln(streams.out, item.ID)
+			title := titleFlag(cmd, path)
+			if !cmd.Flags().Changed("title") && strings.TrimSpace(source) != "" {
+				deck, err := presentation.Parse(source)
+				if err != nil {
+					return err
+				}
+				title = deck.Title
+			}
+			item, err := service.Create(cmd.Context(), path, title, source)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(streams.out, item.Path)
 			return err
 		},
 	}
+	create.Flags().String("title", "", "presentation title (defaults to the source's '# Title' heading or the file name)")
 	create.Flags().String("body-file", "", "read Markdown presentation source from a file (- for standard input)")
 	group.AddCommand(create)
 
 	group.AddCommand(&cobra.Command{
-		Use: "show <id>", Short: "Show the editable Markdown source", Args: cobra.ExactArgs(1),
+		Use: "show <file>", Short: "Show the editable Markdown source", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openPresentations(cmd)
 			if err != nil {
@@ -83,7 +72,7 @@ func addPresentationCommands(root *cobra.Command, streams output) {
 	})
 
 	group.AddCommand(&cobra.Command{
-		Use: "preview <id>", Short: "Print slide-by-slide plain-text preview", Args: cobra.ExactArgs(1),
+		Use: "preview <file>", Short: "Print slide-by-slide plain-text preview", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openPresentations(cmd)
 			if err != nil {
@@ -103,7 +92,7 @@ func addPresentationCommands(root *cobra.Command, streams output) {
 	})
 
 	edit := &cobra.Command{
-		Use: "edit <id>", Short: "Replace a presentation's Markdown source", Args: cobra.ExactArgs(1),
+		Use: "edit <file>", Short: "Replace a presentation's Markdown source", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !cmd.Flags().Changed("body-file") {
 				return errors.New("edit requires --body-file")
@@ -127,22 +116,6 @@ func addPresentationCommands(root *cobra.Command, streams output) {
 	edit.Flags().String("body-file", "", "read replacement Markdown source from a file (- for standard input)")
 	group.AddCommand(edit)
 
-	deleteCommand := &cobra.Command{
-		Use: "delete <id>", Short: "Permanently delete a presentation", Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			yes, _ := cmd.Flags().GetBool("yes")
-			if !yes {
-				return errors.New("deletion requires --yes")
-			}
-			_, service, err := openPresentations(cmd)
-			if err != nil {
-				return err
-			}
-			return service.Delete(cmd.Context(), args[0])
-		},
-	}
-	deleteCommand.Flags().Bool("yes", false, "confirm permanent deletion")
-	group.AddCommand(deleteCommand)
 }
 
 func readPresentationSource(cmd *cobra.Command) (string, error) {

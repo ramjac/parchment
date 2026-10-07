@@ -7,46 +7,72 @@ import (
 )
 
 func TestLoadPrecedenceAndValidation(t *testing.T) {
-	dir := t.TempDir()
-	userPath := filepath.Join(dir, "user.toml")
-	workspacePath := filepath.Join(dir, "workspace.toml")
-	if err := os.WriteFile(userPath, []byte("version = 1\ntheme = \"user\"\nundo_limit = 8\n\n[workspace]\nartifact_directory = \"user-artifacts\"\n"), 0o600); err != nil {
+	path := filepath.Join(t.TempDir(), "parchment.toml")
+	if err := os.WriteFile(path, []byte("version = 1\ntheme = \"file\"\nundo_limit = 12\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(workspacePath, []byte("version = 1\ntheme = \"workspace\"\nundo_limit = 12\n\n[workspace]\nartifact_directory = \"workspace-artifacts\"\n"), 0o600); err != nil {
+	settings, err := Load(path)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if settings.Theme != "file" || settings.UndoLimit != 12 {
+		t.Fatalf("settings = %+v", settings)
 	}
 	t.Setenv("PARCHMENT_THEME", "environment")
 	t.Setenv("PARCHMENT_UNDO_LIMIT", "16")
-	t.Setenv("PARCHMENT_ARTIFACT_DIRECTORY", "environment-artifacts")
-	settings, err := Load(userPath, workspacePath)
+	settings, err = Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if settings.Theme != "environment" || settings.UndoLimit != 16 {
 		t.Fatalf("settings = %+v", settings)
 	}
-	if settings.ArtifactDirectory != "environment-artifacts" {
-		t.Fatalf("artifact directory = %q", settings.ArtifactDirectory)
-	}
 	t.Setenv("PARCHMENT_UNDO_LIMIT", "invalid")
-	if _, err := Load(userPath, workspacePath); err == nil {
+	if _, err := Load(path); err == nil {
 		t.Fatal("invalid environment setting did not fail validation")
 	}
-	if err := os.WriteFile(workspacePath, []byte("version = 2\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version = 2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(userPath, workspacePath); err == nil {
+	if _, err := Load(path); err == nil {
 		t.Fatal("unsupported config version did not fail")
 	}
 }
 
-func TestArtifactDirectoryValidation(t *testing.T) {
-	for _, path := range []string{"", ".", "..", "../outside", "/absolute"} {
-		t.Run(path, func(t *testing.T) {
-			if err := validateArtifactDirectory(path); err == nil {
-				t.Fatalf("accepted artifact directory %q", path)
-			}
-		})
+func TestPathAndEnsureDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("PARCHMENT_CONFIG", "")
+	path, err := Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".parchment", "parchment.toml"); path != want {
+		t.Fatalf("path = %q, want %q", path, want)
+	}
+	if err := EnsureDefault(path); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != defaultFile {
+		t.Fatalf("default config = %q, %v", data, err)
+	}
+	if info, err := os.Stat(filepath.Dir(path)); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("config directory = %v, %v", info, err)
+	}
+	if err := os.WriteFile(path, []byte("version = 1\ntheme = \"kept\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureDefault(path); err != nil {
+		t.Fatal(err)
+	}
+	if settings, err := Load(path); err != nil || settings.Theme != "kept" {
+		t.Fatalf("existing config was replaced: %+v, %v", settings, err)
+	}
+	override := filepath.Join(t.TempDir(), "custom.toml")
+	t.Setenv("PARCHMENT_CONFIG", override)
+	if path, err := Path(); err != nil || path != override {
+		t.Fatalf("override path = %q, %v", path, err)
 	}
 }

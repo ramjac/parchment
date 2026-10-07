@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,51 +10,29 @@ import (
 )
 
 func TestSpreadsheetCLIFormulasAndGridOperations(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("APPDATA", home)
-	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("PARCHMENT_WORKSPACE", "")
-	root := t.TempDir()
+	c := newCLI(t)
+	must, run := c.must, c.run
 	input := filepath.Join(t.TempDir(), "input.csv")
 	if err := os.WriteFile(input, []byte("Item,Count\nApples,4\nOranges,3\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	run := func(args ...string) (string, error) {
-		t.Helper()
-		var stdout, stderr bytes.Buffer
-		cmd := New(&stdout, &stderr)
-		cmd.SetArgs(append([]string{"--workspace", root}, args...))
-		err := cmd.Execute()
-		return stdout.String(), err
-	}
-	must := func(args ...string) string {
-		t.Helper()
-		out, err := run(args...)
-		if err != nil {
-			t.Fatalf("%v: %v", args, err)
-		}
-		return out
-	}
-	must("init")
 	if err := os.WriteFile(input, []byte("Name\nbad\xff\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := run("spreadsheet", "create", "Invalid", "--csv-file", input); err == nil ||
+	if out, err := run("spreadsheet", "create", "invalid.md", "--csv-file", input); err == nil ||
 		!strings.Contains(err.Error(), "valid UTF-8") || out != "" {
 		t.Fatalf("invalid UTF-8 CSV import = %q, %v", out, err)
 	}
-	if out := must("spreadsheet", "list"); strings.Contains(out, "Invalid") {
-		t.Fatalf("failed CSV import persisted an artifact: %q", out)
+	if _, err := os.Stat("invalid.md"); !os.IsNotExist(err) {
+		t.Fatalf("failed CSV import created a file: %v", err)
 	}
 	if err := os.WriteFile(input, []byte("Item,Count\nApples,4\nOranges,3\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	id := strings.TrimSpace(must("spreadsheet", "create", "Fruit", "--csv-file", input))
-	if len(id) != 32 {
-		t.Fatalf("spreadsheet ID = %q", id)
+	id := "fruit.md"
+	if out := strings.TrimSpace(must("spreadsheet", "create", id, "--title", "Fruit", "--csv-file", input)); !strings.HasSuffix(out, id) {
+		t.Fatalf("create printed %q", out)
 	}
 	if out := must("spreadsheet", "cell", id, "B2"); strings.TrimSpace(out) != "4" {
 		t.Fatalf("cell B2 = %q", out)
@@ -83,18 +60,8 @@ func TestSpreadsheetCLIFormulasAndGridOperations(t *testing.T) {
 			t.Fatalf("workbook JSON missing %q:\n%s", value, shown)
 		}
 	}
-	if out := must("spreadsheet", "list"); !strings.Contains(out, id) {
-		t.Fatalf("spreadsheet list = %q", out)
-	}
 	if _, err := run("spreadsheet", "cell", id, "A1", "=1/0", "--formula"); err == nil {
 		t.Fatal("division by zero formula was stored")
-	}
-	if _, err := run("spreadsheet", "delete", id); err == nil {
-		t.Fatal("delete without --yes succeeded")
-	}
-	must("spreadsheet", "delete", id, "--yes")
-	if out := must("spreadsheet", "list"); strings.Contains(out, id) {
-		t.Fatalf("deleted spreadsheet still listed: %q", out)
 	}
 }
 

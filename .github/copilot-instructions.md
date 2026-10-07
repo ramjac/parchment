@@ -11,22 +11,60 @@ Use Go 1.24 or newer.
 
 There is no repository-specific lint target or linter configuration.
 
+## Core principle: artifacts are ordinary files in shared folders
+
+Parchment does not and will never manage a directory of artifacts. A
+Parchment artifact is an ordinary standalone file that lives wherever the user
+puts it, such as the home directory or `~/Documents`, alongside the user's
+other, non-Parchment files. Those folders are shared spaces, not Parchment
+territory. The same artifact can be opened by Parchment or by any text editor.
+
+- Do not create or require a Parchment-owned artifact directory, store,
+  library, vault, collection, workspace, or similar concept under any name.
+  Renaming the concept (for example an "artifacts directory") does not make it
+  acceptable.
+- "Separating Parchment files from the user's other files" is not a goal of
+  this repository; the opposite is intended. Do not justify designs with it.
+- Do not give artifacts opaque storage paths such as `<id>/content.md` or
+  require Parchment-specific folder layouts, marker files, lock directories,
+  or bookkeeping files beside artifacts. A user names and places their files.
+- Do not scan, index, or take ownership of a directory to find artifacts;
+  operate on the files the user explicitly opens or names.
+- `~/.parchment/` is for Parchment's own configuration and application state
+  only (`parchment.toml`, the global write lock, autosave recovery drafts,
+  and future persistent undo/redo history). It never contains artifacts.
+- Do not reintroduce `list`, `search`, or `delete` commands that treat a
+  directory as Parchment's collection. Users find, rename, move, and delete
+  artifact files with ordinary tools.
+
 ## Architecture
 
 `cmd/parchment` is the executable entry point; `internal/cli` builds the Cobra
-command tree and resolves settings and the active workspace. The CLI and the
-Bubble Tea interface share `internal/note.Service` for note operations.
+command tree and resolves settings. Every command takes the artifact's file
+path (`parchment note show ~/Documents/ideas.md`); `create` refuses to
+overwrite an existing file, and `parchment tui <file> [--kind note|document]`
+opens one note or document file, creating it (after asking for the kind when
+`--kind` is omitted) if it does not exist.
 
-The note service depends on a small repository interface. `internal/workspace`
-implements it as a filesystem-backed store, and `internal/tui` receives that
-same interface along with the service. This keeps note behavior independent of
-the CLI, TUI, and storage implementation. `internal/history` provides bounded,
-in-memory undo/redo for successful service changes.
+The note, document, spreadsheet, and presentation services in
+`internal/<kind>` hold the domain rules and depend on small repository
+interfaces keyed by file path. `internal/filerepo` implements them over
+standalone, user-named files: it detects kinds from metadata, rejects plain
+Markdown and files of another kind, detects edits made outside Parchment by
+comparing the file with the version that was loaded, writes atomically next to
+the file, and keeps its write lock and recovery drafts under `~/.parchment/`.
+It never deletes artifact files. `internal/tui` is a single-file editor that
+receives the note and document services and a `recovery.Store`. This keeps
+behavior independent of the CLI, TUI, and storage implementation.
+`internal/history` provides bounded, in-memory undo/redo for successful
+service changes; creating a file is not recorded.
 
-An initialized workspace stores versioned `parchment.toml` at its root and
-artifacts under `artifacts/<id>/content.md` by default; the workspace-relative
-directory can be configured with `workspace.artifact_directory`. A Parchment
-file is a Markdown document with an embedded, typed data envelope: its first
+`~/.parchment/` holds Parchment's own files only: the versioned
+`parchment.toml` (created automatically), `write.lock`, and `recovery/`
+autosave drafts (named by a hash of the artifact's absolute path) and, in the
+future, persistent undo/redo history. Never store artifacts under
+`~/.parchment/`. A Parchment file is a Markdown document with
+an embedded, typed data envelope: its first
 fenced code block is `parchment-meta`, containing the shared artifact metadata as JSON;
 kind-specific data is stored in `parchment-<thing>` fenced blocks, also JSON
 unless a versioned block format explicitly specifies otherwise; the remaining
@@ -36,9 +74,8 @@ editable file per artifact while allowing structured data such as workbook
 cells, document layout, change history, and base64-encoded embedded images.
 `internal/artifactfile` reads and writes the common envelope, and
 `internal/artifact` defines the shared metadata. Parchment renderers hide
-reserved `parchment-*` fences, but preserve ordinary code fences. `internal/search`
-searches notes directly through the repository, without an index or background
-process.
+reserved `parchment-*` fences, but preserve ordinary code fences. Metadata
+does not record the file's path; the path is wherever the file is.
 
 ## Repository-specific conventions
 
@@ -47,11 +84,11 @@ process.
   backwards-compatibility handling for artifact format changes. If format
   requirements change incompatibly, update the implementation and the
   checked-in files in `examples/`. Remove this instruction at the first release.
-- Treat this as a local-first modular monolith: the workspace is authoritative,
-  and normal operation must work offline without accounts, hosted services,
-  telemetry, a daemon, or a custom sync protocol. Keep data inspectable and
-  usable with ordinary filesystem tools.
-- Keep note behavior in the service layer and persistence in the workspace
+- Treat this as a local-first modular monolith: the user's artifact files,
+  wherever they are, are authoritative, and normal operation must work offline without
+  accounts, hosted services, telemetry, a daemon, or a custom sync protocol.
+  Keep data inspectable and usable with ordinary filesystem tools.
+- Keep note behavior in the service layer and persistence in the filesystem
   repository; the CLI and TUI should orchestrate these rather than duplicate
   note rules.
 - Keep architectural dependencies pointed outward: domain/application code
@@ -67,9 +104,9 @@ process.
   and confirmation states receive input before background screens. Do not
   introduce a universal child-component interface until multiple real
   components need it.
-- Persist artifact IDs as 32-character lowercase hex strings. An artifact's
-  `Location` must be `<workspace.artifact_directory>/<id>/content.md`, using
-  the non-hidden `artifacts` directory by default.
+- Persist artifact IDs as 32-character lowercase hex strings in metadata. IDs
+  identify artifacts; they must not dictate file names or folder layout, and
+  operations address artifacts by path, not ID.
 - Generally, persist each artifact as one human-readable file. Keep its shared
   metadata, content, comments or annotations, and change-tracking data together
   so a text editor can inspect the complete artifact without opening sidecars.
@@ -79,9 +116,10 @@ process.
   ordinary prose and formatting in the Markdown body. The expected exception
   is separate autosave/recovery data used to restore unsaved work. Do not add
   other per-artifact sidecar files.
-- Workspace writes use a temporary file followed by sync and rename; preserve
-  the restrictive file and directory permissions used by the workspace
-  package.
+- Filesystem writes use a temporary file in the artifact's directory followed
+  by sync and rename; preserve an existing file's permissions, write symlink
+  targets rather than replacing links, create new files owner-only, and keep
+  `~/.parchment/` owner-only. Never place other files beside artifacts.
 - Keep Markdown as canonical note content; rendered Markdown belongs to the
   view layer and must never replace persisted content. Keep import/export
   formats separate from domain models.
@@ -98,16 +136,14 @@ process.
   contextual `parchment-footnote` blocks and Markdown-link footnote references
   are not supported; preserve such blocks as source unless implementing
   explicit parsing, validation, and rendering semantics for them.
-- Artifact timestamps are UTC. Config files are versioned TOML (`version = 1`);
-  the user config is loaded before workspace config, with environment
-  overrides applied afterward. Workspace selection also supports the
-  `--workspace` flag, `PARCHMENT_WORKSPACE`, a configured user workspace, and
-  parent-directory discovery.
-- Search is case-insensitive across title, Markdown body, and tags. Keep it a
-  direct repository scan for this release: no database, index, or background
-  indexer. Search results and note lists are ordered newest-modified first.
-  Keep search coupled to the repository boundary, not artifact-domain APIs, so
-  a rebuildable index could be added later if required.
+- Artifact timestamps are UTC. Configuration is a single versioned TOML file
+  (`version = 1`) at `~/.parchment/parchment.toml`, or the existing file named
+  by `PARCHMENT_CONFIG`; environment overrides are applied afterward. Do not
+  reintroduce workspaces, collections, or per-directory config files.
+- Closing the TUI editor normally (confirmed when dirty) deletes the file's
+  recovery draft; only an abnormal exit leaves one, which is offered when the
+  same path is reopened. Document proposals are an editor action (`F3`
+  proposes unsaved edits, `F4` reviews proposals), not a separate mode.
 - Keep undo operations meaningful and bounded; record only successful
   operations, clear redo after a new operation, and do not persist history
   unless persistence is implemented and tested. The current history is
@@ -118,5 +154,7 @@ process.
 - Tests use Go's `testing` package and temporary directories for filesystem
   behavior. CLI tests construct a command with injected output streams; TUI
   tests exercise the Bubble Tea model with messages rather than starting an
-  interactive terminal. Keep tests independent of a real home directory,
+  interactive terminal, using real services over `filerepo` in temporary
+  directories; CLI tests point `HOME` at a temporary directory and use
+  `t.Chdir`. Keep tests independent of a real home directory,
   network, timezone, terminal, and machine-specific configuration.
