@@ -11,7 +11,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"example.com/parchment/internal/presentation"
-	"example.com/parchment/internal/workspace"
 )
 
 // drivePresentation sends a message and feeds presentation results back in.
@@ -55,16 +54,8 @@ func newPresentationTestModel(t *testing.T) (*presentationModel, *presentation.S
 	if err := os.WriteFile(path, sample, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	repository, err := workspace.OpenPresentationFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	service := presentation.NewService(repository, 10)
-	items, err := repository.ListPresentations(context.Background())
-	if err != nil || len(items) != 1 {
-		t.Fatalf("list standalone presentation = %v, %v", items, err)
-	}
-	m := newPresentationModel(service, repository, items[0].ID, "deck.md")
+	service := presentation.NewService(newTestRepository(t), 10)
+	m := newPresentationModel(service, path)
 	drivePresentation(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	drivePresentation(t, m, m.Init()())
 	if !m.loaded || m.pending || m.errMessage != "" {
@@ -250,7 +241,7 @@ func TestPresentationSaveErrorKeepsDraft(t *testing.T) {
 	draft := m.item.Source + "\nLocal edit\n"
 	m.editor.SetValue(draft)
 	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyCtrlS})
-	if !m.editing || m.pending || !strings.Contains(m.errMessage, "changed outside Parchment") {
+	if !m.editing || m.pending || !strings.Contains(m.errMessage, "changed since it was loaded") {
 		t.Fatalf("save error state: editing %t pending %t err %q", m.editing, m.pending, m.errMessage)
 	}
 	if m.editor.Value() != draft {
@@ -263,7 +254,7 @@ func TestPresentationSaveErrorKeepsDraft(t *testing.T) {
 
 func TestPresentationLoadErrorsAndStaleResults(t *testing.T) {
 	m, _, _ := newPresentationTestModel(t)
-	m.id = "p5"
+	m.path = filepath.Join(t.TempDir(), "missing.md")
 	drivePresentation(t, m, sheetKey("r"))
 	if m.errMessage != "Load failed: presentation not found" {
 		t.Fatalf("missing load error = %q", m.errMessage)

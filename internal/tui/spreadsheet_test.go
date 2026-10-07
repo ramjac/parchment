@@ -2,11 +2,14 @@ package tui
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/filerepo"
 	"example.com/parchment/internal/spreadsheet"
 )
 
@@ -66,15 +69,25 @@ func sheetKey(name string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(name)}
 }
 
-func newSheetModel(t *testing.T, rows [][]spreadsheet.Cell) (*spreadsheetModel, *spreadsheet.Service, *memoryRepository, string) {
+func newTestRepository(t *testing.T) *filerepo.Repository {
 	t.Helper()
-	ws := openTestWorkspace(t)
-	service := spreadsheet.NewService(ws, 10)
-	book, err := service.Create(context.Background(), "Budget", rows)
+	repository, err := filerepo.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := newSpreadsheetModel(service, ws, book.ID, "budget.md")
+	return repository
+}
+
+func newSheetModel(t *testing.T, rows [][]spreadsheet.Cell) (*spreadsheetModel, *spreadsheet.Service, *filerepo.Repository, string) {
+	t.Helper()
+	repository := newTestRepository(t)
+	service := spreadsheet.NewService(repository, 10)
+	path := filepath.Join(t.TempDir(), "budget.md")
+	book, err := service.Create(context.Background(), path, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newSpreadsheetModel(service, book.Path)
 	driveSheet(t, m, tea.WindowSizeMsg{Width: 100, Height: 20})
 	if msg := m.Init()(); msg != nil {
 		driveSheet(t, m, msg)
@@ -82,12 +95,12 @@ func newSheetModel(t *testing.T, rows [][]spreadsheet.Cell) (*spreadsheetModel, 
 	if !m.loaded || m.pending {
 		t.Fatalf("model not loaded: loaded %t pending %t err %q", m.loaded, m.pending, m.errMessage)
 	}
-	return m, service, ws, book.ID
+	return m, service, repository, book.Path
 }
 
-func storedCell(t *testing.T, service *spreadsheet.Service, id string, row, column int) spreadsheet.Cell {
+func storedCell(t *testing.T, service *spreadsheet.Service, path string, row, column int) spreadsheet.Cell {
 	t.Helper()
-	book, err := service.Get(context.Background(), id)
+	book, err := service.Get(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,8 +292,8 @@ func TestSpreadsheetCancelledContextReportsCancelled(t *testing.T) {
 }
 
 func TestSpreadsheetLoadErrorAllowsRetryAndQuit(t *testing.T) {
-	ws := openTestWorkspace(t)
-	m := newSpreadsheetModel(spreadsheet.NewService(ws, 10), ws, "smissing", "missing.md")
+	repository := newTestRepository(t)
+	m := newSpreadsheetModel(spreadsheet.NewService(repository, 10), filepath.Join(t.TempDir(), "missing.md"))
 	driveSheet(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
 	driveSheet(t, m, m.Init()())
 	if m.loaded || m.errMessage == "" || !strings.Contains(m.View(), "Error:") {
@@ -313,5 +326,30 @@ func TestSpreadsheetTabSwitchesSheets(t *testing.T) {
 	}
 	if book.Sheets[1].Rows[0][0].Value != "second" || book.Sheets[0].Rows[0][0].Value != "first" || m.sheet != 1 {
 		t.Fatalf("sheet edit went to wrong sheet: %#v (current %d)", book.Sheets, m.sheet)
+	}
+}
+
+func TestSpreadsheetOpenedBeforeFirstResizeUsesTerminalSize(t *testing.T) {
+	for _, kind := range []artifact.Kind{artifact.SpreadsheetKind, artifact.PresentationKind} {
+		h := newHarness(t, "")
+		var err error
+		if kind == artifact.SpreadsheetKind {
+			_, err = h.sheets.Create(context.Background(), h.path, nil)
+		} else {
+			_, err = h.decks.Create(context.Background(), h.path, "# Talk\n\n## Slide")
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		model := NewModel(Config{
+			Path: h.path, Kind: kind, Notes: h.notes, Documents: h.docs,
+			Spreadsheets: h.sheets, Presentations: h.decks, Recovery: h.repo,
+		})
+		h.m = &model
+		h.run(h.m.Init())
+		h.send(tea.WindowSizeMsg{Width: 100, Height: 30})
+		if view := h.m.View(); strings.Contains(view, "too small") {
+			t.Fatalf("%s opened before the first resize stayed too small:\n%s", kind, view)
+		}
 	}
 }

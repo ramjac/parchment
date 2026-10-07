@@ -27,18 +27,9 @@ func TestChangeSnapshotDoesNotRequireTitle(t *testing.T) {
 	}
 }
 
-func TestDocumentDraftTitleIsNotAppliedBySave(t *testing.T) {
-	document := Document{Artifact: artifact.Artifact{Title: "Filename title"}}
-	applyDraft(&document, Draft{Title: "Edited title", Body: "Text", Layout: DefaultLayout()})
-
-	if document.Title != "Filename title" {
-		t.Fatalf("save changed transient title to %q", document.Title)
-	}
-}
-
 func TestNormalizeAllowsBlankTitle(t *testing.T) {
 	service := NewService(&documentRepositoryStub{}, 5)
-	created, err := service.Create(context.Background(), Draft{
+	created, err := service.Create(context.Background(), "doc.md", Draft{
 		Body:   "Text",
 		Layout: DefaultLayout(),
 	})
@@ -50,12 +41,11 @@ func TestNormalizeAllowsBlankTitle(t *testing.T) {
 	}
 
 	updated, err := service.Save(context.Background(), created, Draft{
-		Title:  "TUI draft title",
 		Body:   "Updated text",
 		Layout: DefaultLayout(),
 	})
 	if err != nil {
-		t.Fatalf("save document with transitional draft title: %v", err)
+		t.Fatalf("save document: %v", err)
 	}
 	if updated.Title != "" {
 		t.Fatalf("save changed transient title to %q", updated.Title)
@@ -64,14 +54,16 @@ func TestNormalizeAllowsBlankTitle(t *testing.T) {
 
 type documentRepositoryStub struct {
 	Repository
+	stored Document
 }
 
-func (*documentRepositoryStub) ArtifactLocation(id string) string {
-	return "parchment/artifacts/" + id + "/content.md"
+func (r *documentRepositoryStub) GetDocument(context.Context, string) (Document, error) {
+	return r.stored, nil
 }
 
-func (*documentRepositoryStub) TransitionDocument(
-	context.Context, string, *Document, *Document,
+func (r *documentRepositoryStub) TransitionDocument(
+	_ context.Context, _ string, _ *Document, target *Document,
 ) error {
+	r.stored = *target
 	return nil
 }

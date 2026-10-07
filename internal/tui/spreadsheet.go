@@ -44,12 +44,10 @@ type spreadsheetHistoryMsg struct {
 }
 
 // spreadsheetModel is a single-workbook grid editor. It owns only UI state;
-// reads go through the repository and edits through the spreadsheet service.
+// it reads and edits the workbook file through the spreadsheet service.
 type spreadsheetModel struct {
 	service             *spreadsheet.Service
-	repository          spreadsheet.Repository
-	id                  string
-	filePath            string
+	path                string
 	book                spreadsheet.Spreadsheet
 	loaded              bool
 	sheet               int
@@ -71,12 +69,12 @@ type spreadsheetModel struct {
 	cancelOperation     context.CancelFunc
 }
 
-func newSpreadsheetModel(service *spreadsheet.Service, repository spreadsheet.Repository, id, filePath string) *spreadsheetModel {
+func newSpreadsheetModel(service *spreadsheet.Service, path string) *spreadsheetModel {
 	input := textinput.New()
 	input.Prompt = ""
 	input.CharLimit = spreadsheet.MaxFormulaLength + 1
 	return &spreadsheetModel{
-		service: service, repository: repository, id: id, filePath: filePath, input: input,
+		service: service, path: path, input: input,
 		newOperationContext: func() (context.Context, context.CancelFunc) {
 			return context.WithCancel(context.Background())
 		},
@@ -85,19 +83,6 @@ func newSpreadsheetModel(service *spreadsheet.Service, repository spreadsheet.Re
 			border:  lipgloss.AdaptiveColor{Light: "#b8b4c7", Dark: "#55516a"},
 		},
 	}
-}
-
-// RunSpreadsheet opens one spreadsheet artifact in a full-screen grid editor.
-// filePath is shown to the user only; the workbook is loaded by id through
-// repository and edited through service.
-func RunSpreadsheet(ctx context.Context, service *spreadsheet.Service, repository spreadsheet.Repository, id, filePath string) error {
-	model := newSpreadsheetModel(service, repository, id, filePath)
-	model.newOperationContext = func() (context.Context, context.CancelFunc) {
-		return context.WithCancel(ctx)
-	}
-	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx))
-	_, err := program.Run()
-	return err
 }
 
 func (m *spreadsheetModel) Init() tea.Cmd { return m.load() }
@@ -292,9 +277,9 @@ func (m *spreadsheetModel) save() tea.Cmd {
 func (m *spreadsheetModel) saveCell(row, column int, cell spreadsheet.Cell, draft string) tea.Cmd {
 	ctx, seq := m.startOperation()
 	m.status, m.errMessage = "Saving…", ""
-	service, id, name := m.service, m.id, m.book.Sheets[m.sheet].Name
+	service, path, name := m.service, m.path, m.book.Sheets[m.sheet].Name
 	return func() tea.Msg {
-		book, err := service.SetCellInSheet(ctx, id, name, row+1, column+1, cell)
+		book, err := service.SetCellInSheet(ctx, path, name, row+1, column+1, cell)
 		return spreadsheetCellSavedMsg{seq: seq, book: book, row: row, column: column, draft: draft, err: err}
 	}
 }
@@ -302,9 +287,9 @@ func (m *spreadsheetModel) saveCell(row, column int, cell spreadsheet.Cell, draf
 func (m *spreadsheetModel) load() tea.Cmd {
 	ctx, seq := m.startOperation()
 	m.status, m.errMessage = "Loading…", ""
-	repository, id := m.repository, m.id
+	service, path := m.service, m.path
 	return func() tea.Msg {
-		book, err := repository.GetSpreadsheet(ctx, id)
+		book, err := service.Get(ctx, path)
 		return spreadsheetLoadedMsg{seq: seq, book: book, err: err}
 	}
 }
@@ -504,8 +489,8 @@ func (m *spreadsheetModel) View() string {
 		}
 	}
 	header := sanitizeTerminalLine(title)
-	if m.filePath != "" {
-		header += "  " + sanitizeTerminalLine(m.filePath)
+	if m.path != "" {
+		header += "  " + sanitizeTerminalLine(m.path)
 	}
 	b.WriteString(accent.Render(runewidth.Truncate(header, m.width, "…")) + "\n")
 

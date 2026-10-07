@@ -3,6 +3,8 @@ package tui
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
@@ -12,348 +14,172 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
+	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/note"
-	"example.com/parchment/internal/workspace"
+	"example.com/parchment/internal/recovery"
 )
 
-// drive sends a message and feeds the results of returned commands back into
-// the model, as the Bubble Tea runtime would.
-func drive(t *testing.T, m *Model, message tea.Msg) {
+// newDocumentHarness opens the editor on a document file, creating it with
+// draft first when draft has a body.
+func newDocumentHarness(t *testing.T, draft document.Draft) *harness {
 	t.Helper()
-	_, cmd := m.Update(message)
-	var run func(tea.Cmd)
-	run = func(c tea.Cmd) {
-		if c == nil {
-			return
-		}
-		switch result := c().(type) {
-		case tea.BatchMsg:
-			for _, inner := range result {
-				run(inner)
-			}
-		case nil:
-		default:
-			_, next := m.Update(result)
-			run(next)
+	h := newHarness(t, "")
+	if draft.Body != "" {
+		if _, err := h.docs.Create(context.Background(), h.path, draft); err != nil {
+			t.Fatal(err)
 		}
 	}
-	run(cmd)
-}
-
-func typeText(t *testing.T, m *Model, text string) {
-	t.Helper()
-	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text)})
-}
-
-func newDocumentsModel(t *testing.T) (*Model, *document.Service) {
-	t.Helper()
-	ws := openTestWorkspace(t)
-	docs := document.NewService(ws, 10)
-	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test", WithDocuments(docs))
-	m := &model
-	drive(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
-	drive(t, m, notesLoadedMsg{})
-	return m, docs
-}
-
-func TestInitialDocumentOptionOpensMatchingDocument(t *testing.T) {
-	ws := openTestWorkspace(t)
-	service := document.NewService(ws, 10)
-	created, err := service.Create(context.Background(), document.Draft{Title: "Target", Body: "Target body"})
-	if err != nil {
-		t.Fatal(err)
+	h.open(artifact.DocumentKind)
+	if h.m.stage != stageDocument {
+		t.Fatalf("stage = %d, error = %q", h.m.stage, h.m.errMessage)
 	}
-
-	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test",
-		WithDocuments(service), WithInitialDocument(created.ID))
-	updated, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	model = *updated.(*Model)
-	message := model.Init()()
-	updated, _ = model.Update(message)
-	model = *updated.(*Model)
-	selected, ok := model.documents.selectedDocument()
-	if !model.documentsActive || !ok || selected.ID != created.ID || !model.documents.showPreview {
-		t.Fatalf("initial document state = active %t, selected %q, preview %t",
-			model.documentsActive, selected.ID, model.documents.showPreview)
+	if draft.Body != "" {
+		if !h.m.documents.reading {
+			t.Fatal("an existing document did not open in the reader")
+		}
+		h.key("e")
 	}
-}
-
-func TestStandaloneDocumentScreenCannotCreateOrDelete(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "document.md")
-	sample, err := os.ReadFile("../../examples/document.md")
-	if err != nil {
-		t.Fatal(err)
+	if h.m.documents.reading {
+		t.Fatalf("document did not enter the editor: %q", h.m.documents.errMessage)
 	}
-	if err := os.WriteFile(path, sample, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	docs, err := workspace.OpenDocumentFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	items, err := docs.ListDocuments(context.Background())
-	if err != nil || len(items) != 1 {
-		t.Fatalf("list document = %v, %v", items, err)
-	}
-	notes, err := workspace.OpenMarkdownFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	model := NewModel(note.NewService(notes, 10), notes, "document.md", path,
-		WithDocuments(document.NewService(docs, 10)), WithInitialDocument(items[0].ID), WithSingleDocumentFile())
-	model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	model.Update(model.Init()())
-	if !model.documents.showPreview {
-		t.Fatal("document did not open in reader view")
-	}
-	model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	if model.documents.mode != documentBrowsing || model.documents.creating {
-		t.Fatal("standalone document entered create mode")
-	}
-	model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-	if model.documents.confirmDelete {
-		t.Fatal("standalone document entered delete confirmation")
-	}
-	_, quit := model.Update(tea.KeyMsg{Type: tea.KeyTab})
-	if quit == nil {
-		t.Fatal("Tab did not exit standalone document")
-	}
-	if msg := quit(); msg != (tea.QuitMsg{}) {
-		t.Fatalf("Tab returned %T, want quit", msg)
-	}
-}
-
-func TestStandaloneDocumentPreviewNavigatesExamplePages(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "document.md")
-	sample, err := os.ReadFile("../../examples/document.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, sample, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	docs, err := workspace.OpenDocumentFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	items, err := docs.ListDocuments(context.Background())
-	if err != nil || len(items) != 1 {
-		t.Fatalf("list document = %v, %v", items, err)
-	}
-	notes, err := workspace.OpenMarkdownFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	model := NewModel(note.NewService(notes, 10), notes, "document.md", path,
-		WithDocuments(document.NewService(docs, 10)), WithInitialDocument(items[0].ID), WithSingleDocumentFile())
-	m := &model
-	drive(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
-	drive(t, m, m.Init()())
-	s := m.documents
-	if !s.showPreview || len(s.previewPages) < 3 {
-		t.Fatalf("example preview = focused %t, %d pages", s.showPreview, len(s.previewPages))
-	}
-	if s.preview.AtBottom() {
-		t.Fatal("first page is not scrollable at test size")
-	}
-	drive(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	if s.previewPage != 0 || s.preview.YOffset == 0 {
-		t.Fatalf("scrolling inside first page: page %d, offset %d", s.previewPage, s.preview.YOffset)
-	}
-	drive(t, m, tea.KeyMsg{Type: tea.KeyRight})
-	if s.previewPage != 1 || !s.preview.AtTop() {
-		t.Fatalf("right arrow: page %d, top %t", s.previewPage, s.preview.AtTop())
-	}
-	drive(t, m, tea.KeyMsg{Type: tea.KeyRight})
-	if s.previewPage != 2 {
-		t.Fatalf("right arrow: page %d, want 2", s.previewPage)
-	}
-	drive(t, m, tea.KeyMsg{Type: tea.KeyLeft})
-	if s.previewPage != 1 {
-		t.Fatalf("left arrow: page %d, want 1", s.previewPage)
-	}
-	s.preview.GotoBottom()
-	drive(t, m, tea.KeyMsg{Type: tea.KeyPgDown})
-	if s.previewPage != 2 || !s.preview.AtTop() {
-		t.Fatalf("page down at bottom: page %d, top %t", s.previewPage, s.preview.AtTop())
-	}
-	drive(t, m, tea.KeyMsg{Type: tea.KeyPgUp})
-	if s.previewPage != 1 {
-		t.Fatalf("page up at top: page %d, want 1", s.previewPage)
-	}
-	s.preview.GotoTop()
-	drive(t, m, tea.KeyMsg{Type: tea.KeyUp})
-	if s.previewPage != 0 || !s.preview.AtBottom() {
-		t.Fatalf("up at top: page %d, bottom %t", s.previewPage, s.preview.AtBottom())
-	}
-	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
-	if s.previewPage != 1 {
-		t.Fatalf("] shortcut: page %d, want 1", s.previewPage)
-	}
-	s.preview.GotoBottom()
-	drive(t, m, tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
-	if s.previewPage != 2 {
-		t.Fatalf("wheel down at bottom: page %d, want 2", s.previewPage)
-	}
-	drive(t, m, tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelUp})
-	if s.previewPage != 1 || !s.preview.AtBottom() {
-		t.Fatalf("wheel up at top: page %d, bottom %t", s.previewPage, s.preview.AtBottom())
-	}
-}
-
-func TestStandaloneDocumentEditorSavesBodyWithoutTitle(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "report.md")
-	sample, err := os.ReadFile("../../examples/document.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, sample, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	docs, err := workspace.OpenDocumentFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	items, err := docs.ListDocuments(context.Background())
-	if err != nil || len(items) != 1 {
-		t.Fatalf("list document = %v, %v", items, err)
-	}
-	notes, err := workspace.OpenMarkdownFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	model := NewModel(note.NewService(notes, 10), notes, "report.md", path,
-		WithDocuments(document.NewService(docs, 10)), WithInitialDocument(items[0].ID), WithSingleDocumentFile())
-	m := &model
-	drive(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
-	drive(t, m, m.Init()())
-	drive(t, m, tea.KeyMsg{Type: tea.KeyEsc})
-	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	if m.documents.mode != documentEditing || !m.documents.body.Focused() || strings.Contains(m.View(), "Title:") {
-		t.Fatal("standalone editor did not focus the body without a title field")
-	}
-	m.documents.body.SetValue("# Updated report\n")
-	drive(t, m, tea.KeyMsg{Type: tea.KeyCtrlS})
-	got, err := docs.GetDocument(context.Background(), items[0].ID)
-	if err != nil || got.Body != "# Updated report\n" {
-		t.Fatalf("saved document body = %q, %v", got.Body, err)
-	}
+	return h
 }
 
 func TestDocumentEditorHasToolbarAndSavesLayout(t *testing.T) {
-	m, docs := newDocumentsModel(t)
-	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
-	if !m.documentsActive {
-		t.Fatal("Tab did not open the documents screen")
-	}
-	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	view := m.View()
-	for _, label := range []string{"Save", "Preview", "Bold", "H1", "Page break", "Section", "Cols: 1", "Margins: Normal", "Header", "Footer", "Image"} {
-		if label == "Bold" {
-			label = "B"
-		}
+	h := newDocumentHarness(t, document.Draft{})
+	view := h.m.View()
+	for _, label := range []string{"Save", "Propose", "Changes", "Preview", "B", "H1", "Page break", "Section", "Cols: 1", "Margins: Normal", "Header", "Footer", "Image"} {
 		if !strings.Contains(view, label) {
 			t.Fatalf("editor toolbar is missing %q:\n%s", label, view)
 		}
 	}
-	typeText(t, m, "Intro")
-	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b"), Alt: true})
-	typeText(t, m, "bold")
-	m.documents.act("pagebreak")
-	m.documents.act("columns")
-	if _, err := docs.List(context.Background()); err != nil {
+	s := h.m.documents
+	h.typeText("Intro")
+	h.send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b"), Alt: true})
+	h.typeText("bold")
+	s.act("pagebreak")
+	s.act("columns")
+	h.key("ctrl+s")
+	got, err := h.docs.Get(context.Background(), h.path)
+	if err != nil {
 		t.Fatal(err)
 	}
-	drive(t, m, tea.KeyMsg{Type: tea.KeyCtrlS})
-	list, err := docs.List(context.Background())
-	if err != nil || len(list) != 1 {
-		t.Fatalf("documents = %v, err = %v", list, err)
-	}
-	got := list[0]
-	if got.Layout.Columns != 2 {
-		t.Fatalf("saved document columns = %d", got.Layout.Columns)
+	if got.Title != "report" || got.Layout.Columns != 2 {
+		t.Fatalf("saved document = %q columns %d", got.Title, got.Layout.Columns)
 	}
 	if !strings.Contains(got.Body, "Intro**bold") || !strings.Contains(got.Body, document.PageBreakMarkup) {
 		t.Fatalf("saved body = %q", got.Body)
 	}
-	if m.documents.mode != documentBrowsing {
-		t.Fatal("editor did not close after saving")
+	if h.m.stage != stageDocument || s.dirty() || h.quit {
+		t.Fatalf("after save: stage=%d dirty=%t quit=%t", h.m.stage, s.dirty(), h.quit)
 	}
 }
 
-func TestDocumentTUIRecordsReviewsAndAcceptsProposal(t *testing.T) {
-	m, docs := newDocumentsModel(t)
-	created, err := docs.Create(context.Background(), document.Draft{
-		Title: "Original", Body: "before", Layout: document.DefaultLayout(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
-	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
-	s := m.documents
-	if s.mode != documentEditing || !s.proposing {
-		t.Fatal("c did not open the proposal editor")
+func TestDocumentProposeReviewAndAccept(t *testing.T) {
+	ctx := context.Background()
+	h := newDocumentHarness(t, document.Draft{Body: "before", Layout: document.DefaultLayout()})
+	s := h.m.documents
+	h.key("f3")
+	if !strings.Contains(s.status, "Edit the document first") || s.showChanges {
+		t.Fatalf("propose without edits: status=%q", s.status)
 	}
 	s.body.SetValue("after")
-	drive(t, m, tea.KeyMsg{Type: tea.KeyCtrlS})
+	h.key("f3")
 	if !s.showChanges || len(s.changes) != 1 || s.changes[0].Status != document.ChangePending {
-		t.Fatalf("proposal was not recorded for review: %+v", s.changes)
+		t.Fatalf("proposal was not recorded for review: %+v (error %q)", s.changes, s.errMessage)
 	}
-	live, err := docs.Get(context.Background(), created.ID)
+	if s.dirty() || s.body.Value() != "before" {
+		t.Fatalf("editor did not return to the saved document: body %q", s.body.Value())
+	}
+	live, err := h.docs.Get(ctx, h.path)
 	if err != nil || live.Body != "before" {
 		t.Fatalf("proposal modified the live document: %+v, %v", live, err)
 	}
-	drive(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	if !s.reviewing || !strings.Contains(m.View(), "Proposed Markdown") {
+	h.key("enter")
+	if !s.reviewing || !strings.Contains(h.m.View(), "Proposed Markdown") {
 		t.Fatal("proposal review did not display its before/after content")
 	}
-	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
-	accepted, err := docs.Get(context.Background(), created.ID)
+	h.key("a")
+	accepted, err := h.docs.Get(ctx, h.path)
 	if err != nil || accepted.Body != "after" {
 		t.Fatalf("accepted document = %+v, %v", accepted, err)
 	}
 	if len(s.changes) != 1 || s.changes[0].Status != document.ChangeAccepted {
 		t.Fatalf("accepted proposal state = %+v", s.changes)
 	}
+	if s.body.Value() != "after" {
+		t.Fatalf("editor not refreshed after acceptance: %q", s.body.Value())
+	}
+	h.key("esc")
+	h.key("esc")
+	if s.showChanges || h.quit {
+		t.Fatalf("Esc from review: showChanges=%t quit=%t", s.showChanges, h.quit)
+	}
+}
+
+func TestDocumentAcceptRefusedWithUnsavedEdits(t *testing.T) {
+	ctx := context.Background()
+	h := newDocumentHarness(t, document.Draft{Body: "before", Layout: document.DefaultLayout()})
+	before, err := h.docs.Get(ctx, h.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.docs.Propose(ctx, before, "Other", document.Draft{Body: "proposed", Layout: before.Layout}); err != nil {
+		t.Fatal(err)
+	}
+	s := h.m.documents
+	s.body.SetValue("local edit")
+	h.key("f4")
+	h.key("enter")
+	h.key("a")
+	if !strings.Contains(s.status, "Save or discard") {
+		t.Fatalf("status = %q", s.status)
+	}
+	if d, _ := h.docs.Get(ctx, h.path); d.Body != "before" {
+		t.Fatalf("proposal accepted over unsaved edits: %q", d.Body)
+	}
+	h.key("r")
+	changes, err := h.docs.Changes(ctx, h.path)
+	if err != nil || changes[0].Status != document.ChangeRejected {
+		t.Fatalf("reject with unsaved edits = %+v, %v", changes, err)
+	}
+	if s.body.Value() != "local edit" {
+		t.Fatalf("reject discarded unsaved edits: %q", s.body.Value())
+	}
 }
 
 func TestDocumentChangeReviewScrollsAndBoundsChangeList(t *testing.T) {
-	m, docs := newDocumentsModel(t)
 	ctx := context.Background()
-	created, err := docs.Create(ctx, document.Draft{
-		Title: "Long", Body: strings.Repeat("current line\n", 80) + "CURRENT-LAST",
+	h := newDocumentHarness(t, document.Draft{Body: strings.Repeat("current line\n", 80) + "CURRENT-LAST"})
+	created, err := h.docs.Get(ctx, h.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	change, err := h.docs.Propose(ctx, created, "Long proposal", document.Draft{
+		Body: strings.Repeat("proposed line\n", 80) + "PROPOSED-LAST", Layout: created.Layout,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	change, err := docs.Propose(ctx, created, "Long proposal", document.Draft{
-		Title: "Long", Body: strings.Repeat("proposed line\n", 80) + "PROPOSED-LAST",
-		Layout: created.Layout,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	m.documentsActive = true
-	s := m.documents
+	s := h.m.documents
 	s.changes, s.selectedChange, s.showChanges, s.reviewing = []document.Change{change}, 0, true, true
 	s.resize(100, 12)
 	s.setChangeReviewContent()
-	view := m.View()
+	view := h.m.View()
 	if strings.Contains(view, "CURRENT-LAST") || strings.Contains(view, "PROPOSED-LAST") {
-		t.Fatalf("review unexpectedly showed content beyond the initial viewport:\n%s", view)
+		t.Fatalf("review showed content beyond the initial viewport:\n%s", view)
 	}
 	sawCurrent, sawProposed := false, false
 	for i := 0; i < 100 && !(sawCurrent && sawProposed); i++ {
-		drive(t, m, tea.KeyMsg{Type: tea.KeyPgDown})
-		view = m.View()
+		h.key("pgdown")
+		view = h.m.View()
 		sawCurrent = sawCurrent || strings.Contains(view, "CURRENT-LAST")
 		sawProposed = sawProposed || strings.Contains(view, "PROPOSED-LAST")
 	}
 	if !sawCurrent || !sawProposed {
-		t.Fatalf("scrolling did not reveal both document bodies")
+		t.Fatal("scrolling did not reveal both document bodies")
 	}
 	if !strings.Contains(view, "a accept") || !strings.Contains(view, "Esc return") {
 		t.Fatalf("review controls disappeared while scrolling:\n%s", view)
@@ -377,105 +203,82 @@ func TestDocumentChangeReviewScrollsAndBoundsChangeList(t *testing.T) {
 }
 
 func TestDocumentChangeReviewReflowsLongLinesOnResize(t *testing.T) {
-	m, docs := newDocumentsModel(t)
 	ctx := context.Background()
-	created, err := docs.Create(ctx, document.Draft{
-		Title: "Long", Body: strings.Repeat("c", 90) + "CURRENT-END",
+	h := newDocumentHarness(t, document.Draft{Body: strings.Repeat("c", 90) + "CURRENT-END"})
+	created, err := h.docs.Get(ctx, h.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	change, err := h.docs.Propose(ctx, created, "Long proposal", document.Draft{
+		Body: strings.Repeat("p", 90) + "PROPOSED-END", Layout: created.Layout,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	change, err := docs.Propose(ctx, created, "Long proposal", document.Draft{
-		Title: "Long", Body: strings.Repeat("p", 90) + "PROPOSED-END",
-		Layout: created.Layout,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := m.documents
+	s := h.m.documents
 	s.changes, s.selectedChange, s.showChanges, s.reviewing = []document.Change{change}, 0, true, true
 	s.resize(100, 12)
-	wideLineCount := s.changeReview.TotalLineCount()
+	wide := s.changeReview.TotalLineCount()
 	s.resize(40, 12)
-	if s.changeReview.TotalLineCount() <= wideLineCount {
-		t.Fatalf("narrow review did not reflow long lines: wide=%d narrow=%d",
-			wideLineCount, s.changeReview.TotalLineCount())
+	if s.changeReview.TotalLineCount() <= wide {
+		t.Fatalf("narrow review did not reflow: wide=%d narrow=%d", wide, s.changeReview.TotalLineCount())
 	}
-	var view string
 	sawCurrent, sawProposed := false, false
 	for i := 0; i < s.changeReview.TotalLineCount() && !(sawCurrent && sawProposed); i++ {
 		s.changeReview.SetYOffset(i)
-		view = s.changeReview.View()
+		view := s.changeReview.View()
 		sawCurrent = sawCurrent || strings.Contains(view, "CURRENT-END")
 		sawProposed = sawProposed || strings.Contains(view, "PROPOSED-END")
 	}
 	if !sawCurrent || !sawProposed {
-		t.Fatalf("reflowed review did not make the ends of both long lines inspectable: offset=%d lines=%d view=%q",
-			s.changeReview.YOffset, s.changeReview.TotalLineCount(), view)
+		t.Fatal("reflowed review did not make the ends of both long lines inspectable")
 	}
-	review := s.viewChanges("header")
-	if !strings.Contains(review, "a accept") || !strings.Contains(review, "Esc return") {
+	if review := s.viewChanges("header"); !strings.Contains(review, "a accept") || !strings.Contains(review, "Esc return") {
 		t.Fatal("review controls disappeared after reflow")
 	}
 }
 
 func TestToolbarMouseClickAndUnsavedEscape(t *testing.T) {
-	m, _ := newDocumentsModel(t)
-	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
-	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	s := m.documents
+	h := newDocumentHarness(t, document.Draft{})
+	s := h.m.documents
 	placed, _ := s.buttonLayout(s.width)
 	buttons := s.toolbarButtons()
 	for _, p := range placed {
 		if buttons[p.index].action == "columns" {
-			drive(t, m, tea.MouseMsg{X: p.x + 1, Y: toolbarTop + p.row, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+			h.send(tea.MouseMsg{X: p.x + 1, Y: toolbarTop + p.row, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 		}
 	}
 	if s.layout.Columns != 2 {
 		t.Fatalf("clicking the columns button left %d columns", s.layout.Columns)
 	}
-	drive(t, m, tea.KeyMsg{Type: tea.KeyEsc})
-	if s.mode != documentEditing {
-		t.Fatal("Esc discarded unsaved layout changes without confirmation")
+	h.key("esc")
+	if h.quit || !strings.Contains(s.status, "Unsaved changes") {
+		t.Fatalf("Esc discarded unsaved layout changes without confirmation: %q", s.status)
 	}
-	drive(t, m, tea.KeyMsg{Type: tea.KeyEsc})
-	if s.mode != documentBrowsing {
-		t.Fatal("second Esc did not close the editor")
+	h.key("esc")
+	if h.quit || !s.reading {
+		t.Fatal("second Esc did not return to the reader")
 	}
-}
-
-func TestDocumentsTabReturnsToNotes(t *testing.T) {
-	m, _ := newDocumentsModel(t)
-	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
-	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
-	if m.documentsActive {
-		t.Fatal("Tab did not return to notes")
+	h.key("q")
+	if !h.quit {
+		t.Fatal("q did not quit the reader")
+	}
+	if d, _ := h.docs.Get(context.Background(), h.path); d.Layout.Columns != 1 {
+		t.Fatalf("discarded layout was saved: %d columns", d.Layout.Columns)
 	}
 }
 
-func TestDocumentEditorStartsInBodyAndFormatsText(t *testing.T) {
-	m, _ := newDocumentsModel(t)
-	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
-	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	if !m.documents.body.Focused() {
-		t.Fatal("document editor did not focus body on open")
+func TestAltFormattingFromToolbarFocusesBody(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{})
+	s := h.m.documents
+	h.key("tab")
+	if s.focus != focusToolbar || s.body.Focused() {
+		t.Fatal("Tab did not move focus from the body to the toolbar")
 	}
-	if strings.Contains(m.View(), "Title:") {
-		t.Fatal("document editor still displays a title field")
-	}
-	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
-	if m.documents.focus != focusToolbar {
-		t.Fatal("Tab did not focus the toolbar from the body")
-	}
-	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
-	if !m.documents.body.Focused() {
-		t.Fatal("Tab did not return to the body from the toolbar")
-	}
-	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b"), Alt: true})
-	typeText(t, m, "x")
-	s := m.documents
+	h.send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b"), Alt: true})
+	h.typeText("x")
 	if !s.body.Focused() {
-		t.Fatal("formatting did not focus the body")
+		t.Fatal("formatting from the toolbar did not focus the body")
 	}
 	if s.body.Value() != "**x**" {
 		t.Fatalf("body = %q", s.body.Value())
@@ -483,10 +286,8 @@ func TestDocumentEditorStartsInBodyAndFormatsText(t *testing.T) {
 }
 
 func TestSectionPromptRequiresWholeValue(t *testing.T) {
-	m, _ := newDocumentsModel(t)
-	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
-	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	s := m.documents
+	h := newDocumentHarness(t, document.Draft{})
+	s := h.m.documents
 	for _, value := range []string{"2junk", "2.5", "2cc", "5", "0"} {
 		s.finishPrompt(promptSection, value)
 		if s.body.Value() != "" || s.errMessage == "" {
@@ -499,30 +300,26 @@ func TestSectionPromptRequiresWholeValue(t *testing.T) {
 	}
 }
 
-func TestSmallTerminalQDoesNotQuitEditor(t *testing.T) {
-	m, _ := newDocumentsModel(t)
-	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
-	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	typeText(t, m, "Draft")
-	_, _ = m.Update(tea.WindowSizeMsg{Width: 30, Height: 8})
-	cmd, _ := m.documents.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-	if cmd != nil {
-		if _, quit := cmd().(tea.QuitMsg); quit {
-			t.Fatal("q quit the editor with unsaved changes")
-		}
+func TestSmallTerminalQDoesNotQuitDirtyDocument(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{})
+	h.typeText("Draft")
+	h.send(tea.WindowSizeMsg{Width: 30, Height: 8})
+	h.key("q")
+	if h.quit {
+		t.Fatal("q quit the editor with unsaved changes")
 	}
-	if m.documents.mode != documentEditing {
-		t.Fatal("editor closed")
+	h.m.documents.body.SetValue("")
+	h.key("q")
+	if !h.quit {
+		t.Fatal("q did not quit a clean editor")
 	}
 }
 
 func TestCancelledImageLoadIsDiscarded(t *testing.T) {
-	m, _ := newDocumentsModel(t)
-	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
-	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	h := newDocumentHarness(t, document.Draft{})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	path := t.TempDir() + "/pixel.png"
+	path := filepath.Join(t.TempDir(), "pixel.png")
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, image.NewGray(image.Rect(0, 0, 1, 1))); err != nil {
 		t.Fatal(err)
@@ -533,78 +330,294 @@ func TestCancelledImageLoadIsDiscarded(t *testing.T) {
 	if msg := readImageCommand(context.Background(), path)().(imageLoadedMsg); msg.err != nil {
 		t.Fatalf("valid image failed to load: %v", msg.err)
 	}
-	msg := readImageCommand(ctx, path)()
-	m.documents.pending = true
-	m.documents.update(msg)
-	if len(m.documents.images) != 0 || m.documents.body.Value() != "" || m.documents.pending {
+	s := h.m.documents
+	s.pending = true
+	h.send(readImageCommand(ctx, path)())
+	if len(s.images) != 0 || s.body.Value() != "" || s.pending {
 		t.Fatal("cancelled image load changed the document")
 	}
-	if !strings.Contains(m.documents.status, "cancelled") {
-		t.Fatalf("status = %q", m.documents.status)
+	if !strings.Contains(s.status, "cancelled") {
+		t.Fatalf("status = %q", s.status)
 	}
 }
 
 func TestEditorRefusesDocumentItCannotPreserve(t *testing.T) {
-	m, docs := newDocumentsModel(t)
-	long := strings.Repeat("t", 5_000_001)
-	created, err := docs.Create(context.Background(), document.Draft{Title: "Long document", Body: long})
-	if err != nil {
+	body := "before\x1b[2Jafter"
+	h := newHarness(t, "")
+	if _, err := h.docs.Create(context.Background(), h.path, document.Draft{Body: body}); err != nil {
 		t.Fatal(err)
 	}
-	s := m.documents
-	if command := s.startEdit(created); command != nil {
-		t.Fatal("editor accepted oversized body")
+	h.open(artifact.DocumentKind)
+	h.key("e")
+	if s := h.m.documents; !s.reading || !strings.Contains(s.errMessage, "exceeds editor limits") {
+		t.Fatalf("reading = %v, error = %q", s.reading, s.errMessage)
 	}
-	if s.mode != documentBrowsing || !strings.Contains(s.errMessage, "exceeds editor limits") {
-		t.Fatalf("mode = %d, error = %q", s.mode, s.errMessage)
-	}
-	stored, err := docs.Get(context.Background(), created.ID)
-	if err != nil || stored.Body != long {
-		t.Fatalf("stored body changed: length %d, %v", len(stored.Body), err)
+	if stored, err := h.docs.Get(context.Background(), h.path); err != nil || stored.Body != body {
+		t.Fatalf("stored body changed: %q, %v", stored.Body, err)
 	}
 }
 
-func TestDocumentOutlineNavigation(t *testing.T) {
-	ws := openTestWorkspace(t)
-	service := document.NewService(ws, 10)
-	var body strings.Builder
-	body.WriteString("# Intro\n\nhello\n\n")
-	for i := 0; i < 90; i++ {
-		body.WriteString("filler line\n\n")
+func TestDocumentAutosaveIsOfferedOnReopen(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "# Before\n\nOriginal"})
+	s := h.m.documents
+	s.body.SetValue("# After\n\nRecovered")
+	s.layout.Columns = 2
+	h.run(s.saveDocumentRecovery(s.autosaveSession))
+	if !h.hasDraft() {
+		t.Fatal("autosave wrote no draft")
 	}
-	body.WriteString("## Middle\n\nmore\n\n<!-- parchment:page-break -->\n\n## End\n\ndone\n")
-	created, err := service.Create(context.Background(), document.Draft{Title: "Doc", Body: body.String()})
-	if err != nil {
+
+	h.open(artifact.DocumentKind)
+	if h.m.stage != stageRecovery {
+		t.Fatalf("stage = %d", h.m.stage)
+	}
+	h.key("r")
+	s = h.m.documents
+	if h.m.stage != stageDocument || s.body.Value() != "# After\n\nRecovered" || s.layout.Columns != 2 {
+		t.Fatalf("recovered editor: stage=%d body=%q columns=%d", h.m.stage, s.body.Value(), s.layout.Columns)
+	}
+	if s.snapshot.Body != "# Before\n\nOriginal" {
+		t.Fatalf("recovered snapshot body = %q", s.snapshot.Body)
+	}
+	h.key("ctrl+s")
+	if d, err := h.docs.Get(context.Background(), h.path); err != nil || d.Body != "# After\n\nRecovered" || d.Layout.Columns != 2 {
+		t.Fatalf("saved recovered document = %+v, %v", d, err)
+	}
+	if h.hasDraft() {
+		t.Fatal("saving left the draft behind")
+	}
+}
+
+func TestRevertingDocumentEditsRemovesAutosavedDraft(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "Original"})
+	s := h.m.documents
+	s.body.SetValue("Unsaved")
+	h.run(s.saveDocumentRecovery(s.autosaveSession))
+	if !h.hasDraft() {
+		t.Fatal("autosave wrote no draft")
+	}
+	s.body.SetValue("Original")
+	h.run(s.saveDocumentRecovery(s.autosaveSession))
+	if h.hasDraft() || s.draftStored {
+		t.Fatalf("reverted editor kept its draft (draftStored=%t)", s.draftStored)
+	}
+}
+
+func TestDocumentAutosaveStoresImagesOnceAndSkipsUnchangedState(t *testing.T) {
+	ctx := context.Background()
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewGray(image.Rect(0, 0, 1, 1))); err != nil {
 		t.Fatal(err)
 	}
-	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test",
-		WithDocuments(service), WithInitialDocument(created.ID), WithSingleDocumentFile())
-	m := &model
-	drive(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
-	drive(t, m, m.Init()())
-	s := m.documents
-	if len(s.outline) != 3 {
-		t.Fatalf("outline = %+v", s.outline)
+	h := newDocumentHarness(t, document.Draft{Body: "Intro"})
+	if _, _, err := h.docs.AddImage(ctx, h.path, "pixel", buf.Bytes()); err != nil {
+		t.Fatal(err)
 	}
-	if view := m.View(); !strings.Contains(view, "Outline") || !strings.Contains(view, "Middle") || strings.Contains(view, "Documents") {
-		t.Fatalf("view lacks outline pane:\n%s", view)
+	h.open(artifact.DocumentKind)
+	s := h.m.documents
+	if len(s.images) != 1 {
+		t.Fatalf("images = %d", len(s.images))
 	}
-	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("}")})
-	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("}")})
-	if s.currentSection() != 2 || s.previewPage != s.outline[2].Page-1 || s.previewPage == 0 {
-		t.Fatalf("after }}: section %d page %d", s.currentSection(), s.previewPage)
+	s.body.SetValue(s.body.Value() + "\n\nEdited")
+	h.run(s.saveDocumentRecovery(s.autosaveSession))
+	draft, ok, err := h.repo.LoadRecovery(ctx, h.path)
+	if err != nil || !ok {
+		t.Fatalf("draft = %t, %v", ok, err)
 	}
-	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("{")})
-	if s.currentSection() != 1 {
-		t.Fatalf("after {: section %d", s.currentSection())
+	encoded := base64.StdEncoding.EncodeToString(buf.Bytes())
+	if n := strings.Count(string(draft.Data), encoded); n != 1 {
+		t.Fatalf("image payload stored %d times in the draft", n)
 	}
-	_, targets := s.sidebar()
-	for row, target := range targets {
-		if target == 0 {
-			drive(t, m, tea.MouseMsg{X: 3, Y: 2 + row, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+
+	// An unchanged editor does not rewrite the draft.
+	if err := h.repo.DeleteRecovery(ctx, h.path); err != nil {
+		t.Fatal(err)
+	}
+	h.run(s.saveDocumentRecovery(s.autosaveSession))
+	if h.hasDraft() {
+		t.Fatal("unchanged state was autosaved again")
+	}
+	s.body.SetValue(s.body.Value() + " more")
+	h.run(s.saveDocumentRecovery(s.autosaveSession))
+	if !h.hasDraft() {
+		t.Fatal("changed state was not autosaved")
+	}
+
+	h.open(artifact.DocumentKind)
+	h.key("r")
+	s = h.m.documents
+	if h.m.stage != stageDocument || len(s.images) != 1 || len(s.snapshot.Images) != 1 ||
+		!bytes.Equal(s.images[0].Data, buf.Bytes()) || !strings.HasSuffix(s.body.Value(), "Edited more") {
+		t.Fatalf("recovered: stage=%d images=%d snapshot images=%d body=%q", h.m.stage, len(s.images), len(s.snapshot.Images), s.body.Value())
+	}
+	h.key("ctrl+s")
+	if d, err := h.docs.Get(ctx, h.path); err != nil || len(d.Images) != 1 || !strings.HasSuffix(d.Body, "Edited more") {
+		t.Fatalf("saved recovered document = %+v, %v", d, err)
+	}
+}
+
+func TestDocumentPreviewFitsTerminalAndScrolls(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "# Hello\n\nSome text"})
+	h.send(tea.WindowSizeMsg{Width: 90, Height: 24})
+	h.key("f5")
+	s := h.m.documents
+	if !s.previewing || len(s.editPages) == 0 || len(s.editPages[0].Lines) <= 24 {
+		t.Fatalf("preview: previewing=%t pages=%d", s.previewing, len(s.editPages))
+	}
+	view := h.m.View()
+	if lines := strings.Count(view, "\n") + 1; lines > 24 {
+		t.Fatalf("preview view has %d lines for a 24-line terminal", lines)
+	}
+	if !strings.Contains(view, "HELLO") || !strings.Contains(view, "Some text") || !strings.Contains(view, "lines 1–22 of") {
+		t.Fatalf("preview does not show the top of the page:\n%s", view)
+	}
+	h.send(tea.KeyMsg{Type: tea.KeyDown})
+	if !strings.Contains(h.m.View(), "lines 2–23 of") {
+		t.Fatalf("down did not scroll:\n%s", h.m.View())
+	}
+	h.send(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
+	if !strings.Contains(h.m.View(), "lines 5–26 of") {
+		t.Fatalf("wheel did not scroll:\n%s", h.m.View())
+	}
+	h.send(tea.KeyMsg{Type: tea.KeyEnd})
+	total := len(s.editPages[0].Lines)
+	if !strings.Contains(h.m.View(), fmt.Sprintf("lines %d–%d of %d", total-21, total, total)) {
+		t.Fatalf("end did not reach the bottom:\n%s", h.m.View())
+	}
+	h.key("esc")
+	if s.previewing || h.m.stage != stageDocument {
+		t.Fatal("esc did not return to the editor")
+	}
+}
+
+func TestDocumentOpensInReaderWithOutline(t *testing.T) {
+	h := newHarness(t, "")
+	brk := "\n\n" + document.PageBreakMarkup + "\n\n"
+	body := "# Intro\n\nHello." + brk + "# Middle\n\nMore." + brk + "## Detail\n\nEnd."
+	if _, err := h.docs.Create(context.Background(), h.path, document.Draft{Body: body}); err != nil {
+		t.Fatal(err)
+	}
+	h.open(artifact.DocumentKind)
+	s := h.m.documents
+	if h.m.stage != stageDocument || !s.reading {
+		t.Fatalf("stage = %d, reading = %v", h.m.stage, s.reading)
+	}
+	view := h.m.View()
+	for _, want := range []string{"Outline", "› Intro", "Middle", "Detail", "Page 1/", "Hello."} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("reader is missing %q:\n%s", want, view)
 		}
 	}
-	if s.previewPage != 0 || s.currentSection() != 0 {
-		t.Fatalf("click Intro: section %d page %d", s.currentSection(), s.previewPage)
+	if lines := strings.Count(view, "\n") + 1; lines > h.m.height {
+		t.Fatalf("reader view has %d lines for a %d-line terminal", lines, h.m.height)
+	}
+	if len(s.readerPages) < 3 {
+		t.Fatalf("pages = %d", len(s.readerPages))
+	}
+	h.key("}")
+	if s.readerPage != s.outline[1].Page-1 || !strings.Contains(h.m.View(), "› Middle") {
+		t.Fatalf("} moved to page %d", s.readerPage+1)
+	}
+	h.key("{")
+	if s.readerPage != 0 {
+		t.Fatalf("{ moved to page %d", s.readerPage+1)
+	}
+	h.key("]")
+	if s.readerPage != 1 {
+		t.Fatalf("] moved to page %d", s.readerPage+1)
+	}
+	h.key("[")
+	h.key("[")
+	if s.readerPage != len(s.readerPages)-1 {
+		t.Fatalf("[ did not wrap to the last page: %d", s.readerPage+1)
+	}
+	_, targets := s.outlineLines()
+	for row, target := range targets {
+		if target == 1 {
+			h.send(tea.MouseMsg{X: 3, Y: row + 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+		}
+	}
+	if s.readerPage != s.outline[1].Page-1 {
+		t.Fatalf("clicking the outline moved to page %d", s.readerPage+1)
+	}
+
+	h.key("e")
+	if s.reading || !strings.Contains(h.m.View(), "Editing document") {
+		t.Fatal("e did not open the editor")
+	}
+	h.key("esc")
+	if !s.reading || h.quit {
+		t.Fatal("Esc in a clean editor did not return to the reader")
+	}
+	h.key("q")
+	if !h.quit {
+		t.Fatal("q did not quit the reader")
+	}
+}
+
+func TestDocumentReaderShowsSavedEditsAndDiscardsDraft(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "# Start\n\nText."})
+	s := h.m.documents
+	h.typeText("New ")
+	h.key("ctrl+s")
+	h.key("esc")
+	if !s.reading || !strings.Contains(h.m.View(), "New") {
+		t.Fatalf("reader does not show the saved edit:\n%s", h.m.View())
+	}
+	h.key("e")
+	h.typeText("Unsaved ")
+	h.key("esc")
+	h.key("esc")
+	if !s.reading || strings.Contains(h.m.View(), "Unsaved") || !strings.Contains(s.status, "Discarded") {
+		t.Fatalf("discarding did not return to the saved reader: %q\n%s", s.status, h.m.View())
+	}
+	if h.hasDraft() {
+		t.Fatal("leaving the editor kept the recovery draft")
+	}
+}
+
+func TestDocumentEditConfigOpensExistingDocumentInEditor(t *testing.T) {
+	h := newHarness(t, "")
+	if _, err := h.docs.Create(context.Background(), h.path, document.Draft{Body: "# Created"}); err != nil {
+		t.Fatal(err)
+	}
+	h.openWith(artifact.DocumentKind, true)
+	s := h.m.documents
+	if h.m.stage != stageDocument || s.reading || s.body.Value() != "# Created" {
+		t.Fatalf("stage = %d, reading = %v, body = %q", h.m.stage, s.reading, s.body.Value())
+	}
+	h.key("esc")
+	if !s.reading {
+		t.Fatal("Esc did not return to the reader")
+	}
+}
+
+type failingDeleteStore struct{ recovery.Store }
+
+func (failingDeleteStore) DeleteRecovery(context.Context, string) error {
+	return errors.New("disk is read-only")
+}
+
+func TestLeavingDocumentEditorReportsDraftCleanupFailure(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "# Start"})
+	s := h.m.documents
+	s.recoveryStore = failingDeleteStore{h.repo}
+	s.draftStored = false
+	h.key("esc")
+	if !s.reading || !s.draftStored || !strings.Contains(s.errMessage, "disk is read-only") {
+		t.Fatalf("reading = %v, draftStored = %v, error = %q", s.reading, s.draftStored, s.errMessage)
+	}
+}
+
+func TestDocumentReaderFitsTerminalWidth(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "# Heading\n\n" + strings.Repeat("word ", 400)})
+	h.key("esc")
+	for _, width := range []int{80, 100, 137} {
+		h.send(tea.WindowSizeMsg{Width: width, Height: 30})
+		for _, line := range strings.Split(h.m.View(), "\n") {
+			if got := lipgloss.Width(line); got > width {
+				t.Fatalf("reader line is %d columns in a %d-column terminal: %q", got, width, line)
+			}
+		}
 	}
 }

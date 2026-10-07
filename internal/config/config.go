@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -39,14 +40,17 @@ type fileConfig struct {
 	} `toml:"backup"`
 }
 
-// Load resolves the per-user TOML file, followed by environment overrides.
-func Load(userPath string) (Settings, error) {
+const defaultFile = "version = 1\n"
+
+// Load resolves built-in defaults, the TOML file at path, and environment
+// overrides. A missing file leaves the defaults in place.
+func Load(path string) (Settings, error) {
 	settings := Settings{
 		Editor: "vi", Theme: "adaptive", UndoLimit: 100,
 		LogLevel: "warn", LogFormat: "text",
 	}
-	if userPath != "" {
-		cfg, err := read(userPath)
+	if path != "" {
+		cfg, err := read(path)
 		if err != nil {
 			return Settings{}, err
 		}
@@ -59,13 +63,103 @@ func Load(userPath string) (Settings, error) {
 	return settings, nil
 }
 
-// UserConfigPath returns the platform-appropriate user configuration path.
-func UserConfigPath() (string, error) {
-	dir, err := os.UserConfigDir()
+// Directory returns the per-user Parchment directory, ~/.parchment. It holds
+// the configuration file and application state such as autosave recovery
+// drafts. It never holds artifacts.
+func Directory() (string, error) {
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("find user config directory: %w", err)
+		return "", fmt.Errorf("find home directory: %w", err)
 	}
-	return filepath.Join(dir, "parchment", "parchment.toml"), nil
+	return filepath.Join(home, ".parchment"), nil
+}
+
+// Path returns the configuration file path: PARCHMENT_CONFIG when set,
+// otherwise parchment.toml in Directory.
+func Path() (string, error) {
+	if value := os.Getenv("PARCHMENT_CONFIG"); value != "" {
+		return filepath.Abs(value)
+	}
+	dir, err := Directory()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "parchment.toml"), nil
+}
+
+// EnsureDefault creates a minimal versioned configuration file at path, and
+// its parent directory with owner-only permissions, when the file is missing.
+func EnsureDefault(path string) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	// MkdirAll leaves an existing directory's mode unchanged; keep
+	// Parchment's state directory owner-only even if it was pre-created.
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("inspect config directory: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return fmt.Errorf("restrict config directory permissions: %w", err)
+		}
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return nil
+	}
+	// Write and sync a temporary file, then link it into place without
+	// replacing anything, so a concurrent launch never reads a partial file.
+	temp, err := os.CreateTemp(dir, ".parchment-*.toml")
+	if err != nil {
+		return fmt.Errorf("create config %s: %w", path, err)
+	}
+	tempPath := temp.Name()
+	defer func() { _ = os.Remove(tempPath) }()
+	_, err = temp.WriteString(defaultFile)
+	if err == nil {
+		err = temp.Chmod(0o600)
+	}
+	if err == nil {
+		err = temp.Sync()
+	}
+	if closeErr := temp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return fmt.Errorf("write config %s: %w", path, err)
+	}
+	switch err := os.Link(tempPath, path); {
+	case err == nil, errors.Is(err, os.ErrExist):
+		return nil
+	}
+	// Filesystems without hard links: fall back to an exclusive create.
+	return createExclusive(path)
+}
+
+func createExclusive(path string) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("create config %s: %w", path, err)
+	}
+	_, err = file.WriteString(defaultFile)
+	if err == nil {
+		err = file.Sync()
+	}
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("write config %s: %w", path, err)
+	}
+	return nil
 }
 
 func read(path string) (fileConfig, error) {

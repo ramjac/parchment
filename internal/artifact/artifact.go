@@ -77,7 +77,7 @@ func ValidIDForKind(id string, kind Kind) bool {
 
 // Artifact contains runtime metadata shared by every artifact type. The
 // artifact-file envelope persists only kind, timestamps, and format version;
-// identity, title, and location are runtime or derived values.
+// identity, title, and path are runtime values derived from the file.
 type Artifact struct {
 	ID            string    `json:"id"`
 	Kind          Kind      `json:"kind"`
@@ -85,7 +85,8 @@ type Artifact struct {
 	CreatedAt     time.Time `json:"created_at"`
 	ModifiedAt    time.Time `json:"modified_at"`
 	FormatVersion int       `json:"format_version"`
-	Location      string    `json:"location"`
+	// Path is the file the artifact was read from or will be written to.
+	Path string `json:"-"`
 }
 
 // Validate checks the common metadata required for a persisted artifact.
@@ -102,9 +103,6 @@ func (a Artifact) Validate() error {
 	}
 	if a.FormatVersion != FormatVersion {
 		return fmt.Errorf("unsupported artifact format version %d", a.FormatVersion)
-	}
-	if a.Location == "" {
-		return errors.New("artifact location is required")
 	}
 	return nil
 }

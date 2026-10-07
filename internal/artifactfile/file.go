@@ -150,7 +150,6 @@ func Decode(data []byte) (File, error) {
 	file.Blocks = blocks
 	file.Artifact.ID = transientID(file.Artifact.Kind, data)
 	file.Artifact.Title = titleFromBody(file.Body)
-	file.Artifact.Location = "standalone"
 	return file, nil
 }
 

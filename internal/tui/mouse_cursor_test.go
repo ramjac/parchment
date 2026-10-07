@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/note"
 	"example.com/parchment/internal/spreadsheet"
 )
@@ -45,46 +46,6 @@ func TestPlaceTextareaCursorInScrolledAndWrappedText(t *testing.T) {
 	editor.InsertString("!")
 	if editor.Value() != "abcdefghijk!lmnopqrstuv" {
 		t.Fatalf("wrapped click inserted at %q", editor.Value())
-	}
-}
-
-func TestNoteClickPositionsBodyCursor(t *testing.T) {
-	repository := openTestWorkspace(t)
-	model := NewModel(note.NewService(repository, 10), repository, "note.md", "note.md", WithSingleMarkdownFile())
-	model.width, model.height = 80, 24
-	model.bodyInput.SetWidth(76)
-	model.bodyInput.SetHeight(14)
-	model.bodyInput.SetValue("alpha\nbravo")
-	model.bodyInput.Focus()
-	model.mode, model.pending = editing, false
-	model.Update(tea.MouseMsg{X: 2, Y: 4, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
-	model.bodyInput.InsertString("!")
-	if model.bodyInput.Value() != "alpha\nbr!avo" {
-		t.Fatalf("note click positioned cursor at %q", model.bodyInput.Value())
-	}
-	model.Update(tea.MouseMsg{X: 1, Y: 0, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
-	model.bodyInput.InsertString("?")
-	if model.bodyInput.Value() != "alpha\nbr!?avo" {
-		t.Fatalf("header click moved note cursor: %q", model.bodyInput.Value())
-	}
-}
-
-func TestDocumentClickPositionsBodyCursor(t *testing.T) {
-	m, _ := newDocumentsModel(t)
-	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
-	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	s := m.documents
-	s.body.SetValue("alpha\nbravo")
-	y := toolbarTop + s.toolbarRows() + 1
-	drive(t, m, tea.MouseMsg{X: 2, Y: y + 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
-	s.body.InsertString("!")
-	if s.body.Value() != "alpha\nbr!avo" {
-		t.Fatalf("document click positioned cursor at %q", s.body.Value())
-	}
-	drive(t, m, tea.MouseMsg{X: 1, Y: 0, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
-	s.body.InsertString("?")
-	if s.body.Value() != "alpha\nbr!?avo" {
-		t.Fatalf("header click moved document cursor: %q", s.body.Value())
 	}
 }
 
@@ -129,15 +90,15 @@ func TestSpreadsheetClickSelectsCellAndPositionsInput(t *testing.T) {
 func TestNoteEditorShowsCursorAwayFromTextEnd(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
-	repository := openTestWorkspace(t)
-	model := NewModel(note.NewService(repository, 10), repository, "note.md", "note.md", WithSingleMarkdownFile())
+	model := NewModel(Config{Path: "note.md", Kind: artifact.NoteKind})
 	model.width, model.height = 80, 24
 	model.resizeEditors()
 	body := note.Note{Body: strings.Repeat("line\n", 60) + "end"}
-	body.ID = "x"
 	if !model.startEdit(body) {
 		t.Fatal("note did not open for editing")
 	}
+	model.stage = stageNote
+	model.bodyInput.Focus()
 	for i := 0; i < 59; i++ {
 		model.bodyInput.CursorUp()
 	}

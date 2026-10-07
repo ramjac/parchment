@@ -36,13 +36,11 @@ type presentationHistoryMsg struct {
 }
 
 // presentationModel is a single-deck slide viewer and Markdown source editor.
-// It owns only UI state; reads go through the repository and edits through
-// the presentation service.
+// It owns only UI state; it reads and edits the deck file through the
+// presentation service.
 type presentationModel struct {
 	service             *presentation.Service
-	repository          presentation.Repository
-	id                  string
-	filePath            string
+	path                string
 	item                presentation.Presentation
 	deck                presentation.Deck
 	loaded              bool
@@ -63,14 +61,14 @@ type presentationModel struct {
 	cancelOperation     context.CancelFunc
 }
 
-func newPresentationModel(service *presentation.Service, repository presentation.Repository, id, filePath string) *presentationModel {
+func newPresentationModel(service *presentation.Service, path string) *presentationModel {
 	editor := textarea.New()
 	editor.Prompt = ""
 	editor.ShowLineNumbers = true
 	editor.CharLimit = 5_000_000
 	editor.MaxHeight = 0
 	return &presentationModel{
-		service: service, repository: repository, id: id, filePath: filePath, editor: editor,
+		service: service, path: path, editor: editor,
 		newOperationContext: func() (context.Context, context.CancelFunc) {
 			return context.WithCancel(context.Background())
 		},
@@ -79,19 +77,6 @@ func newPresentationModel(service *presentation.Service, repository presentation
 			border:  lipgloss.AdaptiveColor{Light: "#b8b4c7", Dark: "#55516a"},
 		},
 	}
-}
-
-// RunPresentation opens one presentation artifact in a full-screen slide
-// viewer with a Markdown source editor. filePath is shown to the user only;
-// the deck is loaded by id through repository and edited through service.
-func RunPresentation(ctx context.Context, service *presentation.Service, repository presentation.Repository, id, filePath string) error {
-	model := newPresentationModel(service, repository, id, filePath)
-	model.newOperationContext = func() (context.Context, context.CancelFunc) {
-		return context.WithCancel(ctx)
-	}
-	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx))
-	_, err := program.Run()
-	return err
 }
 
 func (m *presentationModel) Init() tea.Cmd { return m.load() }
@@ -364,9 +349,9 @@ func (m *presentationModel) save() tea.Cmd {
 func (m *presentationModel) load() tea.Cmd {
 	ctx, seq := m.startOperation()
 	m.status, m.errMessage = "Loading…", ""
-	repository, id := m.repository, m.id
+	service, path := m.service, m.path
 	return func() tea.Msg {
-		item, err := repository.GetPresentation(ctx, id)
+		item, err := service.Get(ctx, path)
 		return presentationLoadedMsg{seq: seq, item: item, err: err}
 	}
 }
@@ -495,8 +480,8 @@ func (m *presentationModel) View() string {
 			header += fmt.Sprintf(" — %d/%d", m.page, len(m.deck.Slides))
 		}
 	}
-	if m.filePath != "" {
-		header += "  " + sanitizeTerminalLine(m.filePath)
+	if m.path != "" {
+		header += "  " + sanitizeTerminalLine(m.path)
 	}
 	b.WriteString(accent.Render(runewidth.Truncate(header, m.width, "…")) + "\n")
 

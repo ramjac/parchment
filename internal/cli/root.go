@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,129 +9,173 @@ import (
 	"github.com/spf13/cobra"
 
 	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/artifactfile"
 	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/document"
+	"example.com/parchment/internal/filerepo"
 	"example.com/parchment/internal/note"
 	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/spreadsheet"
-	"example.com/parchment/internal/tui"
-	"example.com/parchment/internal/workspace"
 )
 
-// New creates the file-oriented parchment command.
+type output struct {
+	out io.Writer
+	err io.Writer
+}
+
+// New creates the parchment command tree.
 func New(stdout, stderr io.Writer) *cobra.Command {
+	streams := output{out: stdout, err: stderr}
 	root := &cobra.Command{
-		Use:           "parchment <file>",
-		Short:         "Open and edit a Markdown or Parchment file",
-		Example:       "  parchment notes.md\n  parchment budget.md",
-		Args:          cobra.ExactArgs(1),
+		Use:   "parchment [file]",
+		Short: "Local-first notes, documents, spreadsheets, and presentations",
+		Long: "Each Parchment artifact is an ordinary Markdown file that you name and place anywhere.\n" +
+			"`parchment <file>` opens the file in the interactive editor, like `parchment tui <file>`.\n" +
+			"Plain Markdown files open as notes and stay plain Markdown.\n" +
+			"Configuration is read from ~/.parchment/parchment.toml, which is created on first use.",
+		Example:       "  parchment ~/Documents/ideas.md\n  parchment note create ~/Documents/ideas.md\n  parchment note show ~/Documents/ideas.md",
+		Args:          cobra.MaximumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE:          openFile,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return cmd.Help()
+			}
+			return runTUI(cmd, args[0], "", false)
+		},
 	}
 	root.SetOut(stdout)
 	root.SetErr(stderr)
+
+	notes := &cobra.Command{Use: "note", Short: "Create and manage Markdown notes"}
+	root.AddCommand(groupCommand(notes))
+	create := &cobra.Command{
+		Use: "create <file>", Short: "Create a note file", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, service, err := open(cmd)
+			if err != nil {
+				return err
+			}
+			path, err := filepath.Abs(args[0])
+			if err != nil {
+				return err
+			}
+			body, _ := cmd.Flags().GetString("body")
+			n, err := service.Create(cmd.Context(), path, body)
+			if err != nil {
+				return err
+			}
+			return finishCreate(cmd, streams, n.Path, artifact.NoteKind)
+		},
+	}
+	create.Flags().String("body", "", "initial Markdown content")
+	addEditFlag(create)
+	notes.AddCommand(create)
+	notes.AddCommand(&cobra.Command{
+		Use: "show <file>", Short: "Show a note", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, service, err := open(cmd)
+			if err != nil {
+				return err
+			}
+			n, err := service.Get(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			_, err = io.WriteString(streams.out, n.Body)
+			return err
+		},
+	})
+	edit := &cobra.Command{
+		Use: "edit <file>", Short: "Replace a note's Markdown body", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, service, err := open(cmd)
+			if err != nil {
+				return err
+			}
+			if !cmd.Flags().Changed("body") {
+				return fmt.Errorf("nothing to change: pass --body")
+			}
+			body, _ := cmd.Flags().GetString("body")
+			_, err = service.Update(cmd.Context(), args[0], body)
+			return err
+		},
+	}
+	edit.Flags().String("body", "", "new Markdown content")
+	notes.AddCommand(edit)
+	addDocumentCommands(root, streams)
+	addSpreadsheetCommands(root, streams)
+	addPresentationCommands(root, streams)
+
+	root.AddCommand(tuiCommand())
 	return root
 }
 
-func openFile(cmd *cobra.Command, args []string) error {
-	abs, err := filepath.Abs(args[0])
+func open(cmd *cobra.Command) (*filerepo.Repository, *note.Service, error) {
+	repo, settings, err := openStore()
 	if err != nil {
-		return fmt.Errorf("resolve file path: %w", err)
+		return nil, nil, err
 	}
-	resolved, err := filepath.EvalSymlinks(abs)
+	return repo, note.NewService(repo, settings.UndoLimit), nil
+}
+
+func openDocuments(cmd *cobra.Command) (*filerepo.Repository, *document.Service, error) {
+	repo, settings, err := openStore()
 	if err != nil {
-		return fmt.Errorf("resolve file: %w", err)
+		return nil, nil, err
 	}
-	info, err := os.Stat(resolved)
+	return repo, document.NewService(repo, settings.UndoLimit), nil
+}
+
+func openSpreadsheets(cmd *cobra.Command) (*filerepo.Repository, *spreadsheet.Service, error) {
+	repo, settings, err := openStore()
 	if err != nil {
-		return fmt.Errorf("inspect file: %w", err)
+		return nil, nil, err
 	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a regular file", resolved)
-	}
-	file, err := os.Open(resolved)
+	return repo, spreadsheet.NewService(repo, settings.UndoLimit), nil
+}
+
+func openPresentations(cmd *cobra.Command) (*filerepo.Repository, *presentation.Service, error) {
+	repo, settings, err := openStore()
 	if err != nil {
-		return fmt.Errorf("open file: %w", err)
+		return nil, nil, err
 	}
-	metadata, metadataErr := artifactfile.ReadMetadataFrom(file)
-	closeErr := file.Close()
-	if metadataErr != nil && !errors.Is(metadataErr, artifactfile.ErrMetadataMissing) {
-		return metadataErr
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close file: %w", closeErr)
-	}
-	userPath, err := config.UserConfigPath()
+	return repo, presentation.NewService(repo, settings.UndoLimit), nil
+}
+
+// openStore resolves ~/.parchment/parchment.toml (or PARCHMENT_CONFIG) and
+// returns a repository for standalone artifact files. The state directory
+// holds only configuration, recovery drafts, and the write lock.
+func openStore() (*filerepo.Repository, config.Settings, error) {
+	configPath, err := config.Path()
 	if err != nil {
-		return err
+		return nil, config.Settings{}, err
 	}
-	settings, err := config.Load(userPath)
+	if os.Getenv("PARCHMENT_CONFIG") == "" {
+		if err := config.EnsureDefault(configPath); err != nil {
+			return nil, config.Settings{}, err
+		}
+	} else if _, err := os.Stat(configPath); err != nil {
+		return nil, config.Settings{}, fmt.Errorf("PARCHMENT_CONFIG: %w", err)
+	}
+	settings, err := config.Load(configPath)
 	if err != nil {
-		return err
+		return nil, config.Settings{}, err
 	}
-	switch {
-	case errors.Is(metadataErr, artifactfile.ErrMetadataMissing):
-		repository, err := workspace.OpenMarkdownFile(resolved)
-		if err != nil {
-			return err
-		}
-		return tui.Run(cmd.Context(), note.NewService(repository, settings.UndoLimit), repository,
-			filepath.Base(resolved), resolved, tui.WithSingleMarkdownFile())
-	case metadata.Kind == artifact.NoteKind:
-		repository, err := workspace.OpenNoteFile(resolved)
-		if err != nil {
-			return err
-		}
-		return tui.Run(cmd.Context(), note.NewService(repository, settings.UndoLimit), repository,
-			filepath.Base(resolved), resolved, tui.WithSingleMarkdownFile())
-	case metadata.Kind == artifact.DocumentKind:
-		repository, err := workspace.OpenDocumentFile(resolved)
-		if err != nil {
-			return err
-		}
-		documents, err := repository.ListDocuments(cmd.Context())
-		if err != nil {
-			return err
-		}
-		if len(documents) != 1 {
-			return fmt.Errorf("expected one document in %s, got %d", resolved, len(documents))
-		}
-		notes, err := workspace.OpenMarkdownFile(resolved)
-		if err != nil {
-			return err
-		}
-		return tui.Run(cmd.Context(), note.NewService(notes, settings.UndoLimit), notes,
-			filepath.Base(resolved), resolved, tui.WithDocuments(document.NewService(repository, settings.UndoLimit)),
-			tui.WithInitialDocument(documents[0].ID), tui.WithSingleDocumentFile())
-	case metadata.Kind == artifact.SpreadsheetKind:
-		repository, err := workspace.OpenSpreadsheetFile(resolved)
-		if err != nil {
-			return err
-		}
-		books, err := repository.ListSpreadsheets(cmd.Context())
-		if err != nil {
-			return err
-		}
-		if len(books) != 1 {
-			return fmt.Errorf("expected one spreadsheet in %s, got %d", resolved, len(books))
-		}
-		return tui.RunSpreadsheet(cmd.Context(), spreadsheet.NewService(repository, settings.UndoLimit), repository, books[0].ID, resolved)
-	case metadata.Kind == artifact.PresentationKind:
-		repository, err := workspace.OpenPresentationFile(resolved)
-		if err != nil {
-			return err
-		}
-		decks, err := repository.ListPresentations(cmd.Context())
-		if err != nil {
-			return err
-		}
-		if len(decks) != 1 {
-			return fmt.Errorf("expected one presentation in %s, got %d", resolved, len(decks))
-		}
-		return tui.RunPresentation(cmd.Context(), presentation.NewService(repository, settings.UndoLimit), repository, decks[0].ID, resolved)
-	default:
-		return fmt.Errorf("interactive editing is not supported for %s files", metadata.Kind)
+	stateDir, err := config.Directory()
+	if err != nil {
+		return nil, config.Settings{}, err
 	}
+	repo, err := filerepo.New(stateDir)
+	if err != nil {
+		return nil, config.Settings{}, err
+	}
+	return repo, settings, nil
+}
+
+// groupCommand makes a command group report unknown subcommands as errors
+// instead of printing help and exiting successfully.
+func groupCommand(group *cobra.Command) *cobra.Command {
+	group.Args = cobra.NoArgs
+	group.RunE = func(cmd *cobra.Command, _ []string) error { return cmd.Help() }
+	return group
 }

@@ -16,7 +16,6 @@ func TestSingleFileWorkbookEncodesMetadataCellsAndFormulas(t *testing.T) {
 		Artifact: artifact.Artifact{
 			ID: "s12345", Kind: artifact.SpreadsheetKind,
 			Title: "Budget", FormatVersion: artifact.FormatVersion,
-			Location:  "parchment/artifacts/s12345/content.md",
 			CreatedAt: fixedTime, ModifiedAt: fixedTime,
 		},
 		Version: FileVersion,
@@ -79,7 +78,6 @@ func TestFormulaArithmeticReferencesAndCycles(t *testing.T) {
 		Artifact: artifact.Artifact{
 			ID: "s12345", Kind: artifact.SpreadsheetKind,
 			Title: "Formula test", FormatVersion: artifact.FormatVersion,
-			Location:  "parchment/artifacts/s12345/content.md",
 			CreatedAt: fixedTime, ModifiedAt: fixedTime,
 		},
 		Version: FileVersion,
@@ -127,7 +125,7 @@ func TestSpreadsheetOperationsFormulaShiftsAndHistory(t *testing.T) {
 	ctx := context.Background()
 	repository := newMemoryRepository()
 	service := NewService(repository, 20)
-	book, err := service.Create(ctx, "Values", [][]Cell{{{Value: "2"}, {Value: "3"}, {Formula: "=A1+B1"}}})
+	book, err := service.Create(ctx, "values.md", [][]Cell{{{Value: "2"}, {Value: "3"}, {Formula: "=A1+B1"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +133,7 @@ func TestSpreadsheetOperationsFormulaShiftsAndHistory(t *testing.T) {
 	if err != nil || value != 5 {
 		t.Fatalf("initial formula = %v, %v", value, err)
 	}
-	updated, err := service.InsertRow(ctx, book.ID, 1)
+	updated, err := service.InsertRow(ctx, book.Path, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,14 +144,14 @@ func TestSpreadsheetOperationsFormulaShiftsAndHistory(t *testing.T) {
 	if _, err := service.Undo(ctx); err != nil {
 		t.Fatal(err)
 	}
-	undone, err := service.Get(ctx, book.ID)
+	undone, err := service.Get(ctx, book.Path)
 	if err != nil || len(undone.Sheets[0].Rows) != 1 || undone.Sheets[0].Rows[0][2].Formula != "=A1+B1" {
 		t.Fatalf("undo did not restore sheet: %+v, %v", undone, err)
 	}
 	if _, err := service.Redo(ctx); err != nil {
 		t.Fatal(err)
 	}
-	redone, err := service.Get(ctx, book.ID)
+	redone, err := service.Get(ctx, book.Path)
 	if err != nil || len(redone.Sheets[0].Rows) != 2 || redone.Sheets[0].Rows[1][2].Formula != "=A2+B2" {
 		t.Fatalf("redo did not restore inserted row: %+v, %v", redone, err)
 	}
@@ -218,7 +216,6 @@ func formulaChain(formulas int) Spreadsheet {
 		Artifact: artifact.Artifact{
 			ID: "s12345", Kind: artifact.SpreadsheetKind,
 			Title: "Deep formulas", FormatVersion: artifact.FormatVersion,
-			Location:  "parchment/artifacts/s12345/content.md",
 			CreatedAt: fixedTime, ModifiedAt: fixedTime,
 		},
 		Version: FileVersion, Sheets: []Sheet{{Name: "Sheet1", Rows: rows}},
@@ -235,18 +232,6 @@ type memoryRepository struct {
 
 func newMemoryRepository() *memoryRepository {
 	return &memoryRepository{books: make(map[string]Spreadsheet)}
-}
-
-func (*memoryRepository) ArtifactLocation(id string) string {
-	return "parchment/artifacts/" + id + "/content.md"
-}
-
-func (r *memoryRepository) ListSpreadsheets(context.Context) ([]Spreadsheet, error) {
-	var books []Spreadsheet
-	for _, book := range r.books {
-		books = append(books, cloneSpreadsheet(book))
-	}
-	return books, nil
 }
 
 func (r *memoryRepository) GetSpreadsheet(_ context.Context, id string) (Spreadsheet, error) {

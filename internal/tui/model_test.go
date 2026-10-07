@@ -2,395 +2,566 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/document"
+	"example.com/parchment/internal/filerepo"
 	"example.com/parchment/internal/note"
-	"example.com/parchment/internal/workspace"
+	"example.com/parchment/internal/presentation"
+	"example.com/parchment/internal/spreadsheet"
 )
 
-func TestResponsiveMinimumAndHelpModal(t *testing.T) {
-	ws := openTestWorkspace(t)
-	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test")
-	updated, _ := model.Update(tea.WindowSizeMsg{Width: 30, Height: 8})
-	model = *updated.(*Model)
-	if view := model.View(); !strings.Contains(view, "too small") || !strings.Contains(view, "press q") {
-		t.Fatalf("small terminal view = %q", view)
+// harness wires the editor to real services over files in temporary
+// directories: one for the artifact and one standing in for ~/.parchment.
+type harness struct {
+	t      *testing.T
+	m      *Model
+	repo   *filerepo.Repository
+	notes  *note.Service
+	docs   *document.Service
+	sheets *spreadsheet.Service
+	decks  *presentation.Service
+	path   string
+	quit   bool
+}
+
+func newHarness(t *testing.T, kind artifact.Kind) *harness {
+	t.Helper()
+	repo, err := filerepo.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
 	}
-	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-	model = *updated.(*Model)
-	if command == nil {
-		t.Fatal("q in minimum-size mode did not request quit")
+	h := &harness{
+		t: t, repo: repo,
+		notes: note.NewService(repo, 10), docs: document.NewService(repo, 10),
+		sheets: spreadsheet.NewService(repo, 10), decks: presentation.NewService(repo, 10),
+		path: filepath.Join(t.TempDir(), "report.md"),
 	}
-	updated, _ = model.Update(notesLoadedMsg{})
-	model = *updated.(*Model)
-	updated, _ = model.Update(tea.WindowSizeMsg{Width: 90, Height: 24})
-	model = *updated.(*Model)
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
-	model = *updated.(*Model)
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	model = *updated.(*Model)
-	if model.mode != browsing || !strings.Contains(model.View(), "Close help") {
-		t.Fatalf("help overlay did not retain focus: mode=%d view=%q", model.mode, model.View())
+	h.open(kind)
+	return h
+}
+
+// open starts a fresh editor session on the harness file, as running
+// `parchment tui` again would.
+func (h *harness) open(kind artifact.Kind) {
+	h.t.Helper()
+	h.openWith(kind, false)
+}
+
+// openWith starts a session; edit opens an existing document in its editor.
+func (h *harness) openWith(kind artifact.Kind, edit bool) {
+	h.t.Helper()
+	model := NewModel(Config{
+		Path: h.path, Kind: kind, Edit: edit, Notes: h.notes, Documents: h.docs,
+		Spreadsheets: h.sheets, Presentations: h.decks, Recovery: h.repo,
+	})
+	h.m, h.quit = &model, false
+	// Blinking cursors return tea.Tick commands, which the harness would run
+	// synchronously.
+	h.m.bodyInput.Cursor.SetMode(cursor.CursorStatic)
+	if s := h.m.documents; s != nil {
+		s.body.Cursor.SetMode(cursor.CursorStatic)
+		s.promptInput.Cursor.SetMode(cursor.CursorStatic)
+	}
+	h.send(tea.WindowSizeMsg{Width: 100, Height: 30})
+	h.run(h.m.Init())
+}
+
+// send delivers a message and feeds the results of returned commands back
+// into the model, as the Bubble Tea runtime would.
+func (h *harness) send(message tea.Msg) {
+	h.t.Helper()
+	h.m.autosaveScheduler = nil
+	if h.m.documents != nil {
+		h.m.documents.autosaveScheduler = nil
+	}
+	_, cmd := h.m.Update(message)
+	h.run(cmd)
+}
+
+var cmdType = reflect.TypeOf(tea.Cmd(nil))
+
+func (h *harness) run(c tea.Cmd) {
+	h.t.Helper()
+	if c == nil {
+		return
+	}
+	result := c()
+	if v := reflect.ValueOf(result); v.Kind() == reflect.Slice && v.Type().Elem() == cmdType {
+		// tea.Batch and tea.Sequence results.
+		for i := range v.Len() {
+			h.run(v.Index(i).Interface().(tea.Cmd))
+		}
+		return
+	}
+	switch result.(type) {
+	case nil:
+	case tea.QuitMsg:
+		h.quit = true
+	default:
+		h.send(result)
 	}
 }
 
-func TestSingleMarkdownFileModeEditsBodyOnly(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "garden.md")
-	if err := os.WriteFile(path, []byte("# Garden\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	repository, err := workspace.OpenMarkdownFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	service := note.NewService(repository, 10)
-	items, err := service.List(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	item := items[0]
-	model := NewModel(service, repository, "garden.md", path, WithSingleMarkdownFile())
-	model.width, model.height = 90, 24
-	updated, _ := model.Update(notesLoadedMsg{notes: []note.Note{item}})
-	model = *updated.(*Model)
-	if model.mode != editing || !model.bodyInput.Focused() ||
-		!strings.Contains(model.View(), "# Garden") || strings.Contains(model.View(), "Notes (") {
-		t.Fatalf("single-file initial view = %q", model.View())
-	}
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("!")})
-	model = *updated.(*Model)
-	if model.bodyInput.Value() != "# Garden\n!" || model.titleInput.Value() != item.Title {
-		t.Fatalf("editor values = title %q, body %q", model.titleInput.Value(), model.bodyInput.Value())
-	}
-	result := model.saveNote()().(noteSavedMsg)
-	if result.err != nil {
-		t.Fatalf("save plain Markdown file: %v", result.err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "# Garden\n!" {
-		t.Fatalf("plain file content = %q", data)
+func (h *harness) key(key string) {
+	h.t.Helper()
+	switch key {
+	case "esc":
+		h.send(tea.KeyMsg{Type: tea.KeyEsc})
+	case "tab":
+		h.send(tea.KeyMsg{Type: tea.KeyTab})
+	case "enter":
+		h.send(tea.KeyMsg{Type: tea.KeyEnter})
+	case "ctrl+s":
+		h.send(tea.KeyMsg{Type: tea.KeyCtrlS})
+	case "ctrl+c":
+		h.send(tea.KeyMsg{Type: tea.KeyCtrlC})
+	case "ctrl+z":
+		h.send(tea.KeyMsg{Type: tea.KeyCtrlZ})
+	case "f3":
+		h.send(tea.KeyMsg{Type: tea.KeyF3})
+	case "f4":
+		h.send(tea.KeyMsg{Type: tea.KeyF4})
+	case "f5":
+		h.send(tea.KeyMsg{Type: tea.KeyF5})
+	case "pgdown":
+		h.send(tea.KeyMsg{Type: tea.KeyPgDown})
+	default:
+		h.send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
 	}
 }
 
-func TestSingleMarkdownFileStaysInEditorAfterSave(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "garden.md")
-	if err := os.WriteFile(path, []byte("# Garden\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	repository, err := workspace.OpenMarkdownFile(path)
+func (h *harness) typeText(text string) {
+	h.t.Helper()
+	h.send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text)})
+}
+
+func (h *harness) hasDraft() bool {
+	h.t.Helper()
+	_, ok, err := h.repo.LoadRecovery(context.Background(), h.path)
 	if err != nil {
-		t.Fatal(err)
+		h.t.Fatal(err)
 	}
-	model := NewModel(note.NewService(repository, 10), repository, "garden.md", path, WithSingleMarkdownFile())
-	model.width, model.height = 90, 24
-	model.Update(model.Init()())
-	if model.mode != editing || !model.bodyInput.Focused() {
-		t.Fatalf("initial mode=%d, focused=%t", model.mode, model.bodyInput.Focused())
+	return ok
+}
+
+func TestMissingFileAsksForKindAndCreatesIt(t *testing.T) {
+	h := newHarness(t, "")
+	if h.m.stage != stageChooseKind || !strings.Contains(h.m.View(), "does not exist yet") {
+		t.Fatalf("stage = %d, view:\n%s", h.m.stage, h.m.View())
 	}
-	model.bodyInput.SetValue("# Changed\n")
-	_, save := model.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
-	if save == nil {
-		t.Fatal("save command not returned")
+	if _, err := os.Stat(h.path); !os.IsNotExist(err) {
+		t.Fatalf("file created before a kind was chosen: %v", err)
 	}
-	model.Update(save())
-	if model.mode != editing || model.pending || model.dirty() {
-		t.Fatalf("save left editor: mode=%d pending=%t dirty=%t", model.mode, model.pending, model.dirty())
+	h.key("d")
+	if h.m.stage != stageDocument {
+		t.Fatalf("stage = %d, error = %q", h.m.stage, h.m.errMessage)
 	}
-	model.bodyInput.SetValue("# Discarded\n")
-	model.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if model.mode != editing || model.bodyInput.Value() != "# Changed\n" {
-		t.Fatal("escape did not discard unsaved edit in editor")
+	d, err := h.docs.Get(context.Background(), h.path)
+	if err != nil || d.Title != "report" {
+		t.Fatalf("created document = %+v, %v", d, err)
 	}
-	_, quit := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if quit == nil || quit() != (tea.QuitMsg{}) {
-		t.Fatal("escape did not quit clean editor")
+	entries, err := os.ReadDir(filepath.Dir(h.path))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("files next to the artifact = %v, %v", entries, err)
 	}
 }
 
-func TestInitialNoteOptionSelectsAndPreviewsNote(t *testing.T) {
-	ws := openTestWorkspace(t)
-	service := note.NewService(ws, 10)
-	first, err := service.Create(context.Background(), "First", "First body")
-	if err != nil {
-		t.Fatal(err)
+func TestQuitAtKindPromptCreatesNothing(t *testing.T) {
+	h := newHarness(t, "")
+	h.key("q")
+	if !h.quit {
+		t.Fatal("q did not quit")
 	}
-	target, err := service.Create(context.Background(), "Target", "Target body")
-	if err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(h.path); !os.IsNotExist(err) {
+		t.Fatalf("quitting created the file: %v", err)
 	}
-	model := NewModel(service, ws, "test", "/tmp/test", WithInitialNote(target.ID))
-	message := model.Init()()
-	updated, _ := model.Update(message)
-	model = *updated.(*Model)
-	selected, ok := model.selectedNote()
-	if !ok || selected.ID != target.ID || !model.showPreview {
-		t.Fatalf("initial note selection = %+v, preview=%t (first note %s)", selected, model.showPreview, first.ID)
+}
+
+func TestMissingFileWithKindIsCreatedDirectly(t *testing.T) {
+	h := newHarness(t, artifact.NoteKind)
+	if h.m.stage != stageNote || !strings.Contains(h.m.status, "Created") {
+		t.Fatalf("stage = %d, status = %q", h.m.stage, h.m.status)
+	}
+	if n, err := h.notes.Get(context.Background(), h.path); err != nil || n.Title != "report" {
+		t.Fatalf("created note = %+v, %v", n, err)
+	}
+}
+
+func TestEditorOpensFileOfWrongKindAsFailure(t *testing.T) {
+	h := newHarness(t, artifact.DocumentKind)
+	h.open(artifact.NoteKind)
+	if h.m.stage != stageFailed || h.m.errMessage == "" {
+		t.Fatalf("stage = %d, error = %q", h.m.stage, h.m.errMessage)
+	}
+	h.key("q")
+	if !h.quit {
+		t.Fatal("q did not quit from the failure screen")
+	}
+}
+
+func TestNoteSaveStaysInEditorAndCloseQuits(t *testing.T) {
+	h := newHarness(t, artifact.NoteKind)
+	h.typeText("Hello")
+	if !h.m.dirty() {
+		t.Fatal("typing did not dirty the editor")
+	}
+	h.key("ctrl+s")
+	if h.m.stage != stageNote || h.m.dirty() || h.quit {
+		t.Fatalf("after save: stage=%d dirty=%t quit=%t error=%q", h.m.stage, h.m.dirty(), h.quit, h.m.errMessage)
+	}
+	if n, err := h.notes.Get(context.Background(), h.path); err != nil || n.Body != "Hello" {
+		t.Fatalf("saved note = %+v, %v", n, err)
+	}
+	h.key("ctrl+z")
+	if n, _ := h.notes.Get(context.Background(), h.path); n.Body != "" || h.m.bodyInput.Value() != "" {
+		t.Fatalf("undo: file body %q, editor body %q", n.Body, h.m.bodyInput.Value())
+	}
+	h.key("esc")
+	if !h.quit {
+		t.Fatal("Esc on a clean editor did not quit")
+	}
+}
+
+func TestNoteEscapeConfirmsBeforeDiscarding(t *testing.T) {
+	h := newHarness(t, artifact.NoteKind)
+	h.typeText("unsaved")
+	h.key("esc")
+	if h.quit || !strings.Contains(h.m.status, "Unsaved changes") {
+		t.Fatalf("first Esc: quit=%t status=%q", h.quit, h.m.status)
+	}
+	h.key("esc")
+	if !h.quit {
+		t.Fatal("second Esc did not quit")
+	}
+	if n, _ := h.notes.Get(context.Background(), h.path); n.Body != "" {
+		t.Fatalf("discarded edit was saved: %q", n.Body)
 	}
 }
 
 func TestPendingCtrlCCancelsOperationAndQuits(t *testing.T) {
-	ws := openTestWorkspace(t)
-	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test")
+	h := newHarness(t, "")
 	opCtx, cancel := context.WithCancel(context.Background())
-	model.pending = true
-	model.cancelOperation = cancel
-
-	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-	if command == nil {
-		t.Fatal("Ctrl+C while pending did not request quit")
-	}
-	if err := opCtx.Err(); err == nil {
-		t.Fatal("Ctrl+C did not cancel the pending operation")
-	}
-	if _, ok := updated.(*Model); !ok {
-		t.Fatalf("updated model has type %T", updated)
-	}
-}
-
-func TestMinimumSizeQuitCancelsPendingOperation(t *testing.T) {
-	ws := openTestWorkspace(t)
-	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test")
-	opCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	model.pending = true
-	model.cancelOperation = cancel
-	model.width, model.height = 30, 8
-
-	_, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-	if command == nil {
-		t.Fatal("q in minimum-size mode did not request quit")
+	h.m.pending, h.m.cancelOperation, h.m.stage = true, cancel, stageOpening
+	_, cmd := h.m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("Ctrl+C while opening did not request quit")
 	}
 	if !errors.Is(opCtx.Err(), context.Canceled) {
-		t.Fatalf("pending operation context error = %v, want context canceled", opCtx.Err())
+		t.Fatal("Ctrl+C did not cancel the pending operation")
 	}
 }
 
 func TestPendingSaveCancellationKeepsEditorOpen(t *testing.T) {
-	ws := openTestWorkspace(t)
-	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test")
+	h := newHarness(t, artifact.NoteKind)
 	opCtx, cancel := context.WithCancel(context.Background())
-	model.mode = editing
-	model.pending = true
-	model.cancelOperation = cancel
-
-	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-	model = *updated.(*Model)
-	if command != nil || model.mode != editing || !model.pending {
-		t.Fatalf("cancelled save state: command=%v mode=%d pending=%t", command, model.mode, model.pending)
+	h.m.pending, h.m.cancelOperation = true, cancel
+	_, cmd := h.m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd != nil || h.m.stage != stageNote || !h.m.pending {
+		t.Fatalf("cancelled save state: command=%v stage=%d pending=%t", cmd, h.m.stage, h.m.pending)
 	}
-	if err := opCtx.Err(); err == nil {
+	if opCtx.Err() == nil {
 		t.Fatal("Ctrl+C did not cancel the pending save")
 	}
-	if !strings.Contains(model.status, "Cancelling save") {
-		t.Fatalf("status = %q", model.status)
-	}
-	updated, _ = model.Update(noteSavedMsg{err: context.Canceled})
-	model = *updated.(*Model)
-	if model.pending || model.mode != editing || !strings.Contains(model.status, "unsaved changes remain") {
-		t.Fatalf("completed cancelled save state: pending=%t mode=%d status=%q", model.pending, model.mode, model.status)
+	h.send(noteSavedMsg{err: context.Canceled})
+	if h.m.pending || h.m.stage != stageNote || !strings.Contains(h.m.status, "unsaved changes remain") {
+		t.Fatalf("completed cancelled save: pending=%t stage=%d status=%q", h.m.pending, h.m.stage, h.m.status)
 	}
 }
 
-func TestNarrowListKeepsSelectedNoteVisible(t *testing.T) {
-	ws := openTestWorkspace(t)
-	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test")
-	model.width, model.height, model.selected = 50, 12, 15
-	for i := range 30 {
-		model.notes = append(model.notes, note.Note{Artifact: artifact.Artifact{Title: fmt.Sprintf("Note %02d", i)}})
+func TestSmallTerminalQClosesOnlyCleanNote(t *testing.T) {
+	h := newHarness(t, artifact.NoteKind)
+	h.send(tea.WindowSizeMsg{Width: 30, Height: 8})
+	if view := h.m.View(); !strings.Contains(view, "too small") {
+		t.Fatalf("small terminal view = %q", view)
 	}
-	model.resizePreview()
-
-	view := model.View()
-	if !strings.Contains(view, "Note 15") {
-		t.Fatalf("selected note is not visible in narrow list:\n%s", view)
+	h.m.bodyInput.SetValue("unsaved")
+	h.key("q")
+	if h.quit {
+		t.Fatal("q quit with unsaved changes")
 	}
-	if strings.Contains(view, "Note 00") {
-		t.Fatalf("narrow list rendered notes outside its visible window:\n%s", view)
+	h.m.bodyInput.SetValue("")
+	h.key("q")
+	if !h.quit {
+		t.Fatal("q did not quit a clean editor")
 	}
 }
 
 func TestViewSanitizesTerminalControlSequences(t *testing.T) {
-	ws := openTestWorkspace(t)
-	model := NewModel(note.NewService(ws, 10), ws, "workspace\x1b[2Jname", "/tmp/workspace\x1b]52;c;payload\a")
-	model.width, model.height = 100, 20
-	model.notes = []note.Note{{
-		Artifact: artifact.Artifact{
-			Title: "Title\x1b[2J",
-		},
-		Body: "Body\x1b]52;c;payload\a\nnext line",
-	}}
-	model.resizePreview()
-
-	view := model.View()
-	for _, unsafe := range []string{
-		"\x1b[2J",
-		"\x1b]52;",
-		"\x07",
-	} {
+	h := newHarness(t, artifact.NoteKind)
+	h.m.path = "/tmp/parch\x1b]52;c;payload\a.md"
+	h.m.bodyInput.SetValue("Body\x1b]52;c;payload\a\nnext")
+	view := h.m.View()
+	for _, unsafe := range []string{"\x1b[2J", "\x1b]52;", "\x07"} {
 		if strings.Contains(view, unsafe) {
-			t.Errorf("view contains terminal control sequence %q: %q", unsafe, view)
+			t.Errorf("view contains terminal control sequence %q", unsafe)
 		}
 	}
-	if !strings.Contains(view, "�[2J") || !strings.Contains(view, "�]52;") {
-		t.Fatalf("view did not visibly sanitize workspace and note strings: %q", view)
+	if !strings.Contains(view, "�]52;") {
+		t.Fatalf("view did not visibly sanitize the path: %q", view)
 	}
-
-	model.mode = editing
-	model.titleInput.SetValue("Edited\x1b[2J")
-	model.bodyInput.SetValue("Edited body\x1b]52;c;payload\a")
-	view = model.View()
-	if strings.Contains(view, "\x1b[2J") || strings.Contains(view, "\x1b]52;") {
-		t.Fatalf("editor view contains pasted terminal controls: %q", view)
+	h.key("f5")
+	if view := h.m.View(); strings.Contains(view, "\x1b]52;") || !strings.Contains(view, "Preview") {
+		t.Fatalf("preview = %q", view)
 	}
 }
 
-func TestEditRefusesNotesThatEditorWouldNormalize(t *testing.T) {
-	cases := []struct {
-		name  string
-		title string
-		body  string
-	}{
-		{name: "long title", title: strings.Repeat("x", 201), body: "body"},
-		{name: "tab in body", title: "Title", body: "before\tafter"},
-		{name: "control in body", title: "Title", body: "before\x1b[2Jafter"},
-		{name: "oversized body", title: "Title", body: strings.Repeat("x", 1_000_001)},
-		{name: "too many body lines", title: "Title", body: strings.Repeat("x\n", 10_000) + "last"},
+func TestEditorRefusesNotesItWouldNormalize(t *testing.T) {
+	cases := []struct{ name, body string }{
+		{"tab in body", "before\tafter"},
+		{"control in body", "before\x1b[2Jafter"},
+		{"oversized body", strings.Repeat("x", 1_000_001)},
+		{"too many body lines", strings.Repeat("x\n", 10_000) + "last"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ws := openTestWorkspace(t)
-			model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test")
-			model.width, model.height = 100, 20
-			model.pending = false
-			model.notes = []note.Note{{
-				Artifact: artifact.Artifact{ID: "id", Title: tc.title},
-				Body:     tc.body,
-			}}
-			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-			model = *updated.(*Model)
-			if model.mode != browsing {
-				t.Fatalf("lossy note opened for editing; mode=%d", model.mode)
+			h := newHarness(t, "")
+			if _, err := h.notes.Create(context.Background(), h.path, tc.body); err != nil {
+				t.Fatal(err)
 			}
-			if model.errMessage == "" {
-				t.Fatal("refused edit did not explain why")
-			}
-			if model.titleInput.Value() == tc.title && model.bodyInput.Value() == tc.body {
-				t.Fatal("test note was representable and should have entered the editor")
+			h.open(artifact.NoteKind)
+			if h.m.stage != stageFailed || !strings.Contains(h.m.errMessage, "editor limits") {
+				t.Fatalf("stage = %d, error = %q", h.m.stage, h.m.errMessage)
 			}
 		})
 	}
 }
 
-func TestEditSaveRejectsConcurrentExternalChange(t *testing.T) {
+func TestNoteSaveRejectsConcurrentExternalChange(t *testing.T) {
 	ctx := context.Background()
-	ws := openTestWorkspace(t)
-	service := note.NewService(ws, 10)
-	created, err := service.Create(ctx, "Original title", "Original body")
-	if err != nil {
+	h := newHarness(t, artifact.NoteKind)
+	h.typeText("Edited body")
+	external := h.m.snapshot
+	external.Body = "Changed in a text editor"
+	if err := h.repo.Transition(ctx, h.path, &h.m.snapshot, &external); err != nil {
 		t.Fatal(err)
 	}
-	model := NewModel(service, ws, "test", "/tmp/test")
-	model.pending = false
-	model.notes = []note.Note{created}
-	model.width, model.height = 100, 20
-	if !model.startEdit(created) {
-		t.Fatal("could not start editing note")
+	h.key("ctrl+s")
+	if h.m.stage != stageNote || !strings.Contains(h.m.errMessage, "changed since it was loaded") {
+		t.Fatalf("stage = %d, error = %q", h.m.stage, h.m.errMessage)
 	}
-	model.bodyInput.SetValue("Edited body")
-
-	external := created
-	external.Body = "Changed outside TUI"
-	external.ModifiedAt = external.ModifiedAt.Add(time.Second)
-	if err := ws.Save(ctx, external); err != nil {
-		t.Fatal(err)
-	}
-
-	result := model.saveNote()().(noteSavedMsg)
-	if result.err == nil {
-		t.Fatal("save succeeded despite external modification")
-	}
-	if !strings.Contains(result.err.Error(), "changed since this operation") {
-		t.Fatalf("save error = %v, want snapshot conflict", result.err)
-	}
-	updated, _ := model.Update(result)
-	model = *updated.(*Model)
-	if model.mode != editing || model.errMessage == "" {
-		t.Fatalf("conflicted save did not keep the editor open and show an error: mode=%v error=%q", model.mode, model.errMessage)
-	}
-	current, err := ws.Get(ctx, created.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if current.Body != external.Body {
-		t.Fatalf("stale editor overwrote external update: %+v", current)
+	current, err := h.notes.Get(ctx, h.path)
+	if err != nil || current.Body != external.Body {
+		t.Fatalf("stale editor overwrote external update: %+v, %v", current, err)
 	}
 }
 
-func TestPreviewCanScrollInWideLayout(t *testing.T) {
-	ws := openTestWorkspace(t)
-	model := NewModel(note.NewService(ws, 10), ws, "test", "/tmp/test")
-	updated, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 16})
-	model = *updated.(*Model)
-	body := make([]string, 30)
-	for i := range body {
-		body[i] = fmt.Sprintf("Line %02d", i+1)
+func TestPreviewCanScroll(t *testing.T) {
+	h := newHarness(t, "")
+	lines := make([]string, 60)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("Line %02d", i+1)
 	}
-	updated, _ = model.Update(notesLoadedMsg{notes: []note.Note{{
-		Artifact: artifact.Artifact{Title: "Long note"},
-		Body:     strings.Join(body, "\n"),
-	}}})
-	model = *updated.(*Model)
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = *updated.(*Model)
-	if view := model.View(); !strings.Contains(view, "Line 01") || strings.Contains(view, "Line 30") {
-		t.Fatalf("initial preview viewport = %q", view)
+	if _, err := h.notes.Create(context.Background(), h.path, strings.Join(lines, "\n")); err != nil {
+		t.Fatal(err)
 	}
-	for range 20 {
-		updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
-		model = *updated.(*Model)
+	h.open(artifact.NoteKind)
+	h.send(tea.WindowSizeMsg{Width: 100, Height: 16})
+	h.key("f5")
+	if view := h.m.View(); !strings.Contains(view, "Line 01") || strings.Contains(view, "Line 60") {
+		t.Fatalf("initial preview = %q", view)
 	}
-	if view := model.View(); !strings.Contains(view, "Line 20") {
-		t.Fatalf("scrolled preview does not show later content: %q", view)
+	for range 3 {
+		h.key("pgdown")
+	}
+	if view := h.m.View(); !strings.Contains(view, "Line 3") {
+		t.Fatalf("scrolled preview = %q", view)
+	}
+	h.key("esc")
+	if h.m.previewing || h.quit {
+		t.Fatal("Esc did not return from preview to the editor")
 	}
 }
 
-func TestReloadPreservesActiveSearch(t *testing.T) {
+func TestNoteAutosaveIsOfferedOnReopen(t *testing.T) {
 	ctx := context.Background()
-	ws := openTestWorkspace(t)
-	service := note.NewService(ws, 10)
-	if _, err := service.Create(ctx, "Matching note", "needle"); err != nil {
+	h := newHarness(t, "")
+	created, err := h.notes.Create(ctx, h.path, "Before")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Create(ctx, "Other note", "unrelated"); err != nil {
+	withBlock := created
+	withBlock.Blocks = map[string]json.RawMessage{"parchment-extra": json.RawMessage(`{"kept":true}`)}
+	if err := h.repo.Transition(ctx, h.path, &created, &withBlock); err != nil {
 		t.Fatal(err)
 	}
-	model := NewModel(service, ws, "test", "/tmp/test")
-	model.searchActive = true
-	model.searchQuery = "needle"
-	model.errMessage = "previous failure"
+	h.open(artifact.NoteKind)
+	h.m.bodyInput.SetValue("Recovered body")
+	h.run(h.m.saveNoteRecovery(h.m.autosaveSession))
+	if !h.hasDraft() {
+		t.Fatal("autosave wrote no draft")
+	}
 
-	result := model.loadNotes()().(searchCompletedMsg)
-	if result.err != nil {
-		t.Fatal(result.err)
+	// Simulate a crash: reopen without closing.
+	h.open(artifact.NoteKind)
+	if h.m.stage != stageRecovery || !strings.Contains(h.m.View(), "autosaved draft") {
+		t.Fatalf("stage = %d, view:\n%s", h.m.stage, h.m.View())
 	}
-	if len(result.notes) != 1 || result.notes[0].Body != "needle" {
-		t.Fatalf("reload results = %+v, want active query preserved", result.notes)
+	h.key("r")
+	if h.m.stage != stageNote || h.m.bodyInput.Value() != "Recovered body" {
+		t.Fatalf("recovered editor: stage=%d body=%q", h.m.stage, h.m.bodyInput.Value())
 	}
-	updated, _ := model.Update(searchCompletedMsg{notes: result.notes})
-	model = *updated.(*Model)
-	if model.errMessage != "" {
-		t.Fatalf("successful reload retained old error: %q", model.errMessage)
+	if string(h.m.snapshot.Blocks["parchment-extra"]) != `{"kept":true}` || h.m.snapshot.Body != "Before" {
+		t.Fatalf("recovered snapshot = %+v", h.m.snapshot)
+	}
+	h.key("ctrl+s")
+	saved, err := h.notes.Get(ctx, h.path)
+	if err != nil || saved.Body != "Recovered body" || string(saved.Blocks["parchment-extra"]) != `{"kept":true}` {
+		t.Fatalf("saved recovered note = %+v, %v", saved, err)
+	}
+	if h.hasDraft() {
+		t.Fatal("saving left the draft behind")
+	}
+}
+
+func TestRecoveryOfferDiscardAndQuit(t *testing.T) {
+	h := newHarness(t, artifact.NoteKind)
+	h.m.bodyInput.SetValue("draft")
+	h.run(h.m.saveNoteRecovery(h.m.autosaveSession))
+
+	h.open(artifact.NoteKind)
+	h.key("q")
+	if !h.quit || !h.hasDraft() {
+		t.Fatalf("q at the offer: quit=%t draft kept=%t", h.quit, h.hasDraft())
+	}
+	h.open(artifact.NoteKind)
+	h.key("d")
+	if h.m.stage != stageNote || h.m.bodyInput.Value() != "" || h.hasDraft() {
+		t.Fatalf("discard: stage=%d body=%q draft=%t", h.m.stage, h.m.bodyInput.Value(), h.hasDraft())
+	}
+}
+
+func TestRecoveryWarnsWhenFileChangedAfterDraft(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, artifact.NoteKind)
+	h.m.bodyInput.SetValue("draft")
+	h.run(h.m.saveNoteRecovery(h.m.autosaveSession))
+	if _, err := h.notes.Update(ctx, h.path, "changed elsewhere"); err != nil {
+		t.Fatal(err)
+	}
+	h.open(artifact.NoteKind)
+	h.key("r")
+	if !strings.Contains(h.m.status, "saving will report a conflict") {
+		t.Fatalf("status = %q", h.m.status)
+	}
+}
+
+func TestClosingNormallyDeletesDraft(t *testing.T) {
+	h := newHarness(t, artifact.NoteKind)
+	h.typeText("unsaved")
+	h.run(h.m.saveNoteRecovery(h.m.autosaveSession))
+	if !h.hasDraft() {
+		t.Fatal("autosave wrote no draft")
+	}
+	h.key("esc")
+	h.key("esc")
+	if !h.quit || h.hasDraft() {
+		t.Fatalf("close: quit=%t draft remains=%t", h.quit, h.hasDraft())
+	}
+}
+
+func TestKindPromptCreatesSpreadsheetAndPresentation(t *testing.T) {
+	h := newHarness(t, "")
+	if view := h.m.View(); !strings.Contains(view, "s  Spreadsheet") || !strings.Contains(view, "p  Presentation") {
+		t.Fatalf("kind prompt = %q", view)
+	}
+	h.key("s")
+	if h.m.stage != stageSpreadsheet || !strings.Contains(h.m.View(), "A1") {
+		t.Fatalf("stage = %d, error = %q, view:\n%s", h.m.stage, h.m.errMessage, h.m.View())
+	}
+	if book, err := h.sheets.Get(context.Background(), h.path); err != nil || len(book.Sheets) != 1 {
+		t.Fatalf("created spreadsheet = %+v, %v", book, err)
+	}
+	h.key("q")
+	if !h.quit {
+		t.Fatal("q did not quit the spreadsheet")
+	}
+
+	h = newHarness(t, "")
+	h.key("p")
+	if h.m.stage != stagePresentation || !strings.Contains(h.m.View(), "report") {
+		t.Fatalf("stage = %d, error = %q, view:\n%s", h.m.stage, h.m.errMessage, h.m.View())
+	}
+	deck, err := h.decks.Get(context.Background(), h.path)
+	if err != nil || !strings.HasPrefix(deck.Source, "# report") {
+		t.Fatalf("created presentation = %+v, %v", deck, err)
+	}
+}
+
+func TestPlainMarkdownOpensAsNoteAndStaysPlain(t *testing.T) {
+	h := newHarness(t, "")
+	if err := os.WriteFile(h.path, []byte("# Plain\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.open(artifact.NoteKind)
+	if h.m.stage != stageNote || h.m.bodyInput.Value() != "# Plain\n" {
+		t.Fatalf("stage = %d, body = %q, error = %q", h.m.stage, h.m.bodyInput.Value(), h.m.errMessage)
+	}
+	h.typeText("more")
+	h.key("ctrl+s")
+	data, err := os.ReadFile(h.path)
+	if err != nil || strings.Contains(string(data), "parchment-meta") || !strings.Contains(string(data), "more") {
+		t.Fatalf("saved plain Markdown = %q, %v", data, err)
+	}
+}
+
+func TestNoteClickPositionsBodyCursor(t *testing.T) {
+	h := newHarness(t, artifact.NoteKind)
+	h.m.bodyInput.SetValue("alpha\nbravo")
+	h.send(tea.MouseMsg{X: 2, Y: 4, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	h.m.bodyInput.InsertString("!")
+	if h.m.bodyInput.Value() != "alpha\nbr!avo" {
+		t.Fatalf("note click positioned cursor at %q", h.m.bodyInput.Value())
+	}
+	h.send(tea.MouseMsg{X: 1, Y: 0, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	h.m.bodyInput.InsertString("?")
+	if h.m.bodyInput.Value() != "alpha\nbr!?avo" {
+		t.Fatalf("header click moved note cursor: %q", h.m.bodyInput.Value())
+	}
+}
+
+func TestDocumentClickPositionsBodyCursor(t *testing.T) {
+	h := newHarness(t, artifact.DocumentKind)
+	s := h.m.documents
+	s.body.SetValue("alpha\nbravo")
+	y := toolbarTop + s.toolbarRows() + 1
+	h.send(tea.MouseMsg{X: 2, Y: y + 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	s.body.InsertString("!")
+	if s.body.Value() != "alpha\nbr!avo" {
+		t.Fatalf("document click positioned cursor at %q", s.body.Value())
+	}
+	h.send(tea.MouseMsg{X: 1, Y: 0, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	s.body.InsertString("?")
+	if s.body.Value() != "alpha\nbr!?avo" {
+		t.Fatalf("header click moved document cursor: %q", s.body.Value())
+	}
+}
+
+func TestRevertingNoteEditsRemovesAutosavedDraft(t *testing.T) {
+	h := newHarness(t, "")
+	if _, err := h.notes.Create(context.Background(), h.path, "Saved"); err != nil {
+		t.Fatal(err)
+	}
+	h.open(artifact.NoteKind)
+	h.m.bodyInput.SetValue("Unsaved")
+	h.run(h.m.saveNoteRecovery(h.m.autosaveSession))
+	if !h.hasDraft() {
+		t.Fatal("autosave wrote no draft")
+	}
+	h.m.bodyInput.SetValue("Saved")
+	h.run(h.m.saveNoteRecovery(h.m.autosaveSession))
+	if h.hasDraft() || h.m.draftStored {
+		t.Fatalf("reverted editor kept its draft (draftStored=%t)", h.m.draftStored)
 	}
 }

@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
-	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -50,8 +50,6 @@ type fileContent struct {
 
 // Repository persists presentations as single-file artifacts.
 type Repository interface {
-	ArtifactLocation(string) string
-	ListPresentations(context.Context) ([]Presentation, error)
 	GetPresentation(context.Context, string) (Presentation, error)
 	TransitionPresentation(context.Context, string, *Presentation, *Presentation) error
 }
@@ -70,35 +68,22 @@ func NewService(repository Repository, undoLimit int) *Service {
 	}
 }
 
-func (s *Service) List(ctx context.Context) ([]Presentation, error) {
-	items, err := s.repository.ListPresentations(ctx)
-	if err != nil {
-		return nil, err
-	}
-	sort.SliceStable(items, func(i, j int) bool {
-		return items[i].ModifiedAt.After(items[j].ModifiedAt)
-	})
-	return items, nil
+// Get loads the presentation stored at path.
+func (s *Service) Get(ctx context.Context, path string) (Presentation, error) {
+	return s.repository.GetPresentation(ctx, path)
 }
 
-func (s *Service) Get(ctx context.Context, id string) (Presentation, error) {
-	return s.repository.GetPresentation(ctx, id)
-}
-
-func (s *Service) Create(ctx context.Context, title, source string) (Presentation, error) {
-	title = strings.TrimSpace(title)
-	if title == "" {
-		return Presentation{}, errors.New("presentation title is required")
-	}
+// Create writes a new presentation file at path. Creation is not undoable.
+func (s *Service) Create(ctx context.Context, path, source string) (Presentation, error) {
 	if strings.TrimSpace(source) == "" {
+		title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		if strings.TrimSpace(title) == "" {
+			title = "Presentation"
+		}
 		source = "# " + title + "\n\n## Slide 1\n\n"
 	}
-	deck, err := Parse(source)
-	if err != nil {
+	if _, err := Parse(source); err != nil {
 		return Presentation{}, err
-	}
-	if deck.Title != title {
-		return Presentation{}, fmt.Errorf("Markdown title %q does not match presentation title %q", deck.Title, title)
 	}
 	id, err := artifact.NewID(artifact.PresentationKind)
 	if err != nil {
@@ -107,25 +92,24 @@ func (s *Service) Create(ctx context.Context, title, source string) (Presentatio
 	now := s.now().UTC()
 	item := Presentation{
 		Artifact: artifact.Artifact{
-			ID: id, Kind: artifact.PresentationKind, Title: title,
+			ID: id, Kind: artifact.PresentationKind,
 			CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
-			Location: s.repository.ArtifactLocation(id),
+			Path: path,
 		},
 		Version: FileVersion, Source: source,
 	}
 	if err := Validate(item); err != nil {
 		return Presentation{}, err
 	}
-	if err := s.change(ctx, nil, &item, "Create presentation"); err != nil {
+	if err := s.repository.TransitionPresentation(ctx, path, nil, &item); err != nil {
 		return Presentation{}, err
 	}
-	return clonePresentation(item), nil
+	return s.repository.GetPresentation(ctx, path)
 }
 
 // Update replaces the presentation source if expected still matches storage.
 func (s *Service) Update(ctx context.Context, expected Presentation, source string) (Presentation, error) {
-	_, err := Parse(source)
-	if err != nil {
+	if _, err := Parse(source); err != nil {
 		return Presentation{}, err
 	}
 	if expected.Source == source {
@@ -141,14 +125,6 @@ func (s *Service) Update(ctx context.Context, expected Presentation, source stri
 		return Presentation{}, err
 	}
 	return clonePresentation(after), nil
-}
-
-func (s *Service) Delete(ctx context.Context, id string) error {
-	before, err := s.repository.GetPresentation(ctx, id)
-	if err != nil {
-		return err
-	}
-	return s.change(ctx, &before, nil, "Delete presentation")
 }
 
 func (s *Service) Undo(ctx context.Context) (string, error) { return s.history.Undo(ctx) }
@@ -436,10 +412,7 @@ func Validate(item Presentation) error {
 		return errors.New("presentation source must be valid UTF-8")
 	}
 	_, err := Parse(item.Source)
-	if err != nil {
-		return err
-	}
-	return nil
+	return err
 }
 
 // Encode writes a self-contained Markdown file with a leading metadata block.
@@ -576,13 +549,8 @@ func (o presentationOperation) Undo(ctx context.Context) error {
 }
 func (o presentationOperation) Description() string { return o.description }
 func (o presentationOperation) transition(ctx context.Context, expected, target *Presentation) error {
-	id := ""
-	if o.before != nil {
-		id = o.before.ID
-	} else if o.after != nil {
-		id = o.after.ID
-	} else {
-		return errors.New("presentation operation has no artifact")
+	if o.before == nil || o.after == nil {
+		return errors.New("presentation operation must have a before and after value")
 	}
-	return o.repository.TransitionPresentation(ctx, id, expected, target)
+	return o.repository.TransitionPresentation(ctx, o.before.Path, expected, target)
 }

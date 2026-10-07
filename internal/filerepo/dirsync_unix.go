@@ -1,6 +1,6 @@
-//go:build !(aix || android || darwin || dragonfly || freebsd || illumos || ios || linux || netbsd || openbsd || solaris) && !windows
+//go:build aix || android || darwin || dragonfly || freebsd || illumos || ios || linux || netbsd || openbsd || solaris
 
-package workspace
+package filerepo
 
 import "os"
 

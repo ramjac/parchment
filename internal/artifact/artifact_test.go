@@ -75,7 +75,7 @@ func TestArtifactValidationRequiresIDPrefixForKind(t *testing.T) {
 			a := Artifact{
 				ID: test.id, Kind: test.kind, Title: "Example",
 				CreatedAt: now, ModifiedAt: now,
-				FormatVersion: FormatVersion, Location: "parchment/artifacts/" + test.id + "/content.md",
+				FormatVersion: FormatVersion,
 			}
 			err := a.Validate()
 			if (err == nil) != test.ok {
