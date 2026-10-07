@@ -198,19 +198,29 @@ type documentsScreen struct {
 	autosaveScheduler func(uint64) tea.Cmd
 
 	// Editor state.
-	snapshot       document.Document
-	body           textarea.Model
-	layout         document.Layout
-	images         []document.Image
-	original       editorDraft
-	focus          editorFocus
-	toolbarIndex   int
-	prompt         promptKind
-	promptInput    textinput.Model
-	previewing     bool
-	editPages      []document.Page
-	editPage       int
+	snapshot     document.Document
+	body         textarea.Model
+	layout       document.Layout
+	images       []document.Image
+	original     editorDraft
+	focus        editorFocus
+	toolbarIndex int
+	prompt       promptKind
+	promptInput  textinput.Model
+	previewing   bool
+	editPages    []document.Page
+	editPage     int
+	// editPageLine is the first page line shown by the print preview.
+	editPageLine   int
 	discardWarning bool
+
+	// Reader state. reading reports that the reader, not the editor, is
+	// shown.
+	reading     bool
+	reader      viewport.Model
+	readerPages []document.Page
+	readerPage  int
+	outline     []document.Section
 }
 
 type editorDraft struct {
@@ -229,7 +239,7 @@ func newDocumentsScreen(service *document.Service, path string, t theme, newCont
 	prompt.CharLimit = document.MaxRunningTextLength * 2
 	return &documentsScreen{
 		service: service, path: path, theme: t, body: body, promptInput: prompt,
-		changeReview: viewport.New(0, 0), newOperationContext: newContext,
+		changeReview: viewport.New(0, 0), reader: viewport.New(0, 0), newOperationContext: newContext,
 		canUndo: service.CanUndo(), canRedo: service.CanRedo(), layout: document.DefaultLayout(),
 	}
 }
@@ -238,6 +248,18 @@ func (s *documentsScreen) resize(width, height int) {
 	s.width, s.height = width, height
 	s.resizeChangeReview()
 	s.layoutEditor()
+	if s.reading {
+		s.resizeReader()
+	}
+}
+
+// resumeAutosave restarts autosave when the editor is open.
+func (s *documentsScreen) resumeAutosave() tea.Cmd {
+	if s.reading {
+		return nil
+	}
+	s.startDocumentAutosaveSession()
+	return s.scheduleDocumentAutosave(s.autosaveSession)
 }
 
 func (s *documentsScreen) update(message tea.Msg) tea.Cmd {
@@ -275,24 +297,21 @@ func (s *documentsScreen) update(message tea.Msg) tea.Cmd {
 			} else {
 				s.errMessage = msg.err.Error()
 			}
-			s.startDocumentAutosaveSession()
-			return s.scheduleDocumentAutosave(s.autosaveSession)
+			return s.resumeAutosave()
 		}
 		s.loadDocument(msg.document)
 		s.errMessage, s.status = "", "Saved “"+msg.document.Title+"”"
 		if msg.cleanupErr != nil {
 			s.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
 		}
-		s.startDocumentAutosaveSession()
-		return s.scheduleDocumentAutosave(s.autosaveSession)
+		return s.resumeAutosave()
 	case documentReloadedMsg:
 		s.finishOperation()
 		s.pending = false
 		s.refreshHistory()
 		if msg.err != nil {
 			s.errMessage = msg.err.Error()
-			s.startDocumentAutosaveSession()
-			return s.scheduleDocumentAutosave(s.autosaveSession)
+			return s.resumeAutosave()
 		}
 		if !s.dirty() || msg.showChanges {
 			// The proposal recorded the edits, so the editor returns to the
@@ -300,6 +319,9 @@ func (s *documentsScreen) update(message tea.Msg) tea.Cmd {
 			s.loadDocument(msg.document)
 		} else {
 			s.snapshot = msg.document
+		}
+		if s.reading {
+			s.refreshReader()
 		}
 		s.changes = msg.changes
 		s.selectedChange = max(min(s.selectedChange, len(s.changes)-1), 0)
@@ -313,8 +335,7 @@ func (s *documentsScreen) update(message tea.Msg) tea.Cmd {
 		if msg.cleanupErr != nil {
 			s.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
 		}
-		s.startDocumentAutosaveSession()
-		return s.scheduleDocumentAutosave(s.autosaveSession)
+		return s.resumeAutosave()
 	case documentChangesLoadedMsg:
 		s.finishOperation()
 		s.pending = false
@@ -349,6 +370,10 @@ func (s *documentsScreen) update(message tea.Msg) tea.Cmd {
 		s.layoutEditor()
 		return cmd
 	case tea.MouseMsg:
+		if s.reading && !s.pending && !s.showChanges {
+			s.updateReaderMouse(msg)
+			return nil
+		}
 		cmd := s.updateMouse(msg)
 		s.layoutEditor()
 		return cmd
@@ -379,6 +404,9 @@ func (s *documentsScreen) updateKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	if s.showChanges {
 		return s.updateChangesKey(msg)
+	}
+	if s.reading {
+		return s.updateReaderKey(msg)
 	}
 	return s.updateEditorKey(msg)
 }
@@ -447,8 +475,11 @@ func (s *documentsScreen) updateChangesKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	switch key {
-	case "esc", "left", "f4":
+	case "esc", "left", "f4", "v":
 		s.showChanges = false
+		if s.reading {
+			return nil
+		}
 		return s.focusBody()
 	case "up", "k":
 		if s.selectedChange > 0 {
@@ -568,6 +599,9 @@ func (s *documentsScreen) view(header string) string {
 	if s.showChanges {
 		return s.viewChanges(header)
 	}
+	if s.reading {
+		return s.readerView(header)
+	}
 	return s.editorView(header)
 }
 
@@ -600,7 +634,11 @@ func (s *documentsScreen) viewChanges(header string) string {
 			}
 			fmt.Fprintf(&b, "%s%s  %s  %s\n", marker, change.Status, change.ID, sanitizeTerminalLine(change.Description))
 		}
-		b.WriteString("\n↑/↓ select  Enter review  ·  Esc returns to the editor")
+		back := "the editor"
+		if s.reading {
+			back = "the reader"
+		}
+		b.WriteString("\n↑/↓ select  Enter review  ·  Esc returns to " + back)
 	}
 	return b.String() + s.statusLine()
 }

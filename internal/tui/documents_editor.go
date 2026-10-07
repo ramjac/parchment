@@ -188,14 +188,19 @@ func (s *documentsScreen) close() tea.Cmd {
 	return closeEditor(s.recoveryStore, s.path)
 }
 
-// requestClose quits, first asking for confirmation when edits are unsaved.
+// requestClose leaves the editor for the reader, first asking for
+// confirmation when edits are unsaved.
 func (s *documentsScreen) requestClose(again string) tea.Cmd {
 	if s.dirty() && !s.discardWarning {
 		s.discardWarning = true
-		s.status = "Unsaved changes: Ctrl+S saves, " + again + " again discards and quits"
+		s.status = "Unsaved changes: Ctrl+S saves, " + again + " again discards them"
 		return nil
 	}
-	return s.close()
+	status := ""
+	if s.dirty() {
+		status = "Discarded unsaved changes"
+	}
+	return s.leaveEditor(status)
 }
 
 // restoreRecovery opens the editor with an autosaved draft, keeping the saved
@@ -330,10 +335,19 @@ func (s *documentsScreen) updateEditorKey(msg tea.KeyMsg) tea.Cmd {
 		case "esc", "f5", "q":
 			s.previewing = false
 		case "right", "pgdown", "n", "]":
-			s.editPage = min(s.editPage+1, len(s.editPages)-1)
+			s.editPage, s.editPageLine = min(s.editPage+1, len(s.editPages)-1), 0
 		case "left", "pgup", "p", "[":
-			s.editPage = max(s.editPage-1, 0)
+			s.editPage, s.editPageLine = max(s.editPage-1, 0), 0
+		case "down", "j":
+			s.editPageLine++
+		case "up", "k":
+			s.editPageLine--
+		case "home", "g":
+			s.editPageLine = 0
+		case "end", "G":
+			s.editPageLine = len(s.previewPage().Lines)
 		}
+		s.clampPreviewLine()
 		return nil
 	}
 	if key != "esc" && key != "ctrl+c" {
@@ -407,6 +421,16 @@ func (s *documentsScreen) updateToolbarKey(key string) tea.Cmd {
 }
 
 func (s *documentsScreen) updateMouse(msg tea.MouseMsg) tea.Cmd {
+	if s.previewing && msg.Action == tea.MouseActionPress {
+		switch msg.Button {
+		case tea.MouseButtonWheelDown:
+			s.editPageLine += 3
+		case tea.MouseButtonWheelUp:
+			s.editPageLine -= 3
+		}
+		s.clampPreviewLine()
+		return nil
+	}
 	if s.pending || s.showChanges || s.prompt != promptNone || s.previewing {
 		return nil
 	}
@@ -482,7 +506,25 @@ func (s *documentsScreen) openPreview() {
 		return
 	}
 	s.errMessage = ""
-	s.editPages, s.editPage, s.previewing = pages, 0, true
+	s.editPages, s.editPage, s.editPageLine, s.previewing = pages, 0, 0, true
+}
+
+func (s *documentsScreen) previewPage() document.Page {
+	if s.editPage < 0 || s.editPage >= len(s.editPages) {
+		return document.Page{}
+	}
+	return s.editPages[s.editPage]
+}
+
+// previewRows is the number of page lines that fit below the one-line
+// application header and the preview's title line.
+func (s *documentsScreen) previewRows() int {
+	return max(s.height-2, 1)
+}
+
+func (s *documentsScreen) clampPreviewLine() {
+	last := max(len(s.previewPage().Lines)-s.previewRows(), 0)
+	s.editPageLine = min(max(s.editPageLine, 0), last)
 }
 
 // act runs one toolbar action. Layout changes modify editor state only; they
@@ -691,14 +733,22 @@ func (s *documentsScreen) editorView(header string) string {
 	if s.dirty() {
 		state += " • unsaved"
 	}
-	state += "  ·  Tab switches Body/Toolbar  ·  F2 toolbar  ·  Ctrl+S saves  ·  F3 proposes  ·  F4 changes  ·  Esc quits"
+	state += "  ·  Tab switches Body/Toolbar  ·  F2 toolbar  ·  Ctrl+S saves  ·  F3 proposes  ·  F4 changes  ·  Esc returns to the reader"
 	if s.previewing {
-		page := ""
-		if len(s.editPages) > 0 {
-			page = pageText(s.editPages[s.editPage], max(s.width, 1))
+		// A printed page is usually taller than the terminal. Show only the
+		// lines that fit; an over-tall view would be clipped from the top,
+		// leaving only the page's blank bottom margin visible.
+		page := s.previewPage()
+		rows := s.previewRows()
+		first := min(max(s.editPageLine, 0), max(len(page.Lines)-rows, 0))
+		last := min(first+rows, len(page.Lines))
+		visible := document.Page{Lines: page.Lines[first:last]}
+		position := fmt.Sprintf("page %d/%d", s.editPage+1, len(s.editPages))
+		if len(page.Lines) > rows {
+			position += fmt.Sprintf(", lines %d–%d of %d", first+1, last, len(page.Lines))
 		}
-		return header + "\nPrint preview  ·  page " + fmt.Sprintf("%d/%d", s.editPage+1, len(s.editPages)) +
-			"  ·  ←/→ pages  ·  Esc returns\n" + page
+		title := runewidth.Truncate("Print preview  ·  "+position+"  ·  ↑/↓ scroll  ·  ←/→ pages  ·  Esc returns", max(s.width, 1), "…")
+		return header + "\n" + title + "\n" + pageText(visible, max(s.width, 1))
 	}
 	body := s.body
 	sanitizeTextareaView(&body)

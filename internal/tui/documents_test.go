@@ -32,6 +32,15 @@ func newDocumentHarness(t *testing.T, draft document.Draft) *harness {
 	if h.m.stage != stageDocument {
 		t.Fatalf("stage = %d, error = %q", h.m.stage, h.m.errMessage)
 	}
+	if draft.Body != "" {
+		if !h.m.documents.reading {
+			t.Fatal("an existing document did not open in the reader")
+		}
+		h.key("e")
+	}
+	if h.m.documents.reading {
+		t.Fatalf("document did not enter the editor: %q", h.m.documents.errMessage)
+	}
 	return h
 }
 
@@ -244,8 +253,12 @@ func TestToolbarMouseClickAndUnsavedEscape(t *testing.T) {
 		t.Fatalf("Esc discarded unsaved layout changes without confirmation: %q", s.status)
 	}
 	h.key("esc")
+	if h.quit || !s.reading {
+		t.Fatal("second Esc did not return to the reader")
+	}
+	h.key("q")
 	if !h.quit {
-		t.Fatal("second Esc did not close the editor")
+		t.Fatal("q did not quit the reader")
 	}
 	if d, _ := h.docs.Get(context.Background(), h.path); d.Layout.Columns != 1 {
 		t.Fatalf("discarded layout was saved: %d columns", d.Layout.Columns)
@@ -332,8 +345,9 @@ func TestEditorRefusesDocumentItCannotPreserve(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.open(artifact.DocumentKind)
-	if h.m.stage != stageFailed || !strings.Contains(h.m.errMessage, "exceeds editor limits") {
-		t.Fatalf("stage = %d, error = %q", h.m.stage, h.m.errMessage)
+	h.key("e")
+	if s := h.m.documents; !s.reading || !strings.Contains(s.errMessage, "exceeds editor limits") {
+		t.Fatalf("reading = %v, error = %q", s.reading, s.errMessage)
 	}
 	if stored, err := h.docs.Get(context.Background(), h.path); err != nil || stored.Body != body {
 		t.Fatalf("stored body changed: %q, %v", stored.Body, err)
@@ -436,5 +450,125 @@ func TestDocumentAutosaveStoresImagesOnceAndSkipsUnchangedState(t *testing.T) {
 	h.key("ctrl+s")
 	if d, err := h.docs.Get(ctx, h.path); err != nil || len(d.Images) != 1 || !strings.HasSuffix(d.Body, "Edited more") {
 		t.Fatalf("saved recovered document = %+v, %v", d, err)
+	}
+}
+
+func TestDocumentPreviewFitsTerminalAndScrolls(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "# Hello\n\nSome text"})
+	h.send(tea.WindowSizeMsg{Width: 90, Height: 24})
+	h.key("f5")
+	s := h.m.documents
+	if !s.previewing || len(s.editPages) == 0 || len(s.editPages[0].Lines) <= 24 {
+		t.Fatalf("preview: previewing=%t pages=%d", s.previewing, len(s.editPages))
+	}
+	view := h.m.View()
+	if lines := strings.Count(view, "\n") + 1; lines > 24 {
+		t.Fatalf("preview view has %d lines for a 24-line terminal", lines)
+	}
+	if !strings.Contains(view, "HELLO") || !strings.Contains(view, "Some text") || !strings.Contains(view, "lines 1–22 of") {
+		t.Fatalf("preview does not show the top of the page:\n%s", view)
+	}
+	h.send(tea.KeyMsg{Type: tea.KeyDown})
+	if !strings.Contains(h.m.View(), "lines 2–23 of") {
+		t.Fatalf("down did not scroll:\n%s", h.m.View())
+	}
+	h.send(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
+	if !strings.Contains(h.m.View(), "lines 5–26 of") {
+		t.Fatalf("wheel did not scroll:\n%s", h.m.View())
+	}
+	h.send(tea.KeyMsg{Type: tea.KeyEnd})
+	total := len(s.editPages[0].Lines)
+	if !strings.Contains(h.m.View(), fmt.Sprintf("lines %d–%d of %d", total-21, total, total)) {
+		t.Fatalf("end did not reach the bottom:\n%s", h.m.View())
+	}
+	h.key("esc")
+	if s.previewing || h.m.stage != stageDocument {
+		t.Fatal("esc did not return to the editor")
+	}
+}
+
+func TestDocumentOpensInReaderWithOutline(t *testing.T) {
+	h := newHarness(t, "")
+	brk := "\n\n" + document.PageBreakMarkup + "\n\n"
+	body := "# Intro\n\nHello." + brk + "# Middle\n\nMore." + brk + "## Detail\n\nEnd."
+	if _, err := h.docs.Create(context.Background(), h.path, document.Draft{Body: body}); err != nil {
+		t.Fatal(err)
+	}
+	h.open(artifact.DocumentKind)
+	s := h.m.documents
+	if h.m.stage != stageDocument || !s.reading {
+		t.Fatalf("stage = %d, reading = %v", h.m.stage, s.reading)
+	}
+	view := h.m.View()
+	for _, want := range []string{"Outline", "› Intro", "Middle", "Detail", "Page 1/", "Hello."} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("reader is missing %q:\n%s", want, view)
+		}
+	}
+	if lines := strings.Count(view, "\n") + 1; lines > h.m.height {
+		t.Fatalf("reader view has %d lines for a %d-line terminal", lines, h.m.height)
+	}
+	if len(s.readerPages) < 3 {
+		t.Fatalf("pages = %d", len(s.readerPages))
+	}
+	h.key("}")
+	if s.readerPage != s.outline[1].Page-1 || !strings.Contains(h.m.View(), "› Middle") {
+		t.Fatalf("} moved to page %d", s.readerPage+1)
+	}
+	h.key("{")
+	if s.readerPage != 0 {
+		t.Fatalf("{ moved to page %d", s.readerPage+1)
+	}
+	h.key("]")
+	if s.readerPage != 1 {
+		t.Fatalf("] moved to page %d", s.readerPage+1)
+	}
+	h.key("[")
+	h.key("[")
+	if s.readerPage != len(s.readerPages)-1 {
+		t.Fatalf("[ did not wrap to the last page: %d", s.readerPage+1)
+	}
+	_, targets := s.outlineLines()
+	for row, target := range targets {
+		if target == 1 {
+			h.send(tea.MouseMsg{X: 3, Y: row + 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+		}
+	}
+	if s.readerPage != s.outline[1].Page-1 {
+		t.Fatalf("clicking the outline moved to page %d", s.readerPage+1)
+	}
+
+	h.key("e")
+	if s.reading || !strings.Contains(h.m.View(), "Editing document") {
+		t.Fatal("e did not open the editor")
+	}
+	h.key("esc")
+	if !s.reading || h.quit {
+		t.Fatal("Esc in a clean editor did not return to the reader")
+	}
+	h.key("q")
+	if !h.quit {
+		t.Fatal("q did not quit the reader")
+	}
+}
+
+func TestDocumentReaderShowsSavedEditsAndDiscardsDraft(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "# Start\n\nText."})
+	s := h.m.documents
+	h.typeText("New ")
+	h.key("ctrl+s")
+	h.key("esc")
+	if !s.reading || !strings.Contains(h.m.View(), "New") {
+		t.Fatalf("reader does not show the saved edit:\n%s", h.m.View())
+	}
+	h.key("e")
+	h.typeText("Unsaved ")
+	h.key("esc")
+	h.key("esc")
+	if !s.reading || strings.Contains(h.m.View(), "Unsaved") || !strings.Contains(s.status, "Discarded") {
+		t.Fatalf("discarding did not return to the saved reader: %q\n%s", s.status, h.m.View())
+	}
+	if h.hasDraft() {
+		t.Fatal("leaving the editor kept the recovery draft")
 	}
 }

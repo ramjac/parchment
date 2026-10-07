@@ -223,13 +223,22 @@ open. Very small terminals show a minimum-size message; `q` then quits only
 when there are no unsaved changes. Preview is plain text rather than rendered
 Markdown, so canonical Markdown is never confused with presentation.
 
+An existing document opens in a reader: an outline of its headings sits beside
+the rendered printed pages (only the pages on narrow terminals). `↑`/`↓` scroll
+and continue onto the neighbouring page, `←`/`→` or `[`/`]` change pages,
+`{`/`}` move between sections, clicking an outline entry jumps to it, `v`
+lists proposals, `u`/`Ctrl+R` undo and redo, and `q` quits. Press `e` to edit;
+`Esc` in the editor returns to the reader, asking first when there are unsaved
+changes. New documents and restored drafts open directly in the editor.
+
 Spreadsheets open as a grid: use arrow keys to select a cell, `Enter` to edit,
 `=` to enter a formula, and `u`/`Ctrl+R` for undo/redo. Presentations open as
 slides with an editable Markdown source. Press `q` to quit either editor.
 
 While editing a note or document, Parchment autosaves recovery drafts every couple of seconds to
 `~/.parchment/recovery/`, never next to the artifact. Saving, proposing, or
-closing the editor normally removes the draft. If Parchment exits
+closing the editor normally (for a document, returning to its reader) removes
+the draft. If Parchment exits
 unexpectedly, reopening the same file offers the draft: `r`
 recovers it into the editor, `d` discards it, and `q` quits and keeps it for
 later. If the file changed after the draft was written, saving the recovered

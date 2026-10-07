@@ -156,6 +156,11 @@ does not record the file's path; the path is wherever the file is.
   offered when the same path is reopened. Spreadsheet and presentation editors
   do not autosave drafts yet. Document proposals are an editor action (`F3`
   proposes unsaved edits, `F4` reviews proposals), not a separate mode.
+- Documents, spreadsheets, and presentations may open in their reader views;
+  notes open directly in their editor. An existing document opens in its
+  reader (outline pane beside the rendered pages); a newly created document or
+  a restored recovery draft opens in the editor. Leaving the document editor
+  returns to the reader. Do not remove reader views when changing editors.
 - Keep undo operations meaningful and bounded; record only successful
   operations, clear redo after a new operation, and do not persist history
   unless persistence is implemented and tested. The current history is

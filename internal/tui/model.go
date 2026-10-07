@@ -377,13 +377,19 @@ func (m *Model) enterEditor() tea.Cmd {
 		_, cmd := m.deck.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		return cmd
 	case artifact.DocumentKind:
+		// Existing documents open in the reader; new ones start in the editor.
+		m.stage = stageDocument
+		if !m.opened.created {
+			m.documents.startReading(m.opened.document)
+			m.documents.status = m.status
+			return nil
+		}
 		cmd, ok := m.documents.startEdit(m.opened.document)
 		if !ok {
 			m.stage, m.errMessage = stageFailed, m.documents.errMessage
 			return nil
 		}
 		m.documents.status = m.status
-		m.stage = stageDocument
 		return cmd
 	}
 	return nil
