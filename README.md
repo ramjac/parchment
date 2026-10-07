@@ -242,6 +242,14 @@ a simpler layout and a minimum-size message; quit remains available. Preview is
 plain text rather than rendered Markdown, so canonical Markdown is never
 confused with presentation.
 
+While editing notes or documents, Parchment saves recovery snapshots every
+couple of seconds. If the application exits unexpectedly, the next TUI launch
+offers those drafts before opening the workspace. Use `↑`/`↓` to choose a
+draft, `r` to recover it, `d` to discard it, or `Esc` to postpone recovery;
+press `F6` from the notes screen to review postponed drafts. Recovery files
+are stored separately under `.parchment/recovery/` and removed when the draft
+is saved or explicitly discarded.
+
 Undo and redo cover note creation, edits, title changes, tag changes, and
 deletion. The bounded history is in memory for the current process and does
 not survive a restart.
@@ -252,7 +260,6 @@ This repository currently implements notes, documents, basic spreadsheets,
 and basic Markdown presentations.
 The broader suite is planned to add:
 
-- Background auto-save and recovery from auto-save so that in the event Parchment crashes or is force closed, any changes since the last save can be optionally recovered.
 - Read and work with plain Markdown files that lack Parchment metadata, without
   adding `parchment-meta` or other `parchment-*` blocks to them. Provide an
   explicit, opt-in "convert to Parchment artifact" operation; only that

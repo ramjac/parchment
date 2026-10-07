@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -183,6 +184,7 @@ func TestEditRefusesNotesThatEditorWouldNormalize(t *testing.T) {
 		{name: "oversized body", title: "Title", body: strings.Repeat("x", 1_000_001)},
 		{name: "too many body lines", title: "Title", body: strings.Repeat("x\n", 10_000) + "last"},
 	}
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ws := openTestWorkspace(t)
@@ -205,6 +207,58 @@ func TestEditRefusesNotesThatEditorWouldNormalize(t *testing.T) {
 				t.Fatal("test note was representable and should have entered the editor")
 			}
 		})
+	}
+}
+
+func TestNoteAutosaveCanBeRecovered(t *testing.T) {
+	ws := openTestWorkspace(t)
+	service := note.NewService(ws, 10)
+	created, err := service.Create(context.Background(), "Original", "Before")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.Blocks = map[string]json.RawMessage{"parchment-extra": json.RawMessage(`{"kept":true}`)}
+	if err := ws.Save(context.Background(), created); err != nil {
+		t.Fatal(err)
+	}
+	created, err = service.Get(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(service, ws, "test", ws.Root())
+	model.pending = false
+	if !model.startEdit(created) {
+		t.Fatalf("failed to start note edit: %s", model.errMessage)
+	}
+	model.titleInput.SetValue("Recovered title")
+	model.titleInput.CursorEnd()
+	model.bodyInput.SetValue("Recovered body")
+	result := model.saveNoteRecovery(model.autosaveSession)().(autosaveFinishedMsg)
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	drafts, err := ws.ListRecovery(context.Background())
+	if err != nil || len(drafts) != 1 {
+		t.Fatalf("recovery drafts = %+v, %v", drafts, err)
+	}
+	model.mode = browsing
+	model.recoveries = drafts
+	model.recoveryDismissed = false
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if cmd == nil {
+		t.Fatal("recover command is nil")
+	}
+	opened := cmd()
+	updated, _ := model.Update(opened)
+	model = *updated.(*Model)
+	if model.mode != editing || model.titleInput.Value() != "Recovered title" || model.bodyInput.Value() != "Recovered body" {
+		t.Fatalf("recovered editor: mode=%d title=%q body=%q", model.mode, model.titleInput.Value(), model.bodyInput.Value())
+	}
+	if model.editingSnapshot.Body != "Before" {
+		t.Fatalf("recovered note snapshot body = %q", model.editingSnapshot.Body)
+	}
+	if string(model.editingSnapshot.Blocks["parchment-extra"]) != `{"kept":true}` {
+		t.Fatalf("recovered note blocks = %+v", model.editingSnapshot.Blocks)
 	}
 }
 

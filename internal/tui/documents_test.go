@@ -20,6 +20,10 @@ import (
 // the model, as the Bubble Tea runtime would.
 func drive(t *testing.T, m *Model, message tea.Msg) {
 	t.Helper()
+	m.autosaveScheduler = nil
+	if m.documents != nil {
+		m.documents.autosaveScheduler = nil
+	}
 	_, cmd := m.Update(message)
 	var run func(tea.Cmd)
 	run = func(c tea.Cmd) {
@@ -62,6 +66,7 @@ func TestDocumentEditorHasToolbarAndSavesLayout(t *testing.T) {
 	if !m.documentsActive {
 		t.Fatal("Tab did not open the documents screen")
 	}
+
 	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	view := m.View()
 	for _, label := range []string{"Save", "Preview", "Bold", "H1", "Page break", "Section", "Cols: 1", "Margins: Normal", "Header", "Footer", "Image"} {
@@ -355,6 +360,7 @@ func TestEditorRefusesDocumentItCannotPreserve(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
 	drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
 	s := m.documents
@@ -364,5 +370,50 @@ func TestEditorRefusesDocumentItCannotPreserve(t *testing.T) {
 	stored, err := docs.Get(context.Background(), created.ID)
 	if err != nil || stored.Title != long {
 		t.Fatalf("stored title changed: %q, %v", stored.Title, err)
+	}
+}
+
+func TestDocumentAutosaveCanBeRecovered(t *testing.T) {
+	m, docs := newDocumentsModel(t)
+	created, err := docs.Create(context.Background(), document.Draft{
+		Title: "Before", Body: "# Before\n\nOriginal",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	screen := m.documents
+	screen.autosaveScheduler = nil
+	screen.startEdit(created)
+	screen.titleInput.SetValue("After")
+	screen.body.SetValue("# After\n\nRecovered")
+	screen.layout.Columns = 2
+	result := screen.saveDocumentRecovery(screen.autosaveSession)().(documentAutosaveFinishedMsg)
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	drafts, err := m.recoveryStore.ListRecovery(context.Background())
+	if err != nil || len(drafts) != 1 {
+		t.Fatalf("recovery drafts = %+v, %v", drafts, err)
+	}
+
+	reopened := NewModel(m.service, m.repository, "test", m.workspacePath, WithDocuments(docs))
+	reopened.pending = false
+	reopened.recoveries = drafts
+	_, cmd := reopened.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if cmd == nil {
+		t.Fatal("recover command is nil")
+	}
+	updated, _ := reopened.Update(cmd())
+	reopened = *updated.(*Model)
+	if !reopened.documentsActive || reopened.documents.mode != documentEditing ||
+		reopened.documents.titleInput.Value() != "After" ||
+		reopened.documents.body.Value() != "# After\n\nRecovered" ||
+		reopened.documents.layout.Columns != 2 {
+		t.Fatalf("recovered document editor state: active=%t mode=%d title=%q body=%q columns=%d",
+			reopened.documentsActive, reopened.documents.mode, reopened.documents.titleInput.Value(),
+			reopened.documents.body.Value(), reopened.documents.layout.Columns)
+	}
+	if reopened.documents.snapshot.Body != created.Body {
+		t.Fatalf("recovered document snapshot body = %q, want %q", reopened.documents.snapshot.Body, created.Body)
 	}
 }

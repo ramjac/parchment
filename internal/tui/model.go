@@ -2,9 +2,11 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -16,6 +18,7 @@ import (
 	"example.com/parchment/internal/artifactfile"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/note"
+	"example.com/parchment/internal/recovery"
 	"example.com/parchment/internal/search"
 )
 
@@ -38,8 +41,9 @@ type searchCompletedMsg struct {
 }
 
 type noteSavedMsg struct {
-	note note.Note
-	err  error
+	note       note.Note
+	err        error
+	cleanupErr error
 }
 
 type noteDeletedMsg struct{ err error }
@@ -47,6 +51,36 @@ type historyChangedMsg struct {
 	description string
 	err         error
 }
+
+type recoveriesLoadedMsg struct {
+	drafts []recovery.Draft
+	err    error
+}
+type recoveryDeletedMsg struct {
+	id         string
+	err        error
+	showStatus bool
+}
+type recoveryOpenedMsg struct {
+	draft recovery.Draft
+	data  noteRecoveryData
+	err   error
+}
+type autosaveTickMsg struct{ session uint64 }
+type autosaveFinishedMsg struct {
+	session uint64
+	err     error
+}
+
+type noteRecoveryData struct {
+	Snapshot       note.Note                  `json:"snapshot"`
+	SnapshotBody   string                     `json:"snapshot_body"`
+	SnapshotBlocks map[string]json.RawMessage `json:"snapshot_blocks,omitempty"`
+	Title          string                     `json:"title"`
+	Body           string                     `json:"body"`
+}
+
+const autosaveInterval = 2 * time.Second
 
 type theme struct {
 	primary lipgloss.AdaptiveColor
@@ -87,6 +121,15 @@ type Model struct {
 	cancelOperation     context.CancelFunc
 	documents           *documentsScreen
 	documentsActive     bool
+	recoveryStore       recovery.Store
+	recoveries          []recovery.Draft
+	recoverySelected    int
+	recoveryLoading     bool
+	recoveryDismissed   bool
+	autosaveSession     uint64
+	autosaveID          string
+	autosaveCancel      context.CancelFunc
+	autosaveScheduler   func(uint64) tea.Cmd
 }
 
 // Option customizes the interactive model.
@@ -96,6 +139,12 @@ type Option func(*Model)
 func WithDocuments(service *document.Service) Option {
 	return func(m *Model) {
 		m.documents = newDocumentsScreen(service, m.theme, m.newOperationContext)
+		m.documents.recoveryStore = m.recoveryStore
+		m.documents.autosaveScheduler = func(session uint64) tea.Cmd {
+			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
+				return documentAutosaveTickMsg{session: session}
+			})
+		}
 	}
 }
 
@@ -126,6 +175,14 @@ func NewModel(service *note.Service, repository note.Repository, workspaceName, 
 			border:  lipgloss.AdaptiveColor{Light: "#b8b4c7", Dark: "#55516a"},
 		},
 	}
+	if store, ok := repository.(recovery.Store); ok {
+		m.recoveryStore = store
+	}
+	m.autosaveScheduler = func(session uint64) tea.Cmd {
+		return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
+			return autosaveTickMsg{session: session}
+		})
+	}
 	for _, option := range options {
 		option(&m)
 	}
@@ -134,17 +191,96 @@ func NewModel(service *note.Service, repository note.Repository, workspaceName, 
 
 // Init loads the initial note list.
 func (m *Model) Init() tea.Cmd {
-	return m.loadNotes()
+	cmds := []tea.Cmd{m.loadNotes()}
+	if m.recoveryStore != nil {
+		m.recoveryLoading = true
+		cmds = append(cmds, m.loadRecoveries())
+	}
+	return tea.Batch(cmds...)
 }
 
 // Update applies a terminal message to the notes screen.
 func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	if recovered, ok := message.(documentRecoveryReadyMsg); ok {
+		m.recoveryLoading = false
+		if recovered.err != nil {
+			m.errMessage = recovered.err.Error()
+			return m, nil
+		}
+		if m.documents == nil {
+			m.errMessage = "Document editor is unavailable for this recovery draft"
+			return m, nil
+		}
+		m.removeRecovery(recovered.draft.ID)
+		m.recoveryDismissed = true
+		m.documentsActive = true
+		cmd := m.documents.restoreRecovery(recovered.draft, recovered.data)
+		return m, cmd
+	}
 	if m.documents != nil {
 		if handled, cmd := m.updateDocuments(message); handled {
 			return m, cmd
 		}
 	}
 	switch msg := message.(type) {
+	case recoveriesLoadedMsg:
+		m.recoveryLoading = false
+		if msg.err != nil {
+			m.status = "Autosaved draft check failed: " + msg.err.Error()
+		} else {
+			m.recoveries = msg.drafts
+			m.recoverySelected = 0
+			m.recoveryDismissed = false
+		}
+	case recoveryOpenedMsg:
+		m.recoveryLoading = false
+		if msg.err != nil {
+			m.errMessage = msg.err.Error()
+			return m, nil
+		}
+		m.removeRecovery(msg.draft.ID)
+		m.recoveryDismissed = true
+		m.mode, m.creating = editing, msg.draft.Created
+		m.editingID, m.autosaveID = msg.draft.Artifact, msg.draft.ID
+		m.editingSnapshot = msg.data.Snapshot
+		m.editingSnapshot.Body = msg.data.SnapshotBody
+		m.editingSnapshot.Blocks = cloneRawMessages(msg.data.SnapshotBlocks)
+		m.titleInput.SetValue(msg.data.Title)
+		m.titleInput.CursorEnd()
+		m.bodyInput.SetValue(msg.data.Body)
+		m.originalTitle, m.originalBody = msg.data.Snapshot.Title, msg.data.Snapshot.Body
+		m.titleInput.Focus()
+		m.bodyInput.Blur()
+		m.errMessage, m.status = "", "Recovered unsaved note draft"
+		m.startAutosaveSession()
+		return m, m.scheduleAutosave(m.autosaveSession)
+	case recoveryDeletedMsg:
+		if msg.err != nil {
+			m.errMessage = msg.err.Error()
+		} else {
+			m.removeRecovery(msg.id)
+			m.errMessage = ""
+			if msg.showStatus {
+				m.status = "Autosaved draft discarded"
+			}
+		}
+	case autosaveTickMsg:
+		if msg.session == m.autosaveSession && m.mode == editing && !m.documentsActive {
+			return m, m.saveNoteRecovery(msg.session)
+		}
+	case autosaveFinishedMsg:
+		if msg.session == m.autosaveSession {
+			if m.autosaveCancel != nil {
+				m.autosaveCancel()
+				m.autosaveCancel = nil
+			}
+			if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
+				m.errMessage = "Autosave failed: " + msg.err.Error()
+			}
+			if m.mode == editing && !m.documentsActive {
+				return m, m.scheduleAutosave(msg.session)
+			}
+		}
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.resizeEditors()
@@ -186,13 +322,18 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.errMessage = msg.err.Error()
 			}
 			m.refreshHistoryAvailability()
-			return m, nil
+			m.startAutosaveSession()
+			return m, m.scheduleAutosave(m.autosaveSession)
 		}
 		m.refreshHistoryAvailability()
 		m.mode = browsing
 		m.creating = false
+		m.recoveryDismissed = false
 		m.errMessage = ""
 		m.status = "Saved “" + msg.note.Title + "”"
+		if msg.cleanupErr != nil {
+			m.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
+		}
 		return m, m.loadNotes()
 	case noteDeletedMsg:
 		m.finishOperation()
@@ -248,6 +389,30 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = "Please wait for the current operation to finish"
 		return m, nil
 	}
+	if m.recoveryLoading {
+		m.status = "Checking for autosaved drafts…"
+		return m, nil
+	}
+	if len(m.recoveries) > 0 && !m.recoveryDismissed && m.mode != editing {
+		switch key {
+		case "up", "k":
+			m.recoverySelected = max(0, m.recoverySelected-1)
+		case "down", "j":
+			m.recoverySelected = min(len(m.recoveries)-1, m.recoverySelected+1)
+		case "r":
+			return m, m.openRecovery()
+		case "d":
+			return m, m.deleteRecovery()
+		case "esc":
+			m.recoveryDismissed = true
+			m.status = "Autosaved drafts postponed; press F6 to review"
+		}
+		return m, nil
+	}
+	if key == "f6" && len(m.recoveries) > 0 {
+		m.recoveryDismissed = false
+		return m, nil
+	}
 	if key == "ctrl+c" {
 		if m.mode == editing {
 			if m.dirty() {
@@ -255,7 +420,10 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.mode = browsing
-			return m, nil
+			m.stopAutosave()
+			m.creating = false
+			m.recoveryDismissed = false
+			return m, m.deleteCurrentRecovery()
 		}
 		return m, tea.Quit
 	}
@@ -282,11 +450,14 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.mode == editing {
 		switch key {
 		case "esc":
+			m.stopAutosave()
 			m.mode = browsing
 			m.creating = false
+			m.recoveryDismissed = false
 			m.status = "Edit cancelled"
-			return m, nil
+			return m, m.deleteCurrentRecovery()
 		case "ctrl+s":
+			m.stopAutosave()
 			m.pending = true
 			return m, m.saveNote()
 		case "tab":
@@ -359,14 +530,16 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.searchInput.SetValue("")
 		return m, m.searchInput.Focus()
 	case "n":
-		m.startCreate()
-		return m, m.titleInput.Focus()
+		if m.startCreate() {
+			return m, tea.Batch(m.titleInput.Focus(), m.scheduleAutosave(m.autosaveSession))
+		}
+		return m, nil
 	case "e":
 		if n, ok := m.selectedNote(); ok {
 			if !m.startEdit(n) {
 				return m, nil
 			}
-			return m, m.titleInput.Focus()
+			return m, tea.Batch(m.titleInput.Focus(), m.scheduleAutosave(m.autosaveSession))
 		}
 	case "d":
 		if _, ok := m.selectedNote(); ok {
@@ -415,6 +588,14 @@ func (m Model) View() string {
 	}
 	header := lipgloss.NewStyle().Bold(true).Foreground(m.theme.primary).
 		Render("parchment  ·  " + sanitizeTerminalLine(m.workspaceName) + "  ·  " + sanitizeTerminalLine(m.workspacePath))
+	if m.documentsActive {
+		if !m.recoveryLoading && (len(m.recoveries) == 0 || m.recoveryDismissed) {
+			return m.documents.view(header)
+		}
+	}
+	if m.recoveryLoading || len(m.recoveries) > 0 && !m.recoveryDismissed {
+		return m.recoveryView(header)
+	}
 	if m.documentsActive {
 		return m.documents.view(header)
 	}
@@ -565,9 +746,15 @@ func (m *Model) refreshHistoryAvailability() {
 	m.canRedo = m.service.CanRedo()
 }
 
-func (m *Model) startCreate() {
+func (m *Model) startCreate() bool {
+	id, err := newRecoveryID()
+	if err != nil {
+		m.errMessage = "Start autosave: " + err.Error()
+		return false
+	}
 	m.mode, m.creating = editing, true
 	m.editingID = ""
+	m.autosaveID = id
 	m.editingSnapshot = note.Note{}
 	m.originalTitle, m.originalBody = "", ""
 	m.titleInput.SetValue("")
@@ -575,9 +762,16 @@ func (m *Model) startCreate() {
 	m.titleInput.Focus()
 	m.bodyInput.Blur()
 	m.status, m.errMessage = "", ""
+	m.startAutosaveSession()
+	return true
 }
 
 func (m *Model) startEdit(n note.Note) bool {
+	id, err := newRecoveryID()
+	if err != nil {
+		m.errMessage = "Start autosave: " + err.Error()
+		return false
+	}
 	m.titleInput.SetValue(n.Title)
 	m.bodyInput.SetValue(n.Body)
 	if m.titleInput.Value() != n.Title || m.bodyInput.Value() != n.Body {
@@ -587,28 +781,36 @@ func (m *Model) startEdit(n note.Note) bool {
 	}
 	m.mode, m.creating = editing, false
 	m.editingID = n.ID
+	m.autosaveID = id
 	m.editingSnapshot = n
 	m.originalTitle, m.originalBody = n.Title, n.Body
 	m.titleInput.Focus()
 	m.bodyInput.Blur()
 	m.resizeEditors()
 	m.status, m.errMessage = "", ""
+	m.startAutosaveSession()
 	return true
 }
 
 func (m *Model) saveNote() tea.Cmd {
 	title, body, id, create, expected := strings.TrimSpace(m.titleInput.Value()), m.bodyInput.Value(), m.editingID, m.creating, m.editingSnapshot
+	store, recoveryID := m.recoveryStore, m.autosaveID
+	service := m.service
 	ctx := m.startOperation()
 	return func() tea.Msg {
 		var n note.Note
 		var err error
 		if create {
-			n, err = m.service.Create(ctx, title, body)
+			n, err = service.Create(ctx, title, body)
 		} else {
 			expected.ID = id
-			n, err = m.service.UpdateExpected(ctx, expected, title, body)
+			n, err = service.UpdateExpected(ctx, expected, title, body)
 		}
-		return noteSavedMsg{note: n, err: err}
+		var cleanupErr error
+		if err == nil && store != nil {
+			cleanupErr = store.DeleteRecovery(context.Background(), recoveryID)
+		}
+		return noteSavedMsg{note: n, err: err, cleanupErr: cleanupErr}
 	}
 }
 
@@ -782,6 +984,7 @@ func (m *Model) updateDocuments(message tea.Msg) (bool, tea.Cmd) {
 	cmd, leave := m.documents.update(message)
 	if leave && !m.documents.busy() {
 		m.documentsActive = false
+		m.recoveryDismissed = false
 		return true, m.loadNotes()
 	}
 	return true, cmd

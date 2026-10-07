@@ -1,15 +1,19 @@
 package tui
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/document"
+	"example.com/parchment/internal/recovery"
 )
 
 // toolbarButton is one always-visible toolbar control.
@@ -156,7 +160,13 @@ func (s *documentsScreen) toolbarView() string {
 }
 
 func (s *documentsScreen) startCreate() tea.Cmd {
+	id, err := newRecoveryID()
+	if err != nil {
+		s.errMessage = "Start autosave: " + err.Error()
+		return nil
+	}
 	s.creating, s.proposing = true, false
+	s.autosaveID = id
 	s.snapshot = document.Document{}
 	s.layout = document.DefaultLayout()
 	s.images = nil
@@ -175,7 +185,13 @@ func (s *documentsScreen) startEdit(d document.Document) tea.Cmd {
 		s.status = ""
 		return nil
 	}
+	id, err := newRecoveryID()
+	if err != nil {
+		s.errMessage = "Start autosave: " + err.Error()
+		return nil
+	}
 	s.creating, s.proposing = false, false
+	s.autosaveID = id
 	s.snapshot = d
 	s.layout = d.Layout
 	if s.layout == (document.Layout{}) {
@@ -186,6 +202,7 @@ func (s *documentsScreen) startEdit(d document.Document) tea.Cmd {
 }
 
 func (s *documentsScreen) beginEditor(title, body string) tea.Cmd {
+	s.startDocumentAutosaveSession()
 	s.mode = documentEditing
 	s.titleInput.SetValue(title)
 	s.body.SetValue(body)
@@ -195,13 +212,106 @@ func (s *documentsScreen) beginEditor(title, body string) tea.Cmd {
 	s.toolbarIndex = 0
 	s.errMessage, s.status = "", ""
 	s.layoutEditor()
-	return tea.Batch(s.focusTitle(), tea.EnableMouseCellMotion)
+	return tea.Batch(s.focusTitle(), tea.EnableMouseCellMotion, s.scheduleDocumentAutosave(s.autosaveSession))
 }
 
 func (s *documentsScreen) stopEditing(status string) tea.Cmd {
 	s.mode, s.creating, s.proposing, s.prompt, s.previewing, s.discardWarning = documentBrowsing, false, false, promptNone, false, false
 	s.status, s.errMessage = status, ""
-	return tea.DisableMouse
+	s.stopDocumentAutosave()
+	cmds := []tea.Cmd{tea.DisableMouse}
+	if s.recoveryStore != nil && s.autosaveID != "" {
+		store, id := s.recoveryStore, s.autosaveID
+		cmds = append(cmds, func() tea.Msg {
+			return documentRecoveryDeletedMsg{err: store.DeleteRecovery(context.Background(), id)}
+		})
+	}
+	return tea.Batch(cmds...)
+}
+
+func (s *documentsScreen) restoreRecovery(draft recovery.Draft, data documentRecoveryData) tea.Cmd {
+	s.autosaveID = draft.ID
+	s.creating, s.proposing, s.snapshot = draft.Created, draft.Proposal, data.Snapshot
+	s.snapshot.Blocks = cloneRawMessages(data.SnapshotBlocks)
+	s.layout, s.images = data.Draft.Layout, data.Draft.Images
+	if s.creating {
+		s.snapshot = document.Document{}
+	}
+	cmd := s.beginEditor(data.Draft.Title, data.Draft.Body)
+	if s.creating {
+		s.original = editorDraft{}
+	} else {
+		s.original = editorDraft{
+			title: s.snapshot.Title, body: s.snapshot.Body,
+			layout: s.snapshot.Layout, images: imageKey(s.snapshot.Images),
+		}
+	}
+	s.status = "Recovered unsaved document draft"
+	return cmd
+}
+
+func (s *documentsScreen) startDocumentAutosaveSession() {
+	s.autosaveSession++
+	if s.autosaveCancel != nil {
+		s.autosaveCancel()
+		s.autosaveCancel = nil
+	}
+}
+
+func (s *documentsScreen) stopDocumentAutosave() {
+	s.autosaveSession++
+	if s.autosaveCancel != nil {
+		s.autosaveCancel()
+		s.autosaveCancel = nil
+	}
+}
+
+func (s *documentsScreen) scheduleDocumentAutosave(session uint64) tea.Cmd {
+	if s.recoveryStore == nil || s.autosaveScheduler == nil {
+		return nil
+	}
+	return s.autosaveScheduler(session)
+}
+
+func (s *documentsScreen) saveDocumentRecovery(session uint64) tea.Cmd {
+	if s.recoveryStore == nil {
+		return nil
+	}
+	if !s.dirty() {
+		return s.scheduleDocumentAutosave(session)
+	}
+	data := documentRecoveryData{
+		Snapshot: s.snapshot, SnapshotBlocks: cloneRawMessages(s.snapshot.Blocks),
+		Draft: document.Draft{
+			Title: s.titleInput.Value(), Body: s.body.Value(),
+			Layout: s.layout, Images: cloneDocumentImages(s.images),
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.autosaveCancel = cancel
+	store := s.recoveryStore
+	draft := recovery.Draft{
+		ID: s.autosaveID, Kind: "document", Artifact: s.snapshot.ID,
+		Created: s.creating, Proposal: s.proposing, Title: s.titleInput.Value(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	return func() tea.Msg {
+		encoded, err := json.Marshal(data)
+		if err == nil {
+			draft.Data = encoded
+			err = store.SaveRecovery(ctx, draft)
+		}
+		return documentAutosaveFinishedMsg{session: session, err: err}
+	}
+}
+
+func cloneDocumentImages(source []document.Image) []document.Image {
+	images := make([]document.Image, len(source))
+	for i, image := range source {
+		images[i] = image
+		images[i].Data = append([]byte(nil), image.Data...)
+	}
+	return images
 }
 
 func (s *documentsScreen) focusTitle() tea.Cmd {
@@ -349,15 +459,21 @@ func (s *documentsScreen) save() tea.Cmd {
 	if s.pending {
 		return nil
 	}
+	s.stopDocumentAutosave()
 	draft := document.Draft{Title: s.titleInput.Value(), Body: s.body.Value(), Layout: s.layout, Images: s.images}
 	s.pending = true
 	s.errMessage = ""
 	ctx := s.startOperation()
 	service, creating, proposing, snapshot := s.service, s.creating, s.proposing, s.snapshot
+	store, recoveryID := s.recoveryStore, s.autosaveID
 	return func() tea.Msg {
 		if proposing {
 			change, err := service.Propose(ctx, snapshot, "TUI edit", draft)
-			return documentProposedMsg{change: change, err: err}
+			var cleanupErr error
+			if err == nil && store != nil {
+				cleanupErr = store.DeleteRecovery(context.Background(), recoveryID)
+			}
+			return documentProposedMsg{change: change, err: err, cleanupErr: cleanupErr}
 		}
 		var d document.Document
 		var err error
@@ -366,7 +482,11 @@ func (s *documentsScreen) save() tea.Cmd {
 		} else {
 			d, err = service.Save(ctx, snapshot, draft)
 		}
-		return documentSavedMsg{document: d, err: err}
+		var cleanupErr error
+		if err == nil && store != nil {
+			cleanupErr = store.DeleteRecovery(context.Background(), recoveryID)
+		}
+		return documentSavedMsg{document: d, err: err, cleanupErr: cleanupErr}
 	}
 }
 

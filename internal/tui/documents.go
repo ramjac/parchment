@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/document"
+	"example.com/parchment/internal/recovery"
 )
 
 // documentMessage marks results of document operations, which are routed to
@@ -33,8 +35,9 @@ type documentLoadedMsg struct {
 	err      error
 }
 type documentSavedMsg struct {
-	document document.Document
-	err      error
+	document   document.Document
+	err        error
+	cleanupErr error
 }
 type documentDeletedMsg struct{ err error }
 type documentHistoryMsg struct {
@@ -46,8 +49,9 @@ type documentChangesLoadedMsg struct {
 	err     error
 }
 type documentProposedMsg struct {
-	change document.Change
-	err    error
+	change     document.Change
+	err        error
+	cleanupErr error
 }
 type documentChangeUpdatedMsg struct {
 	description string
@@ -58,16 +62,37 @@ type imageLoadedMsg struct {
 	alt   string
 	err   error
 }
+type documentRecoveryReadyMsg struct {
+	draft recovery.Draft
+	data  documentRecoveryData
+	err   error
+}
+type documentAutosaveTickMsg struct{ session uint64 }
+type documentAutosaveFinishedMsg struct {
+	session uint64
+	err     error
+}
+type documentRecoveryDeletedMsg struct{ err error }
 
-func (documentsLoadedMsg) isDocumentMessage()       {}
-func (documentLoadedMsg) isDocumentMessage()        {}
-func (documentSavedMsg) isDocumentMessage()         {}
-func (documentDeletedMsg) isDocumentMessage()       {}
-func (documentHistoryMsg) isDocumentMessage()       {}
-func (documentChangesLoadedMsg) isDocumentMessage() {}
-func (documentProposedMsg) isDocumentMessage()      {}
-func (documentChangeUpdatedMsg) isDocumentMessage() {}
-func (imageLoadedMsg) isDocumentMessage()           {}
+type documentRecoveryData struct {
+	Snapshot       document.Document          `json:"snapshot"`
+	SnapshotBlocks map[string]json.RawMessage `json:"snapshot_blocks,omitempty"`
+	Draft          document.Draft             `json:"draft"`
+}
+
+func (documentsLoadedMsg) isDocumentMessage()          {}
+func (documentLoadedMsg) isDocumentMessage()           {}
+func (documentSavedMsg) isDocumentMessage()            {}
+func (documentDeletedMsg) isDocumentMessage()          {}
+func (documentHistoryMsg) isDocumentMessage()          {}
+func (documentChangesLoadedMsg) isDocumentMessage()    {}
+func (documentProposedMsg) isDocumentMessage()         {}
+func (documentChangeUpdatedMsg) isDocumentMessage()    {}
+func (imageLoadedMsg) isDocumentMessage()              {}
+func (documentRecoveryReadyMsg) isDocumentMessage()    {}
+func (documentAutosaveTickMsg) isDocumentMessage()     {}
+func (documentAutosaveFinishedMsg) isDocumentMessage() {}
+func (documentRecoveryDeletedMsg) isDocumentMessage()  {}
 
 type documentMode int
 
@@ -124,6 +149,11 @@ type documentsScreen struct {
 
 	newOperationContext func() (context.Context, context.CancelFunc)
 	cancelOperation     context.CancelFunc
+	recoveryStore       recovery.Store
+	autosaveID          string
+	autosaveSession     uint64
+	autosaveCancel      context.CancelFunc
+	autosaveScheduler   func(uint64) tea.Cmd
 
 	// Editor state.
 	creating       bool
@@ -182,6 +212,27 @@ func (s *documentsScreen) busy() bool { return s.pending || s.mode == documentEd
 
 func (s *documentsScreen) update(message tea.Msg) (tea.Cmd, bool) {
 	switch msg := message.(type) {
+	case documentRecoveryDeletedMsg:
+		if msg.err != nil {
+			s.errMessage = msg.err.Error()
+		}
+	case documentAutosaveTickMsg:
+		if msg.session == s.autosaveSession && s.mode == documentEditing {
+			return s.saveDocumentRecovery(msg.session), false
+		}
+	case documentAutosaveFinishedMsg:
+		if msg.session == s.autosaveSession {
+			if s.autosaveCancel != nil {
+				s.autosaveCancel()
+				s.autosaveCancel = nil
+			}
+			if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
+				s.errMessage = "Autosave failed: " + msg.err.Error()
+			}
+			if s.mode == documentEditing {
+				return s.scheduleDocumentAutosave(msg.session), false
+			}
+		}
 	case documentsLoadedMsg:
 		s.finishOperation()
 		s.pending = false
@@ -219,20 +270,28 @@ func (s *documentsScreen) update(message tea.Msg) (tea.Cmd, bool) {
 			} else {
 				s.errMessage = msg.err.Error()
 			}
-			return nil, false
+			s.startDocumentAutosaveSession()
+			return s.scheduleDocumentAutosave(s.autosaveSession), false
 		}
 		s.mode, s.creating = documentBrowsing, false
 		s.errMessage, s.status = "", "Saved “"+msg.document.Title+"”"
+		if msg.cleanupErr != nil {
+			s.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
+		}
 		return tea.Batch(tea.DisableMouse, s.loadDocuments()), false
 	case documentProposedMsg:
 		s.finishOperation()
 		s.pending = false
 		if msg.err != nil {
 			s.errMessage = msg.err.Error()
-			return nil, false
+			s.startDocumentAutosaveSession()
+			return s.scheduleDocumentAutosave(s.autosaveSession), false
 		}
 		s.mode, s.proposing = documentBrowsing, false
 		s.errMessage, s.status = "", "Proposal recorded: "+msg.change.ID
+		if msg.cleanupErr != nil {
+			s.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
+		}
 		return tea.Batch(tea.DisableMouse, s.loadChanges(msg.change.DocumentID)), false
 	case documentChangesLoadedMsg:
 		s.finishOperation()
