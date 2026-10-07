@@ -56,8 +56,14 @@ func newHarness(t *testing.T, kind artifact.Kind) *harness {
 // `parchment tui` again would.
 func (h *harness) open(kind artifact.Kind) {
 	h.t.Helper()
+	h.openWith(kind, false)
+}
+
+// openWith starts a session; edit opens an existing document in its editor.
+func (h *harness) openWith(kind artifact.Kind, edit bool) {
+	h.t.Helper()
 	model := NewModel(Config{
-		Path: h.path, Kind: kind, Notes: h.notes, Documents: h.docs,
+		Path: h.path, Kind: kind, Edit: edit, Notes: h.notes, Documents: h.docs,
 		Spreadsheets: h.sheets, Presentations: h.decks, Recovery: h.repo,
 	})
 	h.m, h.quit = &model, false

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
 	"example.com/parchment/internal/artifact"
@@ -32,14 +33,16 @@ func tuiCommand() *cobra.Command {
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			kind, _ := cmd.Flags().GetString("kind")
-			return runTUI(cmd, args[0], artifact.Kind(kind))
+			return runTUI(cmd, args[0], artifact.Kind(kind), false)
 		},
 	}
 	command.Flags().String("kind", "", "kind to create when the file is missing: note, document, spreadsheet, or presentation")
 	return command
 }
 
-func runTUI(cmd *cobra.Command, arg string, requested artifact.Kind) error {
+// runTUI opens arg in the interactive editor. edit opens an existing
+// document in its editor instead of its reader.
+func runTUI(cmd *cobra.Command, arg string, requested artifact.Kind, edit bool) error {
 	path, kind, err := resolveTUITarget(arg, requested)
 	if err != nil {
 		return err
@@ -51,6 +54,7 @@ func runTUI(cmd *cobra.Command, arg string, requested artifact.Kind) error {
 	return tui.Run(cmd.Context(), tui.Config{
 		Path:          path,
 		Kind:          kind,
+		Edit:          edit,
 		Notes:         note.NewService(repo, settings.UndoLimit),
 		Documents:     document.NewService(repo, settings.UndoLimit),
 		Spreadsheets:  spreadsheet.NewService(repo, settings.UndoLimit),
@@ -98,4 +102,33 @@ func validEditorKind(kind artifact.Kind) bool {
 		}
 	}
 	return false
+}
+
+// addEditFlag adds --no-edit to a create command.
+func addEditFlag(command *cobra.Command) {
+	command.Flags().Bool("no-edit", false, "only create the file; do not open it in the editor")
+}
+
+// finishCreate opens a newly created file in its editor when Parchment runs
+// in an interactive terminal; otherwise, as in scripts and pipelines, it
+// prints the file's path.
+func finishCreate(cmd *cobra.Command, streams output, path string, kind artifact.Kind) error {
+	noEdit, _ := cmd.Flags().GetBool("no-edit")
+	if !noEdit && streams.interactive() {
+		return runTUI(cmd, path, kind, true)
+	}
+	_, err := fmt.Fprintf(streams.out, "%s\n", path)
+	return err
+}
+
+// interactive reports whether standard input and the command's output are
+// both terminals.
+func (s output) interactive() bool {
+	out, ok := s.out.(*os.File)
+	return ok && isTerminal(out) && isTerminal(os.Stdin)
+}
+
+func isTerminal(file *os.File) bool {
+	fd := file.Fd()
+	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
 }

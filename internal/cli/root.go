@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/filerepo"
@@ -39,7 +40,7 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 			if len(args) == 0 {
 				return cmd.Help()
 			}
-			return runTUI(cmd, args[0], "")
+			return runTUI(cmd, args[0], "", false)
 		},
 	}
 	root.SetOut(stdout)
@@ -63,11 +64,11 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(streams.out, "%s\n", n.Path)
-			return err
+			return finishCreate(cmd, streams, n.Path, artifact.NoteKind)
 		},
 	}
 	create.Flags().String("body", "", "initial Markdown content")
+	addEditFlag(create)
 	notes.AddCommand(create)
 	notes.AddCommand(&cobra.Command{
 		Use: "show <file>", Short: "Show a note", Args: cobra.ExactArgs(1),

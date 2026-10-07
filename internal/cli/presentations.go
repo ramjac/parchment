@@ -2,13 +2,13 @@ package cli
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
 
+	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/presentation"
 )
 
@@ -38,11 +38,11 @@ func addPresentationCommands(root *cobra.Command, streams output) {
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintln(streams.out, item.Path)
-			return err
+			return finishCreate(cmd, streams, item.Path, artifact.PresentationKind)
 		},
 	}
 	create.Flags().String("body-file", "", "read Markdown presentation source from a file (- for standard input)")
+	addEditFlag(create)
 	group.AddCommand(create)
 
 	group.AddCommand(&cobra.Command{

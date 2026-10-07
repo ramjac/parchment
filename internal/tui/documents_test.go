@@ -572,3 +572,19 @@ func TestDocumentReaderShowsSavedEditsAndDiscardsDraft(t *testing.T) {
 		t.Fatal("leaving the editor kept the recovery draft")
 	}
 }
+
+func TestDocumentEditConfigOpensExistingDocumentInEditor(t *testing.T) {
+	h := newHarness(t, "")
+	if _, err := h.docs.Create(context.Background(), h.path, document.Draft{Body: "# Created"}); err != nil {
+		t.Fatal(err)
+	}
+	h.openWith(artifact.DocumentKind, true)
+	s := h.m.documents
+	if h.m.stage != stageDocument || s.reading || s.body.Value() != "# Created" {
+		t.Fatalf("stage = %d, reading = %v, body = %q", h.m.stage, s.reading, s.body.Value())
+	}
+	h.key("esc")
+	if !s.reading {
+		t.Fatal("Esc did not return to the reader")
+	}
+}

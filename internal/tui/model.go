@@ -28,7 +28,9 @@ type Config struct {
 	Path string
 	// Kind is the artifact kind. When empty, the editor asks which kind to
 	// create.
-	Kind          artifact.Kind
+	Kind artifact.Kind
+	// Edit opens an existing document in its editor instead of its reader.
+	Edit          bool
 	Notes         *note.Service
 	Documents     *document.Service
 	Spreadsheets  *spreadsheet.Service
@@ -94,6 +96,7 @@ type theme struct {
 type Model struct {
 	path          string
 	kind          artifact.Kind
+	edit          bool
 	service       *note.Service
 	spreadsheets  *spreadsheet.Service
 	presentations *presentation.Service
@@ -140,7 +143,7 @@ func NewModel(config Config) Model {
 	body.Placeholder = "Write Markdown…"
 	body.CharLimit = 1_000_000
 	m := Model{
-		path: config.Path, kind: config.Kind,
+		path: config.Path, kind: config.Kind, edit: config.Edit,
 		service: config.Notes, spreadsheets: config.Spreadsheets, presentations: config.Presentations,
 		recoveryStore: config.Recovery,
 		bodyInput:     body, preview: viewport.New(0, 0),
@@ -377,9 +380,10 @@ func (m *Model) enterEditor() tea.Cmd {
 		_, cmd := m.deck.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		return cmd
 	case artifact.DocumentKind:
-		// Existing documents open in the reader; new ones start in the editor.
+		// Existing documents open in the reader unless editing was requested;
+		// new ones start in the editor.
 		m.stage = stageDocument
-		if !m.opened.created {
+		if !m.opened.created && !m.edit {
 			m.documents.startReading(m.opened.document)
 			m.documents.status = m.status
 			return nil

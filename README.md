@@ -18,7 +18,10 @@ parchment examples/budget.md
 ```
 
 Every command takes the artifact's file path; there is nothing to initialize.
-`create` refuses to overwrite an existing file. An artifact's title is its file
+`create` refuses to overwrite an existing file. Run in a terminal, `create`
+then opens the new file in its editor; pass `--no-edit` to only create it.
+When output is piped or redirected, as in scripts, `create` prints the new
+file's path instead. An artifact's title is its file
 name; titles and IDs are not stored in the file. The first run creates
 `~/.parchment/parchment.toml`. Use `parchment --help` and
 `parchment note --help` for the complete command tree.

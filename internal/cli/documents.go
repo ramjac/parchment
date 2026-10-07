@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
 )
 
@@ -44,12 +45,12 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(streams.out, "%s\n", d.Path)
-			return err
+			return finishCreate(cmd, streams, d.Path, artifact.DocumentKind)
 		},
 	}
 	addBodyFlags(create)
 	addLayoutFlags(create)
+	addEditFlag(create)
 	docs.AddCommand(create)
 
 	docs.AddCommand(&cobra.Command{

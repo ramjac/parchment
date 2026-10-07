@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/spreadsheet"
 )
 
@@ -51,11 +52,11 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintln(streams.out, book.Path)
-			return err
+			return finishCreate(cmd, streams, book.Path, artifact.SpreadsheetKind)
 		},
 	}
 	create.Flags().String("csv-file", "", "initialize cells from a CSV file")
+	addEditFlag(create)
 	group.AddCommand(create)
 
 	group.AddCommand(&cobra.Command{
