@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/filerepo"
 	"example.com/parchment/internal/spreadsheet"
 )
@@ -325,5 +326,30 @@ func TestSpreadsheetTabSwitchesSheets(t *testing.T) {
 	}
 	if book.Sheets[1].Rows[0][0].Value != "second" || book.Sheets[0].Rows[0][0].Value != "first" || m.sheet != 1 {
 		t.Fatalf("sheet edit went to wrong sheet: %#v (current %d)", book.Sheets, m.sheet)
+	}
+}
+
+func TestSpreadsheetOpenedBeforeFirstResizeUsesTerminalSize(t *testing.T) {
+	for _, kind := range []artifact.Kind{artifact.SpreadsheetKind, artifact.PresentationKind} {
+		h := newHarness(t, "")
+		var err error
+		if kind == artifact.SpreadsheetKind {
+			_, err = h.sheets.Create(context.Background(), h.path, nil)
+		} else {
+			_, err = h.decks.Create(context.Background(), h.path, "# Talk\n\n## Slide")
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		model := NewModel(Config{
+			Path: h.path, Kind: kind, Notes: h.notes, Documents: h.docs,
+			Spreadsheets: h.sheets, Presentations: h.decks, Recovery: h.repo,
+		})
+		h.m = &model
+		h.run(h.m.Init())
+		h.send(tea.WindowSizeMsg{Width: 100, Height: 30})
+		if view := h.m.View(); strings.Contains(view, "too small") {
+			t.Fatalf("%s opened before the first resize stayed too small:\n%s", kind, view)
+		}
 	}
 }

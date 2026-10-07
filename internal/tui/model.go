@@ -238,6 +238,16 @@ func (m *Model) openFile(kind artifact.Kind) tea.Cmd {
 
 // Update applies a terminal message to the editor.
 func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	// Record the size before delegating: the file may open before the first
+	// size arrives, and the shell's view checks the size too.
+	size, resized := message.(tea.WindowSizeMsg)
+	if resized {
+		m.width, m.height = size.Width, size.Height
+		m.resizeEditors()
+		if m.documents != nil {
+			m.documents.resize(size.Width, size.Height)
+		}
+	}
 	switch {
 	case m.stage == stageSpreadsheet && m.sheet != nil:
 		_, cmd := m.sheet.Update(message)
@@ -246,12 +256,7 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		_, cmd := m.deck.Update(message)
 		return m, cmd
 	}
-	if size, ok := message.(tea.WindowSizeMsg); ok {
-		m.width, m.height = size.Width, size.Height
-		m.resizeEditors()
-		if m.documents != nil {
-			m.documents.resize(size.Width, size.Height)
-		}
+	if resized {
 		return m, nil
 	}
 	if _, ok := message.(documentMessage); ok && m.documents != nil {
