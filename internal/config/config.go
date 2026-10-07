@@ -108,6 +108,39 @@ func EnsureDefault(path string) error {
 			return fmt.Errorf("restrict config directory permissions: %w", err)
 		}
 	}
+	if _, err := os.Lstat(path); err == nil {
+		return nil
+	}
+	// Write and sync a temporary file, then link it into place without
+	// replacing anything, so a concurrent launch never reads a partial file.
+	temp, err := os.CreateTemp(dir, ".parchment-*.toml")
+	if err != nil {
+		return fmt.Errorf("create config %s: %w", path, err)
+	}
+	tempPath := temp.Name()
+	defer func() { _ = os.Remove(tempPath) }()
+	_, err = temp.WriteString(defaultFile)
+	if err == nil {
+		err = temp.Chmod(0o600)
+	}
+	if err == nil {
+		err = temp.Sync()
+	}
+	if closeErr := temp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return fmt.Errorf("write config %s: %w", path, err)
+	}
+	switch err := os.Link(tempPath, path); {
+	case err == nil, errors.Is(err, os.ErrExist):
+		return nil
+	}
+	// Filesystems without hard links: fall back to an exclusive create.
+	return createExclusive(path)
+}
+
+func createExclusive(path string) error {
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if errors.Is(err, os.ErrExist) {
 		return nil
@@ -115,17 +148,18 @@ func EnsureDefault(path string) error {
 	if err != nil {
 		return fmt.Errorf("create config %s: %w", path, err)
 	}
-	if _, err := file.WriteString(defaultFile); err != nil {
-		_ = file.Close()
+	_, err = file.WriteString(defaultFile)
+	if err == nil {
+		err = file.Sync()
+	}
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
 		_ = os.Remove(path)
 		return fmt.Errorf("write config %s: %w", path, err)
 	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return fmt.Errorf("write config %s: %w", path, err)
-	}
-	return file.Close()
+	return nil
 }
 
 func read(path string) (fileConfig, error) {

@@ -116,7 +116,7 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			}
 			description, _ := cmd.Flags().GetString("description")
 			change, err := service.Propose(cmd.Context(), current, description, document.Draft{
-				Body: body, Layout: layout,
+				Body: body, Layout: layout, Images: current.Images,
 			})
 			if err != nil {
 				return err

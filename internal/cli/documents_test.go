@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -50,5 +51,30 @@ func TestDocumentCLI(t *testing.T) {
 	}
 	if _, err := run("document", "accept", id, changeID); err == nil {
 		t.Fatal("accepted proposal was accepted a second time")
+	}
+}
+
+func TestDocumentProposalKeepsEmbeddedImages(t *testing.T) {
+	c := newCLI(t)
+	png := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\xff\xff?\x00\x05\xfe\x02\xfe\xa7\x35\x81\x84\x00\x00\x00\x00IEND\xaeB`\x82")
+	if err := os.WriteFile("pixel.png", png, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c.must("document", "create", "report.md", "--body", "Intro")
+	name := strings.TrimSpace(c.must("document", "image", "report.md", "pixel.png", "--alt", "pixel"))
+	before, err := os.ReadFile("report.md")
+	if err != nil || !strings.Contains(string(before), name) {
+		t.Fatalf("image not embedded: %v", err)
+	}
+	shown := c.must("document", "show", "report.md")
+	change := strings.TrimSpace(c.must("document", "propose", "report.md", "--body", strings.Replace(shown, "Intro", "Revised intro", 1)))
+	c.must("document", "accept", "report.md", change)
+	accepted := c.must("document", "show", "report.md")
+	if !strings.Contains(accepted, "Revised intro") || !strings.Contains(accepted, name) {
+		t.Fatalf("accepted body = %q", accepted)
+	}
+	after, err := os.ReadFile("report.md")
+	if err != nil || !strings.Contains(string(after), `"name": "`+name) && !strings.Contains(string(after), `"name":"`+name) {
+		t.Fatalf("accepted proposal dropped the embedded image:\n%s", after)
 	}
 }

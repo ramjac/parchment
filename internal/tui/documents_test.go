@@ -3,6 +3,7 @@ package tui
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"image"
 	"image/png"
@@ -382,5 +383,58 @@ func TestRevertingDocumentEditsRemovesAutosavedDraft(t *testing.T) {
 	h.run(s.saveDocumentRecovery(s.autosaveSession))
 	if h.hasDraft() || s.draftStored {
 		t.Fatalf("reverted editor kept its draft (draftStored=%t)", s.draftStored)
+	}
+}
+
+func TestDocumentAutosaveStoresImagesOnceAndSkipsUnchangedState(t *testing.T) {
+	ctx := context.Background()
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewGray(image.Rect(0, 0, 1, 1))); err != nil {
+		t.Fatal(err)
+	}
+	h := newDocumentHarness(t, document.Draft{Body: "Intro"})
+	if _, _, err := h.docs.AddImage(ctx, h.path, "pixel", buf.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	h.open(artifact.DocumentKind)
+	s := h.m.documents
+	if len(s.images) != 1 {
+		t.Fatalf("images = %d", len(s.images))
+	}
+	s.body.SetValue(s.body.Value() + "\n\nEdited")
+	h.run(s.saveDocumentRecovery(s.autosaveSession))
+	draft, ok, err := h.repo.LoadRecovery(ctx, h.path)
+	if err != nil || !ok {
+		t.Fatalf("draft = %t, %v", ok, err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(buf.Bytes())
+	if n := strings.Count(string(draft.Data), encoded); n != 1 {
+		t.Fatalf("image payload stored %d times in the draft", n)
+	}
+
+	// An unchanged editor does not rewrite the draft.
+	if err := h.repo.DeleteRecovery(ctx, h.path); err != nil {
+		t.Fatal(err)
+	}
+	h.run(s.saveDocumentRecovery(s.autosaveSession))
+	if h.hasDraft() {
+		t.Fatal("unchanged state was autosaved again")
+	}
+	s.body.SetValue(s.body.Value() + " more")
+	h.run(s.saveDocumentRecovery(s.autosaveSession))
+	if !h.hasDraft() {
+		t.Fatal("changed state was not autosaved")
+	}
+
+	h.open(artifact.DocumentKind)
+	h.key("r")
+	s = h.m.documents
+	if h.m.stage != stageDocument || len(s.images) != 1 || len(s.snapshot.Images) != 1 ||
+		!bytes.Equal(s.images[0].Data, buf.Bytes()) || !strings.HasSuffix(s.body.Value(), "Edited more") {
+		t.Fatalf("recovered: stage=%d images=%d snapshot images=%d body=%q", h.m.stage, len(s.images), len(s.snapshot.Images), s.body.Value())
+	}
+	h.key("ctrl+s")
+	if d, err := h.docs.Get(ctx, h.path); err != nil || len(d.Images) != 1 || !strings.HasSuffix(d.Body, "Edited more") {
+		t.Fatalf("saved recovered document = %+v, %v", d, err)
 	}
 }

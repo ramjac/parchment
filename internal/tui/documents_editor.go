@@ -170,7 +170,7 @@ func (s *documentsScreen) startEdit(d document.Document) (tea.Cmd, bool) {
 
 // loadDocument makes d the saved state of the editor.
 func (s *documentsScreen) loadDocument(d document.Document) {
-	s.snapshot = d
+	s.snapshot, s.lastAutosave = d, nil
 	s.layout = d.Layout
 	if s.layout == (document.Layout{}) {
 		s.layout = document.DefaultLayout()
@@ -201,16 +201,20 @@ func (s *documentsScreen) requestClose(again string) tea.Cmd {
 // restoreRecovery opens the editor with an autosaved draft, keeping the saved
 // state the draft started from so saving still detects later edits.
 func (s *documentsScreen) restoreRecovery(data documentRecoveryData) (tea.Cmd, bool) {
-	snapshot := data.Snapshot
-	snapshot.Blocks, snapshot.Path = cloneRawMessages(data.SnapshotBlocks), s.path
+	snapshot, draft, err := data.expand()
+	if err != nil {
+		s.errMessage = "Decode autosaved document: " + err.Error()
+		return nil, false
+	}
+	snapshot.Path = s.path
 	cmd, ok := s.startEdit(snapshot)
 	if !ok {
 		return nil, false
 	}
-	s.body.SetValue(data.Draft.Body)
+	s.body.SetValue(draft.Body)
 	s.body.CursorStart()
 	s.draftStored = true
-	s.layout, s.images = data.Draft.Layout, data.Draft.Images
+	s.layout, s.images = draft.Layout, draft.Images
 	if s.layout == (document.Layout{}) {
 		s.layout = document.DefaultLayout()
 	}
@@ -256,13 +260,16 @@ func (s *documentsScreen) saveDocumentRecovery(session uint64) tea.Cmd {
 			return documentAutosaveFinishedMsg{session: session, err: store.DeleteRecovery(context.Background(), path), cleared: true}
 		}
 	}
-	s.draftStored = true
-	data := documentRecoveryData{
-		Snapshot: s.snapshot, SnapshotBlocks: cloneRawMessages(s.snapshot.Blocks),
-		Draft: document.Draft{
-			Body: s.body.Value(), Layout: s.layout, Images: cloneDocumentImages(s.images),
-		},
+	state := documentAutosaveState{
+		snapshot: s.snapshot,
+		draft:    document.Draft{Body: s.body.Value(), Layout: s.layout, Images: s.images},
 	}
+	if s.lastAutosave != nil && s.lastAutosave.equal(state) {
+		return s.scheduleDocumentAutosave(session)
+	}
+	state.draft.Images = cloneDocumentImages(s.images)
+	s.draftStored = true
+	data := newDocumentRecoveryData(state)
 	ctx, cancel := context.WithCancel(context.Background())
 	s.autosaveCancel = cancel
 	store := s.recoveryStore
@@ -275,7 +282,7 @@ func (s *documentsScreen) saveDocumentRecovery(session uint64) tea.Cmd {
 			draft.Data = encoded
 			err = store.SaveRecovery(ctx, draft)
 		}
-		return documentAutosaveFinishedMsg{session: session, err: err}
+		return documentAutosaveFinishedMsg{session: session, err: err, state: state}
 	}
 }
 

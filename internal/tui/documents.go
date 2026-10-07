@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -55,14 +56,91 @@ type documentAutosaveFinishedMsg struct {
 	err     error
 	// cleared reports that the draft was deleted because the editor was clean.
 	cleared bool
+	state   documentAutosaveState
 }
 
 // documentRecoveryData is the autosaved document editor state: the saved
-// document the edits started from and the unsaved draft.
+// document the edits started from and the unsaved draft. Embedded images are
+// stored once in Images; the snapshot and draft refer to them by index.
 type documentRecoveryData struct {
 	Snapshot       document.Document          `json:"snapshot"`
 	SnapshotBlocks map[string]json.RawMessage `json:"snapshot_blocks,omitempty"`
 	Draft          document.Draft             `json:"draft"`
+	Images         []document.Image           `json:"images,omitempty"`
+	SnapshotImages []int                      `json:"snapshot_images,omitempty"`
+	DraftImages    []int                      `json:"draft_images,omitempty"`
+}
+
+// documentAutosaveState is the editor state written by an autosave, used to
+// skip rewriting an unchanged draft.
+type documentAutosaveState struct {
+	snapshot document.Document
+	draft    document.Draft
+}
+
+func (a documentAutosaveState) equal(b documentAutosaveState) bool {
+	return document.Equal(a.snapshot, b.snapshot) && a.draft.Body == b.draft.Body &&
+		a.draft.Layout == b.draft.Layout && sameImages(a.draft.Images, b.draft.Images)
+}
+
+func sameImages(left, right []document.Image) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i].Name != right[i].Name || !bytes.Equal(left[i].Data, right[i].Data) {
+			return false
+		}
+	}
+	return true
+}
+
+func newDocumentRecoveryData(state documentAutosaveState) documentRecoveryData {
+	data := documentRecoveryData{
+		Snapshot: state.snapshot, SnapshotBlocks: cloneRawMessages(state.snapshot.Blocks),
+		Draft: state.draft,
+	}
+	data.Snapshot.Images, data.Draft.Images = nil, nil
+	index := func(image document.Image) int {
+		for i, pooled := range data.Images {
+			if pooled.Name == image.Name && bytes.Equal(pooled.Data, image.Data) {
+				return i
+			}
+		}
+		data.Images = append(data.Images, image)
+		return len(data.Images) - 1
+	}
+	for _, image := range state.snapshot.Images {
+		data.SnapshotImages = append(data.SnapshotImages, index(image))
+	}
+	for _, image := range state.draft.Images {
+		data.DraftImages = append(data.DraftImages, index(image))
+	}
+	return data
+}
+
+// expand returns the snapshot and draft with their images restored.
+func (d documentRecoveryData) expand() (document.Document, document.Draft, error) {
+	images := func(refs []int) ([]document.Image, error) {
+		var out []document.Image
+		for _, ref := range refs {
+			if ref < 0 || ref >= len(d.Images) {
+				return nil, fmt.Errorf("invalid image reference %d", ref)
+			}
+			out = append(out, d.Images[ref])
+		}
+		return out, nil
+	}
+	snapshot, draft := d.Snapshot, d.Draft
+	var err error
+	if snapshot.Images, err = images(d.SnapshotImages); err != nil {
+		return document.Document{}, document.Draft{}, err
+	}
+	if draft.Images, err = images(d.DraftImages); err != nil {
+		return document.Document{}, document.Draft{}, err
+	}
+	snapshot.Blocks = cloneRawMessages(d.SnapshotBlocks)
+	return snapshot, draft, nil
 }
 
 func (documentSavedMsg) isDocumentMessage()            {}
@@ -114,7 +192,9 @@ type documentsScreen struct {
 	autosaveSession     uint64
 	autosaveCancel      context.CancelFunc
 	// draftStored reports that a recovery draft for this file may exist.
-	draftStored       bool
+	draftStored bool
+	// lastAutosave is the state most recently written as a recovery draft.
+	lastAutosave      *documentAutosaveState
 	autosaveScheduler func(uint64) tea.Cmd
 
 	// Editor state.
@@ -172,8 +252,13 @@ func (s *documentsScreen) update(message tea.Msg) tea.Cmd {
 				s.autosaveCancel()
 				s.autosaveCancel = nil
 			}
-			if msg.cleared && msg.err == nil {
-				s.draftStored = false
+			switch {
+			case msg.err != nil:
+			case msg.cleared:
+				s.draftStored, s.lastAutosave = false, nil
+			default:
+				state := msg.state
+				s.lastAutosave = &state
 			}
 			if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 				s.errMessage = "Autosave failed: " + msg.err.Error()

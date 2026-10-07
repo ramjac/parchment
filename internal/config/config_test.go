@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 )
 
@@ -94,5 +95,34 @@ func TestEnsureDefaultRestrictsExistingDirectory(t *testing.T) {
 	}
 	if info, err := os.Stat(dir); err != nil || info.Mode().Perm() != 0o700 {
 		t.Fatalf("config directory mode = %v, %v", info.Mode().Perm(), err)
+	}
+}
+
+func TestEnsureDefaultConcurrentLaunchesSeeCompleteFile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".parchment")
+	path := filepath.Join(dir, "parchment.toml")
+	var wg sync.WaitGroup
+	errs := make(chan error, 16)
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := EnsureDefault(path); err != nil {
+				errs <- err
+				return
+			}
+			if _, err := Load(path); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("config directory entries = %v, %v", entries, err)
 	}
 }
