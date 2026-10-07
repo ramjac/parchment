@@ -306,7 +306,7 @@ func openWorkspace(cmd *cobra.Command) (*workspace.Workspace, config.Settings, e
 	if err != nil {
 		return nil, config.Settings{}, err
 	}
-	ws, err := workspace.Open(abs)
+	ws, err := workspace.OpenWithArtifactDirectory(abs, settings.ArtifactDirectory)
 	if err != nil {
 		return nil, config.Settings{}, err
 	}

@@ -15,7 +15,7 @@ func TestSingleFileWorkbookEncodesMetadataCellsAndFormulas(t *testing.T) {
 		Artifact: artifact.Artifact{
 			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.SpreadsheetKind,
 			Title: "Budget", FormatVersion: artifact.FormatVersion,
-			Location:  ".parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+			Location:  "artifacts/0123456789abcdef0123456789abcdef/content.md",
 			CreatedAt: fixedTime, ModifiedAt: fixedTime,
 		},
 		Version: FileVersion,
@@ -78,7 +78,7 @@ func TestFormulaArithmeticReferencesAndCycles(t *testing.T) {
 		Artifact: artifact.Artifact{
 			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.SpreadsheetKind,
 			Title: "Formula test", FormatVersion: artifact.FormatVersion,
-			Location:  ".parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+			Location:  "artifacts/0123456789abcdef0123456789abcdef/content.md",
 			CreatedAt: fixedTime, ModifiedAt: fixedTime,
 		},
 		Version: FileVersion,
@@ -217,7 +217,7 @@ func formulaChain(formulas int) Spreadsheet {
 		Artifact: artifact.Artifact{
 			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.SpreadsheetKind,
 			Title: "Deep formulas", FormatVersion: artifact.FormatVersion,
-			Location:  ".parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+			Location:  "artifacts/0123456789abcdef0123456789abcdef/content.md",
 			CreatedAt: fixedTime, ModifiedAt: fixedTime,
 		},
 		Version: FileVersion, Sheets: []Sheet{{Name: "Sheet1", Rows: rows}},
@@ -229,7 +229,7 @@ func TestEqualTreatsEmptyMetadataSlicesAsNil(t *testing.T) {
 		Artifact: artifact.Artifact{
 			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.SpreadsheetKind,
 			Title: "Metadata", FormatVersion: artifact.FormatVersion,
-			Location:  ".parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+			Location:  "artifacts/0123456789abcdef0123456789abcdef/content.md",
 			CreatedAt: fixedTime, ModifiedAt: fixedTime,
 		},
 		Version: FileVersion, Sheets: []Sheet{{Name: "Sheet1", Rows: [][]Cell{{{Value: "1"}}}}},

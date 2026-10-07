@@ -16,7 +16,7 @@ const spreadsheetName = "content.md"
 
 // ListSpreadsheets implements the spreadsheet repository interface.
 func (w *Workspace) ListSpreadsheets(ctx context.Context) ([]spreadsheet.Spreadsheet, error) {
-	root := filepath.Join(w.root, ".parchment", "artifacts")
+	root := w.artifactsPath()
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, fmt.Errorf("list artifacts: %w", err)
@@ -65,7 +65,7 @@ func (w *Workspace) GetSpreadsheet(ctx context.Context, id string) (spreadsheet.
 		return spreadsheet.Spreadsheet{}, spreadsheet.ErrNotFound
 	}
 	var book spreadsheet.Spreadsheet
-	err := withArtifactLock(ctx, filepath.Join(w.root, ".parchment", "artifacts"), id, func() error {
+	err := withArtifactLock(ctx, w.artifactsPath(), id, func() error {
 		var readErr error
 		book, readErr = w.readSpreadsheetUnlocked(id)
 		return readErr
@@ -89,7 +89,7 @@ func (w *Workspace) TransitionSpreadsheet(
 	if target != nil && target.ID != id {
 		return errors.New("target spreadsheet ID does not match transition ID")
 	}
-	root := filepath.Join(w.root, ".parchment", "artifacts")
+	root := w.artifactsPath()
 	return withArtifactLock(ctx, root, id, func() error {
 		dir := filepath.Join(root, id)
 		_, dirErr := os.Lstat(dir)
@@ -138,14 +138,14 @@ func (w *Workspace) saveSpreadsheetLocked(ctx context.Context, book spreadsheet.
 	if !validID.MatchString(book.ID) || book.Kind != artifact.SpreadsheetKind {
 		return errors.New("invalid spreadsheet artifact")
 	}
-	if book.Location != filepath.ToSlash(filepath.Join(".parchment", "artifacts", book.ID, spreadsheetName)) {
+	if book.Location != w.ArtifactLocation(book.ID) {
 		return errors.New("invalid spreadsheet location")
 	}
 	data, err := spreadsheet.Encode(book)
 	if err != nil {
 		return err
 	}
-	dir := filepath.Join(w.root, ".parchment", "artifacts", book.ID)
+	dir := w.artifactPath(book.ID)
 	created := false
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		if !errors.Is(err, os.ErrExist) {
@@ -191,7 +191,7 @@ func (w *Workspace) saveSpreadsheetLocked(ctx context.Context, book spreadsheet.
 }
 
 func (w *Workspace) readSpreadsheetUnlocked(id string) (spreadsheet.Spreadsheet, error) {
-	dir := filepath.Join(w.root, ".parchment", "artifacts", id)
+	dir := w.artifactPath(id)
 	info, err := os.Lstat(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -223,7 +223,7 @@ func (w *Workspace) readSpreadsheetUnlocked(id string) (spreadsheet.Spreadsheet,
 	if err != nil {
 		return spreadsheet.Spreadsheet{}, fmt.Errorf("decode spreadsheet %s: %w", id, err)
 	}
-	if book.ID != id || book.Location != filepath.ToSlash(filepath.Join(".parchment", "artifacts", id, spreadsheetName)) {
+	if book.ID != id || book.Location != w.ArtifactLocation(id) {
 		return spreadsheet.Spreadsheet{}, fmt.Errorf("invalid spreadsheet metadata for %s", id)
 	}
 	return book, nil

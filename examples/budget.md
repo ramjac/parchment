@@ -7,7 +7,7 @@
   "created_at": "2026-01-15T09:00:00Z",
   "modified_at": "2026-01-15T09:00:00Z",
   "format_version": 1,
-  "location": ".parchment/artifacts/30000000000000000000000000000003/content.md"
+  "location": "artifacts/30000000000000000000000000000003/content.md"
 }
 ```
 

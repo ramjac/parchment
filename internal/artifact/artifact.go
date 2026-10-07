@@ -31,6 +31,11 @@ type Artifact struct {
 	Links         []string  `json:"links,omitempty"`
 }
 
+// LocationProvider supplies the workspace-relative artifact path for a new ID.
+type LocationProvider interface {
+	ArtifactLocation(id string) string
+}
+
 // Validate checks the common metadata required for a persisted artifact.
 func (a Artifact) Validate() error {
 	if a.ID == "" {

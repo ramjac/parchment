@@ -33,7 +33,9 @@ var errNoMetadata = errors.New("artifact metadata not found")
 
 // Workspace is the local filesystem-backed artifact store for one workspace.
 type Workspace struct {
-	root string
+	root            string
+	artifactDir     string
+	artifactRelPath string
 }
 
 // Init creates a workspace and its versioned TOML configuration.
@@ -77,8 +79,13 @@ func ValidateMarker(path string) error {
 	return nil
 }
 
-// Open returns an initialized workspace without creating workspace directories.
+// Open returns an initialized workspace using the default artifact directory.
 func Open(path string) (*Workspace, error) {
+	return OpenWithArtifactDirectory(path, "artifacts")
+}
+
+// OpenWithArtifactDirectory opens a workspace using a workspace-relative artifact directory.
+func OpenWithArtifactDirectory(path, artifactDirectory string) (*Workspace, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace path: %w", err)
@@ -89,12 +96,12 @@ func Open(path string) (*Workspace, error) {
 		}
 		return nil, fmt.Errorf("open workspace: %w", err)
 	}
-	private := filepath.Join(abs, ".parchment")
-	if err := ensureExistingDirectory(private); err != nil {
-		return nil, fmt.Errorf("open workspace: %w", err)
+	rel, err := cleanArtifactDirectory(artifactDirectory)
+	if err != nil {
+		return nil, err
 	}
-	artifacts := filepath.Join(private, "artifacts")
-	if err := ensureExistingDirectory(artifacts); err != nil {
+	artifacts := filepath.Join(abs, rel)
+	if err := ensureWorkspaceRelativeDirectory(abs, rel); err != nil {
 		return nil, fmt.Errorf("open workspace: %w", err)
 	}
 	entries, err := os.ReadDir(artifacts)
@@ -135,11 +142,20 @@ func Open(path string) (*Workspace, error) {
 			return nil, fmt.Errorf("recover artifact %s: %w", entry.Name(), err)
 		}
 	}
-	return &Workspace{root: abs}, nil
+	return &Workspace{root: abs, artifactDir: artifacts, artifactRelPath: rel}, nil
 }
 
 // Root returns the absolute filesystem path to the workspace.
 func (w *Workspace) Root() string { return w.root }
+
+// ArtifactLocation returns the workspace-relative path for an artifact ID.
+func (w *Workspace) ArtifactLocation(id string) string {
+	return filepath.ToSlash(filepath.Join(w.artifactRelPath, id, "content.md"))
+}
+
+func (w *Workspace) artifactsPath() string { return w.artifactDir }
+
+func (w *Workspace) artifactPath(id string) string { return filepath.Join(w.artifactDir, id) }
 
 // Name returns the final workspace path component.
 func (w *Workspace) Name() string { return filepath.Base(w.root) }
@@ -166,7 +182,7 @@ func Find(start string) (string, error) {
 
 // List implements the note repository interface.
 func (w *Workspace) List(ctx context.Context) ([]note.Note, error) {
-	root := filepath.Join(w.root, ".parchment", "artifacts")
+	root := w.artifactsPath()
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, fmt.Errorf("list artifacts: %w", err)
@@ -209,7 +225,7 @@ func (w *Workspace) List(ctx context.Context) ([]note.Note, error) {
 }
 
 func (w *Workspace) readArtifactMetadataUnlocked(id string) (artifact.Artifact, error) {
-	dir := filepath.Join(w.root, ".parchment", "artifacts", id)
+	dir := w.artifactPath(id)
 	info, err := os.Lstat(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -270,7 +286,7 @@ func (w *Workspace) Transition(ctx context.Context, id string, expected, target 
 	if target != nil && target.ID != id {
 		return errors.New("target note ID does not match transition ID")
 	}
-	artifactsDir := filepath.Join(w.root, ".parchment", "artifacts")
+	artifactsDir := w.artifactsPath()
 	return withArtifactLock(ctx, artifactsDir, id, func() error {
 		dir := filepath.Join(artifactsDir, id)
 		_, dirErr := os.Lstat(dir)
@@ -312,7 +328,7 @@ func (w *Workspace) Save(ctx context.Context, n note.Note) error {
 	if !validID.MatchString(n.ID) {
 		return errors.New("invalid note artifact")
 	}
-	return withArtifactLock(ctx, filepath.Join(w.root, ".parchment", "artifacts"), n.ID, func() error {
+	return withArtifactLock(ctx, w.artifactsPath(), n.ID, func() error {
 		return w.saveLocked(ctx, n)
 	})
 }
@@ -324,7 +340,7 @@ func (w *Workspace) saveLocked(ctx context.Context, n note.Note) error {
 	if err := n.Artifact.Validate(); err != nil {
 		return err
 	}
-	if n.Location != filepath.ToSlash(filepath.Join(".parchment", "artifacts", n.ID, "content.md")) {
+	if n.Location != w.ArtifactLocation(n.ID) {
 		return errors.New("invalid note content location")
 	}
 	blocks := make(map[string]any, len(n.Blocks))
@@ -336,7 +352,7 @@ func (w *Workspace) saveLocked(ctx context.Context, n note.Note) error {
 		return fmt.Errorf("encode note artifact: %w", err)
 	}
 
-	dir := filepath.Join(w.root, ".parchment", "artifacts", n.ID)
+	dir := w.artifactPath(n.ID)
 	created := false
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		if !errors.Is(err, os.ErrExist) {
@@ -606,7 +622,7 @@ func (w *Workspace) Delete(ctx context.Context, id string) error {
 	if !validID.MatchString(id) {
 		return note.ErrNotFound
 	}
-	artifactsDir := filepath.Join(w.root, ".parchment", "artifacts")
+	artifactsDir := w.artifactsPath()
 	return withArtifactLock(ctx, artifactsDir, id, func() error {
 		return w.deleteLocked(ctx, artifactsDir, id)
 	})
@@ -810,7 +826,7 @@ func removePendingArtifactTombstone(artifactsDir, id string) error {
 }
 
 func (w *Workspace) readNote(ctx context.Context, id string) (result note.Note, resultErr error) {
-	artifactsDir := filepath.Join(w.root, ".parchment", "artifacts")
+	artifactsDir := w.artifactsPath()
 	resultErr = withArtifactLock(ctx, artifactsDir, id, func() error {
 		var err error
 		result, err = w.readNoteUnlocked(id)
@@ -820,7 +836,7 @@ func (w *Workspace) readNote(ctx context.Context, id string) (result note.Note, 
 }
 
 func (w *Workspace) readNoteUnlocked(id string) (note.Note, error) {
-	dir := filepath.Join(w.root, ".parchment", "artifacts", id)
+	dir := w.artifactPath(id)
 	info, err := os.Lstat(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -859,7 +875,7 @@ func (w *Workspace) readNoteUnlocked(id string) (note.Note, error) {
 	if a.Kind != artifact.NoteKind {
 		return note.Note{}, errNotNote
 	}
-	if a.Location != filepath.ToSlash(filepath.Join(".parchment", "artifacts", id, "content.md")) {
+	if a.Location != w.ArtifactLocation(id) {
 		return note.Note{}, fmt.Errorf("invalid note metadata for %s", id)
 	}
 	a.CreatedAt = a.CreatedAt.UTC()
@@ -928,11 +944,29 @@ func ensureWorkspaceDirectories(root string) error {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return err
 	}
-	private := filepath.Join(root, ".parchment")
-	if err := ensureDirectory(private); err != nil {
-		return err
+	return ensureWorkspaceRelativeDirectory(root, "artifacts")
+}
+
+func cleanArtifactDirectory(path string) (string, error) {
+	if path == "" || filepath.IsAbs(path) || filepath.VolumeName(path) != "" {
+		return "", errors.New("workspace.artifact_directory must be a non-empty relative path")
 	}
-	return ensureDirectory(filepath.Join(private, "artifacts"))
+	clean := filepath.Clean(path)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", errors.New("workspace.artifact_directory must stay within the workspace")
+	}
+	return clean, nil
+}
+
+func ensureWorkspaceRelativeDirectory(root, rel string) error {
+	current := root
+	for _, component := range strings.Split(rel, string(filepath.Separator)) {
+		current = filepath.Join(current, component)
+		if err := ensureDirectory(current); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func ensureDirectory(path string) error {

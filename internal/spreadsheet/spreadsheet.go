@@ -127,11 +127,15 @@ func (s *Service) Create(ctx context.Context, title string, rows [][]Cell) (Spre
 	}
 	id := hex.EncodeToString(idBytes)
 	now := s.now().UTC()
+	location := "artifacts/" + id + "/content.md"
+	if provider, ok := s.repository.(artifact.LocationProvider); ok {
+		location = provider.ArtifactLocation(id)
+	}
 	sheet := Spreadsheet{
 		Artifact: artifact.Artifact{
 			ID: id, Kind: artifact.SpreadsheetKind, Title: title,
 			CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
-			Location: ".parchment/artifacts/" + id + "/content.md",
+			Location: location,
 		},
 		Version: FileVersion, Sheets: []Sheet{{Name: "Sheet1", Rows: cloneRows(rows)}},
 	}

@@ -68,11 +68,16 @@ func (s *Service) Create(ctx context.Context, title, body string) (Note, error) 
 	if _, err := rand.Read(idBytes); err != nil {
 		return Note{}, fmt.Errorf("generate note ID: %w", err)
 	}
+	id := hex.EncodeToString(idBytes)
 	now := s.now().UTC()
+	location := "artifacts/" + id + "/content.md"
+	if provider, ok := s.repository.(artifact.LocationProvider); ok {
+		location = provider.ArtifactLocation(id)
+	}
 	n := Note{Artifact: artifact.Artifact{
-		ID: hex.EncodeToString(idBytes), Kind: artifact.NoteKind, Title: strings.TrimSpace(title),
+		ID: id, Kind: artifact.NoteKind, Title: strings.TrimSpace(title),
 		CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
-		Location: ".parchment/artifacts/" + hex.EncodeToString(idBytes) + "/content.md",
+		Location: location,
 	}, Body: body}
 	if err := s.change(ctx, nil, &n, "Create note"); err != nil {
 		return Note{}, err

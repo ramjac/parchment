@@ -65,7 +65,7 @@ func TestWorkspaceAndNoteCLI(t *testing.T) {
 	if _, err := run("note", "delete", id, "--yes"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(root + "/.parchment/artifacts/" + id); !os.IsNotExist(err) {
+	if _, err := os.Stat(root + "/artifacts/" + id); !os.IsNotExist(err) {
 		t.Fatalf("deleted artifact storage exists: %v", err)
 	}
 }

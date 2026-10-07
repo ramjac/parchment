@@ -85,7 +85,7 @@ func TestArtifactEditsPreserveAdditionalPayloadBlocks(t *testing.T) {
 	root := t.TempDir()
 	ws := openTestWorkspace(t, root)
 	contentPath := func(id string) string {
-		return filepath.Join(root, ".parchment", "artifacts", id, "content.md")
+		return filepath.Join(root, "artifacts", id, "content.md")
 	}
 
 	notes := note.NewService(ws, 10)
@@ -166,6 +166,10 @@ func TestWorkspacePersistsInspectableNotesAndStableIDs(t *testing.T) {
 	if err := Init(root); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Lstat(filepath.Join(root, ".parchment")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("hidden artifact directory exists after init: %v", err)
+	}
+
 	ws, err := Open(root)
 	if err != nil {
 		t.Fatal(err)
@@ -225,6 +229,28 @@ func TestWorkspacePersistsInspectableNotesAndStableIDs(t *testing.T) {
 	}
 }
 
+func TestOpenWithConfiguredArtifactDirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := OpenWithArtifactDirectory(root, filepath.Join("public", "markdown"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := note.NewService(ws, 10).Create(context.Background(), "Public note", "Markdown body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLocation := filepath.ToSlash(filepath.Join("public", "markdown", created.ID, "content.md"))
+	if created.Location != wantLocation {
+		t.Fatalf("location = %q, want %q", created.Location, wantLocation)
+	}
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(wantLocation))); err != nil {
+		t.Fatalf("stat configured artifact: %v", err)
+	}
+}
+
 func TestWorkspaceRejectsUnsafeIDsAndLocations(t *testing.T) {
 	ws := openTestWorkspace(t, t.TempDir())
 	if _, err := ws.Get(context.Background(), "../outside"); err != note.ErrNotFound {
@@ -239,7 +265,7 @@ func TestFindSkipsArtifactDirectoriesWithoutWorkspaceMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	nested := filepath.Join(parent, "nested")
-	if err := os.MkdirAll(filepath.Join(nested, ".parchment", "artifacts"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(nested, "artifacts"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	found, err := Find(nested)
@@ -273,7 +299,7 @@ func TestDeleteCancellationRollsBackStagedDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	artifactsDir := filepath.Join(root, ".parchment", "artifacts")
+	artifactsDir := filepath.Join(root, "artifacts")
 	cancelCtx := &cancelOnErrContext{Context: ctx, cancelAt: 4}
 
 	err = ws.deleteLocked(cancelCtx, artifactsDir, created.ID)
@@ -298,7 +324,7 @@ func TestDeleteRecoversCommittedIntentBeforeRedoingDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	artifactsDir := filepath.Join(root, ".parchment", "artifacts")
+	artifactsDir := filepath.Join(root, "artifacts")
 	tombstone := filepath.Join(artifactsDir, pendingArtifactPrefix+created.ID)
 	if err := os.Rename(filepath.Join(artifactsDir, created.ID), tombstone); err != nil {
 		t.Fatal(err)
@@ -390,7 +416,7 @@ func TestTransitionDoesNotOverwriteOccupiedArtifactIDs(t *testing.T) {
 	ctx := context.Background()
 	ws := openTestWorkspace(t, t.TempDir())
 	id := "0123456789abcdef0123456789abcdef"
-	dir := filepath.Join(ws.Root(), ".parchment", "artifacts", id)
+	dir := filepath.Join(ws.Root(), "artifacts", id)
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -398,7 +424,7 @@ func TestTransitionDoesNotOverwriteOccupiedArtifactIDs(t *testing.T) {
 		ID: id, Kind: artifact.DocumentKind, Title: "Other artifact",
 		CreatedAt: time.Now().UTC(), ModifiedAt: time.Now().UTC(),
 		FormatVersion: artifact.FormatVersion,
-		Location:      ".parchment/artifacts/" + id + "/content.md",
+		Location:      "artifacts/" + id + "/content.md",
 	}
 	original, err := artifactfile.Encode(metadata, "other artifact", nil)
 	if err != nil {
@@ -412,7 +438,7 @@ func TestTransitionDoesNotOverwriteOccupiedArtifactIDs(t *testing.T) {
 		ID: id, Kind: artifact.NoteKind, Title: "Overwriting note",
 		CreatedAt: time.Now().UTC(), ModifiedAt: time.Now().UTC(),
 		FormatVersion: artifact.FormatVersion,
-		Location:      ".parchment/artifacts/" + id + "/content.md",
+		Location:      "artifacts/" + id + "/content.md",
 	}}
 	if err := ws.Save(ctx, target); err == nil {
 		t.Fatal("Save overwrote a non-note artifact")
@@ -429,12 +455,12 @@ func TestTransitionDoesNotOverwriteOccupiedArtifactIDs(t *testing.T) {
 	}
 
 	occupiedID := "abcdef0123456789abcdef0123456789"
-	occupiedDir := filepath.Join(ws.Root(), ".parchment", "artifacts", occupiedID)
+	occupiedDir := filepath.Join(ws.Root(), "artifacts", occupiedID)
 	if err := os.Mkdir(occupiedDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	target.ID = occupiedID
-	target.Location = ".parchment/artifacts/" + occupiedID + "/content.md"
+	target.Location = "artifacts/" + occupiedID + "/content.md"
 	if err := ws.Transition(ctx, occupiedID, nil, &target); err == nil {
 		t.Fatal("transition claimed an occupied artifact directory")
 	}
@@ -530,7 +556,7 @@ func TestNoteCleanupFailureDoesNotFailCommittedRename(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(root, ".parchment", "artifacts", created.ID)
+	dir := filepath.Join(root, "artifacts", created.ID)
 	metadataDir := filepath.Join(dir, "metadata.json")
 	if err := os.Mkdir(metadataDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -561,12 +587,12 @@ func TestFailedCreateDoesNotLeaveArtifactDirectory(t *testing.T) {
 		ID: "0123456789abcdef0123456789abcdef", Kind: artifact.NoteKind, Title: "Invalid time",
 		CreatedAt:  time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC),
 		ModifiedAt: time.Now().UTC(), FormatVersion: artifact.FormatVersion,
-		Location: ".parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+		Location: "artifacts/0123456789abcdef0123456789abcdef/content.md",
 	}}
 	if err := ws.Save(context.Background(), n); err == nil {
 		t.Fatal("save succeeded with an unrepresentable timestamp")
 	}
-	dir := filepath.Join(root, ".parchment", "artifacts", n.ID)
+	dir := filepath.Join(root, "artifacts", n.ID)
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("failed create left artifact directory: %v", err)
 	}
@@ -577,11 +603,11 @@ func TestOpenRejectsSymlinkedWorkspaceStorage(t *testing.T) {
 	if err := Init(root); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(filepath.Join(root, ".parchment", "artifacts")); err != nil {
+	if err := os.Remove(filepath.Join(root, "artifacts")); err != nil {
 		t.Fatal(err)
 	}
 	outside := t.TempDir()
-	if err := os.Symlink(outside, filepath.Join(root, ".parchment", "artifacts")); err != nil {
+	if err := os.Symlink(outside, filepath.Join(root, "artifacts")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Open(root); err == nil {
@@ -594,13 +620,13 @@ func TestSaveRejectsSymlinkedArtifactDirectory(t *testing.T) {
 	ws := openTestWorkspace(t, root)
 	id := "0123456789abcdef0123456789abcdef"
 	outside := t.TempDir()
-	if err := os.Symlink(outside, filepath.Join(root, ".parchment", "artifacts", id)); err != nil {
+	if err := os.Symlink(outside, filepath.Join(root, "artifacts", id)); err != nil {
 		t.Fatal(err)
 	}
 	n := note.Note{Artifact: artifact.Artifact{
 		ID: id, Kind: artifact.NoteKind, Title: "Symlink",
 		CreatedAt: time.Now().UTC(), ModifiedAt: time.Now().UTC(), FormatVersion: artifact.FormatVersion,
-		Location: ".parchment/artifacts/" + id + "/content.md",
+		Location: "artifacts/" + id + "/content.md",
 	}}
 	if err := ws.Save(context.Background(), n); err == nil {
 		t.Fatal("saved note through symlinked artifact directory")
@@ -657,7 +683,7 @@ func TestConcurrentSavesKeepArtifactFilesConsistent(t *testing.T) {
 }
 
 func TestArtifactLockWaitsAndHonorsCancellation(t *testing.T) {
-	artifactsDir := filepath.Join(t.TempDir(), ".parchment", "artifacts")
+	artifactsDir := filepath.Join(t.TempDir(), "artifacts")
 	if err := os.MkdirAll(artifactsDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -691,7 +717,7 @@ func TestOpenRecoversInterruptedArtifactReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(root, ".parchment", "artifacts", created.ID)
+	dir := filepath.Join(root, "artifacts", created.ID)
 	content, err := os.ReadFile(filepath.Join(dir, "content.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -734,7 +760,7 @@ func TestRecoveryRejectsUnexpectedBackupBeforeMutatingFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(root, ".parchment", "artifacts", created.ID)
+	dir := filepath.Join(root, "artifacts", created.ID)
 	backup, err := stageFile(dir, []byte("original body"))
 	if err != nil {
 		t.Fatal(err)
@@ -802,7 +828,7 @@ func TestOpenRestoresPendingArtifactDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	artifactsDir := filepath.Join(root, ".parchment", "artifacts")
+	artifactsDir := filepath.Join(root, "artifacts")
 	dir := filepath.Join(artifactsDir, created.ID)
 	tombstone := filepath.Join(artifactsDir, pendingArtifactPrefix+created.ID)
 	if err := os.Rename(dir, tombstone); err != nil {
@@ -835,7 +861,7 @@ func TestOpenRecoversDeletionFromDurableIntent(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			artifactsDir := filepath.Join(root, ".parchment", "artifacts")
+			artifactsDir := filepath.Join(root, "artifacts")
 			dir := filepath.Join(artifactsDir, created.ID)
 			tombstone := filepath.Join(artifactsDir, pendingArtifactPrefix+created.ID)
 			if err := os.Rename(dir, tombstone); err != nil {
@@ -873,7 +899,7 @@ func TestOpenKeepsCommittedDeletionIntentWhenTombstoneCleanupFails(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	artifactsDir := filepath.Join(root, ".parchment", "artifacts")
+	artifactsDir := filepath.Join(root, "artifacts")
 	tombstone := filepath.Join(artifactsDir, pendingArtifactPrefix+created.ID)
 	if err := os.Rename(filepath.Join(artifactsDir, created.ID), tombstone); err != nil {
 		t.Fatal(err)
@@ -910,7 +936,7 @@ func TestOpenKeepsCommittedDeletionIntentWhenTombstoneCleanupFails(t *testing.T)
 func TestNoteRepositoryIgnoresOtherArtifactKinds(t *testing.T) {
 	ws := openTestWorkspace(t, t.TempDir())
 	id := "0123456789abcdef0123456789abcdef"
-	dir := filepath.Join(ws.Root(), ".parchment", "artifacts", id)
+	dir := filepath.Join(ws.Root(), "artifacts", id)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -919,7 +945,7 @@ func TestNoteRepositoryIgnoresOtherArtifactKinds(t *testing.T) {
 		CreatedAt:     time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC),
 		ModifiedAt:    time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC),
 		FormatVersion: artifact.FormatVersion,
-		Location:      ".parchment/artifacts/" + id + "/content.md",
+		Location:      "artifacts/" + id + "/content.md",
 	}
 	data, err := artifactfile.Encode(metadata, "future document", nil)
 	if err != nil {
@@ -974,13 +1000,13 @@ func TestArtifactListsCheckKindBeforeReadingBodies(t *testing.T) {
 			item := artifact.Artifact{
 				ID: id, Kind: source.kind, Title: "Large", CreatedAt: now, ModifiedAt: now,
 				FormatVersion: artifact.FormatVersion,
-				Location:      filepath.ToSlash(filepath.Join(".parchment", "artifacts", id, "content.md")),
+				Location:      filepath.ToSlash(filepath.Join("artifacts", id, "content.md")),
 			}
 			data, err := artifactfile.Encode(item, "body", nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			dir := filepath.Join(root, ".parchment", "artifacts", id)
+			dir := filepath.Join(root, "artifacts", id)
 			if err := os.Mkdir(dir, 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -1012,7 +1038,7 @@ func TestOpenRecoversReplacementInsideRestoredPendingDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	artifactsDir := filepath.Join(root, ".parchment", "artifacts")
+	artifactsDir := filepath.Join(root, "artifacts")
 	dir := filepath.Join(artifactsDir, created.ID)
 	content, err := os.ReadFile(filepath.Join(dir, "content.md"))
 	if err != nil {

@@ -107,11 +107,15 @@ func (s *Service) Create(ctx context.Context, title, source string) (Presentatio
 	}
 	id := hex.EncodeToString(idBytes)
 	now := s.now().UTC()
+	location := "artifacts/" + id + "/content.md"
+	if provider, ok := s.repository.(artifact.LocationProvider); ok {
+		location = provider.ArtifactLocation(id)
+	}
 	item := Presentation{
 		Artifact: artifact.Artifact{
 			ID: id, Kind: artifact.PresentationKind, Title: title,
 			CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
-			Location: ".parchment/artifacts/" + id + "/content.md",
+			Location: location,
 		},
 		Version: FileVersion, Source: source,
 	}

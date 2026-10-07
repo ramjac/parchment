@@ -360,9 +360,13 @@ func (s *Service) Create(ctx context.Context, draft Draft) (Document, error) {
 	if draft.Layout == (Layout{}) {
 		draft.Layout = DefaultLayout()
 	}
+	location := "artifacts/" + id + "/content.md"
+	if provider, ok := s.repository.(artifact.LocationProvider); ok {
+		location = provider.ArtifactLocation(id)
+	}
 	d := Document{Artifact: artifact.Artifact{
 		ID: id, Kind: artifact.DocumentKind, CreatedAt: now, ModifiedAt: now,
-		FormatVersion: artifact.FormatVersion, Location: ".parchment/artifacts/" + id + "/content.md",
+		FormatVersion: artifact.FormatVersion, Location: location,
 	}}
 	applyDraft(&d, draft)
 	if err := normalize(&d); err != nil {

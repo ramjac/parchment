@@ -20,6 +20,7 @@ type Settings struct {
 	UndoLimit          int
 	WorkspacePath      string
 	WorkspaceDiscovery string
+	ArtifactDirectory  string
 	LogLevel           string
 	LogFormat          string
 	LocalBackup        string
@@ -31,8 +32,9 @@ type fileConfig struct {
 	Theme     *string `toml:"theme"`
 	UndoLimit *int    `toml:"undo_limit"`
 	Workspace struct {
-		Path      *string `toml:"path"`
-		Discovery *string `toml:"discovery"`
+		Path              *string `toml:"path"`
+		Discovery         *string `toml:"discovery"`
+		ArtifactDirectory *string `toml:"artifact_directory"`
 	} `toml:"workspace"`
 	Logging struct {
 		Level  *string `toml:"level"`
@@ -49,7 +51,8 @@ type fileConfig struct {
 func Load(userPath, workspacePath string) (Settings, error) {
 	settings := Settings{
 		Editor: "vi", Theme: "adaptive", UndoLimit: 100, WorkspaceDiscovery: "parents",
-		LogLevel: "warn", LogFormat: "text",
+		ArtifactDirectory: "artifacts",
+		LogLevel:          "warn", LogFormat: "text",
 	}
 	for _, path := range []string{userPath, workspacePath} {
 		if path == "" {
@@ -67,6 +70,9 @@ func Load(userPath, workspacePath string) (Settings, error) {
 	}
 	if settings.WorkspaceDiscovery != "parents" && settings.WorkspaceDiscovery != "disabled" {
 		return Settings{}, fmt.Errorf("unsupported workspace discovery mode %q", settings.WorkspaceDiscovery)
+	}
+	if err := validateArtifactDirectory(settings.ArtifactDirectory); err != nil {
+		return Settings{}, err
 	}
 	return settings, nil
 }
@@ -114,6 +120,9 @@ func apply(settings *Settings, cfg fileConfig) {
 	if cfg.Workspace.Discovery != nil {
 		settings.WorkspaceDiscovery = *cfg.Workspace.Discovery
 	}
+	if cfg.Workspace.ArtifactDirectory != nil {
+		settings.ArtifactDirectory = *cfg.Workspace.ArtifactDirectory
+	}
 	if cfg.Logging.Level != nil {
 		settings.LogLevel = *cfg.Logging.Level
 	}
@@ -139,10 +148,24 @@ func applyEnvironment(settings *Settings) {
 			settings.UndoLimit = 0
 		}
 	}
+	if value, ok := os.LookupEnv("PARCHMENT_ARTIFACT_DIRECTORY"); ok {
+		settings.ArtifactDirectory = value
+	}
 	if value, ok := os.LookupEnv("PARCHMENT_LOG_LEVEL"); ok {
 		settings.LogLevel = strings.ToLower(value)
 	}
 	if value, ok := os.LookupEnv("PARCHMENT_LOG_FORMAT"); ok {
 		settings.LogFormat = strings.ToLower(value)
 	}
+}
+
+func validateArtifactDirectory(path string) error {
+	if path == "" || filepath.IsAbs(path) || filepath.VolumeName(path) != "" {
+		return errors.New("workspace.artifact_directory must be a non-empty relative path")
+	}
+	clean := filepath.Clean(path)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return errors.New("workspace.artifact_directory must stay within the workspace")
+	}
+	return nil
 }

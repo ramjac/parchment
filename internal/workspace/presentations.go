@@ -16,7 +16,7 @@ const presentationName = "content.md"
 
 // ListPresentations implements the presentation repository interface.
 func (w *Workspace) ListPresentations(ctx context.Context) ([]presentation.Presentation, error) {
-	root := filepath.Join(w.root, ".parchment", "artifacts")
+	root := w.artifactsPath()
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, fmt.Errorf("list artifacts: %w", err)
@@ -65,7 +65,7 @@ func (w *Workspace) GetPresentation(ctx context.Context, id string) (presentatio
 		return presentation.Presentation{}, presentation.ErrNotFound
 	}
 	var item presentation.Presentation
-	err := withArtifactLock(ctx, filepath.Join(w.root, ".parchment", "artifacts"), id, func() error {
+	err := withArtifactLock(ctx, w.artifactsPath(), id, func() error {
 		var readErr error
 		item, readErr = w.readPresentationUnlocked(id)
 		return readErr
@@ -89,7 +89,7 @@ func (w *Workspace) TransitionPresentation(
 	if target != nil && target.ID != id {
 		return errors.New("target presentation ID does not match transition ID")
 	}
-	root := filepath.Join(w.root, ".parchment", "artifacts")
+	root := w.artifactsPath()
 	return withArtifactLock(ctx, root, id, func() error {
 		dir := filepath.Join(root, id)
 		_, dirErr := os.Lstat(dir)
@@ -138,14 +138,14 @@ func (w *Workspace) savePresentationLocked(ctx context.Context, item presentatio
 	if !validID.MatchString(item.ID) || item.Kind != artifact.PresentationKind {
 		return errors.New("invalid presentation artifact")
 	}
-	if item.Location != filepath.ToSlash(filepath.Join(".parchment", "artifacts", item.ID, presentationName)) {
+	if item.Location != w.ArtifactLocation(item.ID) {
 		return errors.New("invalid presentation location")
 	}
 	data, err := presentation.Encode(item)
 	if err != nil {
 		return err
 	}
-	dir := filepath.Join(w.root, ".parchment", "artifacts", item.ID)
+	dir := w.artifactPath(item.ID)
 	created := false
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		if !errors.Is(err, os.ErrExist) {
@@ -191,7 +191,7 @@ func (w *Workspace) savePresentationLocked(ctx context.Context, item presentatio
 }
 
 func (w *Workspace) readPresentationUnlocked(id string) (presentation.Presentation, error) {
-	dir := filepath.Join(w.root, ".parchment", "artifacts", id)
+	dir := w.artifactPath(id)
 	info, err := os.Lstat(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -223,7 +223,7 @@ func (w *Workspace) readPresentationUnlocked(id string) (presentation.Presentati
 	if err != nil {
 		return presentation.Presentation{}, fmt.Errorf("decode presentation %s: %w", id, err)
 	}
-	if item.ID != id || item.Location != filepath.ToSlash(filepath.Join(".parchment", "artifacts", id, presentationName)) {
+	if item.ID != id || item.Location != w.ArtifactLocation(id) {
 		return presentation.Presentation{}, fmt.Errorf("invalid presentation metadata for %s", id)
 	}
 	return item, nil

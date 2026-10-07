@@ -359,7 +359,7 @@ func testPresentation() Presentation {
 			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.PresentationKind,
 			Title: "Demo", CreatedAt: testNow, ModifiedAt: testNow,
 			FormatVersion: artifact.FormatVersion,
-			Location:      ".parchment/artifacts/0123456789abcdef0123456789abcdef/content.md",
+			Location:      "artifacts/0123456789abcdef0123456789abcdef/content.md",
 		},
 		Version: FileVersion, Source: "# Demo\n\n## Slide 1\n\nHello.\n",
 	}
