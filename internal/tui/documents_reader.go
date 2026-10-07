@@ -252,12 +252,23 @@ func (s *documentsScreen) leaveEditor(status string) tea.Cmd {
 	store, path := s.recoveryStore, s.path
 	s.startReading(s.snapshot)
 	s.status = status
-	s.draftStored = false
 	if store == nil {
+		s.draftStored = false
 		return nil
 	}
 	return func() tea.Msg {
-		_ = store.DeleteRecovery(context.Background(), path)
-		return nil
+		return documentDraftDiscardedMsg{err: store.DeleteRecovery(context.Background(), path)}
 	}
+}
+
+// draftDiscarded records the result of deleting the draft on leaving the
+// editor. On failure the draft is still known to exist, so the next clean
+// autosave retries the deletion.
+func (s *documentsScreen) draftDiscarded(msg documentDraftDiscardedMsg) {
+	if msg.err == nil {
+		s.draftStored = false
+		return
+	}
+	s.draftStored = true
+	s.errMessage = "Could not remove recovery draft: " + msg.err.Error()
 }

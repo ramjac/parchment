@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
@@ -13,9 +14,11 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
+	"example.com/parchment/internal/recovery"
 )
 
 // newDocumentHarness opens the editor on a document file, creating it with
@@ -586,5 +589,35 @@ func TestDocumentEditConfigOpensExistingDocumentInEditor(t *testing.T) {
 	h.key("esc")
 	if !s.reading {
 		t.Fatal("Esc did not return to the reader")
+	}
+}
+
+type failingDeleteStore struct{ recovery.Store }
+
+func (failingDeleteStore) DeleteRecovery(context.Context, string) error {
+	return errors.New("disk is read-only")
+}
+
+func TestLeavingDocumentEditorReportsDraftCleanupFailure(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "# Start"})
+	s := h.m.documents
+	s.recoveryStore = failingDeleteStore{h.repo}
+	s.draftStored = false
+	h.key("esc")
+	if !s.reading || !s.draftStored || !strings.Contains(s.errMessage, "disk is read-only") {
+		t.Fatalf("reading = %v, draftStored = %v, error = %q", s.reading, s.draftStored, s.errMessage)
+	}
+}
+
+func TestDocumentReaderFitsTerminalWidth(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "# Heading\n\n" + strings.Repeat("word ", 400)})
+	h.key("esc")
+	for _, width := range []int{80, 100, 137} {
+		h.send(tea.WindowSizeMsg{Width: width, Height: 30})
+		for _, line := range strings.Split(h.m.View(), "\n") {
+			if got := lipgloss.Width(line); got > width {
+				t.Fatalf("reader line is %d columns in a %d-column terminal: %q", got, width, line)
+			}
+		}
 	}
 }

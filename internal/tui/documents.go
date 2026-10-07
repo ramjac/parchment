@@ -51,6 +51,10 @@ type imageLoadedMsg struct {
 	err   error
 }
 type documentAutosaveTickMsg struct{ session uint64 }
+
+// documentDraftDiscardedMsg reports deleting the recovery draft after leaving
+// the editor.
+type documentDraftDiscardedMsg struct{ err error }
 type documentAutosaveFinishedMsg struct {
 	session uint64
 	err     error
@@ -149,6 +153,7 @@ func (documentChangesLoadedMsg) isDocumentMessage()    {}
 func (imageLoadedMsg) isDocumentMessage()              {}
 func (documentAutosaveTickMsg) isDocumentMessage()     {}
 func (documentAutosaveFinishedMsg) isDocumentMessage() {}
+func (documentDraftDiscardedMsg) isDocumentMessage()   {}
 
 type editorFocus int
 
@@ -264,6 +269,8 @@ func (s *documentsScreen) resumeAutosave() tea.Cmd {
 
 func (s *documentsScreen) update(message tea.Msg) tea.Cmd {
 	switch msg := message.(type) {
+	case documentDraftDiscardedMsg:
+		s.draftDiscarded(msg)
 	case documentAutosaveTickMsg:
 		if msg.session == s.autosaveSession {
 			return s.saveDocumentRecovery(msg.session)
