@@ -2,6 +2,7 @@ package note_test
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -33,53 +34,29 @@ func replace(t *testing.T, repo *filerepo.Repository, n note.Note) {
 func TestNoteOperationsUndoAndRedo(t *testing.T) {
 	ctx := context.Background()
 	service, _, path := newService(t, 20)
-	created, err := service.Create(ctx, path, "First", "draft")
+	created, err := service.Create(ctx, path, "draft")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if service.CanUndo() {
 		t.Fatal("creating a file was recorded in undo history")
 	}
-	updated, err := service.Update(ctx, path, "First", "final")
+	updated, err := service.Update(ctx, path, "final")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if updated.Body != "final" || updated.Path != created.Path {
 		t.Fatalf("updated = %+v", updated)
 	}
-	if err := service.AddTag(ctx, path, "work"); err != nil {
-		t.Fatal(err)
-	}
-	if err := service.RemoveTag(ctx, path, " work "); err != nil {
-		t.Fatal(err)
-	}
-	if err := service.RemoveTag(ctx, path, "   "); err == nil {
-		t.Fatal("empty tag removal succeeded")
-	}
-	if _, err := service.Rename(ctx, path, "Renamed"); err != nil {
+	if _, err := service.Update(ctx, path, "revised"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.Undo(ctx); err != nil {
 		t.Fatal(err)
 	}
 	restored, err := service.Get(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if restored.Title != "First" {
-		t.Fatalf("undo rename title = %q", restored.Title)
-	}
-	for range 2 {
-		if _, err := service.Undo(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
-	restored, err = service.Get(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(restored.Tags) != 0 {
-		t.Fatalf("undo tag changes left tags: %v", restored.Tags)
+	if err != nil || restored.Body != "final" {
+		t.Fatalf("undo revised = %+v, %v", restored, err)
 	}
 	if _, err := service.Undo(ctx); err != nil {
 		t.Fatal(err)
@@ -112,14 +89,14 @@ func TestNoteOperationsUndoAndRedo(t *testing.T) {
 func TestCreateRefusesExistingFile(t *testing.T) {
 	ctx := context.Background()
 	service, _, path := newService(t, 10)
-	if _, err := service.Create(ctx, path, "First", "one"); err != nil {
+	if _, err := service.Create(ctx, path, "one"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Create(ctx, path, "Second", "two"); err == nil {
+	if _, err := service.Create(ctx, path, "two"); err == nil {
 		t.Fatal("create overwrote an existing file")
 	}
 	n, err := service.Get(ctx, path)
-	if err != nil || n.Title != "First" {
+	if err != nil || n.Body != "one" || n.Title != "note" {
 		t.Fatalf("existing note = %+v, %v", n, err)
 	}
 }
@@ -127,11 +104,11 @@ func TestCreateRefusesExistingFile(t *testing.T) {
 func TestNoOpUpdateDoesNotCreateHistory(t *testing.T) {
 	ctx := context.Background()
 	service, _, path := newService(t, 10)
-	n, err := service.Create(ctx, path, "Title", "Body")
+	n, err := service.Create(ctx, path, "Body")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Update(ctx, path, n.Title, n.Body); err != nil {
+	if _, err := service.Update(ctx, path, n.Body); err != nil {
 		t.Fatal(err)
 	}
 	if service.CanUndo() {
@@ -139,34 +116,13 @@ func TestNoOpUpdateDoesNotCreateHistory(t *testing.T) {
 	}
 }
 
-func TestUndoRedoTreatsEmptySlicesAsEquivalentToNil(t *testing.T) {
-	ctx := context.Background()
-	service, repo, path := newService(t, 10)
-	created, err := service.Create(ctx, path, "Title", "before")
-	if err != nil {
-		t.Fatal(err)
-	}
-	created.Tags = []string{}
-	created.Links = []string{}
-	replace(t, repo, created)
-	if _, err := service.Update(ctx, path, "Title", "after"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.Undo(ctx); err != nil {
-		t.Fatalf("undo failed after persistence normalized empty slices: %v", err)
-	}
-	if _, err := service.Redo(ctx); err != nil {
-		t.Fatalf("redo failed after persistence normalized empty slices: %v", err)
-	}
-}
-
 func TestUndoRefusesToOverwriteExternalEdits(t *testing.T) {
 	ctx := context.Background()
 	service, repo, path := newService(t, 10)
-	if _, err := service.Create(ctx, path, "Title", "before"); err != nil {
+	if _, err := service.Create(ctx, path, "before"); err != nil {
 		t.Fatal(err)
 	}
-	updated, err := service.Update(ctx, path, "Title", "after")
+	updated, err := service.Update(ctx, path, "after")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,32 +137,32 @@ func TestUndoRefusesToOverwriteExternalEdits(t *testing.T) {
 	}
 }
 
-func TestHistorySnapshotsDoNotAliasReturnedNoteSlices(t *testing.T) {
+func TestHistorySnapshotsDoNotAliasReturnedNoteBlocks(t *testing.T) {
 	ctx := context.Background()
 	service, repo, path := newService(t, 10)
-	created, err := service.Create(ctx, path, "Before", "body")
+	created, err := service.Create(ctx, path, "before")
 	if err != nil {
 		t.Fatal(err)
 	}
-	created.Tags = []string{"work"}
-	created.Links = []string{"related"}
+	created.Blocks = map[string]json.RawMessage{"parchment-extra": json.RawMessage(`{"a":1}`)}
 	replace(t, repo, created)
-
-	renamed, err := service.Rename(ctx, path, "After")
+	current, err := service.Get(ctx, path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	renamed.Tags[0] = "mutated"
-	renamed.Links[0] = "mutated"
-
+	updated, err := service.UpdateExpected(ctx, current, "after")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated.Blocks["parchment-extra"][2] = 'z'
 	if _, err := service.Undo(ctx); err != nil {
-		t.Fatalf("undo failed after mutating returned slices: %v", err)
+		t.Fatalf("undo failed after mutating returned blocks: %v", err)
 	}
 	restored, err := service.Get(ctx, path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored.Title != "Before" || restored.Tags[0] != "work" || restored.Links[0] != "related" {
+	if restored.Body != "before" || string(restored.Blocks["parchment-extra"]) != `{"a":1}` {
 		t.Fatalf("undo restored mutated history snapshot: %+v", restored)
 	}
 }

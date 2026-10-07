@@ -31,7 +31,7 @@ func TestSpreadsheetCLIFormulasAndGridOperations(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := "fruit.md"
-	if out := strings.TrimSpace(must("spreadsheet", "create", id, "--title", "Fruit", "--csv-file", input)); !strings.HasSuffix(out, id) {
+	if out := strings.TrimSpace(must("spreadsheet", "create", id, "--csv-file", input)); !strings.HasSuffix(out, id) {
 		t.Fatalf("create printed %q", out)
 	}
 	if out := must("spreadsheet", "cell", id, "B2"); strings.TrimSpace(out) != "4" {
@@ -55,7 +55,7 @@ func TestSpreadsheetCLIFormulasAndGridOperations(t *testing.T) {
 		t.Fatalf("cell in named sheet = %q", out)
 	}
 	shown := must("spreadsheet", "show", id)
-	for _, value := range []string{`"title": "Fruit"`, `"kind": "spreadsheet"`, `"formula": "=C3+C4"`, `"name": "Sheet1"`, `"name": "Summary"`} {
+	for _, value := range []string{`"kind": "spreadsheet"`, `"formula": "=C3+C4"`, `"name": "Sheet1"`, `"name": "Summary"`} {
 		if !strings.Contains(shown, value) {
 			t.Fatalf("workbook JSON missing %q:\n%s", value, shown)
 		}

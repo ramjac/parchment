@@ -7,13 +7,16 @@ package filerepo
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/artifactfile"
@@ -117,8 +120,35 @@ func decodeArtifact(path string, content []byte) (artifactfile.File, error) {
 	}
 	file.Artifact.CreatedAt = file.Artifact.CreatedAt.UTC()
 	file.Artifact.ModifiedAt = file.Artifact.ModifiedAt.UTC()
-	file.Artifact.Path = path
+	setRuntimeIdentity(&file.Artifact, path)
 	return file, nil
+}
+
+// setRuntimeIdentity derives the artifact's runtime ID and title from its
+// path. Neither is persisted; the file name is how users identify a file.
+func setRuntimeIdentity(item *artifact.Artifact, path string) {
+	item.Path = path
+	item.ID = pathID(item.Kind, path)
+	item.Title = pathTitle(path)
+}
+
+// pathID returns a stable, valid artifact ID for a path.
+func pathID(kind artifact.Kind, path string) string {
+	prefix := map[artifact.Kind]byte{
+		artifact.NoteKind: 'n', artifact.DocumentKind: 'd', artifact.SpreadsheetKind: 's',
+		artifact.PresentationKind: 'p', artifact.ImageKind: 'i',
+	}[kind]
+	digest := sha256.Sum256([]byte(path))
+	return string(prefix) + new(big.Int).SetBytes(digest[:16]).Text(36)
+}
+
+// pathTitle returns the file name without its extension.
+func pathTitle(path string) string {
+	base := filepath.Base(path)
+	if title := strings.TrimSuffix(base, filepath.Ext(base)); title != "" {
+		return title
+	}
+	return base
 }
 
 // update writes one artifact file under the repository's write lock. When
@@ -159,10 +189,7 @@ func (r *Repository) update(ctx context.Context, path string, create bool, notFo
 		if err != nil {
 			return err
 		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := writeAtomic(resolved, data, mode); err != nil {
+		if err := writeAtomic(ctx, resolved, data, mode); err != nil {
 			return fmt.Errorf("write %s: %w", path, err)
 		}
 		return nil
@@ -274,7 +301,8 @@ func openRegularFile(path string) (*os.File, error) {
 
 // writeAtomic replaces path with data using a temporary file in the same
 // directory followed by sync and rename. It does not create directories.
-func writeAtomic(path string, data []byte, mode os.FileMode) error {
+// It honors cancellation up to the rename.
+func writeAtomic(ctx context.Context, path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
 	file, err := os.CreateTemp(dir, ".parchment-*")
 	if err != nil {
@@ -295,6 +323,9 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := os.Rename(temp, path); err != nil {

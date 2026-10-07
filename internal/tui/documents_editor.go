@@ -152,12 +152,10 @@ func (s *documentsScreen) toolbarView() string {
 // would truncate or alter; saving after any edit would otherwise overwrite the
 // full stored text.
 func (s *documentsScreen) startEdit(d document.Document) (tea.Cmd, bool) {
-	s.titleInput.SetValue(d.Title)
 	s.body.SetValue(d.Body)
-	if s.titleInput.Value() != d.Title || s.body.Value() != d.Body {
-		s.titleInput.SetValue("")
+	if s.body.Value() != d.Body {
 		s.body.SetValue("")
-		s.errMessage = "This document exceeds editor limits or contains text the editor cannot preserve; edit it with `parchment document edit` or a text editor"
+		s.errMessage = "This document exceeds editor limits or contains text the editor cannot preserve; edit it with a text editor"
 		s.status = ""
 		return nil, false
 	}
@@ -167,7 +165,7 @@ func (s *documentsScreen) startEdit(d document.Document) (tea.Cmd, bool) {
 	s.errMessage, s.status = "", ""
 	s.layoutEditor()
 	s.startDocumentAutosaveSession()
-	return tea.Batch(s.focusTitle(), tea.EnableMouseCellMotion, s.scheduleDocumentAutosave(s.autosaveSession)), true
+	return tea.Batch(s.focusBody(), s.scheduleDocumentAutosave(s.autosaveSession)), true
 }
 
 // loadDocument makes d the saved state of the editor.
@@ -178,8 +176,6 @@ func (s *documentsScreen) loadDocument(d document.Document) {
 		s.layout = document.DefaultLayout()
 	}
 	s.images = d.Images
-	s.titleInput.SetValue(d.Title)
-	s.titleInput.CursorEnd()
 	s.body.SetValue(d.Body)
 	s.body.CursorStart()
 	s.original = s.currentDraft()
@@ -189,7 +185,7 @@ func (s *documentsScreen) loadDocument(d document.Document) {
 // close discards the autosaved draft and quits.
 func (s *documentsScreen) close() tea.Cmd {
 	s.stopDocumentAutosave()
-	return tea.Sequence(tea.DisableMouse, closeEditor(s.recoveryStore, s.path))
+	return closeEditor(s.recoveryStore, s.path)
 }
 
 // requestClose quits, first asking for confirmation when edits are unsaved.
@@ -211,8 +207,6 @@ func (s *documentsScreen) restoreRecovery(data documentRecoveryData) (tea.Cmd, b
 	if !ok {
 		return nil, false
 	}
-	s.titleInput.SetValue(data.Draft.Title)
-	s.titleInput.CursorEnd()
 	s.body.SetValue(data.Draft.Body)
 	s.body.CursorStart()
 	s.layout, s.images = data.Draft.Layout, data.Draft.Images
@@ -256,16 +250,14 @@ func (s *documentsScreen) saveDocumentRecovery(session uint64) tea.Cmd {
 	data := documentRecoveryData{
 		Snapshot: s.snapshot, SnapshotBlocks: cloneRawMessages(s.snapshot.Blocks),
 		Draft: document.Draft{
-			Title: s.titleInput.Value(), Body: s.body.Value(),
-			Layout: s.layout, Images: cloneDocumentImages(s.images),
+			Body: s.body.Value(), Layout: s.layout, Images: cloneDocumentImages(s.images),
 		},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.autosaveCancel = cancel
 	store := s.recoveryStore
 	draft := recovery.Draft{
-		Path: s.path, Kind: string(artifact.DocumentKind), Title: s.titleInput.Value(),
-		UpdatedAt: time.Now().UTC(),
+		Path: s.path, Kind: string(artifact.DocumentKind), UpdatedAt: time.Now().UTC(),
 	}
 	return func() tea.Msg {
 		encoded, err := json.Marshal(data)
@@ -286,21 +278,13 @@ func cloneDocumentImages(source []document.Image) []document.Image {
 	return images
 }
 
-func (s *documentsScreen) focusTitle() tea.Cmd {
-	s.focus = focusTitle
-	s.body.Blur()
-	return s.titleInput.Focus()
-}
-
 func (s *documentsScreen) focusBody() tea.Cmd {
 	s.focus = focusBody
-	s.titleInput.Blur()
 	return s.body.Focus()
 }
 
 func (s *documentsScreen) focusToolbar() {
 	s.focus = focusToolbar
-	s.titleInput.Blur()
 	s.body.Blur()
 }
 
@@ -308,15 +292,14 @@ func (s *documentsScreen) layoutEditor() {
 	if s.width == 0 {
 		return
 	}
-	s.titleInput.Width = max(s.width-10, 10)
 	s.body.SetWidth(max(s.width, 10))
-	// header, state, toolbar, blank, title, blank, status line, and a spare row.
-	s.body.SetHeight(max(s.height-s.toolbarRows()-7, 3))
+	// Header, state, toolbar, prompt line, status line, and a spare row.
+	s.body.SetHeight(max(s.height-s.toolbarRows()-5, 3))
 }
 
 func (s *documentsScreen) editorDocument() document.Document {
 	d := document.Document{Body: s.body.Value(), Layout: s.layout, Images: s.images}
-	d.Title = s.titleInput.Value()
+	d.Title = s.snapshot.Title
 	return d
 }
 
@@ -363,14 +346,11 @@ func (s *documentsScreen) updateEditorKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		return s.requestClose("Esc")
 	case "tab":
-		switch s.focus {
-		case focusTitle:
-			return s.focusBody()
-		case focusBody:
+		if s.focus == focusBody {
 			s.focusToolbar()
 			return nil
 		}
-		return s.focusTitle()
+		return s.focusBody()
 	case "f2":
 		s.focusToolbar()
 		return nil
@@ -382,14 +362,7 @@ func (s *documentsScreen) updateEditorKey(msg tea.KeyMsg) tea.Cmd {
 		return s.updateToolbarKey(key)
 	}
 	var cmd tea.Cmd
-	if s.focus == focusTitle {
-		if key == "enter" {
-			return s.focusBody()
-		}
-		s.titleInput, cmd = s.titleInput.Update(msg)
-	} else {
-		s.body, cmd = s.body.Update(msg)
-	}
+	s.body, cmd = s.body.Update(msg)
 	return cmd
 }
 
@@ -431,6 +404,9 @@ func (s *documentsScreen) updateMouse(msg tea.MouseMsg) tea.Cmd {
 			return s.act(buttons[p.index].action)
 		}
 	}
+	if placeTextareaCursor(&s.body, msg.X, msg.Y-(toolbarTop+s.toolbarRows()+1)) {
+		return s.focusBody()
+	}
 	return nil
 }
 
@@ -439,7 +415,7 @@ func (s *documentsScreen) save() tea.Cmd {
 		return nil
 	}
 	s.stopDocumentAutosave()
-	draft := document.Draft{Title: s.titleInput.Value(), Body: s.body.Value(), Layout: s.layout, Images: s.images}
+	draft := document.Draft{Body: s.body.Value(), Layout: s.layout, Images: s.images}
 	s.pending = true
 	s.errMessage = ""
 	ctx := s.startOperation()
@@ -465,7 +441,7 @@ func (s *documentsScreen) propose() tea.Cmd {
 		s.status = "Edit the document first; Propose records your unsaved edits for review"
 		return nil
 	}
-	draft := document.Draft{Title: s.titleInput.Value(), Body: s.body.Value(), Layout: s.layout, Images: s.images}
+	draft := document.Draft{Body: s.body.Value(), Layout: s.layout, Images: s.images}
 	service, snapshot, store, path := s.service, s.snapshot, s.recoveryStore, s.path
 	return s.reload(true, func(ctx context.Context) (string, error) {
 		change, err := service.Propose(ctx, snapshot, "TUI edit", draft)
@@ -698,7 +674,7 @@ func (s *documentsScreen) editorView(header string) string {
 	if s.dirty() {
 		state += " • unsaved"
 	}
-	state += "  ·  Tab switches Title/Body/Toolbar  ·  F2 toolbar  ·  Ctrl+S saves  ·  F3 proposes  ·  F4 changes  ·  Esc quits"
+	state += "  ·  Tab switches Body/Toolbar  ·  F2 toolbar  ·  Ctrl+S saves  ·  F3 proposes  ·  F4 changes  ·  Esc quits"
 	if s.previewing {
 		page := ""
 		if len(s.editPages) > 0 {
@@ -707,12 +683,10 @@ func (s *documentsScreen) editorView(header string) string {
 		return header + "\nPrint preview  ·  page " + fmt.Sprintf("%d/%d", s.editPage+1, len(s.editPages)) +
 			"  ·  ←/→ pages  ·  Esc returns\n" + page
 	}
-	title := s.titleInput
-	title.SetValue(sanitizeTerminalLine(title.Value()))
 	body := s.body
-	body.SetValue(sanitizeTerminalText(body.Value()))
+	sanitizeTextareaView(&body)
 	var b strings.Builder
-	b.WriteString(header + "\n" + state + "\n" + s.toolbarView() + "\n\n" + title.View() + "\n")
+	b.WriteString(header + "\n" + state + "\n" + s.toolbarView() + "\n")
 	if s.prompt != promptNone {
 		b.WriteString(s.promptInput.View())
 	}

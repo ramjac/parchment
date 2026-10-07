@@ -3,19 +3,23 @@ package artifactfile
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"sort"
 	"strings"
+	"time"
 
 	"example.com/parchment/internal/artifact"
 )
 
 const metadataBlock = "parchment-meta"
 const bodyBoundary = "<!-- parchment-body -->"
-const envelopeFormat = "parchment-single-file-v1"
+const trailingBlocksBoundary = "<!-- parchment-blocks -->"
+const envelopeFormat = "parchment-single-file-v2"
 const envelopeFormatField = "parchment_format"
 
 const MaxFileSize = 64 << 20
@@ -26,23 +30,31 @@ var ErrMetadataMissing = errors.New("Parchment metadata block is missing")
 // File is a Markdown artifact with shared metadata and optional structured
 // payloads stored in hidden Parchment code fences.
 type File struct {
+	// Artifact includes a decode-time identity; storage adapters replace
+	// runtime-only identity, title, and location values from their path.
 	Artifact artifact.Artifact
 	Body     string
 	Blocks   map[string]json.RawMessage
 }
 
 type metadataEnvelope struct {
-	Format string `json:"parchment_format"`
-	artifact.Artifact
+	Format        string        `json:"parchment_format"`
+	Kind          artifact.Kind `json:"kind"`
+	FormatVersion int           `json:"format_version"`
+	CreatedAt     time.Time     `json:"created_at"`
+	ModifiedAt    time.Time     `json:"modified_at"`
 }
 
-// Encode serializes an artifact as Markdown. Payload blocks are emitted before
-// the visible body so ordinary Markdown readers can ignore them.
+// Encode serializes an artifact as Markdown, with structured payloads after
+// the visible body so ordinary Markdown readers encounter the content first.
 func Encode(item artifact.Artifact, body string, blocks map[string]any) ([]byte, error) {
 	if err := item.Validate(); err != nil {
 		return nil, fmt.Errorf("validate artifact metadata: %w", err)
 	}
-	metadata, err := json.MarshalIndent(metadataEnvelope{Format: envelopeFormat, Artifact: item}, "", "  ")
+	metadata, err := json.MarshalIndent(metadataEnvelope{
+		Format: envelopeFormat, Kind: item.Kind, FormatVersion: item.FormatVersion,
+		CreatedAt: item.CreatedAt.UTC(), ModifiedAt: item.ModifiedAt.UTC(),
+	}, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encode artifact metadata: %w", err)
 	}
@@ -56,6 +68,7 @@ func Encode(item artifact.Artifact, body string, blocks map[string]any) ([]byte,
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	payloads := make(map[string][]byte, len(names))
 	for _, name := range names {
 		var payload []byte
 		if raw, ok := blocks[name].(json.RawMessage); ok {
@@ -70,20 +83,28 @@ func Encode(item artifact.Artifact, body string, blocks map[string]any) ([]byte,
 				return nil, fmt.Errorf("encode %s block: %w", name, err)
 			}
 		}
-		writeBlock(&output, name, payload)
+		payloads[name] = payload
 	}
 	output.WriteByte('\n')
 	output.WriteString(bodyBoundary)
 	output.WriteByte('\n')
 	output.WriteString(body)
+	if len(names) > 0 {
+		output.WriteByte('\n')
+		output.WriteString(trailingBlocksBoundary)
+		output.WriteByte('\n')
+		for _, name := range names {
+			writeBlock(&output, name, payloads[name])
+		}
+	}
 	if output.Len() > MaxFileSize {
 		return nil, fmt.Errorf("artifact file is larger than %d MiB", MaxFileSize>>20)
 	}
 	return output.Bytes(), nil
 }
 
-// Decode reads an artifact envelope. Metadata and structured blocks must
-// precede the visible Markdown body.
+// Decode reads an artifact envelope. Structured payloads are recognized only
+// after the explicit trailing-block boundary, never from Markdown body content.
 func Decode(data []byte) (File, error) {
 	if len(data) > MaxFileSize {
 		return File{}, fmt.Errorf("artifact file is larger than %d MiB", MaxFileSize>>20)
@@ -116,31 +137,110 @@ func Decode(data []byte) (File, error) {
 			foundBodyBoundary = true
 			break
 		}
-		block, isBlock := parseOpening(line)
-		if !isBlock || !strings.HasPrefix(block.name, "parchment-") {
-			break
-		}
-		if block.name == metadataBlock {
-			return File{}, errors.New("duplicate Parchment metadata block")
-		}
-		if _, exists := file.Blocks[block.name]; exists {
-			return File{}, fmt.Errorf("duplicate %s block", block.name)
-		}
-		payload, after, err := readBlock(source, probe, block)
-		if err != nil {
-			return File{}, fmt.Errorf("read %s block: %w", block.name, err)
-		}
-		if !json.Valid(payload) {
-			return File{}, fmt.Errorf("%s block must contain JSON", block.name)
-		}
-		file.Blocks[block.name] = append(json.RawMessage(nil), payload...)
-		offset = after
+		return File{}, errors.New("unexpected content before artifact body separator")
 	}
 	if !foundBodyBoundary {
 		return File{}, errors.New("artifact body separator is missing")
 	}
-	file.Body = strings.Clone(source[offset:])
+	body, blocks, err := readTrailingBlocks(source, offset)
+	if err != nil {
+		return File{}, err
+	}
+	file.Body = strings.Clone(body)
+	file.Blocks = blocks
+	file.Artifact.ID = transientID(file.Artifact.Kind, data)
+	file.Artifact.Title = titleFromBody(file.Body)
 	return file, nil
+}
+
+func readTrailingBlocks(source string, bodyStart int) (string, map[string]json.RawMessage, error) {
+	boundary := -1
+	var afterBoundary int
+	for offset := bodyStart; offset < len(source); {
+		line, next := nextLine(source, offset)
+		if strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r") == trailingBlocksBoundary {
+			boundary, afterBoundary = offset, next
+		}
+		offset = next
+	}
+	if boundary < 0 {
+		return source[bodyStart:], make(map[string]json.RawMessage), nil
+	}
+	blocks, err := parseTrailingBlocks(source, afterBoundary)
+	if err != nil {
+		return "", nil, err
+	}
+	if blocks == nil {
+		return source[bodyStart:], make(map[string]json.RawMessage), nil
+	}
+	bodyEnd := boundary
+	if bodyEnd > bodyStart && source[bodyEnd-1] == '\n' {
+		bodyEnd--
+		if bodyEnd > bodyStart && source[bodyEnd-1] == '\r' {
+			bodyEnd--
+		}
+	}
+	return source[bodyStart:bodyEnd], blocks, nil
+}
+
+func parseTrailingBlocks(source string, offset int) (map[string]json.RawMessage, error) {
+	for offset < len(source) {
+		line, next := nextLine(source, offset)
+		if !isBlankLine(line) {
+			break
+		}
+		offset = next
+	}
+	if offset == len(source) {
+		return nil, nil
+	}
+	first, _ := nextLine(source, offset)
+	opening, ok := parseOpening(first)
+	if !ok {
+		_, info, isFence := parseFence(first)
+		fields := strings.Fields(info)
+		if isFence && len(fields) > 0 && strings.HasPrefix(fields[0], "parchment-") {
+			return nil, errors.New("invalid Parchment trailing block opening")
+		}
+		return nil, nil
+	}
+	if !strings.HasPrefix(opening.name, "parchment-") {
+		return nil, nil
+	}
+	blocks := make(map[string]json.RawMessage)
+	for offset < len(source) {
+		for offset < len(source) {
+			line, next := nextLine(source, offset)
+			if !isBlankLine(line) {
+				break
+			}
+			offset = next
+		}
+		if offset == len(source) {
+			break
+		}
+		line, _ := nextLine(source, offset)
+		block, ok := parseOpening(line)
+		if !ok || !strings.HasPrefix(block.name, "parchment-") {
+			return nil, errors.New("invalid content in Parchment trailing blocks")
+		}
+		if block.name == metadataBlock {
+			return nil, errors.New("duplicate Parchment metadata block")
+		}
+		if _, exists := blocks[block.name]; exists {
+			return nil, fmt.Errorf("duplicate %s block", block.name)
+		}
+		payload, after, err := readBlock(source, offset, block)
+		if err != nil {
+			return nil, fmt.Errorf("read %s block: %w", block.name, err)
+		}
+		if !json.Valid(payload) {
+			return nil, fmt.Errorf("%s block must contain JSON", block.name)
+		}
+		blocks[block.name] = append(json.RawMessage(nil), payload...)
+		offset = after
+	}
+	return blocks, nil
 }
 
 // ReadMetadata reads and validates the leading metadata block without
@@ -260,6 +360,19 @@ func readMetadata(source string) (artifact.Artifact, int, error) {
 	if err != nil {
 		return artifact.Artifact{}, 0, fmt.Errorf("read Parchment metadata: %w", err)
 	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(metadataBytes, &fields); err != nil {
+		return artifact.Artifact{}, 0, fmt.Errorf("decode Parchment metadata: %w", err)
+	}
+	allowedFields := map[string]bool{
+		"parchment_format": true, "kind": true, "format_version": true,
+		"created_at": true, "modified_at": true,
+	}
+	for name := range fields {
+		if !allowedFields[name] {
+			return artifact.Artifact{}, 0, fmt.Errorf("unexpected Parchment metadata field %q", name)
+		}
+	}
 	var envelope metadataEnvelope
 	if err := json.Unmarshal(metadataBytes, &envelope); err != nil {
 		return artifact.Artifact{}, 0, fmt.Errorf("decode Parchment metadata: %w", err)
@@ -267,13 +380,45 @@ func readMetadata(source string) (artifact.Artifact, int, error) {
 	if envelope.Format != envelopeFormat {
 		return artifact.Artifact{}, 0, fmt.Errorf("unsupported artifact format %q", envelope.Format)
 	}
-	item := envelope.Artifact
-	if err := item.Validate(); err != nil {
-		return artifact.Artifact{}, 0, fmt.Errorf("validate Parchment metadata: %w", err)
+	item := artifact.Artifact{
+		Kind: envelope.Kind, CreatedAt: envelope.CreatedAt.UTC(),
+		ModifiedAt: envelope.ModifiedAt.UTC(), FormatVersion: envelope.FormatVersion,
 	}
-	item.CreatedAt = item.CreatedAt.UTC()
-	item.ModifiedAt = item.ModifiedAt.UTC()
+	if item.Kind != artifact.NoteKind && item.Kind != artifact.DocumentKind &&
+		item.Kind != artifact.SpreadsheetKind && item.Kind != artifact.PresentationKind &&
+		item.Kind != artifact.ImageKind {
+		return artifact.Artifact{}, 0, fmt.Errorf("validate Parchment metadata: unsupported artifact kind %q", item.Kind)
+	}
+	if item.FormatVersion != artifact.FormatVersion {
+		return artifact.Artifact{}, 0, fmt.Errorf("validate Parchment metadata: unsupported artifact format version %d", item.FormatVersion)
+	}
+	if item.CreatedAt.IsZero() || item.ModifiedAt.IsZero() {
+		return artifact.Artifact{}, 0, errors.New("validate Parchment metadata: artifact timestamps are required")
+	}
 	return item, offset, nil
+}
+
+func transientID(kind artifact.Kind, data []byte) string {
+	prefixes := map[artifact.Kind]byte{
+		artifact.NoteKind: 'n', artifact.DocumentKind: 'd', artifact.SpreadsheetKind: 's',
+		artifact.PresentationKind: 'p', artifact.ImageKind: 'i',
+	}
+	digest := sha256.Sum256(data)
+	return string(prefixes[kind]) + new(big.Int).SetBytes(digest[:16]).Text(36)
+}
+
+func titleFromBody(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "# ") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "# "))
+		}
+		return line
+	}
+	return "Untitled"
 }
 
 // StripPrivateBlocks removes all fenced blocks whose info string starts with

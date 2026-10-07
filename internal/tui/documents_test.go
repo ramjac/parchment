@@ -18,11 +18,11 @@ import (
 )
 
 // newDocumentHarness opens the editor on a document file, creating it with
-// draft first when draft has a title.
+// draft first when draft has a body.
 func newDocumentHarness(t *testing.T, draft document.Draft) *harness {
 	t.Helper()
 	h := newHarness(t, "")
-	if draft.Title != "" {
+	if draft.Body != "" {
 		if _, err := h.docs.Create(context.Background(), h.path, draft); err != nil {
 			t.Fatal(err)
 		}
@@ -43,9 +43,6 @@ func TestDocumentEditorHasToolbarAndSavesLayout(t *testing.T) {
 		}
 	}
 	s := h.m.documents
-	s.titleInput.SetValue("")
-	h.typeText("Report")
-	h.key("tab")
 	h.typeText("Intro")
 	h.send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b"), Alt: true})
 	h.typeText("bold")
@@ -56,7 +53,7 @@ func TestDocumentEditorHasToolbarAndSavesLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Title != "Report" || got.Layout.Columns != 2 {
+	if got.Title != "report" || got.Layout.Columns != 2 {
 		t.Fatalf("saved document = %q columns %d", got.Title, got.Layout.Columns)
 	}
 	if !strings.Contains(got.Body, "Intro**bold") || !strings.Contains(got.Body, document.PageBreakMarkup) {
@@ -69,23 +66,22 @@ func TestDocumentEditorHasToolbarAndSavesLayout(t *testing.T) {
 
 func TestDocumentProposeReviewAndAccept(t *testing.T) {
 	ctx := context.Background()
-	h := newDocumentHarness(t, document.Draft{Title: "Original", Body: "before", Layout: document.DefaultLayout()})
+	h := newDocumentHarness(t, document.Draft{Body: "before", Layout: document.DefaultLayout()})
 	s := h.m.documents
 	h.key("f3")
 	if !strings.Contains(s.status, "Edit the document first") || s.showChanges {
 		t.Fatalf("propose without edits: status=%q", s.status)
 	}
-	s.titleInput.SetValue("Proposed")
 	s.body.SetValue("after")
 	h.key("f3")
 	if !s.showChanges || len(s.changes) != 1 || s.changes[0].Status != document.ChangePending {
 		t.Fatalf("proposal was not recorded for review: %+v (error %q)", s.changes, s.errMessage)
 	}
-	if s.dirty() || s.titleInput.Value() != "Original" {
-		t.Fatalf("editor did not return to the saved document: title %q", s.titleInput.Value())
+	if s.dirty() || s.body.Value() != "before" {
+		t.Fatalf("editor did not return to the saved document: body %q", s.body.Value())
 	}
 	live, err := h.docs.Get(ctx, h.path)
-	if err != nil || live.Title != "Original" || live.Body != "before" {
+	if err != nil || live.Body != "before" {
 		t.Fatalf("proposal modified the live document: %+v, %v", live, err)
 	}
 	h.key("enter")
@@ -94,14 +90,14 @@ func TestDocumentProposeReviewAndAccept(t *testing.T) {
 	}
 	h.key("a")
 	accepted, err := h.docs.Get(ctx, h.path)
-	if err != nil || accepted.Title != "Proposed" || accepted.Body != "after" {
+	if err != nil || accepted.Body != "after" {
 		t.Fatalf("accepted document = %+v, %v", accepted, err)
 	}
 	if len(s.changes) != 1 || s.changes[0].Status != document.ChangeAccepted {
 		t.Fatalf("accepted proposal state = %+v", s.changes)
 	}
-	if s.titleInput.Value() != "Proposed" || s.body.Value() != "after" {
-		t.Fatalf("editor not refreshed after acceptance: %q / %q", s.titleInput.Value(), s.body.Value())
+	if s.body.Value() != "after" {
+		t.Fatalf("editor not refreshed after acceptance: %q", s.body.Value())
 	}
 	h.key("esc")
 	h.key("esc")
@@ -112,12 +108,12 @@ func TestDocumentProposeReviewAndAccept(t *testing.T) {
 
 func TestDocumentAcceptRefusedWithUnsavedEdits(t *testing.T) {
 	ctx := context.Background()
-	h := newDocumentHarness(t, document.Draft{Title: "Doc", Body: "before", Layout: document.DefaultLayout()})
+	h := newDocumentHarness(t, document.Draft{Body: "before", Layout: document.DefaultLayout()})
 	before, err := h.docs.Get(ctx, h.path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.docs.Propose(ctx, before, "Other", document.Draft{Title: "Doc", Body: "proposed", Layout: before.Layout}); err != nil {
+	if _, err := h.docs.Propose(ctx, before, "Other", document.Draft{Body: "proposed", Layout: before.Layout}); err != nil {
 		t.Fatal(err)
 	}
 	s := h.m.documents
@@ -143,13 +139,13 @@ func TestDocumentAcceptRefusedWithUnsavedEdits(t *testing.T) {
 
 func TestDocumentChangeReviewScrollsAndBoundsChangeList(t *testing.T) {
 	ctx := context.Background()
-	h := newDocumentHarness(t, document.Draft{Title: "Long", Body: strings.Repeat("current line\n", 80) + "CURRENT-LAST"})
+	h := newDocumentHarness(t, document.Draft{Body: strings.Repeat("current line\n", 80) + "CURRENT-LAST"})
 	created, err := h.docs.Get(ctx, h.path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	change, err := h.docs.Propose(ctx, created, "Long proposal", document.Draft{
-		Title: "Long", Body: strings.Repeat("proposed line\n", 80) + "PROPOSED-LAST", Layout: created.Layout,
+		Body: strings.Repeat("proposed line\n", 80) + "PROPOSED-LAST", Layout: created.Layout,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -195,13 +191,13 @@ func TestDocumentChangeReviewScrollsAndBoundsChangeList(t *testing.T) {
 
 func TestDocumentChangeReviewReflowsLongLinesOnResize(t *testing.T) {
 	ctx := context.Background()
-	h := newDocumentHarness(t, document.Draft{Title: "Long", Body: strings.Repeat("c", 90) + "CURRENT-END"})
+	h := newDocumentHarness(t, document.Draft{Body: strings.Repeat("c", 90) + "CURRENT-END"})
 	created, err := h.docs.Get(ctx, h.path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	change, err := h.docs.Propose(ctx, created, "Long proposal", document.Draft{
-		Title: "Long", Body: strings.Repeat("p", 90) + "PROPOSED-END", Layout: created.Layout,
+		Body: strings.Repeat("p", 90) + "PROPOSED-END", Layout: created.Layout,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -255,16 +251,20 @@ func TestToolbarMouseClickAndUnsavedEscape(t *testing.T) {
 	}
 }
 
-func TestAltFormattingFromTitleFocusesBody(t *testing.T) {
+func TestAltFormattingFromToolbarFocusesBody(t *testing.T) {
 	h := newDocumentHarness(t, document.Draft{})
 	s := h.m.documents
+	h.key("tab")
+	if s.focus != focusToolbar || s.body.Focused() {
+		t.Fatal("Tab did not move focus from the body to the toolbar")
+	}
 	h.send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b"), Alt: true})
 	h.typeText("x")
-	if !s.body.Focused() || s.titleInput.Focused() {
-		t.Fatal("formatting from the title did not focus the body")
+	if !s.body.Focused() {
+		t.Fatal("formatting from the toolbar did not focus the body")
 	}
-	if s.body.Value() != "**x**" || s.titleInput.Value() != "report" {
-		t.Fatalf("body = %q, title = %q", s.body.Value(), s.titleInput.Value())
+	if s.body.Value() != "**x**" {
+		t.Fatalf("body = %q", s.body.Value())
 	}
 }
 
@@ -291,7 +291,7 @@ func TestSmallTerminalQDoesNotQuitDirtyDocument(t *testing.T) {
 	if h.quit {
 		t.Fatal("q quit the editor with unsaved changes")
 	}
-	h.m.documents.titleInput.SetValue("report")
+	h.m.documents.body.SetValue("")
 	h.key("q")
 	if !h.quit {
 		t.Fatal("q did not quit a clean editor")
@@ -325,24 +325,23 @@ func TestCancelledImageLoadIsDiscarded(t *testing.T) {
 }
 
 func TestEditorRefusesDocumentItCannotPreserve(t *testing.T) {
-	long := strings.Repeat("t", 250)
+	body := "before\x1b[2Jafter"
 	h := newHarness(t, "")
-	if _, err := h.docs.Create(context.Background(), h.path, document.Draft{Title: long, Body: "body"}); err != nil {
+	if _, err := h.docs.Create(context.Background(), h.path, document.Draft{Body: body}); err != nil {
 		t.Fatal(err)
 	}
 	h.open(artifact.DocumentKind)
 	if h.m.stage != stageFailed || !strings.Contains(h.m.errMessage, "exceeds editor limits") {
 		t.Fatalf("stage = %d, error = %q", h.m.stage, h.m.errMessage)
 	}
-	if stored, err := h.docs.Get(context.Background(), h.path); err != nil || stored.Title != long {
-		t.Fatalf("stored title changed: %q, %v", stored.Title, err)
+	if stored, err := h.docs.Get(context.Background(), h.path); err != nil || stored.Body != body {
+		t.Fatalf("stored body changed: %q, %v", stored.Body, err)
 	}
 }
 
 func TestDocumentAutosaveIsOfferedOnReopen(t *testing.T) {
-	h := newDocumentHarness(t, document.Draft{Title: "Before", Body: "# Before\n\nOriginal"})
+	h := newDocumentHarness(t, document.Draft{Body: "# Before\n\nOriginal"})
 	s := h.m.documents
-	s.titleInput.SetValue("After")
 	s.body.SetValue("# After\n\nRecovered")
 	s.layout.Columns = 2
 	h.run(s.saveDocumentRecovery(s.autosaveSession))
@@ -356,16 +355,14 @@ func TestDocumentAutosaveIsOfferedOnReopen(t *testing.T) {
 	}
 	h.key("r")
 	s = h.m.documents
-	if h.m.stage != stageDocument || s.titleInput.Value() != "After" ||
-		s.body.Value() != "# After\n\nRecovered" || s.layout.Columns != 2 {
-		t.Fatalf("recovered editor: stage=%d title=%q body=%q columns=%d",
-			h.m.stage, s.titleInput.Value(), s.body.Value(), s.layout.Columns)
+	if h.m.stage != stageDocument || s.body.Value() != "# After\n\nRecovered" || s.layout.Columns != 2 {
+		t.Fatalf("recovered editor: stage=%d body=%q columns=%d", h.m.stage, s.body.Value(), s.layout.Columns)
 	}
 	if s.snapshot.Body != "# Before\n\nOriginal" {
 		t.Fatalf("recovered snapshot body = %q", s.snapshot.Body)
 	}
 	h.key("ctrl+s")
-	if d, err := h.docs.Get(context.Background(), h.path); err != nil || d.Title != "After" || d.Layout.Columns != 2 {
+	if d, err := h.docs.Get(context.Background(), h.path); err != nil || d.Body != "# After\n\nRecovered" || d.Layout.Columns != 2 {
 		t.Fatalf("saved recovered document = %+v, %v", d, err)
 	}
 	if h.hasDraft() {

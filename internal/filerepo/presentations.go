@@ -67,6 +67,6 @@ func decodePresentation(path string, content []byte) (presentation.Presentation,
 	if err != nil {
 		return presentation.Presentation{}, fmt.Errorf("decode %s: %w", path, err)
 	}
-	item.Path = path
+	setRuntimeIdentity(&item.Artifact, path)
 	return item, nil
 }

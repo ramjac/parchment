@@ -69,7 +69,7 @@ func (r *Repository) SaveRecovery(ctx context.Context, draft recovery.Draft) err
 	if err := ensureDirectory(filepath.Dir(file)); err != nil {
 		return fmt.Errorf("create recovery storage: %w", err)
 	}
-	if err := writeAtomic(file, data, 0o600); err != nil {
+	if err := writeAtomic(ctx, file, data, 0o600); err != nil {
 		return fmt.Errorf("save recovery draft: %w", err)
 	}
 	return nil

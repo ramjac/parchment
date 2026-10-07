@@ -18,18 +18,22 @@ import (
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/filerepo"
 	"example.com/parchment/internal/note"
+	"example.com/parchment/internal/presentation"
+	"example.com/parchment/internal/spreadsheet"
 )
 
 // harness wires the editor to real services over files in temporary
 // directories: one for the artifact and one standing in for ~/.parchment.
 type harness struct {
-	t     *testing.T
-	m     *Model
-	repo  *filerepo.Repository
-	notes *note.Service
-	docs  *document.Service
-	path  string
-	quit  bool
+	t      *testing.T
+	m      *Model
+	repo   *filerepo.Repository
+	notes  *note.Service
+	docs   *document.Service
+	sheets *spreadsheet.Service
+	decks  *presentation.Service
+	path   string
+	quit   bool
 }
 
 func newHarness(t *testing.T, kind artifact.Kind) *harness {
@@ -41,6 +45,7 @@ func newHarness(t *testing.T, kind artifact.Kind) *harness {
 	h := &harness{
 		t: t, repo: repo,
 		notes: note.NewService(repo, 10), docs: document.NewService(repo, 10),
+		sheets: spreadsheet.NewService(repo, 10), decks: presentation.NewService(repo, 10),
 		path: filepath.Join(t.TempDir(), "report.md"),
 	}
 	h.open(kind)
@@ -51,14 +56,15 @@ func newHarness(t *testing.T, kind artifact.Kind) *harness {
 // `parchment tui` again would.
 func (h *harness) open(kind artifact.Kind) {
 	h.t.Helper()
-	model := NewModel(Config{Path: h.path, Kind: kind, Notes: h.notes, Documents: h.docs, Recovery: h.repo})
+	model := NewModel(Config{
+		Path: h.path, Kind: kind, Notes: h.notes, Documents: h.docs,
+		Spreadsheets: h.sheets, Presentations: h.decks, Recovery: h.repo,
+	})
 	h.m, h.quit = &model, false
 	// Blinking cursors return tea.Tick commands, which the harness would run
 	// synchronously.
-	h.m.titleInput.Cursor.SetMode(cursor.CursorStatic)
 	h.m.bodyInput.Cursor.SetMode(cursor.CursorStatic)
 	if s := h.m.documents; s != nil {
-		s.titleInput.Cursor.SetMode(cursor.CursorStatic)
 		s.body.Cursor.SetMode(cursor.CursorStatic)
 		s.promptInput.Cursor.SetMode(cursor.CursorStatic)
 	}
@@ -201,7 +207,6 @@ func TestEditorOpensFileOfWrongKindAsFailure(t *testing.T) {
 
 func TestNoteSaveStaysInEditorAndCloseQuits(t *testing.T) {
 	h := newHarness(t, artifact.NoteKind)
-	h.key("tab")
 	h.typeText("Hello")
 	if !h.m.dirty() {
 		t.Fatal("typing did not dirty the editor")
@@ -225,7 +230,6 @@ func TestNoteSaveStaysInEditorAndCloseQuits(t *testing.T) {
 
 func TestNoteEscapeConfirmsBeforeDiscarding(t *testing.T) {
 	h := newHarness(t, artifact.NoteKind)
-	h.key("tab")
 	h.typeText("unsaved")
 	h.key("esc")
 	if h.quit || !strings.Contains(h.m.status, "Unsaved changes") {
@@ -291,7 +295,6 @@ func TestSmallTerminalQClosesOnlyCleanNote(t *testing.T) {
 func TestViewSanitizesTerminalControlSequences(t *testing.T) {
 	h := newHarness(t, artifact.NoteKind)
 	h.m.path = "/tmp/parch\x1b]52;c;payload\a.md"
-	h.m.titleInput.SetValue("Edited\x1b[2J")
 	h.m.bodyInput.SetValue("Body\x1b]52;c;payload\a\nnext")
 	view := h.m.View()
 	for _, unsafe := range []string{"\x1b[2J", "\x1b]52;", "\x07"} {
@@ -309,17 +312,16 @@ func TestViewSanitizesTerminalControlSequences(t *testing.T) {
 }
 
 func TestEditorRefusesNotesItWouldNormalize(t *testing.T) {
-	cases := []struct{ name, title, body string }{
-		{"long title", strings.Repeat("x", 201), "body"},
-		{"tab in body", "Title", "before\tafter"},
-		{"control in body", "Title", "before\x1b[2Jafter"},
-		{"oversized body", "Title", strings.Repeat("x", 1_000_001)},
-		{"too many body lines", "Title", strings.Repeat("x\n", 10_000) + "last"},
+	cases := []struct{ name, body string }{
+		{"tab in body", "before\tafter"},
+		{"control in body", "before\x1b[2Jafter"},
+		{"oversized body", strings.Repeat("x", 1_000_001)},
+		{"too many body lines", strings.Repeat("x\n", 10_000) + "last"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t, "")
-			if _, err := h.notes.Create(context.Background(), h.path, tc.title, tc.body); err != nil {
+			if _, err := h.notes.Create(context.Background(), h.path, tc.body); err != nil {
 				t.Fatal(err)
 			}
 			h.open(artifact.NoteKind)
@@ -333,10 +335,9 @@ func TestEditorRefusesNotesItWouldNormalize(t *testing.T) {
 func TestNoteSaveRejectsConcurrentExternalChange(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t, artifact.NoteKind)
-	h.key("tab")
 	h.typeText("Edited body")
 	external := h.m.snapshot
-	external.Title = "Changed in a text editor"
+	external.Body = "Changed in a text editor"
 	if err := h.repo.Transition(ctx, h.path, &h.m.snapshot, &external); err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +346,7 @@ func TestNoteSaveRejectsConcurrentExternalChange(t *testing.T) {
 		t.Fatalf("stage = %d, error = %q", h.m.stage, h.m.errMessage)
 	}
 	current, err := h.notes.Get(ctx, h.path)
-	if err != nil || current.Title != external.Title || current.Body != "" {
+	if err != nil || current.Body != external.Body {
 		t.Fatalf("stale editor overwrote external update: %+v, %v", current, err)
 	}
 }
@@ -356,7 +357,7 @@ func TestPreviewCanScroll(t *testing.T) {
 	for i := range lines {
 		lines[i] = fmt.Sprintf("Line %02d", i+1)
 	}
-	if _, err := h.notes.Create(context.Background(), h.path, "Long", strings.Join(lines, "\n")); err != nil {
+	if _, err := h.notes.Create(context.Background(), h.path, strings.Join(lines, "\n")); err != nil {
 		t.Fatal(err)
 	}
 	h.open(artifact.NoteKind)
@@ -380,7 +381,7 @@ func TestPreviewCanScroll(t *testing.T) {
 func TestNoteAutosaveIsOfferedOnReopen(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t, "")
-	created, err := h.notes.Create(ctx, h.path, "Original", "Before")
+	created, err := h.notes.Create(ctx, h.path, "Before")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,8 +391,6 @@ func TestNoteAutosaveIsOfferedOnReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.open(artifact.NoteKind)
-	h.m.titleInput.SetValue("Recovered title")
-	h.m.titleInput.CursorEnd()
 	h.m.bodyInput.SetValue("Recovered body")
 	h.run(h.m.saveNoteRecovery(h.m.autosaveSession))
 	if !h.hasDraft() {
@@ -400,12 +399,12 @@ func TestNoteAutosaveIsOfferedOnReopen(t *testing.T) {
 
 	// Simulate a crash: reopen without closing.
 	h.open(artifact.NoteKind)
-	if h.m.stage != stageRecovery || !strings.Contains(h.m.View(), "Recovered title") {
+	if h.m.stage != stageRecovery || !strings.Contains(h.m.View(), "autosaved draft") {
 		t.Fatalf("stage = %d, view:\n%s", h.m.stage, h.m.View())
 	}
 	h.key("r")
-	if h.m.stage != stageNote || h.m.titleInput.Value() != "Recovered title" || h.m.bodyInput.Value() != "Recovered body" {
-		t.Fatalf("recovered editor: stage=%d title=%q body=%q", h.m.stage, h.m.titleInput.Value(), h.m.bodyInput.Value())
+	if h.m.stage != stageNote || h.m.bodyInput.Value() != "Recovered body" {
+		t.Fatalf("recovered editor: stage=%d body=%q", h.m.stage, h.m.bodyInput.Value())
 	}
 	if string(h.m.snapshot.Blocks["parchment-extra"]) != `{"kept":true}` || h.m.snapshot.Body != "Before" {
 		t.Fatalf("recovered snapshot = %+v", h.m.snapshot)
@@ -442,7 +441,7 @@ func TestRecoveryWarnsWhenFileChangedAfterDraft(t *testing.T) {
 	h := newHarness(t, artifact.NoteKind)
 	h.m.bodyInput.SetValue("draft")
 	h.run(h.m.saveNoteRecovery(h.m.autosaveSession))
-	if _, err := h.notes.Update(ctx, h.path, "report", "changed elsewhere"); err != nil {
+	if _, err := h.notes.Update(ctx, h.path, "changed elsewhere"); err != nil {
 		t.Fatal(err)
 	}
 	h.open(artifact.NoteKind)
@@ -454,7 +453,6 @@ func TestRecoveryWarnsWhenFileChangedAfterDraft(t *testing.T) {
 
 func TestClosingNormallyDeletesDraft(t *testing.T) {
 	h := newHarness(t, artifact.NoteKind)
-	h.key("tab")
 	h.typeText("unsaved")
 	h.run(h.m.saveNoteRecovery(h.m.autosaveSession))
 	if !h.hasDraft() {
@@ -464,5 +462,82 @@ func TestClosingNormallyDeletesDraft(t *testing.T) {
 	h.key("esc")
 	if !h.quit || h.hasDraft() {
 		t.Fatalf("close: quit=%t draft remains=%t", h.quit, h.hasDraft())
+	}
+}
+
+func TestKindPromptCreatesSpreadsheetAndPresentation(t *testing.T) {
+	h := newHarness(t, "")
+	if view := h.m.View(); !strings.Contains(view, "s  Spreadsheet") || !strings.Contains(view, "p  Presentation") {
+		t.Fatalf("kind prompt = %q", view)
+	}
+	h.key("s")
+	if h.m.stage != stageSpreadsheet || !strings.Contains(h.m.View(), "A1") {
+		t.Fatalf("stage = %d, error = %q, view:\n%s", h.m.stage, h.m.errMessage, h.m.View())
+	}
+	if book, err := h.sheets.Get(context.Background(), h.path); err != nil || len(book.Sheets) != 1 {
+		t.Fatalf("created spreadsheet = %+v, %v", book, err)
+	}
+	h.key("q")
+	if !h.quit {
+		t.Fatal("q did not quit the spreadsheet")
+	}
+
+	h = newHarness(t, "")
+	h.key("p")
+	if h.m.stage != stagePresentation || !strings.Contains(h.m.View(), "report") {
+		t.Fatalf("stage = %d, error = %q, view:\n%s", h.m.stage, h.m.errMessage, h.m.View())
+	}
+	deck, err := h.decks.Get(context.Background(), h.path)
+	if err != nil || !strings.HasPrefix(deck.Source, "# report") {
+		t.Fatalf("created presentation = %+v, %v", deck, err)
+	}
+}
+
+func TestPlainMarkdownOpensAsNoteAndStaysPlain(t *testing.T) {
+	h := newHarness(t, "")
+	if err := os.WriteFile(h.path, []byte("# Plain\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.open(artifact.NoteKind)
+	if h.m.stage != stageNote || h.m.bodyInput.Value() != "# Plain\n" {
+		t.Fatalf("stage = %d, body = %q, error = %q", h.m.stage, h.m.bodyInput.Value(), h.m.errMessage)
+	}
+	h.typeText("more")
+	h.key("ctrl+s")
+	data, err := os.ReadFile(h.path)
+	if err != nil || strings.Contains(string(data), "parchment-meta") || !strings.Contains(string(data), "more") {
+		t.Fatalf("saved plain Markdown = %q, %v", data, err)
+	}
+}
+
+func TestNoteClickPositionsBodyCursor(t *testing.T) {
+	h := newHarness(t, artifact.NoteKind)
+	h.m.bodyInput.SetValue("alpha\nbravo")
+	h.send(tea.MouseMsg{X: 2, Y: 4, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	h.m.bodyInput.InsertString("!")
+	if h.m.bodyInput.Value() != "alpha\nbr!avo" {
+		t.Fatalf("note click positioned cursor at %q", h.m.bodyInput.Value())
+	}
+	h.send(tea.MouseMsg{X: 1, Y: 0, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	h.m.bodyInput.InsertString("?")
+	if h.m.bodyInput.Value() != "alpha\nbr!?avo" {
+		t.Fatalf("header click moved note cursor: %q", h.m.bodyInput.Value())
+	}
+}
+
+func TestDocumentClickPositionsBodyCursor(t *testing.T) {
+	h := newHarness(t, artifact.DocumentKind)
+	s := h.m.documents
+	s.body.SetValue("alpha\nbravo")
+	y := toolbarTop + s.toolbarRows() + 1
+	h.send(tea.MouseMsg{X: 2, Y: y + 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	s.body.InsertString("!")
+	if s.body.Value() != "alpha\nbr!avo" {
+		t.Fatalf("document click positioned cursor at %q", s.body.Value())
+	}
+	h.send(tea.MouseMsg{X: 1, Y: 0, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	s.body.InsertString("?")
+	if s.body.Value() != "alpha\nbr!?avo" {
+		t.Fatalf("header click moved document cursor: %q", s.body.Value())
 	}
 }

@@ -106,8 +106,9 @@ func TestEncodeDecodeSinglePresentationFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !Equal(item, decoded) {
-		t.Fatalf("round trip changed presentation:\noriginal: %+v\ndecoded: %+v", item, decoded)
+	if item.Source != decoded.Source || item.Version != decoded.Version ||
+		!item.CreatedAt.Equal(decoded.CreatedAt) || !item.ModifiedAt.Equal(decoded.ModifiedAt) {
+		t.Fatalf("round trip changed persisted presentation content:\noriginal: %+v\ndecoded: %+v", item, decoded)
 	}
 }
 
@@ -319,7 +320,7 @@ func TestUpdateUsesExpectedSnapshotAndUndoRedo(t *testing.T) {
 	ctx := context.Background()
 	repository := newMemoryRepository()
 	service := NewService(repository, 10)
-	item, err := service.Create(ctx, "demo.md", "Demo", "# Demo\n\n## Start\n\nBefore\n")
+	item, err := service.Create(ctx, "demo.md", "# Demo\n\n## Start\n\nBefore\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,8 +347,8 @@ func TestUpdateUsesExpectedSnapshotAndUndoRedo(t *testing.T) {
 		t.Fatalf("redo = %+v, %v", redone, err)
 	}
 	renamed, err := service.Update(ctx, redone, "# Renamed\n\n## Start\n\nAfter\n")
-	if err != nil || renamed.Title != "Renamed" {
-		t.Fatalf("Markdown title update = %+v, %v", renamed, err)
+	if err != nil || renamed.Title != redone.Title {
+		t.Fatalf("Markdown title update changed transient artifact title: %+v, %v", renamed, err)
 	}
 }
 
@@ -356,7 +357,7 @@ var testNow = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 func testPresentation() Presentation {
 	return Presentation{
 		Artifact: artifact.Artifact{
-			ID: "0123456789abcdef0123456789abcdef", Kind: artifact.PresentationKind,
+			ID: "p12345", Kind: artifact.PresentationKind,
 			Title: "Demo", CreatedAt: testNow, ModifiedAt: testNow,
 			FormatVersion: artifact.FormatVersion,
 		},
@@ -402,17 +403,7 @@ func TestMetadataBlockIsInspectable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if file.Artifact.Title != "Demo" || file.Artifact.Kind != artifact.PresentationKind {
+	if file.Artifact.Kind != artifact.PresentationKind {
 		t.Fatalf("embedded metadata = %+v", file.Artifact)
-	}
-}
-
-func TestEqualTreatsEmptyMetadataSlicesAsNil(t *testing.T) {
-	left := testPresentation()
-	right := left
-	right.Tags = []string{}
-	right.Links = []string{}
-	if !Equal(left, right) {
-		t.Fatal("empty tags and links should equal nil slices")
 	}
 }

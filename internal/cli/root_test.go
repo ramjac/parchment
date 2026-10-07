@@ -53,24 +53,26 @@ func TestNoteCLI(t *testing.T) {
 	if got := strings.TrimSpace(output); got != path {
 		t.Fatalf("create printed %q, want %q", got, path)
 	}
-	c.must("note", "add", "ideas.md", "terminal")
-	c.must("note", "edit", path, "--title", "Renamed", "--body", "updated content")
+	c.must("note", "edit", path, "--body", "updated content")
 	shown := c.must("note", "show", "ideas.md")
-	if !strings.Contains(shown, "# Renamed") || !strings.Contains(shown, "updated content") {
+	if shown != "updated content" {
 		t.Fatalf("show output = %q", shown)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(data), "```parchment-meta\n") || !strings.Contains(string(data), `"terminal"`) ||
-		strings.Contains(string(data), "location") {
+	if !strings.HasPrefix(string(data), "```parchment-meta\n") ||
+		strings.Contains(string(data), "location") || strings.Contains(string(data), `"title"`) {
 		t.Fatalf("note file = %s", data)
 	}
 	if _, err := c.run("note", "create", "ideas.md"); err == nil {
 		t.Fatal("create overwrote an existing file")
 	}
-	for _, removed := range [][]string{{"note", "list"}, {"search", "x"}, {"note", "delete", "ideas.md", "--yes"}} {
+	for _, removed := range [][]string{
+		{"note", "list"}, {"search", "x"}, {"note", "delete", "ideas.md", "--yes"},
+		{"note", "rename", "ideas.md", "x"}, {"note", "add", "ideas.md", "tag"}, {"note", "create", "x.md", "--title", "x"},
+	} {
 		if _, err := c.run(removed...); err == nil {
 			t.Fatalf("removed command %v still runs", removed)
 		}
@@ -80,30 +82,14 @@ func TestNoteCLI(t *testing.T) {
 	}
 }
 
-func TestNoteCreateTitleDefaultsToFileName(t *testing.T) {
+func TestNoteEditRequiresBody(t *testing.T) {
 	c := newCLI(t)
-	c.must("note", "create", "Meeting notes.md")
-	if shown := c.must("note", "show", "Meeting notes.md"); !strings.HasPrefix(shown, "# Meeting notes\n") {
+	c.must("note", "create", "note.md", "--body", "Original body")
+	if _, err := c.run("note", "edit", "note.md"); err == nil {
+		t.Fatal("edit without --body succeeded")
+	}
+	if shown := c.must("note", "show", "note.md"); shown != "Original body" {
 		t.Fatalf("show = %q", shown)
-	}
-	c.must("note", "create", "other.md", "--title", "Explicit")
-	if shown := c.must("note", "show", "other.md"); !strings.HasPrefix(shown, "# Explicit\n") {
-		t.Fatalf("show = %q", shown)
-	}
-}
-
-func TestCLIEditChangesOnlySpecifiedFields(t *testing.T) {
-	c := newCLI(t)
-	c.must("note", "create", "note.md", "--title", "Original title", "--body", "Original body")
-	c.must("note", "edit", "note.md", "--title", "New title")
-	shown := c.must("note", "show", "note.md")
-	if !strings.Contains(shown, "# New title") || !strings.Contains(shown, "Original body") {
-		t.Fatalf("title-only edit changed unspecified body: %q", shown)
-	}
-	c.must("note", "edit", "note.md", "--body", "New body")
-	shown = c.must("note", "show", "note.md")
-	if !strings.Contains(shown, "# New title") || !strings.Contains(shown, "New body") {
-		t.Fatalf("body-only edit changed unspecified title: %q", shown)
 	}
 }
 
@@ -135,7 +121,7 @@ func TestCLIKeepsOnlyConfigAndStateInHome(t *testing.T) {
 	}
 }
 
-func TestCLIRejectsWrongKindAndPlainMarkdown(t *testing.T) {
+func TestCLIRejectsWrongKindAndKeepsPlainMarkdownPlain(t *testing.T) {
 	c := newCLI(t)
 	c.must("document", "create", "report.md")
 	if _, err := c.run("note", "show", "report.md"); err == nil || !strings.Contains(err.Error(), "document") {
@@ -144,11 +130,15 @@ func TestCLIRejectsWrongKindAndPlainMarkdown(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(c.dir, "plain.md"), []byte("# Just Markdown\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.run("note", "edit", "plain.md", "--body", "x"); err == nil {
-		t.Fatal("edited a plain Markdown file that is not a Parchment artifact")
+	if shown := c.must("note", "show", "plain.md"); shown != "# Just Markdown\n" {
+		t.Fatalf("plain Markdown show = %q", shown)
 	}
-	if data, _ := os.ReadFile(filepath.Join(c.dir, "plain.md")); string(data) != "# Just Markdown\n" {
-		t.Fatalf("plain Markdown file changed: %q", data)
+	c.must("note", "edit", "plain.md", "--body", "# Edited\n")
+	if data, _ := os.ReadFile(filepath.Join(c.dir, "plain.md")); string(data) != "# Edited\n" {
+		t.Fatalf("plain Markdown file after edit: %q", data)
+	}
+	if _, err := c.run("document", "show", "plain.md"); err == nil {
+		t.Fatal("document show accepted plain Markdown")
 	}
 }
 
@@ -163,8 +153,14 @@ func TestResolveTUITarget(t *testing.T) {
 	if _, _, err := resolveTUITarget("note.md", "document"); err == nil {
 		t.Fatal("--kind document accepted for a note")
 	}
-	if _, _, err := resolveTUITarget("sheet.md", ""); err == nil || !strings.Contains(err.Error(), "parchment spreadsheet") {
-		t.Fatalf("spreadsheet in TUI = %v", err)
+	if _, kind, err := resolveTUITarget("sheet.md", ""); err != nil || kind != "spreadsheet" {
+		t.Fatalf("spreadsheet in TUI = %q, %v", kind, err)
+	}
+	if err := os.WriteFile(filepath.Join(c.dir, "plain.md"), []byte("text\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, kind, err := resolveTUITarget("plain.md", ""); err != nil || kind != "note" {
+		t.Fatalf("plain Markdown in TUI = %q, %v", kind, err)
 	}
 	if _, kind, err := resolveTUITarget("new.md", ""); err != nil || kind != "" {
 		t.Fatalf("missing file without --kind = %q, %v", kind, err)
@@ -172,10 +168,26 @@ func TestResolveTUITarget(t *testing.T) {
 	if _, kind, err := resolveTUITarget("new.md", "document"); err != nil || kind != "document" {
 		t.Fatalf("missing file with --kind = %q, %v", kind, err)
 	}
-	if _, _, err := resolveTUITarget("new.md", "spreadsheet"); err == nil {
-		t.Fatal("--kind spreadsheet accepted")
+	if _, kind, err := resolveTUITarget("new.md", "presentation"); err != nil || kind != "presentation" {
+		t.Fatalf("missing file with --kind presentation = %q, %v", kind, err)
+	}
+	if _, _, err := resolveTUITarget("new.md", "folder"); err == nil {
+		t.Fatal("--kind folder accepted")
 	}
 	if _, err := os.Stat(filepath.Join(c.dir, "new.md")); !os.IsNotExist(err) {
 		t.Fatalf("resolving a target created the file: %v", err)
+	}
+}
+
+func TestRootHelpAndSubcommandRouting(t *testing.T) {
+	c := newCLI(t)
+	if out := c.must(); !strings.Contains(out, "parchment [file]") {
+		t.Fatalf("root help = %q", out)
+	}
+	if _, err := c.run("a.md", "b.md"); err == nil {
+		t.Fatal("two file arguments accepted")
+	}
+	if out := c.must("note", "create", "note.md"); !strings.HasSuffix(strings.TrimSpace(out), "note.md") {
+		t.Fatalf("subcommand routed to the editor: %q", out)
 	}
 }

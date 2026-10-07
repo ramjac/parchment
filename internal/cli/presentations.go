@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -35,15 +34,7 @@ func addPresentationCommands(root *cobra.Command, streams output) {
 			if err != nil {
 				return err
 			}
-			title := titleFlag(cmd, path)
-			if !cmd.Flags().Changed("title") && strings.TrimSpace(source) != "" {
-				deck, err := presentation.Parse(source)
-				if err != nil {
-					return err
-				}
-				title = deck.Title
-			}
-			item, err := service.Create(cmd.Context(), path, title, source)
+			item, err := service.Create(cmd.Context(), path, source)
 			if err != nil {
 				return err
 			}
@@ -51,7 +42,6 @@ func addPresentationCommands(root *cobra.Command, streams output) {
 			return err
 		},
 	}
-	create.Flags().String("title", "", "presentation title (defaults to the source's '# Title' heading or the file name)")
 	create.Flags().String("body-file", "", "read Markdown presentation source from a file (- for standard input)")
 	group.AddCommand(create)
 

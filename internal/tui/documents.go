@@ -73,8 +73,7 @@ func (documentAutosaveFinishedMsg) isDocumentMessage() {}
 type editorFocus int
 
 const (
-	focusTitle editorFocus = iota
-	focusBody
+	focusBody editorFocus = iota
 	focusToolbar
 )
 
@@ -116,7 +115,6 @@ type documentsScreen struct {
 
 	// Editor state.
 	snapshot       document.Document
-	titleInput     textinput.Model
 	body           textarea.Model
 	layout         document.Layout
 	images         []document.Image
@@ -132,14 +130,11 @@ type documentsScreen struct {
 }
 
 type editorDraft struct {
-	title, body, images string
-	layout              document.Layout
+	body, images string
+	layout       document.Layout
 }
 
 func newDocumentsScreen(service *document.Service, path string, t theme, newContext func() (context.Context, context.CancelFunc)) *documentsScreen {
-	title := textinput.New()
-	title.Prompt = "Title: "
-	title.CharLimit = 200
 	body := textarea.New()
 	body.Prompt = ""
 	body.ShowLineNumbers = false
@@ -149,7 +144,7 @@ func newDocumentsScreen(service *document.Service, path string, t theme, newCont
 	prompt := textinput.New()
 	prompt.CharLimit = document.MaxRunningTextLength * 2
 	return &documentsScreen{
-		service: service, path: path, theme: t, titleInput: title, body: body, promptInput: prompt,
+		service: service, path: path, theme: t, body: body, promptInput: prompt,
 		changeReview: viewport.New(0, 0), newOperationContext: newContext,
 		canUndo: service.CanUndo(), canRedo: service.CanRedo(), layout: document.DefaultLayout(),
 	}
@@ -397,9 +392,8 @@ func (s *documentsScreen) setChangeReviewContent() {
 		return
 	}
 	content := fmt.Sprintf(
-		"%s  ·  %s  ·  %s\n\n--- Current: %s\n+++ Proposed: %s\n\nCurrent page setup:\n%s\n\nProposed page setup:\n%s\n\n--- Current Markdown ---\n%s\n\n+++ Proposed Markdown +++\n%s",
+		"%s  ·  %s  ·  %s\n\nCurrent page setup:\n%s\n\nProposed page setup:\n%s\n\n--- Current Markdown ---\n%s\n\n+++ Proposed Markdown +++\n%s",
 		change.ID, change.Status, sanitizeTerminalLine(change.Description),
-		sanitizeTerminalLine(change.Before.Title), sanitizeTerminalLine(change.After.Title),
 		changeLayoutDescription(change.Before.Layout), changeLayoutDescription(change.After.Layout),
 		sanitizeTerminalText(change.Before.Body), sanitizeTerminalText(change.After.Body),
 	)
@@ -549,7 +543,7 @@ func (s *documentsScreen) dirty() bool { return s.currentDraft() != s.original }
 
 func (s *documentsScreen) currentDraft() editorDraft {
 	return editorDraft{
-		title: s.titleInput.Value(), body: s.body.Value(), layout: s.layout, images: imageKey(s.images),
+		body: s.body.Value(), layout: s.layout, images: imageKey(s.images),
 	}
 }
 

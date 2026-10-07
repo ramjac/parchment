@@ -33,7 +33,6 @@ type Document struct {
 
 // Draft is the editable part of a document.
 type Draft struct {
-	Title  string
 	Body   string
 	Layout Layout
 	Images []Image
@@ -42,7 +41,6 @@ type Draft struct {
 // ChangeSnapshot captures the editable document fields without duplicating
 // embedded image data in the change log.
 type ChangeSnapshot struct {
-	Title      string   `json:"title"`
 	Body       string   `json:"body"`
 	Layout     Layout   `json:"layout"`
 	ImageNames []string `json:"images,omitempty"`
@@ -60,7 +58,7 @@ const (
 // until the proposal is accepted.
 type Change struct {
 	ID          string         `json:"id"`
-	DocumentID  string         `json:"document_id"`
+	DocumentID  string         `json:"-"` // bound to the open document's runtime ID, never persisted
 	Description string         `json:"description"`
 	CreatedAt   time.Time      `json:"created_at"`
 	ResolvedAt  *time.Time     `json:"resolved_at,omitempty"`
@@ -100,7 +98,7 @@ func (s *Service) Get(ctx context.Context, path string) (Document, error) {
 	return s.repository.GetDocument(ctx, path)
 }
 
-// Propose records a title, Markdown, or layout edit for later review without
+// Propose records a Markdown, or layout edit for later review without
 // changing the live document. Proposals may retain or remove embedded images,
 // but cannot add or replace their data.
 func (s *Service) Propose(ctx context.Context, before Document, description string, draft Draft) (Change, error) {
@@ -233,8 +231,8 @@ var ErrChangeNotFound = errors.New("document change not found")
 
 // Validate checks the persisted shape and consistency of a proposed change.
 func (c Change) Validate() error {
-	if !validArtifactID(c.ID) || !validArtifactID(c.DocumentID) {
-		return errors.New("document change IDs must be 32 lowercase hexadecimal characters")
+	if !validChangeID(c.ID) || !artifact.ValidIDForKind(c.DocumentID, artifact.DocumentKind) {
+		return errors.New("document change ID or artifact ID is invalid")
 	}
 	if strings.TrimSpace(c.Description) == "" || c.CreatedAt.IsZero() {
 		return errors.New("document change description and creation time are required")
@@ -263,7 +261,7 @@ func (c Change) Validate() error {
 	return nil
 }
 
-func validArtifactID(id string) bool {
+func validChangeID(id string) bool {
 	if len(id) != 32 {
 		return false
 	}
@@ -278,11 +276,8 @@ func validArtifactID(id string) bool {
 }
 
 func validateSnapshot(s ChangeSnapshot) error {
-	if !utf8.ValidString(s.Title) || !utf8.ValidString(s.Body) {
+	if !utf8.ValidString(s.Body) {
 		return errors.New("document snapshot text must be valid UTF-8")
-	}
-	if strings.TrimSpace(s.Title) == "" {
-		return errors.New("title is required")
 	}
 	if err := s.Layout.Validate(); err != nil {
 		return err
@@ -298,7 +293,7 @@ func validateSnapshot(s ChangeSnapshot) error {
 }
 
 func snapshot(d Document) ChangeSnapshot {
-	result := ChangeSnapshot{Title: d.Title, Body: d.Body, Layout: d.Layout}
+	result := ChangeSnapshot{Body: d.Body, Layout: d.Layout}
 	for _, img := range d.Images {
 		result.ImageNames = append(result.ImageNames, img.Name)
 	}
@@ -322,7 +317,7 @@ func sameSnapshot(left, right ChangeSnapshot) bool {
 }
 
 func applySnapshot(d *Document, s ChangeSnapshot) {
-	d.Title, d.Body, d.Layout = s.Title, s.Body, s.Layout
+	d.Body, d.Layout = s.Body, s.Layout
 	wanted := make(map[string]bool, len(s.ImageNames))
 	for _, name := range s.ImageNames {
 		wanted[name] = true
@@ -339,11 +334,10 @@ func applySnapshot(d *Document, s ChangeSnapshot) {
 // Create writes a new document file at path. A zero Layout selects
 // DefaultLayout. Creation is not undoable; Parchment never deletes files.
 func (s *Service) Create(ctx context.Context, path string, draft Draft) (Document, error) {
-	idBytes := make([]byte, 16)
-	if _, err := rand.Read(idBytes); err != nil {
-		return Document{}, fmt.Errorf("generate document ID: %w", err)
+	id, err := artifact.NewID(artifact.DocumentKind)
+	if err != nil {
+		return Document{}, err
 	}
-	id := hex.EncodeToString(idBytes)
 	now := s.now().UTC()
 	if draft.Layout == (Layout{}) {
 		draft.Layout = DefaultLayout()
@@ -359,7 +353,7 @@ func (s *Service) Create(ctx context.Context, path string, draft Draft) (Documen
 	if err := s.repository.TransitionDocument(ctx, path, nil, &d); err != nil {
 		return Document{}, err
 	}
-	return d, nil
+	return s.repository.GetDocument(ctx, path)
 }
 
 // Save applies an edit only if the document still matches expected, so an
@@ -378,14 +372,6 @@ func (s *Service) Modify(ctx context.Context, path, description string, edit fun
 		return Document{}, err
 	}
 	return s.apply(ctx, before, description, edit)
-}
-
-// Rename changes a document's title without changing its file or ID.
-func (s *Service) Rename(ctx context.Context, path, title string) (Document, error) {
-	return s.Modify(ctx, path, "Rename document", func(d *Document) error {
-		d.Title = title
-		return nil
-	})
 }
 
 // SetLayout replaces the page layout.
@@ -409,43 +395,6 @@ func (s *Service) AddImage(ctx context.Context, path, alt string, data []byte) (
 		return nil
 	})
 	return updated, img.Name, err
-}
-
-// AddTag adds a unique tag to a document.
-func (s *Service) AddTag(ctx context.Context, path, tag string) error {
-	tag = strings.TrimSpace(tag)
-	if tag == "" {
-		return errors.New("tag is required")
-	}
-	_, err := s.Modify(ctx, path, "Add tag", func(d *Document) error {
-		for _, existing := range d.Tags {
-			if existing == tag {
-				return nil
-			}
-		}
-		d.Tags = append(d.Tags, tag)
-		return nil
-	})
-	return err
-}
-
-// RemoveTag removes a tag from a document.
-func (s *Service) RemoveTag(ctx context.Context, path, tag string) error {
-	tag = strings.TrimSpace(tag)
-	if tag == "" {
-		return errors.New("tag is required")
-	}
-	_, err := s.Modify(ctx, path, "Remove tag", func(d *Document) error {
-		kept := d.Tags[:0:0]
-		for _, existing := range d.Tags {
-			if existing != tag {
-				kept = append(kept, existing)
-			}
-		}
-		d.Tags = kept
-		return nil
-	})
-	return err
 }
 
 // Undo reverses the most recent document change.
@@ -474,7 +423,6 @@ func WithImage(d Document, img Image) Document {
 }
 
 func applyDraft(d *Document, draft Draft) {
-	d.Title = draft.Title
 	d.Body = draft.Body
 	d.Layout = draft.Layout
 	d.Images = draft.Images
@@ -502,12 +450,8 @@ func (s *Service) apply(ctx context.Context, expected Document, description stri
 // normalize validates a document and prunes images that the body no longer
 // references, so the file holds only images in use.
 func normalize(d *Document) error {
-	d.Title = strings.TrimSpace(d.Title)
-	if !utf8.ValidString(d.Title) || !utf8.ValidString(d.Body) {
-		return errors.New("document title and body must be valid UTF-8")
-	}
-	if d.Title == "" {
-		return errors.New("document title is required")
+	if !utf8.ValidString(d.Body) {
+		return errors.New("document body must be valid UTF-8")
 	}
 	if err := d.Layout.Validate(); err != nil {
 		return err
@@ -541,8 +485,6 @@ func cloneDocument(d *Document) *Document {
 		return nil
 	}
 	clone := *d
-	clone.Tags = append([]string(nil), d.Tags...)
-	clone.Links = append([]string(nil), d.Links...)
 	clone.Images = make([]Image, len(d.Images))
 	for i, img := range d.Images {
 		clone.Images[i] = Image{Name: img.Name, Data: append([]byte(nil), img.Data...)}
@@ -610,18 +552,7 @@ func (o documentOperation) transition(ctx context.Context, expected, target *Doc
 
 // Equal reports whether two documents have the same persisted value.
 func Equal(left, right Document) bool {
-	if len(left.Tags) == 0 {
-		left.Tags = nil
-	}
-	if len(right.Tags) == 0 {
-		right.Tags = nil
-	}
-	if len(left.Links) == 0 {
-		left.Links = nil
-	}
-	if len(right.Links) == 0 {
-		right.Links = nil
-	}
+	left.Title, right.Title = "", ""
 	if len(left.Images) != len(right.Images) {
 		return false
 	}

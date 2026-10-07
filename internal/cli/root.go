@@ -5,8 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -27,12 +25,22 @@ type output struct {
 func New(stdout, stderr io.Writer) *cobra.Command {
 	streams := output{out: stdout, err: stderr}
 	root := &cobra.Command{
-		Use:           "parchment",
-		Short:         "Local-first notes, documents, spreadsheets, and presentations",
-		Long:          "Each Parchment artifact is an ordinary Markdown file that you name and place anywhere.\nConfiguration is read from ~/.parchment/parchment.toml, which is created on first use.",
-		Example:       "  parchment note create ~/Documents/ideas.md\n  parchment note show ~/Documents/ideas.md\n  parchment tui ~/Documents/ideas.md",
+		Use:   "parchment [file]",
+		Short: "Local-first notes, documents, spreadsheets, and presentations",
+		Long: "Each Parchment artifact is an ordinary Markdown file that you name and place anywhere.\n" +
+			"`parchment <file>` opens the file in the interactive editor, like `parchment tui <file>`.\n" +
+			"Plain Markdown files open as notes and stay plain Markdown.\n" +
+			"Configuration is read from ~/.parchment/parchment.toml, which is created on first use.",
+		Example:       "  parchment ~/Documents/ideas.md\n  parchment note create ~/Documents/ideas.md\n  parchment note show ~/Documents/ideas.md",
+		Args:          cobra.MaximumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return cmd.Help()
+			}
+			return runTUI(cmd, args[0], "")
+		},
 	}
 	root.SetOut(stdout)
 	root.SetErr(stderr)
@@ -51,7 +59,7 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 				return err
 			}
 			body, _ := cmd.Flags().GetString("body")
-			n, err := service.Create(cmd.Context(), path, titleFlag(cmd, path), body)
+			n, err := service.Create(cmd.Context(), path, body)
 			if err != nil {
 				return err
 			}
@@ -59,7 +67,6 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 			return err
 		},
 	}
-	create.Flags().String("title", "", "note title (defaults to the file name)")
 	create.Flags().String("body", "", "initial Markdown content")
 	notes.AddCommand(create)
 	notes.AddCommand(&cobra.Command{
@@ -73,77 +80,33 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(streams.out, "# %s\n\n%s", n.Title, n.Body)
+			_, err = io.WriteString(streams.out, n.Body)
 			return err
 		},
 	})
 	edit := &cobra.Command{
-		Use: "edit <file>", Short: "Replace a note title or body", Args: cobra.ExactArgs(1),
+		Use: "edit <file>", Short: "Replace a note's Markdown body", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := open(cmd)
 			if err != nil {
 				return err
 			}
-			title, _ := cmd.Flags().GetString("title")
+			if !cmd.Flags().Changed("body") {
+				return fmt.Errorf("nothing to change: pass --body")
+			}
 			body, _ := cmd.Flags().GetString("body")
-			var titleValue, bodyValue *string
-			if cmd.Flags().Changed("title") {
-				titleValue = &title
-			}
-			if cmd.Flags().Changed("body") {
-				bodyValue = &body
-			}
-			_, err = service.UpdateFields(cmd.Context(), args[0], titleValue, bodyValue)
+			_, err = service.Update(cmd.Context(), args[0], body)
 			return err
 		},
 	}
-	edit.Flags().String("title", "", "new note title")
 	edit.Flags().String("body", "", "new Markdown content")
 	notes.AddCommand(edit)
-	notes.AddCommand(&cobra.Command{
-		Use: "rename <file> <title>", Short: "Rename a note", Args: cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			_, service, err := open(cmd)
-			if err != nil {
-				return err
-			}
-			_, err = service.Rename(cmd.Context(), args[0], args[1])
-			return err
-		},
-	})
-	notes.AddCommand(tagCommand("add"))
-	notes.AddCommand(tagCommand("remove"))
 	addDocumentCommands(root, streams)
 	addSpreadsheetCommands(root, streams)
 	addPresentationCommands(root, streams)
 
 	root.AddCommand(tuiCommand())
 	return root
-}
-
-func quoteFields(values []string) string {
-	quoted := make([]string, len(values))
-	for i, value := range values {
-		quoted[i] = strconv.Quote(value)
-	}
-	return strings.Join(quoted, ", ")
-}
-
-func tagCommand(action string) *cobra.Command {
-	title := strings.ToUpper(action[:1]) + action[1:]
-	return &cobra.Command{
-		Use: action + " <file> <tag>", Short: title + " a note tag", Args: cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			_, service, err := open(cmd)
-			if err != nil {
-				return err
-			}
-			if action == "add" {
-				return service.AddTag(cmd.Context(), args[0], args[1])
-			}
-			return service.RemoveTag(cmd.Context(), args[0], args[1])
-		},
-	}
 }
 
 func open(cmd *cobra.Command) (*filerepo.Repository, *note.Service, error) {
@@ -176,20 +139,6 @@ func openPresentations(cmd *cobra.Command) (*filerepo.Repository, *presentation.
 		return nil, nil, err
 	}
 	return repo, presentation.NewService(repo, settings.UndoLimit), nil
-}
-
-// titleFlag returns --title, defaulting to the file's base name without its
-// extension.
-func titleFlag(cmd *cobra.Command, path string) string {
-	if title, _ := cmd.Flags().GetString("title"); cmd.Flags().Changed("title") {
-		return title
-	}
-	return defaultTitle(path)
-}
-
-func defaultTitle(path string) string {
-	base := filepath.Base(path)
-	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
 // openStore resolves ~/.parchment/parchment.toml (or PARCHMENT_CONFIG) and

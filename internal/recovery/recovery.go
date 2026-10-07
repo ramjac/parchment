@@ -12,7 +12,6 @@ type Draft struct {
 	// Path is the absolute artifact file path the draft belongs to.
 	Path      string          `json:"path"`
 	Kind      string          `json:"kind"`
-	Title     string          `json:"title"`
 	Data      json.RawMessage `json:"data"`
 	UpdatedAt time.Time       `json:"updated_at"`
 }

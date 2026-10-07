@@ -47,7 +47,7 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 			if err != nil {
 				return err
 			}
-			book, err := service.Create(cmd.Context(), path, titleFlag(cmd, path), rows)
+			book, err := service.Create(cmd.Context(), path, rows)
 			if err != nil {
 				return err
 			}
@@ -55,7 +55,6 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 			return err
 		},
 	}
-	create.Flags().String("title", "", "spreadsheet title (defaults to the file name)")
 	create.Flags().String("csv-file", "", "initialize cells from a CSV file")
 	group.AddCommand(create)
 

@@ -15,12 +15,11 @@ import (
 )
 
 // noteRecoveryData is the autosaved note editor state: the saved note the
-// edits started from and the unsaved title and body.
+// edits started from and the unsaved body.
 type noteRecoveryData struct {
 	Snapshot       note.Note                  `json:"snapshot"`
 	SnapshotBody   string                     `json:"snapshot_body"`
 	SnapshotBlocks map[string]json.RawMessage `json:"snapshot_blocks,omitempty"`
-	Title          string                     `json:"title"`
 	Body           string                     `json:"body"`
 }
 
@@ -51,13 +50,13 @@ func (m *Model) saveNoteRecovery(session uint64) tea.Cmd {
 	data := noteRecoveryData{
 		Snapshot: m.snapshot, SnapshotBody: m.snapshot.Body,
 		SnapshotBlocks: cloneRawMessages(m.snapshot.Blocks),
-		Title:          m.titleInput.Value(), Body: m.bodyInput.Value(),
+		Body:           m.bodyInput.Value(),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.autosaveCancel = cancel
 	store := m.recoveryStore
 	draft := recovery.Draft{
-		Path: m.path, Kind: string(artifact.NoteKind), Title: data.Title, UpdatedAt: time.Now().UTC(),
+		Path: m.path, Kind: string(artifact.NoteKind), UpdatedAt: time.Now().UTC(),
 	}
 	return func() tea.Msg {
 		encoded, err := json.Marshal(data)
@@ -102,15 +101,13 @@ func (m *Model) recoverDraft() tea.Cmd {
 			m.stage = stageFailed
 			return nil
 		}
-		m.titleInput.SetValue(data.Title)
-		m.titleInput.CursorEnd()
 		m.bodyInput.SetValue(data.Body)
 		m.stage = stageNote
 		m.status = "Recovered unsaved note draft"
 		if !note.Equal(snapshot, opened.note) {
 			m.status += "; the file changed after the draft was saved, so saving will report a conflict"
 		}
-		return tea.Batch(m.titleInput.Focus(), m.scheduleAutosave(m.autosaveSession))
+		return tea.Batch(m.bodyInput.Focus(), m.scheduleAutosave(m.autosaveSession))
 	case artifact.DocumentKind:
 		var data documentRecoveryData
 		if err := json.Unmarshal(draft.Data, &data); err != nil {

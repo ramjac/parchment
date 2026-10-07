@@ -67,6 +67,6 @@ func decodeSpreadsheet(path string, content []byte) (spreadsheet.Spreadsheet, er
 	if err != nil {
 		return spreadsheet.Spreadsheet{}, fmt.Errorf("decode %s: %w", path, err)
 	}
-	book.Path = path
+	setRuntimeIdentity(&book.Artifact, path)
 	return book, nil
 }

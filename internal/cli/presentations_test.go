@@ -40,8 +40,8 @@ func TestPresentationCLI(t *testing.T) {
 	if out := must("presentation", "show", id); out != editedSource {
 		t.Fatalf("edited source = %q", out)
 	}
-	if _, err := run("presentation", "create", "mismatch.md", "--title", "Mismatch", "--body-file", sourcePath); err == nil {
-		t.Fatal("mismatched Markdown title was accepted")
+	if _, err := run("presentation", "create", id, "--body-file", sourcePath); err == nil {
+		t.Fatal("create overwrote an existing presentation")
 	}
 	must("presentation", "create", "blank.md")
 	if out := must("presentation", "show", "blank.md"); !strings.HasPrefix(out, "# blank\n") {

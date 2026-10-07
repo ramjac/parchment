@@ -4,13 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
 
 	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -19,7 +17,9 @@ import (
 	"example.com/parchment/internal/artifactfile"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/note"
+	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/recovery"
+	"example.com/parchment/internal/spreadsheet"
 )
 
 // Config selects the one artifact file the interactive editor opens.
@@ -28,13 +28,12 @@ type Config struct {
 	Path string
 	// Kind is the artifact kind. When empty, the editor asks which kind to
 	// create.
-	Kind artifact.Kind
-	// Title is the title for a newly created file. It defaults to the file's
-	// base name without its extension.
-	Title     string
-	Notes     *note.Service
-	Documents *document.Service
-	Recovery  recovery.Store
+	Kind          artifact.Kind
+	Notes         *note.Service
+	Documents     *document.Service
+	Spreadsheets  *spreadsheet.Service
+	Presentations *presentation.Service
+	Recovery      recovery.Store
 }
 
 type stage int
@@ -45,6 +44,8 @@ const (
 	stageRecovery
 	stageNote
 	stageDocument
+	stageSpreadsheet
+	stagePresentation
 	stageFailed
 )
 
@@ -52,6 +53,8 @@ type fileOpenedMsg struct {
 	kind     artifact.Kind
 	note     note.Note
 	document document.Document
+	book     spreadsheet.Spreadsheet
+	deck     presentation.Presentation
 	created  bool
 	draft    recovery.Draft
 	hasDraft bool
@@ -84,13 +87,14 @@ type theme struct {
 	border  lipgloss.AdaptiveColor
 }
 
-// Model is the interactive editor for one note or document file. It owns UI
-// state only; artifact rules live in the note and document services.
+// Model is the interactive editor for one artifact file. It owns UI state
+// only; artifact rules live in the services.
 type Model struct {
 	path          string
 	kind          artifact.Kind
-	title         string
 	service       *note.Service
+	spreadsheets  *spreadsheet.Service
+	presentations *presentation.Service
 	recoveryStore recovery.Store
 	stage         stage
 	width         int
@@ -108,9 +112,7 @@ type Model struct {
 
 	// Note editor state.
 	snapshot          note.Note
-	originalTitle     string
 	originalBody      string
-	titleInput        textinput.Model
 	bodyInput         textarea.Model
 	previewing        bool
 	preview           viewport.Model
@@ -122,27 +124,22 @@ type Model struct {
 	autosaveScheduler func(uint64) tea.Cmd
 
 	documents *documentsScreen
+	sheet     *spreadsheetModel
+	deck      *presentationModel
 }
 
 // NewModel creates the interactive editor for config.Path.
 func NewModel(config Config) Model {
-	titleInput := textinput.New()
-	titleInput.Prompt = "Title: "
-	titleInput.CharLimit = 200
 	body := textarea.New()
 	body.Prompt = ""
 	body.ShowLineNumbers = false
 	body.Placeholder = "Write Markdown…"
 	body.CharLimit = 1_000_000
-	title := strings.TrimSpace(config.Title)
-	if title == "" {
-		base := filepath.Base(config.Path)
-		title = strings.TrimSuffix(base, filepath.Ext(base))
-	}
 	m := Model{
-		path: config.Path, kind: config.Kind, title: title,
-		service: config.Notes, recoveryStore: config.Recovery,
-		titleInput: titleInput, bodyInput: body, preview: viewport.New(0, 0),
+		path: config.Path, kind: config.Kind,
+		service: config.Notes, spreadsheets: config.Spreadsheets, presentations: config.Presentations,
+		recoveryStore: config.Recovery,
+		bodyInput:     body, preview: viewport.New(0, 0),
 		newOperationContext: func() (context.Context, context.CancelFunc) {
 			return context.WithCancel(context.Background())
 		},
@@ -183,11 +180,12 @@ func (m *Model) Init() tea.Cmd {
 }
 
 // openFile loads the file, creating it when missing, and looks for an
-// autosaved draft for its path.
+// autosaved draft of note or document edits for its path.
 func (m *Model) openFile(kind artifact.Kind) tea.Cmd {
 	m.kind, m.stage, m.pending = kind, stageOpening, true
 	ctx := m.startOperation()
-	path, title, notes, store := m.path, m.title, m.service, m.recoveryStore
+	path, notes, store := m.path, m.service, m.recoveryStore
+	sheets, decks := m.spreadsheets, m.presentations
 	var documents *document.Service
 	if m.documents != nil {
 		documents = m.documents.service
@@ -198,15 +196,29 @@ func (m *Model) openFile(kind artifact.Kind) tea.Cmd {
 		case kind == artifact.NoteKind && notes != nil:
 			msg.note, msg.err = notes.Get(ctx, path)
 			if errors.Is(msg.err, note.ErrNotFound) {
-				msg.note, msg.err = notes.Create(ctx, path, title, "")
+				msg.note, msg.err = notes.Create(ctx, path, "")
 				msg.created = true
 			}
 		case kind == artifact.DocumentKind && documents != nil:
 			msg.document, msg.err = documents.Get(ctx, path)
 			if errors.Is(msg.err, document.ErrNotFound) {
-				msg.document, msg.err = documents.Create(ctx, path, document.Draft{Title: title, Layout: document.DefaultLayout()})
+				msg.document, msg.err = documents.Create(ctx, path, document.Draft{Layout: document.DefaultLayout()})
 				msg.created = true
 			}
+		case kind == artifact.SpreadsheetKind && sheets != nil:
+			msg.book, msg.err = sheets.Get(ctx, path)
+			if errors.Is(msg.err, spreadsheet.ErrNotFound) {
+				msg.book, msg.err = sheets.Create(ctx, path, nil)
+				msg.created = true
+			}
+			return msg
+		case kind == artifact.PresentationKind && decks != nil:
+			msg.deck, msg.err = decks.Get(ctx, path)
+			if errors.Is(msg.err, presentation.ErrNotFound) {
+				msg.deck, msg.err = decks.Create(ctx, path, "")
+				msg.created = true
+			}
+			return msg
 		default:
 			msg.err = fmt.Errorf("the interactive editor cannot open %s artifacts", kind)
 		}
@@ -219,6 +231,14 @@ func (m *Model) openFile(kind artifact.Kind) tea.Cmd {
 
 // Update applies a terminal message to the editor.
 func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	switch {
+	case m.stage == stageSpreadsheet && m.sheet != nil:
+		_, cmd := m.sheet.Update(message)
+		return m, cmd
+	case m.stage == stagePresentation && m.deck != nil:
+		_, cmd := m.deck.Update(message)
+		return m, cmd
+	}
 	if size, ok := message.(tea.WindowSizeMsg); ok {
 		m.width, m.height = size.Width, size.Height
 		m.resizeEditors()
@@ -307,6 +327,14 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.loadNote(msg.note)
 		m.errMessage, m.status = "", msg.description
+	case tea.MouseMsg:
+		if m.stage == stageNote && !m.pending && !m.previewing &&
+			msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			// The body starts below the header, state, and blank lines.
+			if placeTextareaCursor(&m.bodyInput, msg.X, msg.Y-3) {
+				return m, m.bodyInput.Focus()
+			}
+		}
 	case tea.KeyMsg:
 		return m, m.updateKey(msg)
 	}
@@ -322,7 +350,25 @@ func (m *Model) enterEditor() tea.Cmd {
 			return nil
 		}
 		m.stage = stageNote
-		return tea.Batch(m.titleInput.Focus(), m.scheduleAutosave(m.autosaveSession))
+		return tea.Batch(m.bodyInput.Focus(), m.scheduleAutosave(m.autosaveSession))
+	case artifact.SpreadsheetKind:
+		m.sheet = newSpreadsheetModel(m.spreadsheets, m.path)
+		m.sheet.newOperationContext, m.sheet.theme = m.newOperationContext, m.theme
+		m.sheet.width, m.sheet.height = m.width, m.height
+		m.sheet.setBook(m.opened.book)
+		m.sheet.status = m.status
+		m.stage = stageSpreadsheet
+		_, cmd := m.sheet.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+		return cmd
+	case artifact.PresentationKind:
+		m.deck = newPresentationModel(m.presentations, m.path)
+		m.deck.newOperationContext, m.deck.theme = m.newOperationContext, m.theme
+		m.deck.width, m.deck.height = m.width, m.height
+		m.deck.setItem(m.opened.deck)
+		m.deck.status = m.status
+		m.stage = stagePresentation
+		_, cmd := m.deck.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+		return cmd
 	case artifact.DocumentKind:
 		cmd, ok := m.documents.startEdit(m.opened.document)
 		if !ok {
@@ -364,6 +410,14 @@ func (m *Model) updateKey(msg tea.KeyMsg) tea.Cmd {
 		case "d":
 			if m.documents != nil {
 				return m.openFile(artifact.DocumentKind)
+			}
+		case "s":
+			if m.spreadsheets != nil {
+				return m.openFile(artifact.SpreadsheetKind)
+			}
+		case "p":
+			if m.presentations != nil {
+				return m.openFile(artifact.PresentationKind)
 			}
 		case "q", "esc", "ctrl+c":
 			return tea.Quit
@@ -425,20 +479,9 @@ func (m *Model) updateNoteKey(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 		return m.history(key == "ctrl+z")
-	case "tab":
-		if m.titleInput.Focused() {
-			m.titleInput.Blur()
-			return m.bodyInput.Focus()
-		}
-		m.bodyInput.Blur()
-		return m.titleInput.Focus()
 	}
 	var command tea.Cmd
-	if m.titleInput.Focused() {
-		m.titleInput, command = m.titleInput.Update(msg)
-	} else {
-		m.bodyInput, command = m.bodyInput.Update(msg)
-	}
+	m.bodyInput, command = m.bodyInput.Update(msg)
 	return command
 }
 
@@ -504,18 +547,27 @@ func (m Model) View() string {
 		if m.documents != nil {
 			options += "\nd  Document"
 		}
+		if m.spreadsheets != nil {
+			options += "\ns  Spreadsheet"
+		}
+		if m.presentations != nil {
+			options += "\np  Presentation"
+		}
 		return header + "\n\nThis file does not exist yet. What kind of artifact should Parchment create?\n\n" +
 			options + "\n\nq quits without creating the file" + m.statusLine()
 	case stageRecovery:
 		draft := m.opened.draft
 		return header + "\n\nAn autosaved draft of unsaved edits to this file exists.\n\n" +
-			"Draft title: " + sanitizeTerminalLine(draft.Title) + "\n" +
-			"Autosaved:   " + draft.UpdatedAt.Local().Format("2006-01-02 15:04") + "\n\n" +
+			"Autosaved: " + draft.UpdatedAt.Local().Format("2006-01-02 15:04") + "\n\n" +
 			"r  Recover the draft into the editor\n" +
 			"d  Discard the draft and open the saved file\n" +
 			"q  Quit and keep the draft" + m.statusLine()
 	case stageDocument:
 		return m.documents.view(header)
+	case stageSpreadsheet:
+		return m.sheet.View()
+	case stagePresentation:
+		return m.deck.View()
 	}
 	state := "Editing note"
 	if m.dirty() {
@@ -524,12 +576,10 @@ func (m Model) View() string {
 	if m.previewing {
 		return header + "\nPreview  ·  ↑/↓ scroll  ·  Esc returns to the editor\n" + m.preview.View() + m.statusLine()
 	}
-	titleInput := m.titleInput
-	titleInput.SetValue(sanitizeTerminalLine(titleInput.Value()))
 	bodyInput := m.bodyInput
-	bodyInput.SetValue(sanitizeTerminalText(bodyInput.Value()))
-	return header + "\n" + state + "  ·  Tab switches fields  ·  Ctrl+S saves  ·  F5 preview  ·  Ctrl+Z/Ctrl+R undo/redo  ·  Esc quits\n\n" +
-		titleInput.View() + "\n\n" + bodyInput.View() + m.statusLine()
+	sanitizeTextareaView(&bodyInput)
+	return header + "\n" + state + "  ·  Ctrl+S saves  ·  F5 preview  ·  Ctrl+Z/Ctrl+R undo/redo  ·  Esc quits\n\n" +
+		bodyInput.View() + m.statusLine()
 }
 
 func (m Model) tooSmall() bool { return m.width < 40 || m.height < 10 }
@@ -560,16 +610,13 @@ func (m *Model) refreshHistoryAvailability() {
 // startEdit loads n into the editor, refusing notes the editor widgets would
 // truncate or alter.
 func (m *Model) startEdit(n note.Note) bool {
-	m.titleInput.SetValue(n.Title)
 	m.bodyInput.SetValue(n.Body)
-	if m.titleInput.Value() != n.Title || m.bodyInput.Value() != n.Body {
-		m.errMessage = "This note exceeds editor limits or contains text the editor cannot preserve; edit it with `parchment note edit` or a text editor"
+	if m.bodyInput.Value() != n.Body {
+		m.errMessage = "This note exceeds editor limits or contains text the editor cannot preserve; edit it with a text editor"
 		m.status = ""
 		return false
 	}
 	m.loadNote(n)
-	m.titleInput.Focus()
-	m.bodyInput.Blur()
 	m.resizeEditors()
 	m.errMessage = ""
 	m.startAutosaveSession()
@@ -579,19 +626,17 @@ func (m *Model) startEdit(n note.Note) bool {
 // loadNote makes n the saved state of the editor.
 func (m *Model) loadNote(n note.Note) {
 	m.snapshot = n
-	m.originalTitle, m.originalBody = n.Title, n.Body
-	m.titleInput.SetValue(n.Title)
-	m.titleInput.CursorEnd()
+	m.originalBody = n.Body
 	m.bodyInput.SetValue(n.Body)
 	m.discardWarning = false
 }
 
 func (m *Model) saveNote() tea.Cmd {
-	title, body, expected := strings.TrimSpace(m.titleInput.Value()), m.bodyInput.Value(), m.snapshot
+	body, expected := m.bodyInput.Value(), m.snapshot
 	store, path, service := m.recoveryStore, m.path, m.service
 	ctx := m.startOperation()
 	return func() tea.Msg {
-		n, err := service.UpdateExpected(ctx, expected, title, body)
+		n, err := service.UpdateExpected(ctx, expected, body)
 		var cleanupErr error
 		if err == nil && store != nil {
 			cleanupErr = store.DeleteRecovery(context.Background(), path)
@@ -616,35 +661,27 @@ func (m *Model) finishOperation() {
 func (m *Model) resizePreview() {
 	m.preview.Width, m.preview.Height = max(m.width-2, 1), max(m.height-4, 1)
 	n := m.snapshot
-	n.Title, n.Body = m.titleInput.Value(), m.bodyInput.Value()
+	n.Body = m.bodyInput.Value()
 	m.preview.SetContent(preview(n))
 	m.preview.GotoTop()
 }
 
 func (m *Model) resizeEditors() {
 	width := max(m.width-8, 20)
-	m.titleInput.Width = width
 	m.bodyInput.SetWidth(width)
-	m.bodyInput.SetHeight(max(m.height-7, 3))
+	m.bodyInput.SetHeight(max(m.height-5, 3))
 	if m.previewing {
 		m.resizePreview()
 	}
 }
 
 func (m Model) dirty() bool {
-	return m.stage == stageNote && (m.titleInput.Value() != m.originalTitle || m.bodyInput.Value() != m.originalBody)
+	return m.stage == stageNote && m.bodyInput.Value() != m.originalBody
 }
 
 func preview(n note.Note) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\n", sanitizeTerminalLine(n.Title))
-	if len(n.Tags) > 0 {
-		tags := make([]string, len(n.Tags))
-		for i, tag := range n.Tags {
-			tags[i] = sanitizeTerminalLine(tag)
-		}
-		fmt.Fprintf(&b, "\nTags: #%s\n", strings.Join(tags, " #"))
-	}
 	fmt.Fprintf(&b, "\n%s", sanitizeTerminalText(artifactfile.StripPrivateBlocks(n.Body)))
 	return b.String()
 }
@@ -676,7 +713,16 @@ func Run(ctx context.Context, config Config) error {
 	if model.documents != nil {
 		model.documents.newOperationContext = model.newOperationContext
 	}
-	program := tea.NewProgram(&model, tea.WithAltScreen(), tea.WithContext(ctx))
+	program := tea.NewProgram(&model, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx))
 	_, err := program.Run()
 	return err
+}
+
+// sanitizeTextareaView replaces control characters in a textarea copy that is
+// only rendered, leaving the canonical editor value untouched.
+func sanitizeTextareaView(editor *textarea.Model) {
+	value := editor.Value()
+	if sanitized := sanitizeTerminalText(value); sanitized != value {
+		editor.SetValue(sanitized)
+	}
 }

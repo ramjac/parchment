@@ -40,7 +40,7 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			if err != nil {
 				return err
 			}
-			d, err := service.Create(cmd.Context(), path, document.Draft{Title: titleFlag(cmd, path), Body: body, Layout: layout})
+			d, err := service.Create(cmd.Context(), path, document.Draft{Body: body, Layout: layout})
 			if err != nil {
 				return err
 			}
@@ -48,7 +48,6 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			return err
 		},
 	}
-	create.Flags().String("title", "", "document title (defaults to the file name)")
 	addBodyFlags(create)
 	addLayoutFlags(create)
 	docs.AddCommand(create)
@@ -64,13 +63,13 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(streams.out, "# %s\n\n%s", d.Title, d.Body)
+			_, err = io.WriteString(streams.out, d.Body)
 			return err
 		},
 	})
 
 	edit := &cobra.Command{
-		Use: "edit <file>", Short: "Replace a document title or body", Args: cobra.ExactArgs(1),
+		Use: "edit <file>", Short: "Replace a document's Markdown body", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
 			if err != nil {
@@ -80,21 +79,16 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			if err != nil {
 				return err
 			}
-			title, _ := cmd.Flags().GetString("title")
-			titleChanged := cmd.Flags().Changed("title")
+			if !bodyChanged {
+				return fmt.Errorf("nothing to change: pass --body or --body-file")
+			}
 			_, err = service.Modify(cmd.Context(), args[0], "Edit document", func(d *document.Document) error {
-				if titleChanged {
-					d.Title = title
-				}
-				if bodyChanged {
-					d.Body = body
-				}
+				d.Body = body
 				return nil
 			})
 			return err
 		},
 	}
-	edit.Flags().String("title", "", "new document title")
 	addBodyFlags(edit)
 	docs.AddCommand(edit)
 
@@ -113,10 +107,6 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			if err != nil {
 				return err
 			}
-			title, _ := cmd.Flags().GetString("title")
-			if !cmd.Flags().Changed("title") {
-				title = current.Title
-			}
 			if !bodyChanged {
 				body = current.Body
 			}
@@ -126,7 +116,7 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			}
 			description, _ := cmd.Flags().GetString("description")
 			change, err := service.Propose(cmd.Context(), current, description, document.Draft{
-				Title: title, Body: body, Layout: layout,
+				Body: body, Layout: layout,
 			})
 			if err != nil {
 				return err
@@ -135,7 +125,6 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			return err
 		},
 	}
-	propose.Flags().String("title", "", "proposed document title")
 	propose.Flags().String("description", "", "short description of the proposed edit")
 	addBodyFlags(propose)
 	addLayoutFlags(propose)
@@ -175,9 +164,9 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 				return err
 			}
 			_, err = fmt.Fprintf(streams.out,
-				"change: %s\nstatus: %s\ndescription: %s\ncreated: %s\n\n--- Current: %s\n+++ Proposed: %s\n\n--- Current page setup ---\n%s\n+++ Proposed page setup +++\n%s\n\n--- Current Markdown ---\n%s\n\n+++ Proposed Markdown +++\n%s\n",
+				"change: %s\nstatus: %s\ndescription: %s\ncreated: %s\n\n--- Current page setup ---\n%s\n+++ Proposed page setup +++\n%s\n\n--- Current Markdown ---\n%s\n\n+++ Proposed Markdown +++\n%s\n",
 				change.ID, change.Status, change.Description, change.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-				change.Before.Title, change.After.Title, changeLayoutDescription(change.Before.Layout),
+				changeLayoutDescription(change.Before.Layout),
 				changeLayoutDescription(change.After.Layout), change.Before.Body, change.After.Body)
 			return err
 		},
@@ -204,36 +193,6 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			return service.Reject(cmd.Context(), args[0], args[1])
 		},
 	})
-
-	docs.AddCommand(&cobra.Command{
-		Use: "rename <file> <title>", Short: "Rename a document", Args: cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			_, service, err := openDocuments(cmd)
-			if err != nil {
-				return err
-			}
-			_, err = service.Rename(cmd.Context(), args[0], args[1])
-			return err
-		},
-	})
-
-	for _, action := range []string{"add", "remove"} {
-		action := action
-		docs.AddCommand(&cobra.Command{
-			Use: "tag-" + action + " <file> <tag>", Short: map[string]string{"add": "Add", "remove": "Remove"}[action] + " a document tag",
-			Args: cobra.ExactArgs(2),
-			RunE: func(cmd *cobra.Command, args []string) error {
-				_, service, err := openDocuments(cmd)
-				if err != nil {
-					return err
-				}
-				if action == "add" {
-					return service.AddTag(cmd.Context(), args[0], args[1])
-				}
-				return service.RemoveTag(cmd.Context(), args[0], args[1])
-			},
-		})
-	}
 
 	layoutCommand := &cobra.Command{
 		Use: "layout <file>", Short: "Show or change page layout",

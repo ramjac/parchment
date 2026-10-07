@@ -2,13 +2,9 @@ package note
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"reflect"
-	"strings"
 	"time"
 
 	"example.com/parchment/internal/artifact"
@@ -49,42 +45,38 @@ func (s *Service) Get(ctx context.Context, path string) (Note, error) {
 }
 
 // Create writes a new note file at path. Creating a file is not recorded in
-// undo history; Parchment never deletes the user's files.
-func (s *Service) Create(ctx context.Context, path, title, body string) (Note, error) {
-	if strings.TrimSpace(title) == "" {
-		return Note{}, errors.New("note title is required")
+// undo history; Parchment never deletes the user's files. The note's title is
+// derived from its file name.
+func (s *Service) Create(ctx context.Context, path, body string) (Note, error) {
+	id, err := artifact.NewID(artifact.NoteKind)
+	if err != nil {
+		return Note{}, err
 	}
-	idBytes := make([]byte, 16)
-	if _, err := rand.Read(idBytes); err != nil {
-		return Note{}, fmt.Errorf("generate note ID: %w", err)
-	}
-	id := hex.EncodeToString(idBytes)
 	now := s.now().UTC()
 	n := Note{Artifact: artifact.Artifact{
-		ID: id, Kind: artifact.NoteKind, Title: strings.TrimSpace(title),
-		CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
-		Path: path,
+		ID: id, Kind: artifact.NoteKind, CreatedAt: now, ModifiedAt: now,
+		FormatVersion: artifact.FormatVersion, Path: path,
 	}, Body: body}
 	if err := s.repository.Transition(ctx, path, nil, &n); err != nil {
 		return Note{}, err
 	}
-	return n, nil
+	return s.repository.Get(ctx, path)
 }
 
-// Update saves a note's title and Markdown body as one undoable change.
-func (s *Service) Update(ctx context.Context, path, title, body string) (Note, error) {
-	return s.UpdateFields(ctx, path, &title, &body)
+// Update replaces a note's Markdown body as one undoable change.
+func (s *Service) Update(ctx context.Context, path, body string) (Note, error) {
+	before, err := s.repository.Get(ctx, path)
+	if err != nil {
+		return Note{}, err
+	}
+	return s.UpdateExpected(ctx, before, body)
 }
 
 // UpdateExpected applies an edit only if the note still matches its snapshot.
-func (s *Service) UpdateExpected(ctx context.Context, expected Note, title, body string) (Note, error) {
-	if strings.TrimSpace(title) == "" {
-		return Note{}, errors.New("note title is required")
-	}
+func (s *Service) UpdateExpected(ctx context.Context, expected Note, body string) (Note, error) {
 	after := expected
-	after.Title = strings.TrimSpace(title)
 	after.Body = body
-	if after.Title == expected.Title && after.Body == expected.Body {
+	if after.Body == expected.Body {
 		return expected, nil
 	}
 	after.ModifiedAt = s.now().UTC()
@@ -92,89 +84,6 @@ func (s *Service) UpdateExpected(ctx context.Context, expected Note, title, body
 		return Note{}, err
 	}
 	return after, nil
-}
-
-// UpdateFields changes only the supplied title and body fields from one
-// repository snapshot, so omitted fields cannot overwrite concurrent updates.
-func (s *Service) UpdateFields(ctx context.Context, path string, title, body *string) (Note, error) {
-	before, err := s.repository.Get(ctx, path)
-	if err != nil {
-		return Note{}, err
-	}
-	nextTitle, nextBody := before.Title, before.Body
-	if title != nil {
-		nextTitle = *title
-	}
-	if body != nil {
-		nextBody = *body
-	}
-	return s.UpdateExpected(ctx, before, nextTitle, nextBody)
-}
-
-// Rename changes a note's title without changing its file or ID.
-func (s *Service) Rename(ctx context.Context, path, title string) (Note, error) {
-	before, err := s.repository.Get(ctx, path)
-	if err != nil {
-		return Note{}, err
-	}
-	if strings.TrimSpace(title) == "" {
-		return Note{}, errors.New("note title is required")
-	}
-	after := before
-	after.Title = strings.TrimSpace(title)
-	after.ModifiedAt = s.now().UTC()
-	if before.Title == after.Title {
-		return before, nil
-	}
-	if err := s.change(ctx, &before, &after, "Rename note"); err != nil {
-		return Note{}, err
-	}
-	return after, nil
-}
-
-// AddTag adds a unique tag to a note.
-func (s *Service) AddTag(ctx context.Context, path, tag string) error {
-	tag = strings.TrimSpace(tag)
-	if tag == "" {
-		return errors.New("tag is required")
-	}
-	before, err := s.repository.Get(ctx, path)
-	if err != nil {
-		return err
-	}
-	for _, existing := range before.Tags {
-		if existing == tag {
-			return nil
-		}
-	}
-	after := before
-	after.Tags = append(append([]string(nil), before.Tags...), tag)
-	after.ModifiedAt = s.now().UTC()
-	return s.change(ctx, &before, &after, "Add tag")
-}
-
-// RemoveTag removes a tag from a note.
-func (s *Service) RemoveTag(ctx context.Context, path, tag string) error {
-	tag = strings.TrimSpace(tag)
-	if tag == "" {
-		return errors.New("tag is required")
-	}
-	before, err := s.repository.Get(ctx, path)
-	if err != nil {
-		return err
-	}
-	after := before
-	after.Tags = nil
-	for _, existing := range before.Tags {
-		if existing != tag {
-			after.Tags = append(after.Tags, existing)
-		}
-	}
-	if len(after.Tags) == len(before.Tags) {
-		return nil
-	}
-	after.ModifiedAt = s.now().UTC()
-	return s.change(ctx, &before, &after, "Remove tag")
 }
 
 // Undo reverses the most recent note change.
@@ -200,8 +109,6 @@ func cloneNote(n *Note) *Note {
 		return nil
 	}
 	clone := *n
-	clone.Tags = append([]string(nil), n.Tags...)
-	clone.Links = append([]string(nil), n.Links...)
 	clone.Blocks = cloneBlocks(n.Blocks)
 	return &clone
 }
@@ -241,20 +148,11 @@ func (o noteOperation) transition(ctx context.Context, expected, target *Note) e
 	return o.repository.Transition(ctx, o.before.Path, expected, target)
 }
 
-// Equal reports whether two notes have the same persisted value.
+// Equal reports whether two notes have the same persisted value. Titles and
+// IDs are derived from the file path and are not compared.
 func Equal(left, right Note) bool {
-	if len(left.Tags) == 0 {
-		left.Tags = nil
-	}
-	if len(right.Tags) == 0 {
-		right.Tags = nil
-	}
-	if len(left.Links) == 0 {
-		left.Links = nil
-	}
-	if len(right.Links) == 0 {
-		right.Links = nil
-	}
+	left.Title, right.Title = "", ""
+	left.ID, right.ID = "", ""
 	return reflect.DeepEqual(left, right)
 }
 

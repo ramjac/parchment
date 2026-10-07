@@ -51,10 +51,10 @@ func TestArtifactsLiveAmongOtherFilesWithoutSidecars(t *testing.T) {
 	}
 	path := filepath.Join(folder, "ideas.md")
 	notes := note.NewService(repo, 10)
-	if _, err := notes.Create(ctx, path, "Ideas", "first"); err != nil {
+	if _, err := notes.Create(ctx, path, "first"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := notes.Update(ctx, path, "Ideas", "second"); err != nil {
+	if _, err := notes.Update(ctx, path, "second"); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.Join(names(t, folder), ","); got != "ideas.md,shopping.txt" {
@@ -85,13 +85,13 @@ func TestCreateIsExclusive(t *testing.T) {
 	if err := os.WriteFile(path, []byte("my own file\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := note.NewService(repo, 10).Create(ctx, path, "Note", ""); !errors.Is(err, filerepo.ErrExists) {
+	if _, err := note.NewService(repo, 10).Create(ctx, path, ""); !errors.Is(err, filerepo.ErrExists) {
 		t.Fatalf("create over existing file = %v", err)
 	}
 	if data, _ := os.ReadFile(path); string(data) != "my own file\n" {
 		t.Fatalf("existing file changed: %q", data)
 	}
-	if _, err := note.NewService(repo, 10).Create(ctx, filepath.Join(folder, "missing", "x.md"), "Note", ""); err == nil {
+	if _, err := note.NewService(repo, 10).Create(ctx, filepath.Join(folder, "missing", "x.md"), ""); err == nil {
 		t.Fatal("create made a missing parent directory")
 	}
 }
@@ -100,7 +100,7 @@ func TestKindDetectionAndMismatch(t *testing.T) {
 	ctx := context.Background()
 	repo, _, folder := newRepo(t)
 	path := filepath.Join(folder, "report.md")
-	if _, err := document.NewService(repo, 10).Create(ctx, path, document.Draft{Title: "Report"}); err != nil {
+	if _, err := document.NewService(repo, 10).Create(ctx, path, document.Draft{}); err != nil {
 		t.Fatal(err)
 	}
 	if kind, err := filerepo.Kind(path); err != nil || kind != artifact.DocumentKind {
@@ -118,8 +118,8 @@ func TestKindDetectionAndMismatch(t *testing.T) {
 	if _, err := filerepo.Kind(plain); !errors.Is(err, filerepo.ErrNotArtifact) {
 		t.Fatalf("Kind of plain Markdown = %v", err)
 	}
-	if _, err := repo.Get(ctx, plain); !errors.Is(err, filerepo.ErrNotArtifact) {
-		t.Fatalf("Get of plain Markdown = %v", err)
+	if _, err := repo.GetDocument(ctx, plain); !errors.Is(err, filerepo.ErrNotArtifact) {
+		t.Fatalf("GetDocument of plain Markdown = %v", err)
 	}
 	if _, err := repo.Get(ctx, filepath.Join(folder, "absent.md")); !errors.Is(err, note.ErrNotFound) {
 		t.Fatalf("Get of missing file = %v", err)
@@ -131,7 +131,7 @@ func TestTransitionDetectsExternalEdits(t *testing.T) {
 	repo, _, folder := newRepo(t)
 	path := filepath.Join(folder, "note.md")
 	notes := note.NewService(repo, 10)
-	loaded, err := notes.Create(ctx, path, "Title", "original")
+	loaded, err := notes.Create(ctx, path, "original")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestTransitionDetectsExternalEdits(t *testing.T) {
 	if err := os.WriteFile(path, []byte(edited), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := notes.UpdateExpected(ctx, loaded, "Title", "stale"); err == nil ||
+	if _, err := notes.UpdateExpected(ctx, loaded, "stale"); err == nil ||
 		!strings.Contains(err.Error(), "changed since it was loaded") {
 		t.Fatalf("stale update = %v", err)
 	}
@@ -160,7 +160,7 @@ func TestUpdatesPreserveModeAndSymlinks(t *testing.T) {
 	repo, _, folder := newRepo(t)
 	target := filepath.Join(folder, "real.md")
 	notes := note.NewService(repo, 10)
-	if _, err := notes.Create(ctx, target, "Real", "one"); err != nil {
+	if _, err := notes.Create(ctx, target, "one"); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(target, 0o644); err != nil {
@@ -170,7 +170,7 @@ func TestUpdatesPreserveModeAndSymlinks(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := notes.Update(ctx, link, "Real", "two"); err != nil {
+	if _, err := notes.Update(ctx, link, "two"); err != nil {
 		t.Fatal(err)
 	}
 	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
@@ -189,7 +189,7 @@ func TestRepositoryNeverDeletesFiles(t *testing.T) {
 	ctx := context.Background()
 	repo, _, folder := newRepo(t)
 	path := filepath.Join(folder, "note.md")
-	n, err := note.NewService(repo, 10).Create(ctx, path, "Title", "")
+	n, err := note.NewService(repo, 10).Create(ctx, path, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,11 +206,11 @@ func TestDocumentProposalsAreStoredInTheFile(t *testing.T) {
 	repo, _, folder := newRepo(t)
 	path := filepath.Join(folder, "doc.md")
 	docs := document.NewService(repo, 10)
-	created, err := docs.Create(ctx, path, document.Draft{Title: "Doc", Body: "before"})
+	created, err := docs.Create(ctx, path, document.Draft{Body: "before"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	change, err := docs.Propose(ctx, created, "Edit", document.Draft{Title: "Doc", Body: "after", Layout: created.Layout})
+	change, err := docs.Propose(ctx, created, "Edit", document.Draft{Body: "after", Layout: created.Layout})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,20 +232,20 @@ func TestSpreadsheetAndPresentationRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	repo, _, folder := newRepo(t)
 	sheetPath := filepath.Join(folder, "budget.md")
-	book, err := spreadsheet.NewService(repo, 10).Create(ctx, sheetPath, "Budget", [][]spreadsheet.Cell{{{Value: "A"}, {Value: "1"}}})
+	book, err := spreadsheet.NewService(repo, 10).Create(ctx, sheetPath, [][]spreadsheet.Cell{{{Value: "A"}, {Value: "1"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := repo.GetSpreadsheet(ctx, sheetPath)
-	if err != nil || loaded.Title != "Budget" || loaded.Path != book.Path {
+	if err != nil || loaded.Title != "budget" || loaded.Path != book.Path {
 		t.Fatalf("spreadsheet = %+v, %v", loaded, err)
 	}
 	deckPath := filepath.Join(folder, "talk.md")
-	if _, err := presentation.NewService(repo, 10).Create(ctx, deckPath, "Talk", "# Talk\n\n## One\n\nHi\n"); err != nil {
+	if _, err := presentation.NewService(repo, 10).Create(ctx, deckPath, "# Talk\n\n## One\n\nHi\n"); err != nil {
 		t.Fatal(err)
 	}
 	deck, err := repo.GetPresentation(ctx, deckPath)
-	if err != nil || deck.Title != "Talk" {
+	if err != nil || deck.Title != "talk" {
 		t.Fatalf("presentation = %+v, %v", deck, err)
 	}
 }
@@ -257,12 +257,12 @@ func TestRecoveryDraftsLiveInStateDirectory(t *testing.T) {
 	if _, ok, err := repo.LoadRecovery(ctx, path); ok || err != nil {
 		t.Fatalf("missing draft = %t, %v", ok, err)
 	}
-	draft := recovery.Draft{Path: path, Kind: "note", Title: "Draft", Data: json.RawMessage(`{"x":1}`), UpdatedAt: time.Unix(10, 0).UTC()}
+	draft := recovery.Draft{Path: path, Kind: "note", Data: json.RawMessage(`{"x":1}`), UpdatedAt: time.Unix(10, 0).UTC()}
 	if err := repo.SaveRecovery(ctx, draft); err != nil {
 		t.Fatal(err)
 	}
 	loaded, ok, err := repo.LoadRecovery(ctx, path)
-	if err != nil || !ok || loaded.Title != "Draft" || string(loaded.Data) != `{"x":1}` || !loaded.UpdatedAt.Equal(draft.UpdatedAt) {
+	if err != nil || !ok || string(loaded.Data) != `{"x":1}` || !loaded.UpdatedAt.Equal(draft.UpdatedAt) {
 		t.Fatalf("loaded draft = %+v, %t, %v", loaded, ok, err)
 	}
 	if _, ok, _ := repo.LoadRecovery(ctx, filepath.Join(folder, "other.md")); ok {
@@ -290,5 +290,71 @@ func TestRecoveryDraftsLiveInStateDirectory(t *testing.T) {
 	}
 	if err := repo.SaveRecovery(ctx, recovery.Draft{Path: path, Kind: "note"}); err == nil {
 		t.Fatal("empty draft saved")
+	}
+}
+
+func TestPlainMarkdownOpensAsNoteAndStaysPlain(t *testing.T) {
+	ctx := context.Background()
+	repo, _, folder := newRepo(t)
+	path := filepath.Join(folder, "plain.md")
+	if err := os.WriteFile(path, []byte("# Plain\n\nText.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	notes := note.NewService(repo, 10)
+	loaded, err := notes.Get(ctx, path)
+	if err != nil || loaded.Body != "# Plain\n\nText.\n" || loaded.Title != "plain" ||
+		!artifact.ValidIDForKind(loaded.ID, artifact.NoteKind) {
+		t.Fatalf("plain note = %+v, %v", loaded, err)
+	}
+	if _, err := notes.UpdateExpected(ctx, loaded, "# Plain\n\nEdited.\n"); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(path); string(data) != "# Plain\n\nEdited.\n" {
+		t.Fatalf("plain file gained an envelope: %q", data)
+	}
+	if _, err := notes.Undo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(path); string(data) != "# Plain\n\nText.\n" {
+		t.Fatalf("undo = %q", data)
+	}
+	if err := os.WriteFile(path, []byte("changed elsewhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := notes.Redo(ctx); err == nil {
+		t.Fatal("redo overwrote an external edit to a plain file")
+	}
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o644 {
+			t.Fatalf("plain file mode = %v, %v", info.Mode(), err)
+		}
+	}
+}
+
+func TestExamplesOpenWithPathDerivedIdentity(t *testing.T) {
+	ctx := context.Background()
+	repo, _, _ := newRepo(t)
+	example := func(name string) string {
+		path, err := filepath.Abs(filepath.Join("../../examples", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	n, err := repo.Get(ctx, example("note.md"))
+	if err != nil || n.Title != "note" || !artifact.ValidIDForKind(n.ID, artifact.NoteKind) {
+		t.Fatalf("note example = %+v, %v", n.Artifact, err)
+	}
+	d, err := repo.GetDocument(ctx, example("document.md"))
+	if err != nil || d.Title != "document" || !artifact.ValidIDForKind(d.ID, artifact.DocumentKind) {
+		t.Fatalf("document example = %+v, %v", d.Artifact, err)
+	}
+	b, err := repo.GetSpreadsheet(ctx, example("budget.md"))
+	if err != nil || b.Title != "budget" || !artifact.ValidIDForKind(b.ID, artifact.SpreadsheetKind) {
+		t.Fatalf("spreadsheet example = %+v, %v", b.Artifact, err)
+	}
+	p, err := repo.GetPresentation(ctx, example("presentation.md"))
+	if err != nil || p.Title != "presentation" || !artifact.ValidIDForKind(p.ID, artifact.PresentationKind) {
+		t.Fatalf("presentation example = %+v, %v", p.Artifact, err)
 	}
 }
