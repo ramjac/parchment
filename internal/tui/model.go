@@ -78,6 +78,8 @@ type autosaveTickMsg struct{ session uint64 }
 type autosaveFinishedMsg struct {
 	session uint64
 	err     error
+	// cleared reports that the draft was deleted because the editor was clean.
+	cleared bool
 }
 
 const autosaveInterval = 2 * time.Second
@@ -111,16 +113,18 @@ type Model struct {
 	opened fileOpenedMsg
 
 	// Note editor state.
-	snapshot          note.Note
-	originalBody      string
-	bodyInput         textarea.Model
-	previewing        bool
-	preview           viewport.Model
-	discardWarning    bool
-	canUndo           bool
-	canRedo           bool
-	autosaveSession   uint64
-	autosaveCancel    context.CancelFunc
+	snapshot        note.Note
+	originalBody    string
+	bodyInput       textarea.Model
+	previewing      bool
+	preview         viewport.Model
+	discardWarning  bool
+	canUndo         bool
+	canRedo         bool
+	autosaveSession uint64
+	autosaveCancel  context.CancelFunc
+	// draftStored reports that a recovery draft for this file may exist.
+	draftStored       bool
 	autosaveScheduler func(uint64) tea.Cmd
 
 	documents *documentsScreen
@@ -289,6 +293,9 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.autosaveCancel != nil {
 				m.autosaveCancel()
 				m.autosaveCancel = nil
+			}
+			if msg.cleared && msg.err == nil {
+				m.draftStored = false
 			}
 			if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 				m.errMessage = "Autosave failed: " + msg.err.Error()

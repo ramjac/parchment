@@ -53,6 +53,8 @@ type documentAutosaveTickMsg struct{ session uint64 }
 type documentAutosaveFinishedMsg struct {
 	session uint64
 	err     error
+	// cleared reports that the draft was deleted because the editor was clean.
+	cleared bool
 }
 
 // documentRecoveryData is the autosaved document editor state: the saved
@@ -111,7 +113,9 @@ type documentsScreen struct {
 	recoveryStore       recovery.Store
 	autosaveSession     uint64
 	autosaveCancel      context.CancelFunc
-	autosaveScheduler   func(uint64) tea.Cmd
+	// draftStored reports that a recovery draft for this file may exist.
+	draftStored       bool
+	autosaveScheduler func(uint64) tea.Cmd
 
 	// Editor state.
 	snapshot       document.Document
@@ -167,6 +171,9 @@ func (s *documentsScreen) update(message tea.Msg) tea.Cmd {
 			if s.autosaveCancel != nil {
 				s.autosaveCancel()
 				s.autosaveCancel = nil
+			}
+			if msg.cleared && msg.err == nil {
+				s.draftStored = false
 			}
 			if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 				s.errMessage = "Autosave failed: " + msg.err.Error()

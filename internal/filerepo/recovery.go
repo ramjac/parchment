@@ -66,13 +66,21 @@ func (r *Repository) SaveRecovery(ctx context.Context, draft recovery.Draft) err
 	if len(data) > maxRecoveryFileSize {
 		return fmt.Errorf("recovery draft exceeds %d bytes", maxRecoveryFileSize)
 	}
-	if err := ensureDirectory(filepath.Dir(file)); err != nil {
-		return fmt.Errorf("create recovery storage: %w", err)
-	}
-	if err := writeAtomic(ctx, file, data, 0o600); err != nil {
-		return fmt.Errorf("save recovery draft: %w", err)
-	}
-	return nil
+	// Saves and deletes share the write lock, and cancellation is checked
+	// again once it is held, so a cancelled autosave cannot recreate a draft
+	// after the editor has saved or closed and removed it.
+	return r.withLock(ctx, func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := ensureDirectory(filepath.Dir(file)); err != nil {
+			return fmt.Errorf("create recovery storage: %w", err)
+		}
+		if err := writeAtomic(ctx, file, data, 0o600); err != nil {
+			return fmt.Errorf("save recovery draft: %w", err)
+		}
+		return nil
+	})
 }
 
 // DeleteRecovery removes the autosaved draft for path, if any.
@@ -84,13 +92,15 @@ func (r *Repository) DeleteRecovery(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(file); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
+	return r.withLock(ctx, func() error {
+		if err := os.Remove(file); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			return fmt.Errorf("remove recovery draft: %w", err)
 		}
-		return fmt.Errorf("remove recovery draft: %w", err)
-	}
-	return syncDirectory(filepath.Dir(file))
+		return syncDirectory(filepath.Dir(file))
+	})
 }
 
 // recoveryFile maps an artifact path to its draft file, named by a hash of

@@ -45,8 +45,17 @@ func (m *Model) saveNoteRecovery(session uint64) tea.Cmd {
 		return nil
 	}
 	if !m.dirty() {
-		return m.scheduleAutosave(session)
+		if !m.draftStored {
+			return m.scheduleAutosave(session)
+		}
+		// The edits were reverted after a draft was autosaved; remove it so a
+		// crash does not offer changes the user already undid.
+		store, path := m.recoveryStore, m.path
+		return func() tea.Msg {
+			return autosaveFinishedMsg{session: session, err: store.DeleteRecovery(context.Background(), path), cleared: true}
+		}
 	}
+	m.draftStored = true
 	data := noteRecoveryData{
 		Snapshot: m.snapshot, SnapshotBody: m.snapshot.Body,
 		SnapshotBlocks: cloneRawMessages(m.snapshot.Blocks),
@@ -102,6 +111,7 @@ func (m *Model) recoverDraft() tea.Cmd {
 			return nil
 		}
 		m.bodyInput.SetValue(data.Body)
+		m.draftStored = true
 		m.stage = stageNote
 		m.status = "Recovered unsaved note draft"
 		if !note.Equal(snapshot, opened.note) {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -89,8 +90,23 @@ func Path() (string, error) {
 // EnsureDefault creates a minimal versioned configuration file at path, and
 // its parent directory with owner-only permissions, when the file is missing.
 func EnsureDefault(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
+	}
+	// MkdirAll leaves an existing directory's mode unchanged; keep
+	// Parchment's state directory owner-only even if it was pre-created.
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("inspect config directory: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return fmt.Errorf("restrict config directory permissions: %w", err)
+		}
 	}
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if errors.Is(err, os.ErrExist) {

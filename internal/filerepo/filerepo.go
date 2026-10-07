@@ -16,6 +16,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"example.com/parchment/internal/artifact"
@@ -189,7 +190,15 @@ func (r *Repository) update(ctx context.Context, path string, create bool, notFo
 		if err != nil {
 			return err
 		}
-		if err := writeAtomic(ctx, resolved, data, mode); err != nil {
+		if create {
+			err = createAtomic(ctx, resolved, data, mode)
+		} else {
+			err = writeAtomic(ctx, resolved, data, mode)
+		}
+		if errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("%s: %w", path, ErrExists)
+		}
+		if err != nil {
 			return fmt.Errorf("write %s: %w", path, err)
 		}
 		return nil
@@ -303,35 +312,92 @@ func openRegularFile(path string) (*os.File, error) {
 // directory followed by sync and rename. It does not create directories.
 // It honors cancellation up to the rename.
 func writeAtomic(ctx context.Context, path string, data []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	file, err := os.CreateTemp(dir, ".parchment-*")
+	temp, err := writeTemp(path, data, mode)
 	if err != nil {
 		return err
 	}
-	temp := file.Name()
 	defer func() { _ = os.Remove(temp) }()
-	if err := file.Chmod(mode); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := os.Rename(temp, path); err != nil {
 		return err
 	}
-	return syncDirectory(dir)
+	return syncDirectory(filepath.Dir(path))
+}
+
+// createAtomic writes data to a new file at path without ever replacing an
+// existing file, even one created concurrently by another program. It links a
+// fully written temporary file into place, which fails if path exists. On
+// filesystems without hard links it falls back to an exclusive create.
+func createAtomic(ctx context.Context, path string, data []byte, mode os.FileMode) error {
+	temp, err := writeTemp(path, data, mode)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(temp) }()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	switch err := os.Link(temp, path); {
+	case err == nil:
+		return syncDirectory(filepath.Dir(path))
+	case errors.Is(err, fs.ErrExist):
+		return err
+	}
+	return createExclusive(path, data, mode)
+}
+
+func createExclusive(path string, data []byte, mode os.FileMode) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	_, err = file.Write(data)
+	if err == nil {
+		err = file.Sync()
+	}
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	return syncDirectory(filepath.Dir(path))
+}
+
+// writeTemp writes data to a synced temporary file beside path and returns
+// its name.
+func writeTemp(path string, data []byte, mode os.FileMode) (string, error) {
+	file, err := os.CreateTemp(filepath.Dir(path), ".parchment-*")
+	if err != nil {
+		return "", err
+	}
+	temp := file.Name()
+	written := false
+	defer func() {
+		if !written {
+			_ = os.Remove(temp)
+		}
+	}()
+	if err := file.Chmod(mode); err != nil {
+		_ = file.Close()
+		return "", err
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return "", err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return "", err
+	}
+	if err := file.Close(); err != nil {
+		return "", err
+	}
+	written = true
+	return temp, nil
 }
 
 func ensureDirectory(path string) error {
@@ -344,6 +410,13 @@ func ensureDirectory(path string) error {
 	}
 	if !info.IsDir() {
 		return fmt.Errorf("%s is not a directory", path)
+	}
+	// MkdirAll leaves an existing directory's mode unchanged; keep
+	// application state owner-only even if the directory was pre-created.
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(path, 0o700); err != nil {
+			return fmt.Errorf("restrict permissions of %s: %w", path, err)
+		}
 	}
 	return nil
 }

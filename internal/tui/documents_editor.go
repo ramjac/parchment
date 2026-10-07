@@ -209,6 +209,7 @@ func (s *documentsScreen) restoreRecovery(data documentRecoveryData) (tea.Cmd, b
 	}
 	s.body.SetValue(data.Draft.Body)
 	s.body.CursorStart()
+	s.draftStored = true
 	s.layout, s.images = data.Draft.Layout, data.Draft.Images
 	if s.layout == (document.Layout{}) {
 		s.layout = document.DefaultLayout()
@@ -245,8 +246,17 @@ func (s *documentsScreen) saveDocumentRecovery(session uint64) tea.Cmd {
 		return nil
 	}
 	if !s.dirty() {
-		return s.scheduleDocumentAutosave(session)
+		if !s.draftStored {
+			return s.scheduleDocumentAutosave(session)
+		}
+		// The edits were reverted after a draft was autosaved; remove it so a
+		// crash does not offer changes the user already undid.
+		store, path := s.recoveryStore, s.path
+		return func() tea.Msg {
+			return documentAutosaveFinishedMsg{session: session, err: store.DeleteRecovery(context.Background(), path), cleared: true}
+		}
 	}
+	s.draftStored = true
 	data := documentRecoveryData{
 		Snapshot: s.snapshot, SnapshotBlocks: cloneRawMessages(s.snapshot.Blocks),
 		Draft: document.Draft{

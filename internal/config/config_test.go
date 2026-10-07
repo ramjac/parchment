@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -74,5 +75,24 @@ func TestPathAndEnsureDefault(t *testing.T) {
 	t.Setenv("PARCHMENT_CONFIG", override)
 	if path, err := Path(); err != nil || path != override {
 		t.Fatalf("override path = %q, %v", path, err)
+	}
+}
+
+func TestEnsureDefaultRestrictsExistingDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permissions")
+	}
+	dir := filepath.Join(t.TempDir(), ".parchment")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureDefault(filepath.Join(dir, "parchment.toml")); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(dir); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("config directory mode = %v, %v", info.Mode().Perm(), err)
 	}
 }

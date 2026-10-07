@@ -369,3 +369,18 @@ func TestDocumentAutosaveIsOfferedOnReopen(t *testing.T) {
 		t.Fatal("saving left the draft behind")
 	}
 }
+
+func TestRevertingDocumentEditsRemovesAutosavedDraft(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "Original"})
+	s := h.m.documents
+	s.body.SetValue("Unsaved")
+	h.run(s.saveDocumentRecovery(s.autosaveSession))
+	if !h.hasDraft() {
+		t.Fatal("autosave wrote no draft")
+	}
+	s.body.SetValue("Original")
+	h.run(s.saveDocumentRecovery(s.autosaveSession))
+	if h.hasDraft() || s.draftStored {
+		t.Fatalf("reverted editor kept its draft (draftStored=%t)", s.draftStored)
+	}
+}

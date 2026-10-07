@@ -541,3 +541,21 @@ func TestDocumentClickPositionsBodyCursor(t *testing.T) {
 		t.Fatalf("header click moved document cursor: %q", s.body.Value())
 	}
 }
+
+func TestRevertingNoteEditsRemovesAutosavedDraft(t *testing.T) {
+	h := newHarness(t, "")
+	if _, err := h.notes.Create(context.Background(), h.path, "Saved"); err != nil {
+		t.Fatal(err)
+	}
+	h.open(artifact.NoteKind)
+	h.m.bodyInput.SetValue("Unsaved")
+	h.run(h.m.saveNoteRecovery(h.m.autosaveSession))
+	if !h.hasDraft() {
+		t.Fatal("autosave wrote no draft")
+	}
+	h.m.bodyInput.SetValue("Saved")
+	h.run(h.m.saveNoteRecovery(h.m.autosaveSession))
+	if h.hasDraft() || h.m.draftStored {
+		t.Fatalf("reverted editor kept its draft (draftStored=%t)", h.m.draftStored)
+	}
+}

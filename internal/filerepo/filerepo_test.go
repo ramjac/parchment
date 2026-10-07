@@ -358,3 +358,44 @@ func TestExamplesOpenWithPathDerivedIdentity(t *testing.T) {
 		t.Fatalf("presentation example = %+v, %v", p.Artifact, err)
 	}
 }
+
+func TestStateDirectoriesAreMadeOwnerOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permissions")
+	}
+	state := filepath.Join(t.TempDir(), "state")
+	for _, dir := range []string{state, filepath.Join(state, "recovery")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repo, err := filerepo.New(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := recovery.Draft{Path: filepath.Join(t.TempDir(), "n.md"), Kind: "note", Data: json.RawMessage(`{}`)}
+	if err := repo.SaveRecovery(context.Background(), draft); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{state, filepath.Join(state, "recovery")} {
+		if info, err := os.Stat(dir); err != nil || info.Mode().Perm() != 0o700 {
+			t.Fatalf("%s mode = %v, %v", dir, info.Mode().Perm(), err)
+		}
+	}
+}
+
+func TestCancelledRecoverySaveWritesNothing(t *testing.T) {
+	repo, state, folder := newRepo(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	draft := recovery.Draft{Path: filepath.Join(folder, "n.md"), Kind: "note", Data: json.RawMessage(`{}`)}
+	if err := repo.SaveRecovery(ctx, draft); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled save = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(state, "recovery")); !os.IsNotExist(err) {
+		t.Fatalf("cancelled save touched recovery storage: %v", err)
+	}
+}
