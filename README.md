@@ -257,19 +257,15 @@ does not survive a restart.
 Parchment supports notes, documents, basic spreadsheets, and Markdown
 presentations. Planned work includes:
 
-- File navigation and organization, including Markdown links.
+- Markdown links for within the document navigation. Clicking on a link should move the document viewer view to the link target.
 - Explicit, opt-in conversion of a plain Markdown file into a Parchment
   artifact (plain Markdown currently opens and saves as a plain note).
 - Autosave recovery drafts for the spreadsheet and presentation editors.
-- Backup operations and optional provider integrations. Any Perkeep
-  integration should remain optional; no custom synchronization protocol is
-  planned.
 - Handling for commonly used editing key combinations like Ctrl+del to remove whole words. Ctrl+arrow for moving the cursor word by word. Tab for inserting several spaces or a tab.  Also Shift+arrow keys for selections.
 - Overall visual improvements
-  - Notes editor doesn't use full height of terminal
+  - Document viewer and other previewers don't do anything to render Markdown as anything other than text. They should add what they can similar to [Glow](https://github.com/charmbracelet/glow)
+  - Notes editor doesn't use full height of terminal (has this been fixed?)
   - Parchment app components at the bottom of the page like the "Ready" status and undo/redo indicators are not visually separated from the content of the artifact being shown. The same is true for the app components at the top of the page.
-- Runtime support for parsed settings such as editor, theme, logging, and
-  backup configuration.
 - Persistent undo/redo, stored under `~/.parchment/`, with explicit storage
   and recovery semantics. History currently lasts only for the running process.
 - Make a plan for importing and exporting to/from common document file
