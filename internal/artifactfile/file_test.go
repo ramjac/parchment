@@ -103,6 +103,104 @@ func TestReadMetadataRequiresCurrentFormatMarker(t *testing.T) {
 	}
 }
 
+func TestStripPrivateBlocksEdgeCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "empty input",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "no fences plain text",
+			input:    "Hello world\nThis is plain markdown.\n",
+			expected: "Hello world\nThis is plain markdown.\n",
+		},
+		{
+			name:     "crlf line endings with private block",
+			input:    "Header\r\n```parchment-secret\r\nsecret content\r\n```\r\nFooter\r\n",
+			expected: "Header\r\nFooter\r\n",
+		},
+		{
+			name:     "no trailing newline at end of file",
+			input:    "Header\n```parchment-secret\nsecret content\n```",
+			expected: "Header\n",
+		},
+		{
+			name:     "tilde private fence",
+			input:    "Header\n~~~parchment-private\nprivate content\n~~~\nFooter\n",
+			expected: "Header\nFooter\n",
+		},
+		{
+			name:     "mismatched fence type backtick vs tilde",
+			input:    "```parchment-secret\ncontent\n~~~\nstill secret\n```\nOutside\n",
+			expected: "Outside\n",
+		},
+		{
+			name:     "longer opening fence requiring matching close length",
+			input:    "````parchment-secret\nsecret\n```\nstill secret\n````\nVisible\n",
+			expected: "Visible\n",
+		},
+		{
+			name:     "closing fence with more characters than opening",
+			input:    "```parchment-secret\nsecret\n`````\nVisible\n",
+			expected: "Visible\n",
+		},
+		{
+			name:     "indented 1 to 3 spaces recognized as private fence",
+			input:    "  ```parchment-secret\n  hidden content\n  ```\nVisible\n",
+			expected: "Visible\n",
+		},
+		{
+			name:     "indented 4 spaces treated as indented code block not fence",
+			input:    "    ```parchment-secret\n    visible indented block\n    ```\n",
+			expected: "    ```parchment-secret\n    visible indented block\n    ```\n",
+		},
+		{
+			name:     "parchment without trailing hyphen is preserved",
+			input:    "```parchment\nvisible code\n```\n",
+			expected: "```parchment\nvisible code\n```\n",
+		},
+		{
+			name:     "parchment with hyphen only is stripped",
+			input:    "Header\n```parchment-\nhidden content\n```\nFooter\n",
+			expected: "Header\nFooter\n",
+		},
+		{
+			name:     "parchment-prefix with extra info arguments is stripped",
+			input:    "Header\n```parchment-secret extra args\nhidden content\n```\nFooter\n",
+			expected: "Header\nFooter\n",
+		},
+		{
+			name:     "nested private block inside non-private block is preserved",
+			input:    "```markdown\n```parchment-secret\ninner text\n```\n```\n",
+			expected: "```markdown\n```parchment-secret\ninner text\n```\n```\n",
+		},
+		{
+			name:     "unterminated private block at EOF",
+			input:    "Header\n```parchment-secret\nunterminated secret at EOF",
+			expected: "Header\n",
+		},
+		{
+			name:     "unterminated ordinary block at EOF",
+			input:    "Header\n```go\nfunc main() {",
+			expected: "Header\n```go\nfunc main() {",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := StripPrivateBlocks(tt.input)
+			if got != tt.expected {
+				t.Errorf("StripPrivateBlocks() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestTitleFromBody(t *testing.T) {
 	tests := []struct {
 		name string
