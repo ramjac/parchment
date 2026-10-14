@@ -173,36 +173,17 @@ const (
 	promptSection
 )
 
-// documentsScreen edits one document file and reviews its proposed changes.
-// It owns UI state only; document rules live in the document service.
-type documentsScreen struct {
-	service        *document.Service
-	path           string
-	theme          theme
-	width, height  int
+// documentChangesState holds state for reviewing proposed document changes.
+type documentChangesState struct {
 	showChanges    bool
 	reviewing      bool
 	changes        []document.Change
 	selectedChange int
 	changeReview   viewport.Model
-	pending        bool
-	canUndo        bool
-	canRedo        bool
-	status         string
-	errMessage     string
+}
 
-	newOperationContext func() (context.Context, context.CancelFunc)
-	cancelOperation     context.CancelFunc
-	recoveryStore       recovery.Store
-	autosaveSession     uint64
-	autosaveCancel      context.CancelFunc
-	// draftStored reports that a recovery draft for this file may exist.
-	draftStored bool
-	// lastAutosave is the state most recently written as a recovery draft.
-	lastAutosave      *documentAutosaveState
-	autosaveScheduler func(uint64) tea.Cmd
-
-	// Editor state.
+// documentEditorState holds state for editing a document.
+type documentEditorState struct {
 	snapshot     document.Document
 	body         textarea.Model
 	layout       document.Layout
@@ -218,14 +199,45 @@ type documentsScreen struct {
 	// editPageLine is the first page line shown by the print preview.
 	editPageLine   int
 	discardWarning bool
+}
 
-	// Reader state. reading reports that the reader, not the editor, is
-	// shown.
+// documentReaderState holds state for reading/viewing a document.
+type documentReaderState struct {
+	// reading reports that the reader, not the editor, is shown.
 	reading     bool
 	reader      viewport.Model
 	readerPages []document.Page
 	readerPage  int
 	outline     []document.Section
+}
+
+// documentsScreen edits one document file and reviews its proposed changes.
+// It owns UI state only; document rules live in the document service.
+type documentsScreen struct {
+	service       *document.Service
+	path          string
+	theme         theme
+	width, height int
+	pending       bool
+	canUndo       bool
+	canRedo       bool
+	status        string
+	errMessage    string
+
+	newOperationContext func() (context.Context, context.CancelFunc)
+	cancelOperation     context.CancelFunc
+	recoveryStore       recovery.Store
+	autosaveSession     uint64
+	autosaveCancel      context.CancelFunc
+	// draftStored reports that a recovery draft for this file may exist.
+	draftStored bool
+	// lastAutosave is the state most recently written as a recovery draft.
+	lastAutosave      *documentAutosaveState
+	autosaveScheduler func(uint64) tea.Cmd
+
+	documentChangesState
+	documentEditorState
+	documentReaderState
 }
 
 type editorDraft struct {
@@ -243,9 +255,21 @@ func newDocumentsScreen(service *document.Service, path string, t theme, newCont
 	prompt := textinput.New()
 	prompt.CharLimit = document.MaxRunningTextLength * 2
 	return &documentsScreen{
-		service: service, path: path, theme: t, body: body, promptInput: prompt,
-		changeReview: viewport.New(0, 0), reader: viewport.New(0, 0), newOperationContext: newContext,
-		canUndo: service.CanUndo(), canRedo: service.CanRedo(), layout: document.DefaultLayout(),
+		service: service, path: path, theme: t,
+		documentEditorState: documentEditorState{
+			body:        body,
+			promptInput: prompt,
+			layout:      document.DefaultLayout(),
+		},
+		documentChangesState: documentChangesState{
+			changeReview: viewport.New(0, 0),
+		},
+		documentReaderState: documentReaderState{
+			reader: viewport.New(0, 0),
+		},
+		newOperationContext: newContext,
+		canUndo:             service.CanUndo(),
+		canRedo:             service.CanRedo(),
 	}
 }
 
