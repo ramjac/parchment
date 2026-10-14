@@ -13,7 +13,9 @@ func BenchmarkToolbarView(b *testing.B) {
 		width:  80,
 		height: 24,
 		theme:  theme{primary: lipgloss.AdaptiveColor{Light: "#4b3f72", Dark: "#c4b5fd"}},
-		layout: document.DefaultLayout(),
+		documentEditorState: documentEditorState{
+			layout: document.DefaultLayout(),
+		},
 	}
 
 	b.ResetTimer()
