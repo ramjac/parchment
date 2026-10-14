@@ -168,61 +168,38 @@ func Parse(source string) (Deck, error) {
 			(isIndentedCode(line) || !strings.HasPrefix(trimmed, "# ")) {
 			return Deck{}, fmt.Errorf("line %d: presentation must begin with a '# Title' heading", lineNumber)
 		}
-		if len(listIndents) > 0 {
-			listIndent = listIndents[len(listIndents)-1]
-		} else {
-			listIndent = 0
-		}
+		listIndent = currentIndent(listIndents)
 		listContent, itemIndent, isListItem := listItemContent(line, listIndent)
-		marker := markdownFence(trimmed)
-		markerIndent := 0
-		if inFence && fenceListIndent > 0 {
-			if trimmed != "" && leadingSpaces(line) < fenceListIndent {
-				inFence, fenceMarker, fenceListIndent = false, "", 0
-			} else if isListItem {
-				marker = ""
-			} else if leadingSpaces(line) >= fenceListIndent {
-				content := line[fenceListIndent:]
-				if !hasFourSpaceFenceIndent(content) {
-					marker = markdownFence(strings.TrimSpace(content))
-				} else {
-					marker = ""
+		var marker string
+		var markerIndent int
+		if inFence {
+			if fenceListIndent > 0 {
+				if trimmed != "" && leadingSpaces(line) < fenceListIndent {
+					inFence, fenceMarker, fenceListIndent = false, "", 0
+				} else if !isListItem && leadingSpaces(line) >= fenceListIndent {
+					marker = fenceMarkerForContent(line[fenceListIndent:])
+					if marker != "" {
+						markerIndent = fenceListIndent
+					}
 				}
-				markerIndent = fenceListIndent
 			} else {
-				marker = ""
+				marker = markdownFence(trimmed)
 			}
 		}
 		if !inFence {
+			listIndents = updateListIndents(listIndents, line, trimmed, isListItem, itemIndent)
+			listIndent = currentIndent(listIndents)
 			if isListItem {
-				for len(listIndents) > 0 && listIndents[len(listIndents)-1] >= itemIndent {
-					listIndents = listIndents[:len(listIndents)-1]
+				marker = fenceMarkerForContent(listContent)
+				if marker != "" {
+					markerIndent = itemIndent
 				}
-				listIndents = append(listIndents, itemIndent)
-				if !hasFourSpaceFenceIndent(listContent) {
-					marker, markerIndent = markdownFence(strings.TrimSpace(listContent)), itemIndent
-				} else {
-					marker = ""
+			} else if listIndent > 0 && leadingSpaces(line) >= listIndent {
+				marker = fenceMarkerForContent(line[listIndent:])
+				if marker != "" {
+					markerIndent = listIndent
 				}
-			} else if trimmed != "" {
-				for len(listIndents) > 0 && leadingSpaces(line) < listIndents[len(listIndents)-1] {
-					listIndents = listIndents[:len(listIndents)-1]
-				}
-			}
-			if len(listIndents) > 0 {
-				listIndent = listIndents[len(listIndents)-1]
 			} else {
-				listIndent = 0
-			}
-			if !isListItem && listIndent > 0 && leadingSpaces(line) >= listIndent {
-				content := line[listIndent:]
-				if !hasFourSpaceFenceIndent(content) {
-					marker = markdownFence(strings.TrimSpace(content))
-				} else {
-					marker = ""
-				}
-				markerIndent = listIndent
-			} else if !isListItem && marker == "" && !isIndentedCode(line) {
 				marker = markdownFence(trimmed)
 			}
 		}
@@ -312,6 +289,35 @@ func Parse(source string) (Deck, error) {
 	}
 	deck.Header = strings.Trim(header.String(), "\r\n")
 	return deck, nil
+}
+
+func fenceMarkerForContent(content string) string {
+	if hasFourSpaceFenceIndent(content) {
+		return ""
+	}
+	return markdownFence(strings.TrimSpace(content))
+}
+
+func currentIndent(indents []int) int {
+	if len(indents) > 0 {
+		return indents[len(indents)-1]
+	}
+	return 0
+}
+
+func updateListIndents(listIndents []int, line, trimmed string, isListItem bool, itemIndent int) []int {
+	if isListItem {
+		for len(listIndents) > 0 && listIndents[len(listIndents)-1] >= itemIndent {
+			listIndents = listIndents[:len(listIndents)-1]
+		}
+		return append(listIndents, itemIndent)
+	}
+	if trimmed != "" {
+		for len(listIndents) > 0 && leadingSpaces(line) < listIndents[len(listIndents)-1] {
+			listIndents = listIndents[:len(listIndents)-1]
+		}
+	}
+	return listIndents
 }
 
 func isIndentedCode(line string) bool {
