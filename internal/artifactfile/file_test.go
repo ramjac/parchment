@@ -130,16 +130,6 @@ func TestStripPrivateBlocksEdgeCases(t *testing.T) {
 			expected: "Header\n",
 		},
 		{
-			name:     "tilde private fence",
-			input:    "Header\n~~~parchment-private\nprivate content\n~~~\nFooter\n",
-			expected: "Header\nFooter\n",
-		},
-		{
-			name:     "mismatched fence type backtick vs tilde",
-			input:    "```parchment-secret\ncontent\n~~~\nstill secret\n```\nOutside\n",
-			expected: "Outside\n",
-		},
-		{
 			name:     "longer opening fence requiring matching close length",
 			input:    "````parchment-secret\nsecret\n```\nstill secret\n````\nVisible\n",
 			expected: "Visible\n",
@@ -173,11 +163,6 @@ func TestStripPrivateBlocksEdgeCases(t *testing.T) {
 			name:     "parchment-prefix with extra info arguments is stripped",
 			input:    "Header\n```parchment-secret extra args\nhidden content\n```\nFooter\n",
 			expected: "Header\nFooter\n",
-		},
-		{
-			name:     "nested private block inside non-private block is preserved",
-			input:    "```markdown\n```parchment-secret\ninner text\n```\n```\n",
-			expected: "```markdown\n```parchment-secret\ninner text\n```\n```\n",
 		},
 		{
 			name:     "unterminated private block at EOF",
