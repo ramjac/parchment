@@ -318,7 +318,7 @@ var (
 )
 
 func inlineText(text string) string {
-	if !strings.ContainsAny(text, "![*_~`") {
+	if !strings.ContainsAny(text, "![]*_~`") {
 		return text
 	}
 	if strings.Contains(text, "![") {
