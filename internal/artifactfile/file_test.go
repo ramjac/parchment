@@ -103,30 +103,6 @@ func TestReadMetadataRequiresCurrentFormatMarker(t *testing.T) {
 	}
 }
 
-func TestEncodeErrorPaths(t *testing.T) {
-	invalidArtifact := testArtifact()
-	invalidArtifact.Kind = "invalid"
-	if _, err := Encode(invalidArtifact, "body", nil); err == nil || !strings.Contains(err.Error(), "validate artifact metadata") {
-		t.Fatalf("Encode invalid artifact error = %v", err)
-	}
-
-	for _, invalidName := range []string{"invalid", "parchment-meta", "parchment-NOTE", "parchment_note"} {
-		if _, err := Encode(testArtifact(), "body", map[string]any{invalidName: "val"}); err == nil || !strings.Contains(err.Error(), "invalid Parchment block name") {
-			t.Fatalf("Encode invalid block name %q error = %v", invalidName, err)
-		}
-	}
-
-	invalidRaw := json.RawMessage(`{"invalid": json}`)
-	if _, err := Encode(testArtifact(), "body", map[string]any{"parchment-note": invalidRaw}); err == nil || !strings.Contains(err.Error(), "invalid JSON") {
-		t.Fatalf("Encode invalid json.RawMessage error = %v", err)
-	}
-
-	unmarshalable := map[string]any{"ch": make(chan int)}
-	if _, err := Encode(testArtifact(), "body", map[string]any{"parchment-note": unmarshalable}); err == nil {
-		t.Fatalf("Encode unmarshalable error expected, got nil")
-	}
-}
-
 func TestDecodeTrailingBlockErrorPaths(t *testing.T) {
 	validHeader, err := Encode(testArtifact(), "Body content\n", nil)
 	if err != nil {
@@ -257,10 +233,69 @@ func TestMaxFileSizeConstraints(t *testing.T) {
 		t.Fatalf("ReadMetadataFrom oversized stream error = %v", err)
 	}
 
-	largeBody := string(make([]byte, MaxFileSize+100))
-	if _, err := Encode(testArtifact(), largeBody, nil); err == nil || !strings.Contains(err.Error(), "larger than 64 MiB") {
-		t.Fatalf("Encode oversized artifact error = %v", err)
+}
+
+func TestEncodeValidationFailure(t *testing.T) {
+	invalidArtifact := artifact.Artifact{}
+	_, err := Encode(invalidArtifact, "body", nil)
+	if err == nil {
+		t.Fatal("expected error when encoding invalid artifact, got nil")
 	}
+	if !strings.Contains(err.Error(), "validate artifact metadata:") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestEncodeMaxFileSizeValidation(t *testing.T) {
+	largeBody := strings.Repeat("a", MaxFileSize)
+	_, err := Encode(testArtifact(), largeBody, nil)
+	if err == nil {
+		t.Fatal("expected error when output exceeds MaxFileSize, got nil")
+	}
+	if !strings.Contains(err.Error(), "artifact file is larger than 64 MiB") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestEncodeBlockValidation(t *testing.T) {
+	art := testArtifact()
+
+	t.Run("invalid block name", func(t *testing.T) {
+		invalidNames := []string{"invalid-name", "parchment-meta", ""}
+		for _, name := range invalidNames {
+			_, err := Encode(art, "body", map[string]any{name: map[string]string{}})
+			if err == nil {
+				t.Fatalf("expected error for block name %q, got nil", name)
+			}
+			if !strings.Contains(err.Error(), "invalid Parchment block name") {
+				t.Fatalf("unexpected error for block name %q: %v", name, err)
+			}
+		}
+	})
+
+	t.Run("invalid json raw message", func(t *testing.T) {
+		_, err := Encode(art, "body", map[string]any{
+			"parchment-data": json.RawMessage(`{invalid json`),
+		})
+		if err == nil {
+			t.Fatal("expected error for invalid json raw message, got nil")
+		}
+		if !strings.Contains(err.Error(), "invalid JSON") {
+			t.Fatalf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("unmarshalable block struct", func(t *testing.T) {
+		_, err := Encode(art, "body", map[string]any{
+			"parchment-data": make(chan int),
+		})
+		if err == nil {
+			t.Fatal("expected error for unmarshalable block payload, got nil")
+		}
+		if !strings.Contains(err.Error(), "encode parchment-data block:") {
+			t.Fatalf("unexpected error message: %v", err)
+		}
+	})
 }
 
 func TestTitleFromBody(t *testing.T) {
@@ -629,6 +664,144 @@ func assertEnvelopeKeys(t *testing.T, metadata []byte) {
 		if _, ok := fields[key]; !ok {
 			t.Errorf("metadata is missing %q", key)
 		}
+	}
+}
+
+func TestStripPrivateBlocks(t *testing.T) {
+	tests := []struct {
+		name     string
+		markdown string
+		want     string
+	}{
+		{
+			name:     "empty markdown",
+			markdown: "",
+			want:     "",
+		},
+		{
+			name:     "plain markdown without fences",
+			markdown: "# Title\n\nThis is plain text.\n",
+			want:     "# Title\n\nThis is plain text.\n",
+		},
+		{
+			name:     "simple parchment private block with backticks",
+			markdown: "before\n```parchment-secret\nhidden content\n```\nafter\n",
+			want:     "before\nafter\n",
+		},
+		{
+			name:     "simple parchment private block with tildes",
+			markdown: "before\n~~~parchment-secret\nhidden content\n~~~\nafter\n",
+			want:     "before\nafter\n",
+		},
+		{
+			name:     "ordinary code fence preserved",
+			markdown: "before\n```go\nfmt.Println(\"hello\")\n```\nafter\n",
+			want:     "before\n```go\nfmt.Println(\"hello\")\n```\nafter\n",
+		},
+		{
+			name:     "longer opening fence requires matching closing fence",
+			markdown: "````parchment-secret\n```\nstill hidden\n````\nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "shorter closing fence does not close longer private fence",
+			markdown: "````parchment-secret\ncontent\n```\nstill inside\n````\nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "closing fence with trailing spaces",
+			markdown: "```parchment-secret\nhidden\n```   \nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "private block with info string arguments",
+			markdown: "```parchment-data json extra\n{\"key\": \"val\"}\n```\nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "CRLF line endings in private block",
+			markdown: "before\r\n```parchment-secret\r\nhidden\r\n```\r\nafter\r\n",
+			want:     "before\r\nafter\r\n",
+		},
+		{
+			name:     "indented private block (1 to 3 spaces)",
+			markdown: "  ```parchment-secret\n  hidden\n  ```\nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "indented code block (4 spaces) is not a fence",
+			markdown: "    ```parchment-secret\n    visible indented code\n",
+			want:     "    ```parchment-secret\n    visible indented code\n",
+		},
+		{
+			name:     "quoted private block in blockquote",
+			markdown: "> ```parchment-secret\n> hidden\n> ```\nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "nested blockquote private block",
+			markdown: "> > ```parchment-secret\n> > hidden\n> > ```\nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "quoted ordinary fence containing private fence syntax",
+			markdown: "> ```go\n> ```parchment-example\n> visible\n> ```\n> ```\n",
+			want:     "> ```go\n> ```parchment-example\n> visible\n> ```\n> ```\n",
+		},
+		{
+			name:     "unordered list private block",
+			markdown: "- ```parchment-secret\n  hidden list item\n  ```\nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "ordered list private block",
+			markdown: "1. ```parchment-secret\n   hidden item\n   ```\nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "deep list continuation private block",
+			markdown: "10. Item\n\n    ```parchment-deep-list\n    deeply-hidden\n    ```\nafter\n",
+			want:     "10. Item\n\nafter\n",
+		},
+		{
+			name:     "ordinary code fence with inner parchment-like text",
+			markdown: "```go\n// parchment-secret\ncode line\n```\n",
+			want:     "```go\n// parchment-secret\ncode line\n```\n",
+		},
+		{
+			name:     "unterminated private block at EOF",
+			markdown: "before\n```parchment-secret\nhidden at eof",
+			want:     "before\n",
+		},
+		{
+			name:     "tilde private fence not closed by backticks",
+			markdown: "~~~parchment-secret\n```\nstill hidden\n~~~\nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "backtick fence with invalid backtick in info string is ignored as fence",
+			markdown: "```parchment`invalid\ncontent\n```\n",
+			want:     "```parchment`invalid\ncontent\n```\n",
+		},
+		{
+			name:     "multiple consecutive private blocks",
+			markdown: "```parchment-one\none\n```\n\n```parchment-two\ntwo\n```\nafter\n",
+			want:     "\nafter\n",
+		},
+		{
+			name:     "private block exiting blockquote container prematurely",
+			markdown: "> ```parchment-quote\n> quoted-hidden\n\noutside-quote\n",
+			want:     "\noutside-quote\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := StripPrivateBlocks(tt.markdown)
+			if got != tt.want {
+				t.Errorf("StripPrivateBlocks(%q) =\n%q\nwant:\n%q", tt.markdown, got, tt.want)
+			}
+		})
 	}
 }
 

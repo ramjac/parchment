@@ -340,110 +340,123 @@ type paragraph struct {
 	text        []string
 }
 
+type blockFormatter struct {
+	width int
+	marks *[]headMark
+	out   []string
+	p     paragraph
+	fence string
+}
+
+func (f *blockFormatter) flush() {
+	if f.p.active {
+		f.out = append(f.out, wrap(inlineText(strings.Join(f.p.text, " ")), f.width, f.p.first, f.p.rest)...)
+	}
+	f.p = paragraph{}
+}
+
+func (f *blockFormatter) blank() {
+	if len(f.out) > 0 && f.out[len(f.out)-1] != "" {
+		f.out = append(f.out, "")
+	}
+}
+
+func (f *blockFormatter) heading(level int, raw string) {
+	f.blank()
+	text := inlineText(raw)
+	if f.marks != nil {
+		*f.marks = append(*f.marks, headMark{line: len(f.out), level: level, title: text})
+	}
+	if level == 1 {
+		text = strings.ToUpper(text)
+	}
+	wrapped := wrap(text, f.width, "", "")
+	f.out = append(f.out, wrapped...)
+	if level <= 2 {
+		longest := 0
+		for _, w := range wrapped {
+			longest = max(longest, runewidth.StringWidth(w))
+		}
+		underline := "="
+		if level == 2 {
+			underline = "-"
+		}
+		f.out = append(f.out, strings.Repeat(underline, longest))
+	}
+	f.blank()
+}
+
+func (f *blockFormatter) processLine(raw string) {
+	line := strings.TrimRight(strings.ReplaceAll(raw, "\t", "    "), " \r")
+	if f.fence != "" {
+		if strings.HasPrefix(strings.TrimSpace(line), f.fence) {
+			f.fence = ""
+			f.blank()
+			return
+		}
+		f.out = append(f.out, hardWrap("    "+line, f.width)...)
+		return
+	}
+	trimmed := strings.TrimSpace(line)
+	if marker, ok := fenceOpener(line); ok {
+		f.flush()
+		f.blank()
+		f.fence = marker
+		return
+	}
+	switch {
+	case trimmed == "":
+		f.flush()
+		f.blank()
+	case commentRE.MatchString(trimmed):
+	case f.p.active && !f.p.quote && f.p.first == "" && setextRE.MatchString(trimmed):
+		level := 1
+		if trimmed[0] == '-' {
+			level = 2
+		}
+		title := strings.Join(f.p.text, " ")
+		f.p = paragraph{}
+		f.heading(level, title)
+	case headingRE.MatchString(trimmed):
+		f.flush()
+		match := headingRE.FindStringSubmatch(trimmed)
+		f.heading(len(match[1]), match[2])
+	case ruleRE.MatchString(trimmed):
+		f.flush()
+		f.blank()
+		f.out = append(f.out, strings.Repeat("-", f.width))
+		f.blank()
+	case strings.HasPrefix(trimmed, "|"):
+		f.flush()
+		f.out = append(f.out, hardWrap(line, f.width)...)
+	case listItemRE.MatchString(line):
+		f.flush()
+		match := listItemRE.FindStringSubmatch(line)
+		prefix := match[1] + match[2] + " "
+		f.p = paragraph{active: true, first: prefix, rest: strings.Repeat(" ", runewidth.StringWidth(prefix)), text: []string{match[3]}}
+	case quoteRE.MatchString(trimmed):
+		text := quoteRE.FindStringSubmatch(trimmed)[1]
+		if !f.p.active || !f.p.quote {
+			f.flush()
+			f.p = paragraph{active: true, quote: true, first: "> ", rest: "> "}
+		}
+		f.p.text = append(f.p.text, text)
+	default:
+		if !f.p.active {
+			f.p = paragraph{active: true}
+		}
+		f.p.text = append(f.p.text, trimmed)
+	}
+}
+
 // formatBlocks converts Markdown lines to plain text wrapped to width.
 func formatBlocks(lines []string, width int, marks *[]headMark) []string {
-	var out []string
-	var p paragraph
-	flush := func() {
-		if p.active {
-			out = append(out, wrap(inlineText(strings.Join(p.text, " ")), width, p.first, p.rest)...)
-		}
-		p = paragraph{}
+	f := blockFormatter{width: width, marks: marks}
+	for _, line := range lines {
+		f.processLine(line)
 	}
-	blank := func() {
-		if len(out) > 0 && out[len(out)-1] != "" {
-			out = append(out, "")
-		}
-	}
-	heading := func(level int, raw string) {
-		blank()
-		text := inlineText(raw)
-		if marks != nil {
-			*marks = append(*marks, headMark{line: len(out), level: level, title: text})
-		}
-		if level == 1 {
-			text = strings.ToUpper(text)
-		}
-		wrapped := wrap(text, width, "", "")
-		out = append(out, wrapped...)
-		if level <= 2 {
-			longest := 0
-			for _, w := range wrapped {
-				longest = max(longest, runewidth.StringWidth(w))
-			}
-			underline := "="
-			if level == 2 {
-				underline = "-"
-			}
-			out = append(out, strings.Repeat(underline, longest))
-		}
-		blank()
-	}
-	fence := ""
-	for _, raw := range lines {
-		line := strings.TrimRight(strings.ReplaceAll(raw, "\t", "    "), " \r")
-		if fence != "" {
-			if strings.HasPrefix(strings.TrimSpace(line), fence) {
-				fence = ""
-				blank()
-				continue
-			}
-			out = append(out, hardWrap("    "+line, width)...)
-			continue
-		}
-		trimmed := strings.TrimSpace(line)
-		if marker, ok := fenceOpener(line); ok {
-			flush()
-			blank()
-			fence = marker
-			continue
-		}
-		switch {
-		case trimmed == "":
-			flush()
-			blank()
-		case commentRE.MatchString(trimmed):
-		case p.active && !p.quote && p.first == "" && setextRE.MatchString(trimmed):
-			level := 1
-			if trimmed[0] == '-' {
-				level = 2
-			}
-			title := strings.Join(p.text, " ")
-			p = paragraph{}
-			heading(level, title)
-		case headingRE.MatchString(trimmed):
-			flush()
-			match := headingRE.FindStringSubmatch(trimmed)
-			heading(len(match[1]), match[2])
-		case ruleRE.MatchString(trimmed):
-			flush()
-			blank()
-			out = append(out, strings.Repeat("-", width))
-			blank()
-		case strings.HasPrefix(trimmed, "|"):
-			flush()
-			out = append(out, hardWrap(line, width)...)
-		case listItemRE.MatchString(line):
-			flush()
-			match := listItemRE.FindStringSubmatch(line)
-			prefix := match[1] + match[2] + " "
-			p = paragraph{active: true, first: prefix, rest: strings.Repeat(" ", runewidth.StringWidth(prefix)), text: []string{match[3]}}
-		case quoteRE.MatchString(trimmed):
-			text := quoteRE.FindStringSubmatch(trimmed)[1]
-			if !p.active || !p.quote {
-				flush()
-				p = paragraph{active: true, quote: true, first: "> ", rest: "> "}
-			}
-			p.text = append(p.text, text)
-		default:
-			if !p.active {
-				p = paragraph{active: true}
-			}
-			p.text = append(p.text, trimmed)
-		}
-	}
-	flush()
-	return out
+	f.flush()
+	return f.out
 }
 
 // fitPrefix bounds a line prefix to half the width so the text keeps room to
