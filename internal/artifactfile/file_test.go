@@ -103,6 +103,69 @@ func TestReadMetadataRequiresCurrentFormatMarker(t *testing.T) {
 	}
 }
 
+func TestEncodeValidationFailure(t *testing.T) {
+	invalidArtifact := artifact.Artifact{}
+	_, err := Encode(invalidArtifact, "body", nil)
+	if err == nil {
+		t.Fatal("expected error when encoding invalid artifact, got nil")
+	}
+	if !strings.Contains(err.Error(), "validate artifact metadata:") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestEncodeMaxFileSizeValidation(t *testing.T) {
+	largeBody := strings.Repeat("a", MaxFileSize)
+	_, err := Encode(testArtifact(), largeBody, nil)
+	if err == nil {
+		t.Fatal("expected error when output exceeds MaxFileSize, got nil")
+	}
+	if !strings.Contains(err.Error(), "artifact file is larger than 64 MiB") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestEncodeBlockValidation(t *testing.T) {
+	art := testArtifact()
+
+	t.Run("invalid block name", func(t *testing.T) {
+		invalidNames := []string{"invalid-name", "parchment-meta", ""}
+		for _, name := range invalidNames {
+			_, err := Encode(art, "body", map[string]any{name: map[string]string{}})
+			if err == nil {
+				t.Fatalf("expected error for block name %q, got nil", name)
+			}
+			if !strings.Contains(err.Error(), "invalid Parchment block name") {
+				t.Fatalf("unexpected error for block name %q: %v", name, err)
+			}
+		}
+	})
+
+	t.Run("invalid json raw message", func(t *testing.T) {
+		_, err := Encode(art, "body", map[string]any{
+			"parchment-data": json.RawMessage(`{invalid json`),
+		})
+		if err == nil {
+			t.Fatal("expected error for invalid json raw message, got nil")
+		}
+		if !strings.Contains(err.Error(), "invalid JSON") {
+			t.Fatalf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("unmarshalable block struct", func(t *testing.T) {
+		_, err := Encode(art, "body", map[string]any{
+			"parchment-data": make(chan int),
+		})
+		if err == nil {
+			t.Fatal("expected error for unmarshalable block payload, got nil")
+		}
+		if !strings.Contains(err.Error(), "encode parchment-data block:") {
+			t.Fatalf("unexpected error message: %v", err)
+		}
+	})
+}
+
 func TestTitleFromBody(t *testing.T) {
 	tests := []struct {
 		name string
