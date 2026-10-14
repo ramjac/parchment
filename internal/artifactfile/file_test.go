@@ -103,6 +103,99 @@ func TestReadMetadataRequiresCurrentFormatMarker(t *testing.T) {
 	}
 }
 
+func TestStripPrivateBlocksEdgeCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		markdown string
+		want     string
+	}{
+		{
+			name:     "empty input",
+			markdown: "",
+			want:     "",
+		},
+		{
+			name:     "no code fences",
+			markdown: "Hello world\nSecond line\n",
+			want:     "Hello world\nSecond line\n",
+		},
+		{
+			name:     "ordinary code block preserved",
+			markdown: "```go\nfmt.Println()\n```\n",
+			want:     "```go\nfmt.Println()\n```\n",
+		},
+		{
+			name:     "simple private block stripped",
+			markdown: "before\n```parchment-secret\nhidden\n```\nafter\n",
+			want:     "before\nafter\n",
+		},
+		{
+			name:     "info string without hyphen preserved",
+			markdown: "```parchment\nvisible\n```\n",
+			want:     "```parchment\nvisible\n```\n",
+		},
+		{
+			name:     "info string starting with parchment but not parchment- preserved",
+			markdown: "```parchmentish\nvisible\n```\n",
+			want:     "```parchmentish\nvisible\n```\n",
+		},
+		{
+			name:     "4-space indented fence is treated as indented code block",
+			markdown: "    ```parchment-secret\n    not a fence\n    ```\n",
+			want:     "    ```parchment-secret\n    not a fence\n    ```\n",
+		},
+		{
+			name:     "tilde fence stripped",
+			markdown: "before\n~~~parchment-data\nsecret\n~~~\nafter\n",
+			want:     "before\nafter\n",
+		},
+		{
+			name:     "4-backtick opening fence requires 4-backtick closing fence",
+			markdown: "````parchment-secret\n```\nstill secret\n````\nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "tilde opening fence not closed by backticks",
+			markdown: "~~~parchment-secret\n```\nstill secret\n~~~\nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "sequential private blocks stripped",
+			markdown: "```parchment-a\nsecret1\n```\n```parchment-b\nsecret2\n```\n",
+			want:     "",
+		},
+		{
+			name:     "private block followed immediately by normal block",
+			markdown: "```parchment-a\nsecret\n```\n```go\ncode\n```\n",
+			want:     "```go\ncode\n```\n",
+		},
+		{
+			name:     "CRLF line endings handled correctly",
+			markdown: "before\r\n```parchment-secret\r\nsecret content\r\n```\r\nafter\r\n",
+			want:     "before\r\nafter\r\n",
+		},
+		{
+			name:     "unclosed private block stripped to EOF",
+			markdown: "before\n```parchment-secret\nsecret line 1\nsecret line 2\n",
+			want:     "before\n",
+		},
+		{
+			name:     "leading and trailing spaces on fence line",
+			markdown: "  ```parchment-secret  \nsecret\n  ```  \n",
+			want:     "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := StripPrivateBlocks(tt.markdown)
+			if got != tt.want {
+				t.Errorf("StripPrivateBlocks(%q) = %q, want %q", tt.markdown, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestTitleFromBody(t *testing.T) {
 	tests := []struct {
 		name string
