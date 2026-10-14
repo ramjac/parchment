@@ -43,46 +43,60 @@ type spreadsheetHistoryMsg struct {
 	err         error
 }
 
-// spreadsheetModel is a single-workbook grid editor. It owns only UI state;
-// it reads and edits the workbook file through the spreadsheet service.
-type spreadsheetModel struct {
-	service             *spreadsheet.Service
-	path                string
-	book                spreadsheet.Spreadsheet
-	loaded              bool
-	sheet               int
-	row, column         int
-	rowOffset           int
-	columnOffset        int
-	width, height       int
-	values              map[[2]int]string
-	showFormulas        bool
-	editing             bool
-	input               textinput.Model
+// spreadsheetGrid holds viewport navigation, selection, and value display state.
+type spreadsheetGrid struct {
+	sheet         int
+	row, column   int
+	rowOffset     int
+	columnOffset  int
+	width, height int
+	values        map[[2]int]string
+	showFormulas  bool
+}
+
+// spreadsheetAsync holds status, error messages, and async operation tracking.
+type spreadsheetAsync struct {
 	pending             bool
 	seq                 int
 	status              string
 	errMessage          string
 	loadedStatus        string
-	theme               theme
 	newOperationContext func() (context.Context, context.CancelFunc)
 	cancelOperation     context.CancelFunc
+}
+
+// spreadsheetModel is a single-workbook grid editor. It owns only UI state;
+// it reads and edits the workbook file through the spreadsheet service.
+type spreadsheetModel struct {
+	service *spreadsheet.Service
+	path    string
+	book    spreadsheet.Spreadsheet
+	loaded  bool
+	editing bool
+	input   textinput.Model
+	theme   theme
+
+	spreadsheetGrid
+	spreadsheetAsync
 }
 
 func newSpreadsheetModel(service *spreadsheet.Service, path string) *spreadsheetModel {
 	input := textinput.New()
 	input.Prompt = ""
 	input.CharLimit = spreadsheet.MaxFormulaLength + 1
-	return &spreadsheetModel{
-		service: service, path: path, input: input,
-		newOperationContext: func() (context.Context, context.CancelFunc) {
-			return context.WithCancel(context.Background())
-		},
+	m := &spreadsheetModel{
+		service: service,
+		path:    path,
+		input:   input,
 		theme: theme{
 			primary: lipgloss.AdaptiveColor{Light: "#4b3f72", Dark: "#c4b5fd"},
 			border:  lipgloss.AdaptiveColor{Light: "#b8b4c7", Dark: "#55516a"},
 		},
 	}
+	m.newOperationContext = func() (context.Context, context.CancelFunc) {
+		return context.WithCancel(context.Background())
+	}
+	return m
 }
 
 func (m *spreadsheetModel) Init() tea.Cmd { return m.load() }
