@@ -63,6 +63,9 @@ func TestSpreadsheetCLIFormulasAndGridOperations(t *testing.T) {
 	if _, err := run("spreadsheet", "cell", id, "A1", "=1/0", "--formula"); err == nil {
 		t.Fatal("division by zero formula was stored")
 	}
+	if _, err := run("spreadsheet", "cell", id, "A1", "--formula"); err == nil || !strings.Contains(err.Error(), "--formula is only valid when setting a cell") {
+		t.Fatalf("reading cell with --formula error = %v", err)
+	}
 }
 
 func TestReadSpreadsheetCSVEnforcesInputAndDimensionLimits(t *testing.T) {

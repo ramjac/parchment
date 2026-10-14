@@ -101,24 +101,7 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 				return err
 			}
 			if len(args) == 2 {
-				if cmd.Flags().Changed("formula") {
-					return errors.New("--formula is only valid when setting a cell")
-				}
-				cellValue := spreadsheet.Cell{}
-				if row <= len(book.Sheets[sheetIndex].Rows) && column <= len(book.Sheets[sheetIndex].Rows[row-1]) {
-					cellValue = book.Sheets[sheetIndex].Rows[row-1][column-1]
-				}
-				if cellValue.Formula != "" {
-					value, err := spreadsheet.Evaluate(&book, sheetIndex, row, column)
-					if err != nil {
-						return err
-					}
-					_, err = fmt.Fprintf(streams.out, "%s\t= %s\t%s\n", args[1],
-						strings.TrimPrefix(cellValue.Formula, "="), strconv.FormatFloat(value, 'f', -1, 64))
-					return err
-				}
-				_, err = fmt.Fprintln(streams.out, cellValue.Value)
-				return err
+				return printCell(streams.out, cmd, &book, args[1], sheetIndex, row, column)
 			}
 			value := args[2]
 			formula, _ := cmd.Flags().GetBool("formula")
@@ -183,6 +166,35 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 		},
 	})
 
+}
+
+func printCell(out io.Writer, cmd *cobra.Command, book *spreadsheet.Spreadsheet, ref string, sheetIndex, row, column int) error {
+	if cmd.Flags().Changed("formula") {
+		return errors.New("--formula is only valid when setting a cell")
+	}
+	cell := getCellAt(book, sheetIndex, row, column)
+	if cell.Formula != "" {
+		value, err := spreadsheet.Evaluate(book, sheetIndex, row, column)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(out, "%s\t= %s\t%s\n", ref,
+			strings.TrimPrefix(cell.Formula, "="), strconv.FormatFloat(value, 'f', -1, 64))
+		return err
+	}
+	_, err := fmt.Fprintln(out, cell.Value)
+	return err
+}
+
+func getCellAt(book *spreadsheet.Spreadsheet, sheetIndex, row, column int) spreadsheet.Cell {
+	if sheetIndex < 0 || sheetIndex >= len(book.Sheets) {
+		return spreadsheet.Cell{}
+	}
+	sheet := &book.Sheets[sheetIndex]
+	if row >= 1 && row <= len(sheet.Rows) && column >= 1 && column <= len(sheet.Rows[row-1]) {
+		return sheet.Rows[row-1][column-1]
+	}
+	return spreadsheet.Cell{}
 }
 
 func readSpreadsheetCSV(input io.Reader, maxBytes int64) ([][]spreadsheet.Cell, error) {
