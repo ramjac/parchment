@@ -22,7 +22,25 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 	}
 	root.AddCommand(groupCommand(docs))
 
-	create := &cobra.Command{
+	docs.AddCommand(
+		newDocumentCreateCmd(streams),
+		newDocumentShowCmd(streams),
+		newDocumentEditCmd(),
+		newDocumentProposeCmd(streams),
+		newDocumentChangesCmd(streams),
+		newDocumentReviewCmd(streams),
+		newDocumentAcceptCmd(),
+		newDocumentRejectCmd(),
+		newDocumentLayoutCmd(streams),
+		newDocumentPageBreakCmd(),
+		newDocumentSectionBreakCmd(),
+		newDocumentImageCmd(streams),
+		newDocumentPrintCmd(streams),
+	)
+}
+
+func newDocumentCreateCmd(streams output) *cobra.Command {
+	cmd := &cobra.Command{
 		Use: "create <file>", Short: "Create a document file", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
@@ -48,12 +66,14 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			return finishCreate(cmd, streams, d.Path, artifact.DocumentKind)
 		},
 	}
-	addBodyFlags(create)
-	addLayoutFlags(create)
-	addEditFlag(create)
-	docs.AddCommand(create)
+	addBodyFlags(cmd)
+	addLayoutFlags(cmd)
+	addEditFlag(cmd)
+	return cmd
+}
 
-	docs.AddCommand(&cobra.Command{
+func newDocumentShowCmd(streams output) *cobra.Command {
+	return &cobra.Command{
 		Use: "show <file>", Short: "Show a document's Markdown", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
@@ -67,9 +87,11 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			_, err = io.WriteString(streams.out, d.Body)
 			return err
 		},
-	})
+	}
+}
 
-	edit := &cobra.Command{
+func newDocumentEditCmd() *cobra.Command {
+	cmd := &cobra.Command{
 		Use: "edit <file>", Short: "Replace a document's Markdown body", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
@@ -90,10 +112,12 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			return err
 		},
 	}
-	addBodyFlags(edit)
-	docs.AddCommand(edit)
+	addBodyFlags(cmd)
+	return cmd
+}
 
-	propose := &cobra.Command{
+func newDocumentProposeCmd(streams output) *cobra.Command {
+	cmd := &cobra.Command{
 		Use: "propose <file>", Short: "Record a document edit for review", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
@@ -126,12 +150,14 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			return err
 		},
 	}
-	propose.Flags().String("description", "", "short description of the proposed edit")
-	addBodyFlags(propose)
-	addLayoutFlags(propose)
-	docs.AddCommand(propose)
+	cmd.Flags().String("description", "", "short description of the proposed edit")
+	addBodyFlags(cmd)
+	addLayoutFlags(cmd)
+	return cmd
+}
 
-	docs.AddCommand(&cobra.Command{
+func newDocumentChangesCmd(streams output) *cobra.Command {
+	return &cobra.Command{
 		Use: "changes <file>", Short: "List proposed and resolved document edits", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
@@ -151,9 +177,11 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			}
 			return nil
 		},
-	})
+	}
+}
 
-	docs.AddCommand(&cobra.Command{
+func newDocumentReviewCmd(streams output) *cobra.Command {
+	return &cobra.Command{
 		Use: "review <file> <change-id>", Short: "Review a proposed document edit", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
@@ -171,9 +199,11 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 				changeLayoutDescription(change.After.Layout), change.Before.Body, change.After.Body)
 			return err
 		},
-	})
+	}
+}
 
-	docs.AddCommand(&cobra.Command{
+func newDocumentAcceptCmd() *cobra.Command {
+	return &cobra.Command{
 		Use: "accept <file> <change-id>", Short: "Accept and apply a proposed document edit", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
@@ -183,8 +213,11 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			_, err = service.Accept(cmd.Context(), args[0], args[1])
 			return err
 		},
-	})
-	docs.AddCommand(&cobra.Command{
+	}
+}
+
+func newDocumentRejectCmd() *cobra.Command {
+	return &cobra.Command{
 		Use: "reject <file> <change-id>", Short: "Reject a proposed document edit", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
@@ -193,9 +226,11 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			}
 			return service.Reject(cmd.Context(), args[0], args[1])
 		},
-	})
+	}
+}
 
-	layoutCommand := &cobra.Command{
+func newDocumentLayoutCmd(streams output) *cobra.Command {
+	cmd := &cobra.Command{
 		Use: "layout <file>", Short: "Show or change page layout",
 		Long: "Show a document's page layout, or change the layout fields given as flags.\n" +
 			"Margins are in millimeters. Header and footer text may contain {title}, {page},\n" +
@@ -226,16 +261,21 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			return err
 		},
 	}
-	addLayoutFlags(layoutCommand)
-	docs.AddCommand(layoutCommand)
+	addLayoutFlags(cmd)
+	return cmd
+}
 
-	docs.AddCommand(&cobra.Command{
+func newDocumentPageBreakCmd() *cobra.Command {
+	return &cobra.Command{
 		Use: "page-break <file>", Short: "Append a page break", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return appendMarkup(cmd, args[0], "Insert page break", document.PageBreakMarkup)
 		},
-	})
-	sectionBreak := &cobra.Command{
+	}
+}
+
+func newDocumentSectionBreakCmd() *cobra.Command {
+	cmd := &cobra.Command{
 		Use: "section-break <file>", Short: "Append a section break with a column count", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			columns, _ := cmd.Flags().GetInt("columns")
@@ -246,11 +286,13 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			return appendMarkup(cmd, args[0], "Insert section break", document.SectionBreakMarkup(columns, continuous))
 		},
 	}
-	sectionBreak.Flags().Int("columns", 1, "columns in the new section")
-	sectionBreak.Flags().Bool("continuous", false, "start the section on the current page")
-	docs.AddCommand(sectionBreak)
+	cmd.Flags().Int("columns", 1, "columns in the new section")
+	cmd.Flags().Bool("continuous", false, "start the section on the current page")
+	return cmd
+}
 
-	image := &cobra.Command{
+func newDocumentImageCmd(streams output) *cobra.Command {
+	cmd := &cobra.Command{
 		Use: "image <file> <image-file>", Short: "Embed a PNG, JPEG, or GIF image at the end of a document", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
@@ -270,10 +312,12 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			return err
 		},
 	}
-	image.Flags().String("alt", "", "alternative text for the image")
-	docs.AddCommand(image)
+	cmd.Flags().String("alt", "", "alternative text for the image")
+	return cmd
+}
 
-	printCommand := &cobra.Command{
+func newDocumentPrintCmd(streams output) *cobra.Command {
+	cmd := &cobra.Command{
 		Use: "print <file>", Short: "Render printer-ready paginated text", Args: cobra.ExactArgs(1),
 		Long: "Render the document as monospaced pages with margins, columns, headers, footers,\n" +
 			"and page numbers. Pages are separated by form feeds, so the output can be sent\n" +
@@ -298,9 +342,8 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 			return err
 		},
 	}
-	printCommand.Flags().StringP("output", "o", "", "write to a file instead of standard output")
-	docs.AddCommand(printCommand)
-
+	cmd.Flags().StringP("output", "o", "", "write to a file instead of standard output")
+	return cmd
 }
 
 func addBodyFlags(cmd *cobra.Command) {

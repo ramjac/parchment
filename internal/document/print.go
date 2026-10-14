@@ -87,72 +87,102 @@ type headMark struct {
 	title string
 }
 
+type bodyPaginator struct {
+	textCols      int
+	bodyRows      int
+	sections      *[]Section
+	pages         [][]string
+	current       []string
+	pendingBreaks int
+}
+
 func paginateBody(body string, defaultColumns, textCols, bodyRows int, sections *[]Section) [][]string {
-	var pages [][]string
-	var current []string
-	pendingBreaks := 0
-	newPage := func() {
-		pages = append(pages, current)
-		current = nil
+	p := bodyPaginator{
+		textCols: textCols,
+		bodyRows: bodyRows,
+		sections: sections,
 	}
+	return p.paginate(body, defaultColumns)
+}
+
+func (p *bodyPaginator) paginate(body string, defaultColumns int) [][]string {
 	for _, r := range splitRuns(body, defaultColumns) {
-		columns := clampColumns(r.columns, textCols)
-		width := ColumnWidth(textCols, columns)
-		var marks []headMark
-		raw := formatBlocks(r.lines, width, &marks)
-		flat := trimBlankEnds(raw)
-		pos := 0 // index of flat[0] within raw
-		for pos < len(raw) && raw[pos] == "" {
-			pos++
-		}
-		record := func(consumed int) {
-			for len(marks) > 0 && marks[0].line < pos+consumed {
-				if sections != nil {
-					*sections = append(*sections, Section{Level: marks[0].level, Title: marks[0].title, Page: len(pages) + 1})
-				}
-				marks = marks[1:]
-			}
-		}
-		if len(flat) > 0 {
-			for ; pendingBreaks > 0; pendingBreaks-- {
-				newPage()
-			}
-			balance := columns > 1 && r.end == sectionBreak && r.continuous
-			if len(current) > 0 && current[len(current)-1] != "" && bodyRows-len(current) > 1 {
-				current = append(current, "")
-			}
-			for len(flat) > 0 {
-				if len(current) >= bodyRows {
-					newPage()
-				}
-				if len(current) == 0 {
-					pos += leadingBlanks(flat)
-					flat = trimBlankEnds(flat)
-					if len(flat) == 0 {
-						break
-					}
-				}
-				remaining := bodyRows - len(current)
-				n := min(len(flat), remaining*columns)
-				chunk := flat[:n]
-				flat = flat[n:]
-				height := min(remaining, n)
-				if balance && len(flat) == 0 {
-					height = (n + columns - 1) / columns
-				}
-				current = append(current, columnRows(chunk, columns, width, height)...)
-				pos += n
-				record(0)
-			}
-		}
-		if r.end == pageBreak || (r.end == sectionBreak && !r.continuous) {
-			pendingBreaks++
-		}
+		p.processRun(r)
 	}
-	if len(current) > 0 || len(pages) == 0 {
-		pages = append(pages, current)
+	if len(p.current) > 0 || len(p.pages) == 0 {
+		p.newPage()
 	}
-	return pages
+	return p.pages
+}
+
+func (p *bodyPaginator) newPage() {
+	p.pages = append(p.pages, p.current)
+	p.current = nil
+}
+
+func (p *bodyPaginator) processRun(r run) {
+	columns := clampColumns(r.columns, p.textCols)
+	width := ColumnWidth(p.textCols, columns)
+	var marks []headMark
+	raw := formatBlocks(r.lines, width, &marks)
+	flat := trimBlankEnds(raw)
+
+	if len(flat) > 0 {
+		for ; p.pendingBreaks > 0; p.pendingBreaks-- {
+			p.newPage()
+		}
+		p.layoutRunLines(flat, &marks, raw, columns, width, r.end, r.continuous)
+	}
+
+	if r.end == pageBreak || (r.end == sectionBreak && !r.continuous) {
+		p.pendingBreaks++
+	}
+}
+
+func (p *bodyPaginator) layoutRunLines(flat []string, marks *[]headMark, raw []string, columns, width int, end directiveKind, continuous bool) {
+	pos := leadingBlanks(raw)
+	balance := columns > 1 && end == sectionBreak && continuous
+
+	if len(p.current) > 0 && p.current[len(p.current)-1] != "" && p.bodyRows-len(p.current) > 1 {
+		p.current = append(p.current, "")
+	}
+
+	for len(flat) > 0 {
+		if len(p.current) >= p.bodyRows {
+			p.newPage()
+		}
+		if len(p.current) == 0 {
+			pos += leadingBlanks(flat)
+			flat = trimBlankEnds(flat)
+			if len(flat) == 0 {
+				break
+			}
+		}
+		remaining := p.bodyRows - len(p.current)
+		n := min(len(flat), remaining*columns)
+		chunk := flat[:n]
+		flat = flat[n:]
+		height := min(remaining, n)
+		if balance && len(flat) == 0 {
+			height = (n + columns - 1) / columns
+		}
+		p.current = append(p.current, columnRows(chunk, columns, width, height)...)
+		pos += n
+		p.recordMarks(marks, pos)
+	}
+}
+
+func (p *bodyPaginator) recordMarks(marks *[]headMark, pos int) {
+	for len(*marks) > 0 && (*marks)[0].line < pos {
+		if p.sections != nil {
+			*p.sections = append(*p.sections, Section{
+				Level: (*marks)[0].level,
+				Title: (*marks)[0].title,
+				Page:  len(p.pages) + 1,
+			})
+		}
+		*marks = (*marks)[1:]
+	}
 }
 
 func leadingBlanks(lines []string) int {
@@ -358,110 +388,123 @@ type paragraph struct {
 	text        []string
 }
 
+type blockFormatter struct {
+	width int
+	marks *[]headMark
+	out   []string
+	p     paragraph
+	fence string
+}
+
+func (f *blockFormatter) flush() {
+	if f.p.active {
+		f.out = append(f.out, wrap(inlineText(strings.Join(f.p.text, " ")), f.width, f.p.first, f.p.rest)...)
+	}
+	f.p = paragraph{}
+}
+
+func (f *blockFormatter) blank() {
+	if len(f.out) > 0 && f.out[len(f.out)-1] != "" {
+		f.out = append(f.out, "")
+	}
+}
+
+func (f *blockFormatter) heading(level int, raw string) {
+	f.blank()
+	text := inlineText(raw)
+	if f.marks != nil {
+		*f.marks = append(*f.marks, headMark{line: len(f.out), level: level, title: text})
+	}
+	if level == 1 {
+		text = strings.ToUpper(text)
+	}
+	wrapped := wrap(text, f.width, "", "")
+	f.out = append(f.out, wrapped...)
+	if level <= 2 {
+		longest := 0
+		for _, w := range wrapped {
+			longest = max(longest, runewidth.StringWidth(w))
+		}
+		underline := "="
+		if level == 2 {
+			underline = "-"
+		}
+		f.out = append(f.out, strings.Repeat(underline, longest))
+	}
+	f.blank()
+}
+
+func (f *blockFormatter) processLine(raw string) {
+	line := strings.TrimRight(strings.ReplaceAll(raw, "\t", "    "), " \r")
+	if f.fence != "" {
+		if strings.HasPrefix(strings.TrimSpace(line), f.fence) {
+			f.fence = ""
+			f.blank()
+			return
+		}
+		f.out = append(f.out, hardWrap("    "+line, f.width)...)
+		return
+	}
+	trimmed := strings.TrimSpace(line)
+	if marker, ok := fenceOpener(line); ok {
+		f.flush()
+		f.blank()
+		f.fence = marker
+		return
+	}
+	switch {
+	case trimmed == "":
+		f.flush()
+		f.blank()
+	case commentRE.MatchString(trimmed):
+	case f.p.active && !f.p.quote && f.p.first == "" && setextRE.MatchString(trimmed):
+		level := 1
+		if trimmed[0] == '-' {
+			level = 2
+		}
+		title := strings.Join(f.p.text, " ")
+		f.p = paragraph{}
+		f.heading(level, title)
+	case headingRE.MatchString(trimmed):
+		f.flush()
+		match := headingRE.FindStringSubmatch(trimmed)
+		f.heading(len(match[1]), match[2])
+	case ruleRE.MatchString(trimmed):
+		f.flush()
+		f.blank()
+		f.out = append(f.out, strings.Repeat("-", f.width))
+		f.blank()
+	case strings.HasPrefix(trimmed, "|"):
+		f.flush()
+		f.out = append(f.out, hardWrap(line, f.width)...)
+	case listItemRE.MatchString(line):
+		f.flush()
+		match := listItemRE.FindStringSubmatch(line)
+		prefix := match[1] + match[2] + " "
+		f.p = paragraph{active: true, first: prefix, rest: strings.Repeat(" ", runewidth.StringWidth(prefix)), text: []string{match[3]}}
+	case quoteRE.MatchString(trimmed):
+		text := quoteRE.FindStringSubmatch(trimmed)[1]
+		if !f.p.active || !f.p.quote {
+			f.flush()
+			f.p = paragraph{active: true, quote: true, first: "> ", rest: "> "}
+		}
+		f.p.text = append(f.p.text, text)
+	default:
+		if !f.p.active {
+			f.p = paragraph{active: true}
+		}
+		f.p.text = append(f.p.text, trimmed)
+	}
+}
+
 // formatBlocks converts Markdown lines to plain text wrapped to width.
 func formatBlocks(lines []string, width int, marks *[]headMark) []string {
-	var out []string
-	var p paragraph
-	flush := func() {
-		if p.active {
-			out = append(out, wrap(inlineText(strings.Join(p.text, " ")), width, p.first, p.rest)...)
-		}
-		p = paragraph{}
+	f := blockFormatter{width: width, marks: marks}
+	for _, line := range lines {
+		f.processLine(line)
 	}
-	blank := func() {
-		if len(out) > 0 && out[len(out)-1] != "" {
-			out = append(out, "")
-		}
-	}
-	heading := func(level int, raw string) {
-		blank()
-		text := inlineText(raw)
-		if marks != nil {
-			*marks = append(*marks, headMark{line: len(out), level: level, title: text})
-		}
-		if level == 1 {
-			text = strings.ToUpper(text)
-		}
-		wrapped := wrap(text, width, "", "")
-		out = append(out, wrapped...)
-		if level <= 2 {
-			longest := 0
-			for _, w := range wrapped {
-				longest = max(longest, runewidth.StringWidth(w))
-			}
-			underline := "="
-			if level == 2 {
-				underline = "-"
-			}
-			out = append(out, strings.Repeat(underline, longest))
-		}
-		blank()
-	}
-	fence := ""
-	for _, raw := range lines {
-		line := strings.TrimRight(strings.ReplaceAll(raw, "\t", "    "), " \r")
-		if fence != "" {
-			if strings.HasPrefix(strings.TrimSpace(line), fence) {
-				fence = ""
-				blank()
-				continue
-			}
-			out = append(out, hardWrap("    "+line, width)...)
-			continue
-		}
-		trimmed := strings.TrimSpace(line)
-		if marker, ok := fenceOpener(line); ok {
-			flush()
-			blank()
-			fence = marker
-			continue
-		}
-		switch {
-		case trimmed == "":
-			flush()
-			blank()
-		case commentRE.MatchString(trimmed):
-		case p.active && !p.quote && p.first == "" && setextRE.MatchString(trimmed):
-			level := 1
-			if trimmed[0] == '-' {
-				level = 2
-			}
-			title := strings.Join(p.text, " ")
-			p = paragraph{}
-			heading(level, title)
-		case headingRE.MatchString(trimmed):
-			flush()
-			match := headingRE.FindStringSubmatch(trimmed)
-			heading(len(match[1]), match[2])
-		case ruleRE.MatchString(trimmed):
-			flush()
-			blank()
-			out = append(out, strings.Repeat("-", width))
-			blank()
-		case strings.HasPrefix(trimmed, "|"):
-			flush()
-			out = append(out, hardWrap(line, width)...)
-		case listItemRE.MatchString(line):
-			flush()
-			match := listItemRE.FindStringSubmatch(line)
-			prefix := match[1] + match[2] + " "
-			p = paragraph{active: true, first: prefix, rest: strings.Repeat(" ", runewidth.StringWidth(prefix)), text: []string{match[3]}}
-		case quoteRE.MatchString(trimmed):
-			text := quoteRE.FindStringSubmatch(trimmed)[1]
-			if !p.active || !p.quote {
-				flush()
-				p = paragraph{active: true, quote: true, first: "> ", rest: "> "}
-			}
-			p.text = append(p.text, text)
-		default:
-			if !p.active {
-				p = paragraph{active: true}
-			}
-			p.text = append(p.text, trimmed)
-		}
-	}
-	flush()
-	return out
+	f.flush()
+	return f.out
 }
 
 // fitPrefix bounds a line prefix to half the width so the text keeps room to
