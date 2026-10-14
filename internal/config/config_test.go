@@ -41,12 +41,25 @@ func TestLoadPrecedenceAndValidation(t *testing.T) {
 	}
 }
 
-func TestLoadEmptyPath(t *testing.T) {
-	// Ensure env vars that might affect defaults are unset or cleared
-	for _, env := range []string{"PARCHMENT_EDITOR", "PARCHMENT_THEME", "PARCHMENT_UNDO_LIMIT", "PARCHMENT_LOG_LEVEL", "PARCHMENT_LOG_FORMAT"} {
-		if err := os.Unsetenv(env); err != nil {
-			t.Fatal(err)
+func unsetEnvForTest(t *testing.T, key string) {
+	t.Helper()
+	val, ok := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if ok {
+			_ = os.Setenv(key, val)
+		} else {
+			_ = os.Unsetenv(key)
 		}
+	})
+}
+
+func TestLoadEmptyPath(t *testing.T) {
+	// Ensure env vars that might affect defaults are temporarily unset and restored on test completion
+	for _, env := range []string{"PARCHMENT_EDITOR", "PARCHMENT_THEME", "PARCHMENT_UNDO_LIMIT", "PARCHMENT_LOG_LEVEL", "PARCHMENT_LOG_FORMAT"} {
+		unsetEnvForTest(t, env)
 	}
 
 	settings, err := Load("")
@@ -73,10 +86,16 @@ func TestLoadUnreadableFile(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("file permissions differ on windows")
 	}
+	if os.Geteuid() == 0 {
+		t.Skip("root user bypasses file read permissions")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "unreadable.toml")
 	if err := os.WriteFile(path, []byte("version = 1\n"), 0o000); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := os.ReadFile(path); err == nil {
+		t.Skip("file permission 000 is not enforced in this environment")
 	}
 	if _, err := Load(path); err == nil {
 		t.Fatal("expected error when reading unreadable config file, got nil")
