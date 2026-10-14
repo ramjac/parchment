@@ -126,7 +126,12 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 			if formula {
 				cellValue = spreadsheet.Cell{Formula: value}
 			}
-			_, err = service.SetCellInSheet(cmd.Context(), args[0], sheetName, row, column, cellValue)
+			_, err = service.SetCellInSheet(cmd.Context(), args[0], spreadsheet.SetCellOptions{
+				Sheet:  sheetName,
+				Row:    row,
+				Column: column,
+				Cell:   cellValue,
+			})
 			return err
 		},
 	}
