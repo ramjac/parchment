@@ -43,30 +43,48 @@ type spreadsheetHistoryMsg struct {
 	err         error
 }
 
+type spreadsheetGrid struct {
+	sheet        int
+	row, column  int
+	rowOffset    int
+	columnOffset int
+	values       map[[2]int]string
+	showFormulas bool
+}
+
+type spreadsheetViewport struct {
+	width, height int
+}
+
+type spreadsheetEditState struct {
+	editing bool
+	input   textinput.Model
+}
+
+type spreadsheetOpState struct {
+	pending         bool
+	seq             int
+	status          string
+	errMessage      string
+	loadedStatus    string
+	cancelOperation context.CancelFunc
+}
+
 // spreadsheetModel is a single-workbook grid editor. It owns only UI state;
 // it reads and edits the workbook file through the spreadsheet service.
 type spreadsheetModel struct {
-	service             *spreadsheet.Service
-	path                string
-	book                spreadsheet.Spreadsheet
-	loaded              bool
-	sheet               int
-	row, column         int
-	rowOffset           int
-	columnOffset        int
-	width, height       int
-	values              map[[2]int]string
-	showFormulas        bool
-	editing             bool
-	input               textinput.Model
-	pending             bool
-	seq                 int
-	status              string
-	errMessage          string
-	loadedStatus        string
+	service *spreadsheet.Service
+	path    string
+	book    spreadsheet.Spreadsheet
+	loaded  bool
+
+	spreadsheetGrid
+	spreadsheetViewport
+	spreadsheetEditState
+	spreadsheetOpState
+
 	theme               theme
 	newOperationContext func() (context.Context, context.CancelFunc)
-	cancelOperation     context.CancelFunc
 }
 
 func newSpreadsheetModel(service *spreadsheet.Service, path string) *spreadsheetModel {
@@ -74,7 +92,11 @@ func newSpreadsheetModel(service *spreadsheet.Service, path string) *spreadsheet
 	input.Prompt = ""
 	input.CharLimit = spreadsheet.MaxFormulaLength + 1
 	return &spreadsheetModel{
-		service: service, path: path, input: input,
+		service: service,
+		path:    path,
+		spreadsheetEditState: spreadsheetEditState{
+			input: input,
+		},
 		newOperationContext: func() (context.Context, context.CancelFunc) {
 			return context.WithCancel(context.Background())
 		},
