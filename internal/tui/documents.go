@@ -276,102 +276,15 @@ func (s *documentsScreen) update(message tea.Msg) tea.Cmd {
 			return s.saveDocumentRecovery(msg.session)
 		}
 	case documentAutosaveFinishedMsg:
-		if msg.session == s.autosaveSession {
-			if s.autosaveCancel != nil {
-				s.autosaveCancel()
-				s.autosaveCancel = nil
-			}
-			switch {
-			case msg.err != nil:
-			case msg.cleared:
-				s.draftStored, s.lastAutosave = false, nil
-			default:
-				state := msg.state
-				s.lastAutosave = &state
-			}
-			if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
-				s.errMessage = "Autosave failed: " + msg.err.Error()
-			}
-			return s.scheduleDocumentAutosave(msg.session)
-		}
+		return s.onAutosaveFinished(msg)
 	case documentSavedMsg:
-		s.finishOperation()
-		s.pending = false
-		s.refreshHistory()
-		if msg.err != nil {
-			if isCancelled(msg.err) {
-				s.errMessage, s.status = "", "Save cancelled; unsaved changes remain"
-			} else {
-				s.errMessage = msg.err.Error()
-			}
-			return s.resumeAutosave()
-		}
-		s.loadDocument(msg.document)
-		s.errMessage, s.status = "", "Saved “"+msg.document.Title+"”"
-		if msg.cleanupErr != nil {
-			s.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
-		}
-		return s.resumeAutosave()
+		return s.onDocumentSaved(msg)
 	case documentReloadedMsg:
-		s.finishOperation()
-		s.pending = false
-		s.refreshHistory()
-		if msg.err != nil {
-			s.errMessage = msg.err.Error()
-			return s.resumeAutosave()
-		}
-		if !s.dirty() || msg.showChanges {
-			// The proposal recorded the edits, so the editor returns to the
-			// saved document.
-			s.loadDocument(msg.document)
-		} else {
-			s.snapshot = msg.document
-		}
-		if s.reading {
-			s.refreshReader()
-		}
-		s.changes = msg.changes
-		s.selectedChange = max(min(s.selectedChange, len(s.changes)-1), 0)
-		if msg.showChanges {
-			s.showChanges, s.reviewing = true, false
-		}
-		if s.reviewing {
-			s.setChangeReviewContent()
-		}
-		s.errMessage, s.status = "", msg.description
-		if msg.cleanupErr != nil {
-			s.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
-		}
-		return s.resumeAutosave()
+		return s.onDocumentReloaded(msg)
 	case documentChangesLoadedMsg:
-		s.finishOperation()
-		s.pending = false
-		if msg.err != nil {
-			s.errMessage = msg.err.Error()
-			return nil
-		}
-		s.changes = msg.changes
-		s.selectedChange = max(min(s.selectedChange, len(s.changes)-1), 0)
-		s.showChanges, s.reviewing = true, false
-		s.errMessage = ""
+		return s.onDocumentChangesLoaded(msg)
 	case imageLoadedMsg:
-		s.finishOperation()
-		s.pending = false
-		if errors.Is(msg.err, context.Canceled) {
-			s.errMessage, s.status = "", "Image insert cancelled"
-			return nil
-		}
-		if msg.err != nil {
-			s.errMessage = msg.err.Error()
-			return nil
-		}
-		s.errMessage = ""
-		s.images = document.WithImage(document.Document{Images: s.images}, msg.image).Images
-		s.insertBlock(document.ImageMarkdown(msg.alt, msg.image.Name))
-		s.status = "Inserted image " + msg.image.Name
-		cmd := s.focusBody()
-		s.layoutEditor()
-		return cmd
+		return s.onImageLoaded(msg)
 	case tea.KeyMsg:
 		cmd := s.updateKey(msg)
 		s.layoutEditor()
@@ -386,6 +299,115 @@ func (s *documentsScreen) update(message tea.Msg) tea.Cmd {
 		return cmd
 	}
 	return nil
+}
+
+func (s *documentsScreen) onAutosaveFinished(msg documentAutosaveFinishedMsg) tea.Cmd {
+	if msg.session != s.autosaveSession {
+		return nil
+	}
+	if s.autosaveCancel != nil {
+		s.autosaveCancel()
+		s.autosaveCancel = nil
+	}
+	switch {
+	case msg.err != nil:
+	case msg.cleared:
+		s.draftStored, s.lastAutosave = false, nil
+	default:
+		state := msg.state
+		s.lastAutosave = &state
+	}
+	if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
+		s.errMessage = "Autosave failed: " + msg.err.Error()
+	}
+	return s.scheduleDocumentAutosave(msg.session)
+}
+
+func (s *documentsScreen) onDocumentSaved(msg documentSavedMsg) tea.Cmd {
+	s.finishOperation()
+	s.pending = false
+	s.refreshHistory()
+	if msg.err != nil {
+		if isCancelled(msg.err) {
+			s.errMessage, s.status = "", "Save cancelled; unsaved changes remain"
+		} else {
+			s.errMessage = msg.err.Error()
+		}
+		return s.resumeAutosave()
+	}
+	s.loadDocument(msg.document)
+	s.errMessage, s.status = "", "Saved “"+msg.document.Title+"”"
+	if msg.cleanupErr != nil {
+		s.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
+	}
+	return s.resumeAutosave()
+}
+
+func (s *documentsScreen) onDocumentReloaded(msg documentReloadedMsg) tea.Cmd {
+	s.finishOperation()
+	s.pending = false
+	s.refreshHistory()
+	if msg.err != nil {
+		s.errMessage = msg.err.Error()
+		return s.resumeAutosave()
+	}
+	if !s.dirty() || msg.showChanges {
+		// The proposal recorded the edits, so the editor returns to the
+		// saved document.
+		s.loadDocument(msg.document)
+	} else {
+		s.snapshot = msg.document
+	}
+	if s.reading {
+		s.refreshReader()
+	}
+	s.changes = msg.changes
+	s.selectedChange = max(min(s.selectedChange, len(s.changes)-1), 0)
+	if msg.showChanges {
+		s.showChanges, s.reviewing = true, false
+	}
+	if s.reviewing {
+		s.setChangeReviewContent()
+	}
+	s.errMessage, s.status = "", msg.description
+	if msg.cleanupErr != nil {
+		s.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
+	}
+	return s.resumeAutosave()
+}
+
+func (s *documentsScreen) onDocumentChangesLoaded(msg documentChangesLoadedMsg) tea.Cmd {
+	s.finishOperation()
+	s.pending = false
+	if msg.err != nil {
+		s.errMessage = msg.err.Error()
+		return nil
+	}
+	s.changes = msg.changes
+	s.selectedChange = max(min(s.selectedChange, len(s.changes)-1), 0)
+	s.showChanges, s.reviewing = true, false
+	s.errMessage = ""
+	return nil
+}
+
+func (s *documentsScreen) onImageLoaded(msg imageLoadedMsg) tea.Cmd {
+	s.finishOperation()
+	s.pending = false
+	if errors.Is(msg.err, context.Canceled) {
+		s.errMessage, s.status = "", "Image insert cancelled"
+		return nil
+	}
+	if msg.err != nil {
+		s.errMessage = msg.err.Error()
+		return nil
+	}
+	s.errMessage = ""
+	s.images = document.WithImage(document.Document{Images: s.images}, msg.image).Images
+	s.insertBlock(document.ImageMarkdown(msg.alt, msg.image.Name))
+	s.status = "Inserted image " + msg.image.Name
+	cmd := s.focusBody()
+	s.layoutEditor()
+	return cmd
 }
 
 func isCancelled(err error) bool {
