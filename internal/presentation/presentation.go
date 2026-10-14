@@ -143,7 +143,6 @@ func Parse(source string) (Deck, error) {
 	fenceMarker := ""
 	fenceListIndent := 0
 	var listIndents []int
-	listIndent := 0
 	var current *Slide
 	var header, body, notes strings.Builder
 	flush := func() {
@@ -168,64 +167,33 @@ func Parse(source string) (Deck, error) {
 			(isIndentedCode(line) || !strings.HasPrefix(trimmed, "# ")) {
 			return Deck{}, fmt.Errorf("line %d: presentation must begin with a '# Title' heading", lineNumber)
 		}
-		if len(listIndents) > 0 {
-			listIndent = listIndents[len(listIndents)-1]
-		} else {
-			listIndent = 0
-		}
+		listIndent := currentListIndent(listIndents)
 		listContent, itemIndent, isListItem := listItemContent(line, listIndent)
 		marker := markdownFence(trimmed)
 		markerIndent := 0
+
 		if inFence && fenceListIndent > 0 {
 			if trimmed != "" && leadingSpaces(line) < fenceListIndent {
 				inFence, fenceMarker, fenceListIndent = false, "", 0
-			} else if isListItem {
-				marker = ""
-			} else if leadingSpaces(line) >= fenceListIndent {
-				content := line[fenceListIndent:]
-				if !hasFourSpaceFenceIndent(content) {
-					marker = markdownFence(strings.TrimSpace(content))
-				} else {
-					marker = ""
-				}
-				markerIndent = fenceListIndent
 			} else {
-				marker = ""
+				marker, markerIndent = evalListFenceMarker(line, fenceListIndent, isListItem)
 			}
 		}
+
 		if !inFence {
-			if isListItem {
-				for len(listIndents) > 0 && listIndents[len(listIndents)-1] >= itemIndent {
-					listIndents = listIndents[:len(listIndents)-1]
-				}
-				listIndents = append(listIndents, itemIndent)
-				if !hasFourSpaceFenceIndent(listContent) {
-					marker, markerIndent = markdownFence(strings.TrimSpace(listContent)), itemIndent
-				} else {
-					marker = ""
-				}
-			} else if trimmed != "" {
-				for len(listIndents) > 0 && leadingSpaces(line) < listIndents[len(listIndents)-1] {
-					listIndents = listIndents[:len(listIndents)-1]
-				}
-			}
-			if len(listIndents) > 0 {
-				listIndent = listIndents[len(listIndents)-1]
-			} else {
-				listIndent = 0
-			}
-			if !isListItem && listIndent > 0 && leadingSpaces(line) >= listIndent {
-				content := line[listIndent:]
-				if !hasFourSpaceFenceIndent(content) {
-					marker = markdownFence(strings.TrimSpace(content))
-				} else {
-					marker = ""
-				}
-				markerIndent = listIndent
-			} else if !isListItem && marker == "" && !isIndentedCode(line) {
-				marker = markdownFence(trimmed)
+			listIndents = updateListIndents(listIndents, line, trimmed, itemIndent, isListItem)
+			listIndent = currentListIndent(listIndents)
+			marker, markerIndent = evalOutsideFenceMarker(line, trimmed, listContent, listIndent, itemIndent, isListItem, marker)
+		}
+
+		writeContent := func(line string) {
+			if current != nil {
+				body.WriteString(line + "\n")
+			} else if deck.Title != "" {
+				header.WriteString(line + "\n")
 			}
 		}
+
 		listContinuation := !isListItem && listIndent > 0 && leadingSpaces(line) >= listIndent
 		if marker != "" && (!isIndentedCode(line) || markerIndent > 0) {
 			if !inFence {
@@ -234,27 +202,15 @@ func Parse(source string) (Deck, error) {
 				strings.TrimSpace(trimmed[len(marker):]) == "" {
 				inFence, fenceMarker, fenceListIndent = false, "", 0
 			}
-			if current != nil {
-				body.WriteString(line + "\n")
-			} else if deck.Title != "" {
-				header.WriteString(line + "\n")
-			}
+			writeContent(line)
 			continue
 		}
 		if inFence {
-			if current != nil {
-				body.WriteString(line + "\n")
-			} else if deck.Title != "" {
-				header.WriteString(line + "\n")
-			}
+			writeContent(line)
 			continue
 		}
 		if isIndentedCode(line) {
-			if current != nil {
-				body.WriteString(line + "\n")
-			} else if deck.Title != "" {
-				header.WriteString(line + "\n")
-			}
+			writeContent(line)
 			continue
 		}
 		if strings.HasPrefix(trimmed, "# ") && !listContinuation {
@@ -291,11 +247,7 @@ func Parse(source string) (Deck, error) {
 			notes.WriteString(strings.TrimPrefix(line, ": ") + "\n")
 			continue
 		}
-		if current != nil {
-			body.WriteString(line + "\n")
-		} else {
-			header.WriteString(line + "\n")
-		}
+		writeContent(line)
 	}
 	if err := scanner.Err(); err != nil {
 		return Deck{}, fmt.Errorf("read presentation Markdown: %w", err)
@@ -312,6 +264,59 @@ func Parse(source string) (Deck, error) {
 	}
 	deck.Header = strings.Trim(header.String(), "\r\n")
 	return deck, nil
+}
+
+func currentListIndent(listIndents []int) int {
+	if len(listIndents) > 0 {
+		return listIndents[len(listIndents)-1]
+	}
+	return 0
+}
+
+func updateListIndents(listIndents []int, line, trimmed string, itemIndent int, isListItem bool) []int {
+	if isListItem {
+		for len(listIndents) > 0 && listIndents[len(listIndents)-1] >= itemIndent {
+			listIndents = listIndents[:len(listIndents)-1]
+		}
+		return append(listIndents, itemIndent)
+	}
+	if trimmed != "" {
+		for len(listIndents) > 0 && leadingSpaces(line) < listIndents[len(listIndents)-1] {
+			listIndents = listIndents[:len(listIndents)-1]
+		}
+	}
+	return listIndents
+}
+
+func evalListFenceMarker(line string, fenceListIndent int, isListItem bool) (string, int) {
+	if isListItem || leadingSpaces(line) < fenceListIndent {
+		return "", 0
+	}
+	content := line[fenceListIndent:]
+	if !hasFourSpaceFenceIndent(content) {
+		return markdownFence(strings.TrimSpace(content)), fenceListIndent
+	}
+	return "", 0
+}
+
+func evalOutsideFenceMarker(line, trimmed, listContent string, listIndent, itemIndent int, isListItem bool, initialMarker string) (string, int) {
+	if isListItem {
+		if !hasFourSpaceFenceIndent(listContent) {
+			return markdownFence(strings.TrimSpace(listContent)), itemIndent
+		}
+		return "", 0
+	}
+	if listIndent > 0 && leadingSpaces(line) >= listIndent {
+		content := line[listIndent:]
+		if !hasFourSpaceFenceIndent(content) {
+			return markdownFence(strings.TrimSpace(content)), listIndent
+		}
+		return "", 0
+	}
+	if initialMarker == "" && !isIndentedCode(line) {
+		return markdownFence(trimmed), 0
+	}
+	return initialMarker, 0
 }
 
 func isIndentedCode(line string) bool {
