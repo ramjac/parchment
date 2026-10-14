@@ -72,12 +72,47 @@ func TestStackUndoRedoBoundAndBranch(t *testing.T) {
 	}
 }
 
-func TestFailedOperationDoesNotEnterHistory(t *testing.T) {
+func TestExecuteNilOperation(t *testing.T) {
 	stack := New(5)
-	if err := stack.Execute(context.Background(), testOperation{fail: true}); err == nil {
+	err := stack.Execute(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for nil operation, got nil")
+	}
+	if err.Error() != "operation is required" {
+		t.Fatalf("got error %q, want %q", err.Error(), "operation is required")
+	}
+	if stack.CanUndo() {
+		t.Fatal("nil operation entered undo history")
+	}
+}
+
+func TestFailedOperationDoesNotEnterHistory(t *testing.T) {
+	ctx := context.Background()
+	stack := New(5)
+	val := 0
+	op := testOperation{value: &val, before: 0, after: 1, description: "op1"}
+
+	if err := stack.Execute(ctx, op); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stack.Undo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !stack.CanRedo() {
+		t.Fatal("expected can redo after undo")
+	}
+
+	failErr := stack.Execute(ctx, testOperation{fail: true})
+	if failErr == nil {
 		t.Fatal("expected operation failure")
+	}
+	if failErr.Error() != "failed" {
+		t.Fatalf("got error %q, want %q", failErr.Error(), "failed")
 	}
 	if stack.CanUndo() {
 		t.Fatal("failed operation entered history")
+	}
+	if !stack.CanRedo() {
+		t.Fatal("failed operation cleared redo history")
 	}
 }
