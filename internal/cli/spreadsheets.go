@@ -20,6 +20,14 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 	group := &cobra.Command{Use: "spreadsheet", Aliases: []string{"sheet"}, Short: "Create and manage text spreadsheets"}
 	root.AddCommand(groupCommand(group))
 
+	group.AddCommand(newSpreadsheetCreateCmd(streams))
+	group.AddCommand(newSpreadsheetShowCmd(streams))
+	group.AddCommand(newSpreadsheetCellCmd(streams))
+	addSpreadsheetInsertCommands(group)
+	group.AddCommand(newSpreadsheetAddSheetCmd())
+}
+
+func newSpreadsheetCreateCmd(streams output) *cobra.Command {
 	create := &cobra.Command{
 		Use: "create <file>", Short: "Create a spreadsheet file", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -57,9 +65,11 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 	}
 	create.Flags().String("csv-file", "", "initialize cells from a CSV file")
 	addEditFlag(create)
-	group.AddCommand(create)
+	return create
+}
 
-	group.AddCommand(&cobra.Command{
+func newSpreadsheetShowCmd(streams output) *cobra.Command {
+	return &cobra.Command{
 		Use: "show <file>", Short: "Show the complete text workbook", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openSpreadsheets(cmd)
@@ -77,8 +87,10 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 			_, err = streams.out.Write(data)
 			return err
 		},
-	})
+	}
+}
 
+func newSpreadsheetCellCmd(streams output) *cobra.Command {
 	cell := &cobra.Command{
 		Use: "cell <file> <A1-reference> [value-or-formula]", Short: "Read or set a cell",
 		Args: cobra.RangeArgs(2, 3),
@@ -101,24 +113,7 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 				return err
 			}
 			if len(args) == 2 {
-				if cmd.Flags().Changed("formula") {
-					return errors.New("--formula is only valid when setting a cell")
-				}
-				cellValue := spreadsheet.Cell{}
-				if row <= len(book.Sheets[sheetIndex].Rows) && column <= len(book.Sheets[sheetIndex].Rows[row-1]) {
-					cellValue = book.Sheets[sheetIndex].Rows[row-1][column-1]
-				}
-				if cellValue.Formula != "" {
-					value, err := spreadsheet.Evaluate(&book, sheetIndex, row, column)
-					if err != nil {
-						return err
-					}
-					_, err = fmt.Fprintf(streams.out, "%s\t= %s\t%s\n", args[1],
-						strings.TrimPrefix(cellValue.Formula, "="), strconv.FormatFloat(value, 'f', -1, 64))
-					return err
-				}
-				_, err = fmt.Fprintln(streams.out, cellValue.Value)
-				return err
+				return readSpreadsheetCell(streams.out, cmd, book, sheetIndex, row, column, args[1])
 			}
 			value := args[2]
 			formula, _ := cmd.Flags().GetBool("formula")
@@ -137,8 +132,10 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 	}
 	cell.Flags().Bool("formula", false, "store the supplied expression as a formula")
 	cell.Flags().String("sheet", "Sheet1", "sheet to read or edit")
-	group.AddCommand(cell)
+	return cell
+}
 
+func addSpreadsheetInsertCommands(group *cobra.Command) {
 	for _, operation := range []struct {
 		name string
 		run  func(*cobra.Command, string, string, int) error
@@ -176,7 +173,10 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 		command.Flags().String("sheet", "Sheet1", "sheet to edit")
 		group.AddCommand(command)
 	}
-	group.AddCommand(&cobra.Command{
+}
+
+func newSpreadsheetAddSheetCmd() *cobra.Command {
+	return &cobra.Command{
 		Use: "add-sheet <file> <name>", Short: "Add a named worksheet", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openSpreadsheets(cmd)
@@ -186,8 +186,28 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 			_, err = service.AddSheet(cmd.Context(), args[0], args[1])
 			return err
 		},
-	})
+	}
+}
 
+func readSpreadsheetCell(out io.Writer, cmd *cobra.Command, book spreadsheet.Spreadsheet, sheetIndex, row, column int, cellRef string) error {
+	if cmd.Flags().Changed("formula") {
+		return errors.New("--formula is only valid when setting a cell")
+	}
+	cellValue := spreadsheet.Cell{}
+	if row <= len(book.Sheets[sheetIndex].Rows) && column <= len(book.Sheets[sheetIndex].Rows[row-1]) {
+		cellValue = book.Sheets[sheetIndex].Rows[row-1][column-1]
+	}
+	if cellValue.Formula != "" {
+		value, err := spreadsheet.Evaluate(&book, sheetIndex, row, column)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(out, "%s\t= %s\t%s\n", cellRef,
+			strings.TrimPrefix(cellValue.Formula, "="), strconv.FormatFloat(value, 'f', -1, 64))
+		return err
+	}
+	_, err := fmt.Fprintln(out, cellValue.Value)
+	return err
 }
 
 func readSpreadsheetCSV(input io.Reader, maxBytes int64) ([][]spreadsheet.Cell, error) {

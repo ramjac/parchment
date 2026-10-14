@@ -399,3 +399,160 @@ func TestCancelledRecoverySaveWritesNothing(t *testing.T) {
 		t.Fatalf("cancelled save touched recovery storage: %v", err)
 	}
 }
+
+func TestTransitionSpreadsheet(t *testing.T) {
+	ctx := context.Background()
+	repo, _, folder := newRepo(t)
+	sheetPath := filepath.Join(folder, "sheet.md")
+
+	t.Run("nil target", func(t *testing.T) {
+		err := repo.TransitionSpreadsheet(ctx, sheetPath, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "Parchment does not delete artifact files") {
+			t.Fatalf("expected delete error, got: %v", err)
+		}
+	})
+
+	id, err := artifact.NewID(artifact.SpreadsheetKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	absPath, err := filepath.Abs(sheetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	target := spreadsheet.Spreadsheet{
+		Artifact: artifact.Artifact{
+			ID: id, Kind: artifact.SpreadsheetKind,
+			CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
+			Path: absPath,
+		},
+		Version: spreadsheet.FileVersion,
+		Sheets:  []spreadsheet.Sheet{{Name: "Sheet1", Rows: [][]spreadsheet.Cell{{{Value: "100"}}}}},
+	}
+
+	t.Run("invalid target artifact", func(t *testing.T) {
+		invalidTarget := target
+		invalidTarget.Kind = artifact.NoteKind
+		err := repo.TransitionSpreadsheet(ctx, sheetPath, nil, &invalidTarget)
+		if err == nil {
+			t.Fatal("expected error for target kind mismatch")
+		}
+	})
+
+	t.Run("create success", func(t *testing.T) {
+		if err := repo.TransitionSpreadsheet(ctx, sheetPath, nil, &target); err != nil {
+			t.Fatalf("failed to create spreadsheet: %v", err)
+		}
+		got, err := repo.GetSpreadsheet(ctx, sheetPath)
+		if err != nil {
+			t.Fatalf("failed to read created spreadsheet: %v", err)
+		}
+		if got.Sheets[0].Rows[0][0].Value != "100" {
+			t.Fatalf("unexpected cell value: %v", got.Sheets[0].Rows[0][0].Value)
+		}
+	})
+
+	t.Run("create already exists", func(t *testing.T) {
+		err := repo.TransitionSpreadsheet(ctx, sheetPath, nil, &target)
+		if !errors.Is(err, filerepo.ErrExists) {
+			t.Fatalf("expected ErrExists when creating over existing file, got: %v", err)
+		}
+	})
+
+	loaded, err := repo.GetSpreadsheet(ctx, sheetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated := loaded
+	updated.Sheets = []spreadsheet.Sheet{{Name: "Sheet1", Rows: [][]spreadsheet.Cell{{{Value: "200"}}}}}
+	updated.ModifiedAt = time.Now().UTC()
+
+	t.Run("update success", func(t *testing.T) {
+		if err := repo.TransitionSpreadsheet(ctx, sheetPath, &loaded, &updated); err != nil {
+			t.Fatalf("failed to update spreadsheet: %v", err)
+		}
+		got, err := repo.GetSpreadsheet(ctx, sheetPath)
+		if err != nil {
+			t.Fatalf("failed to get updated spreadsheet: %v", err)
+		}
+		if got.Sheets[0].Rows[0][0].Value != "200" {
+			t.Fatalf("cell value not updated: %v", got.Sheets[0].Rows[0][0].Value)
+		}
+	})
+
+	t.Run("update missing file", func(t *testing.T) {
+		missingPath := filepath.Join(folder, "missing.md")
+		err := repo.TransitionSpreadsheet(ctx, missingPath, &loaded, &updated)
+		if !errors.Is(err, spreadsheet.ErrNotFound) {
+			t.Fatalf("expected ErrNotFound, got: %v", err)
+		}
+	})
+
+	t.Run("update kind mismatch", func(t *testing.T) {
+		notePath := filepath.Join(folder, "doc.md")
+		if _, err := document.NewService(repo, 10).Create(ctx, notePath, document.Draft{Body: "doc"}); err != nil {
+			t.Fatal(err)
+		}
+		err := repo.TransitionSpreadsheet(ctx, notePath, &loaded, &updated)
+		var kindErr *filerepo.KindError
+		if !errors.As(err, &kindErr) {
+			t.Fatalf("expected KindError when transitioning non-spreadsheet file, got: %v", err)
+		}
+	})
+
+	t.Run("update state changed external edit", func(t *testing.T) {
+		current, err := repo.GetSpreadsheet(ctx, sheetPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Write direct edit to file
+		data, err := os.ReadFile(sheetPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		edited := strings.Replace(string(data), "200", "300", 1)
+		if err := os.WriteFile(sheetPath, []byte(edited), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		err = repo.TransitionSpreadsheet(ctx, sheetPath, &current, &updated)
+		if err == nil || !strings.Contains(err.Error(), "changed since it was loaded") {
+			t.Fatalf("expected changed since loaded error, got: %v", err)
+		}
+	})
+
+	t.Run("update target ID mismatch", func(t *testing.T) {
+		current, err := repo.GetSpreadsheet(ctx, sheetPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		otherID, err := artifact.NewID(artifact.SpreadsheetKind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mismatchedTarget := current
+		mismatchedTarget.ID = otherID
+		err = repo.TransitionSpreadsheet(ctx, sheetPath, &current, &mismatchedTarget)
+		if err == nil || !strings.Contains(err.Error(), "changed since it was loaded") {
+			t.Fatalf("expected changed since loaded error for ID mismatch, got: %v", err)
+		}
+	})
+
+	t.Run("update corrupted file content", func(t *testing.T) {
+		corruptedPath := filepath.Join(folder, "corrupted.md")
+		if err := repo.TransitionSpreadsheet(ctx, corruptedPath, nil, &target); err != nil {
+			t.Fatal(err)
+		}
+		// Overwrite file content with invalid JSON payload in spreadsheet block
+		corruptedContent := "```parchment-meta\n{\"id\":\"" + target.ID + "\",\"kind\":\"spreadsheet\",\"created_at\":\"2025-01-01T00:00:00Z\",\"modified_at\":\"2025-01-01T00:00:00Z\",\"format_version\":1}\n```\n\n```parchment-spreadsheet\n{invalid json}\n```\n"
+		if err := os.WriteFile(corruptedPath, []byte(corruptedContent), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		err = repo.TransitionSpreadsheet(ctx, corruptedPath, &target, &updated)
+		if err == nil {
+			t.Fatal("expected error decoding corrupted spreadsheet")
+		}
+	})
+}

@@ -270,39 +270,55 @@ func Normalize(book *Spreadsheet) error {
 	var names []string
 	for i := range book.Sheets {
 		sheet := &book.Sheets[i]
-		sheet.Name = strings.TrimSpace(sheet.Name)
-		if !utf8.ValidString(sheet.Name) {
-			return errors.New("sheet names must be valid UTF-8")
-		}
-		duplicate := false
-		for _, name := range names {
-			if strings.EqualFold(name, sheet.Name) {
-				duplicate = true
-				break
-			}
-		}
-		if sheet.Name == "" || len(sheet.Name) > 128 || duplicate {
-			return errors.New("sheet names must be non-empty, at most 128 characters, and unique")
+		if err := validateSheetName(sheet, names); err != nil {
+			return err
 		}
 		names = append(names, sheet.Name)
-		if len(sheet.Rows) == 0 {
-			sheet.Rows = [][]Cell{{{}}}
+		if err := normalizeSheetGrid(sheet); err != nil {
+			return err
 		}
-		width := rowWidth(sheet.Rows)
-		if len(sheet.Rows) > MaxRows || width > MaxColumns {
-			return fmt.Errorf("sheet %q cannot exceed %d rows or %d columns", sheet.Name, MaxRows, MaxColumns)
+	}
+	return validateFormulas(book)
+}
+
+func validateSheetName(sheet *Sheet, seen []string) error {
+	sheet.Name = strings.TrimSpace(sheet.Name)
+	if !utf8.ValidString(sheet.Name) {
+		return errors.New("sheet names must be valid UTF-8")
+	}
+	for _, name := range seen {
+		if strings.EqualFold(name, sheet.Name) {
+			return errors.New("sheet names must be non-empty, at most 128 characters, and unique")
 		}
-		for row := range sheet.Rows {
-			if len(sheet.Rows[row]) < width {
-				sheet.Rows[row] = append(sheet.Rows[row], make([]Cell, width-len(sheet.Rows[row]))...)
-			}
-			for column, cell := range sheet.Rows[row] {
-				if err := validateCell(cell); err != nil {
-					return fmt.Errorf("sheet %q cell %s: %w", sheet.Name, CellName(row+1, column+1), err)
-				}
+	}
+	if sheet.Name == "" || len(sheet.Name) > 128 {
+		return errors.New("sheet names must be non-empty, at most 128 characters, and unique")
+	}
+	return nil
+}
+
+func normalizeSheetGrid(sheet *Sheet) error {
+	if len(sheet.Rows) == 0 {
+		sheet.Rows = [][]Cell{{{}}}
+	}
+	width := rowWidth(sheet.Rows)
+	if len(sheet.Rows) > MaxRows || width > MaxColumns {
+		return fmt.Errorf("sheet %q cannot exceed %d rows or %d columns", sheet.Name, MaxRows, MaxColumns)
+	}
+	for row := range sheet.Rows {
+		if len(sheet.Rows[row]) < width {
+			sheet.Rows[row] = append(sheet.Rows[row], make([]Cell, width-len(sheet.Rows[row]))...)
+		}
+		for column, cell := range sheet.Rows[row] {
+			if err := validateCell(cell); err != nil {
+				return fmt.Errorf("sheet %q cell %s: %w", sheet.Name, CellName(row+1, column+1), err)
 			}
 		}
 	}
+	return nil
+}
+
+func validateFormulas(book *Spreadsheet) error {
 	evaluator := evaluator{
 		book: book, visiting: make(map[cellCoordinate]bool),
 		cache: make(map[cellCoordinate]float64), depth: make(map[cellCoordinate]int),
