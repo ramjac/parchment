@@ -246,88 +246,120 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch msg := message.(type) {
 	case fileOpenedMsg:
-		m.finishOperation()
-		m.pending = false
-		if msg.err != nil {
-			m.stage, m.errMessage = stageFailed, msg.err.Error()
-			return m, nil
-		}
-		m.opened = msg
-		if msg.created {
-			m.status = "Created " + m.path
-		}
-		if msg.hasDraft {
-			m.stage = stageRecovery
-			return m, nil
-		}
-		return m, m.enterEditor()
+		return m.handleFileOpened(msg)
 	case recoveryDiscardedMsg:
-		if msg.err != nil {
-			m.errMessage = "Discard autosaved draft: " + msg.err.Error()
-			return m, nil
-		}
-		m.status = "Autosaved draft discarded"
-		return m, m.enterEditor()
+		return m.handleRecoveryDiscarded(msg)
 	case autosaveTickMsg:
-		if msg.session == m.autosaveSession && m.stage == stageNote {
-			return m, m.saveNoteRecovery(msg.session)
-		}
+		return m.handleAutosaveTick(msg)
 	case autosaveFinishedMsg:
-		if msg.session == m.autosaveSession {
-			if m.autosaveCancel != nil {
-				m.autosaveCancel()
-				m.autosaveCancel = nil
-			}
-			if msg.cleared && msg.err == nil {
-				m.draftStored = false
-			}
-			if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
-				m.errMessage = "Autosave failed: " + msg.err.Error()
-			}
-			if m.stage == stageNote {
-				return m, m.scheduleAutosave(msg.session)
-			}
-		}
+		return m.handleAutosaveFinished(msg)
 	case noteSavedMsg:
-		m.finishOperation()
-		m.pending = false
-		m.refreshHistoryAvailability()
-		if msg.err != nil {
-			if errors.Is(msg.err, context.Canceled) {
-				m.errMessage, m.status = "", "Save cancelled; unsaved changes remain"
-			} else {
-				m.errMessage = msg.err.Error()
-			}
-			m.startAutosaveSession()
-			return m, m.scheduleAutosave(m.autosaveSession)
+		return m.handleNoteSaved(msg)
+	case historyChangedMsg:
+		return m.handleHistoryChanged(msg)
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
+	case tea.KeyMsg:
+		return m, m.updateKey(msg)
+	}
+	return m, nil
+}
+
+func (m *Model) handleFileOpened(msg fileOpenedMsg) (tea.Model, tea.Cmd) {
+	m.finishOperation()
+	m.pending = false
+	if msg.err != nil {
+		m.stage, m.errMessage = stageFailed, msg.err.Error()
+		return m, nil
+	}
+	m.opened = msg
+	if msg.created {
+		m.status = "Created " + m.path
+	}
+	if msg.hasDraft {
+		m.stage = stageRecovery
+		return m, nil
+	}
+	return m, m.enterEditor()
+}
+
+func (m *Model) handleRecoveryDiscarded(msg recoveryDiscardedMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		m.errMessage = "Discard autosaved draft: " + msg.err.Error()
+		return m, nil
+	}
+	m.status = "Autosaved draft discarded"
+	return m, m.enterEditor()
+}
+
+func (m *Model) handleAutosaveTick(msg autosaveTickMsg) (tea.Model, tea.Cmd) {
+	if msg.session == m.autosaveSession && m.stage == stageNote {
+		return m, m.saveNoteRecovery(msg.session)
+	}
+	return m, nil
+}
+
+func (m *Model) handleAutosaveFinished(msg autosaveFinishedMsg) (tea.Model, tea.Cmd) {
+	if msg.session == m.autosaveSession {
+		if m.autosaveCancel != nil {
+			m.autosaveCancel()
+			m.autosaveCancel = nil
 		}
-		m.loadNote(msg.note)
-		m.errMessage, m.status = "", "Saved “"+msg.note.Title+"”"
-		if msg.cleanupErr != nil {
-			m.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
+		if msg.cleared && msg.err == nil {
+			m.draftStored = false
+		}
+		if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
+			m.errMessage = "Autosave failed: " + msg.err.Error()
+		}
+		if m.stage == stageNote {
+			return m, m.scheduleAutosave(msg.session)
+		}
+	}
+	return m, nil
+}
+
+func (m *Model) handleNoteSaved(msg noteSavedMsg) (tea.Model, tea.Cmd) {
+	m.finishOperation()
+	m.pending = false
+	m.refreshHistoryAvailability()
+	if msg.err != nil {
+		if errors.Is(msg.err, context.Canceled) {
+			m.errMessage, m.status = "", "Save cancelled; unsaved changes remain"
+		} else {
+			m.errMessage = msg.err.Error()
 		}
 		m.startAutosaveSession()
 		return m, m.scheduleAutosave(m.autosaveSession)
-	case historyChangedMsg:
-		m.finishOperation()
-		m.pending = false
-		m.refreshHistoryAvailability()
-		if msg.err != nil {
-			m.errMessage = msg.err.Error()
-			return m, nil
+	}
+	m.loadNote(msg.note)
+	m.errMessage, m.status = "", "Saved “"+msg.note.Title+"”"
+	if msg.cleanupErr != nil {
+		m.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
+	}
+	m.startAutosaveSession()
+	return m, m.scheduleAutosave(m.autosaveSession)
+}
+
+func (m *Model) handleHistoryChanged(msg historyChangedMsg) (tea.Model, tea.Cmd) {
+	m.finishOperation()
+	m.pending = false
+	m.refreshHistoryAvailability()
+	if msg.err != nil {
+		m.errMessage = msg.err.Error()
+		return m, nil
+	}
+	m.loadNote(msg.note)
+	m.errMessage, m.status = "", msg.description
+	return m, nil
+}
+
+func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.stage == stageNote && !m.pending && !m.previewing &&
+		msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		// The body starts below the header, state, and blank lines.
+		if placeTextareaCursor(&m.bodyInput, msg.X, msg.Y-3) {
+			return m, m.bodyInput.Focus()
 		}
-		m.loadNote(msg.note)
-		m.errMessage, m.status = "", msg.description
-	case tea.MouseMsg:
-		if m.stage == stageNote && !m.pending && !m.previewing &&
-			msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-			// The body starts below the header, state, and blank lines.
-			if placeTextareaCursor(&m.bodyInput, msg.X, msg.Y-3) {
-				return m, m.bodyInput.Focus()
-			}
-		}
-	case tea.KeyMsg:
-		return m, m.updateKey(msg)
 	}
 	return m, nil
 }

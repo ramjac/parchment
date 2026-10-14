@@ -173,36 +173,17 @@ const (
 	promptSection
 )
 
-// documentsScreen edits one document file and reviews its proposed changes.
-// It owns UI state only; document rules live in the document service.
-type documentsScreen struct {
-	service        *document.Service
-	path           string
-	theme          theme
-	width, height  int
+// documentChangesState holds state for reviewing proposed document changes.
+type documentChangesState struct {
 	showChanges    bool
 	reviewing      bool
 	changes        []document.Change
 	selectedChange int
 	changeReview   viewport.Model
-	pending        bool
-	canUndo        bool
-	canRedo        bool
-	status         string
-	errMessage     string
+}
 
-	newOperationContext func() (context.Context, context.CancelFunc)
-	cancelOperation     context.CancelFunc
-	recoveryStore       recovery.Store
-	autosaveSession     uint64
-	autosaveCancel      context.CancelFunc
-	// draftStored reports that a recovery draft for this file may exist.
-	draftStored bool
-	// lastAutosave is the state most recently written as a recovery draft.
-	lastAutosave      *documentAutosaveState
-	autosaveScheduler func(uint64) tea.Cmd
-
-	// Editor state.
+// documentEditorState holds state for editing a document.
+type documentEditorState struct {
 	snapshot     document.Document
 	body         textarea.Model
 	layout       document.Layout
@@ -218,14 +199,45 @@ type documentsScreen struct {
 	// editPageLine is the first page line shown by the print preview.
 	editPageLine   int
 	discardWarning bool
+}
 
-	// Reader state. reading reports that the reader, not the editor, is
-	// shown.
+// documentReaderState holds state for reading/viewing a document.
+type documentReaderState struct {
+	// reading reports that the reader, not the editor, is shown.
 	reading     bool
 	reader      viewport.Model
 	readerPages []document.Page
 	readerPage  int
 	outline     []document.Section
+}
+
+// documentsScreen edits one document file and reviews its proposed changes.
+// It owns UI state only; document rules live in the document service.
+type documentsScreen struct {
+	service       *document.Service
+	path          string
+	theme         theme
+	width, height int
+	pending       bool
+	canUndo       bool
+	canRedo       bool
+	status        string
+	errMessage    string
+
+	newOperationContext func() (context.Context, context.CancelFunc)
+	cancelOperation     context.CancelFunc
+	recoveryStore       recovery.Store
+	autosaveSession     uint64
+	autosaveCancel      context.CancelFunc
+	// draftStored reports that a recovery draft for this file may exist.
+	draftStored bool
+	// lastAutosave is the state most recently written as a recovery draft.
+	lastAutosave      *documentAutosaveState
+	autosaveScheduler func(uint64) tea.Cmd
+
+	documentChangesState
+	documentEditorState
+	documentReaderState
 }
 
 type editorDraft struct {
@@ -243,9 +255,21 @@ func newDocumentsScreen(service *document.Service, path string, t theme, newCont
 	prompt := textinput.New()
 	prompt.CharLimit = document.MaxRunningTextLength * 2
 	return &documentsScreen{
-		service: service, path: path, theme: t, body: body, promptInput: prompt,
-		changeReview: viewport.New(0, 0), reader: viewport.New(0, 0), newOperationContext: newContext,
-		canUndo: service.CanUndo(), canRedo: service.CanRedo(), layout: document.DefaultLayout(),
+		service: service, path: path, theme: t,
+		documentEditorState: documentEditorState{
+			body:        body,
+			promptInput: prompt,
+			layout:      document.DefaultLayout(),
+		},
+		documentChangesState: documentChangesState{
+			changeReview: viewport.New(0, 0),
+		},
+		documentReaderState: documentReaderState{
+			reader: viewport.New(0, 0),
+		},
+		newOperationContext: newContext,
+		canUndo:             service.CanUndo(),
+		canRedo:             service.CanRedo(),
 	}
 }
 
@@ -276,102 +300,16 @@ func (s *documentsScreen) update(message tea.Msg) tea.Cmd {
 			return s.saveDocumentRecovery(msg.session)
 		}
 	case documentAutosaveFinishedMsg:
-		if msg.session == s.autosaveSession {
-			if s.autosaveCancel != nil {
-				s.autosaveCancel()
-				s.autosaveCancel = nil
-			}
-			switch {
-			case msg.err != nil:
-			case msg.cleared:
-				s.draftStored, s.lastAutosave = false, nil
-			default:
-				state := msg.state
-				s.lastAutosave = &state
-			}
-			if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
-				s.errMessage = "Autosave failed: " + msg.err.Error()
-			}
-			return s.scheduleDocumentAutosave(msg.session)
-		}
+		return s.autosaveFinished(msg)
 	case documentSavedMsg:
-		s.finishOperation()
-		s.pending = false
-		s.refreshHistory()
-		if msg.err != nil {
-			if isCancelled(msg.err) {
-				s.errMessage, s.status = "", "Save cancelled; unsaved changes remain"
-			} else {
-				s.errMessage = msg.err.Error()
-			}
-			return s.resumeAutosave()
-		}
-		s.loadDocument(msg.document)
-		s.errMessage, s.status = "", "Saved “"+msg.document.Title+"”"
-		if msg.cleanupErr != nil {
-			s.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
-		}
-		return s.resumeAutosave()
+		return s.documentSaved(msg)
 	case documentReloadedMsg:
-		s.finishOperation()
-		s.pending = false
-		s.refreshHistory()
-		if msg.err != nil {
-			s.errMessage = msg.err.Error()
-			return s.resumeAutosave()
-		}
-		if !s.dirty() || msg.showChanges {
-			// The proposal recorded the edits, so the editor returns to the
-			// saved document.
-			s.loadDocument(msg.document)
-		} else {
-			s.snapshot = msg.document
-		}
-		if s.reading {
-			s.refreshReader()
-		}
-		s.changes = msg.changes
-		s.selectedChange = max(min(s.selectedChange, len(s.changes)-1), 0)
-		if msg.showChanges {
-			s.showChanges, s.reviewing = true, false
-		}
-		if s.reviewing {
-			s.setChangeReviewContent()
-		}
-		s.errMessage, s.status = "", msg.description
-		if msg.cleanupErr != nil {
-			s.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
-		}
-		return s.resumeAutosave()
+		return s.documentReloaded(msg)
 	case documentChangesLoadedMsg:
-		s.finishOperation()
-		s.pending = false
-		if msg.err != nil {
-			s.errMessage = msg.err.Error()
-			return nil
-		}
-		s.changes = msg.changes
-		s.selectedChange = max(min(s.selectedChange, len(s.changes)-1), 0)
-		s.showChanges, s.reviewing = true, false
-		s.errMessage = ""
+		s.documentChangesLoaded(msg)
+		return nil
 	case imageLoadedMsg:
-		s.finishOperation()
-		s.pending = false
-		if errors.Is(msg.err, context.Canceled) {
-			s.errMessage, s.status = "", "Image insert cancelled"
-			return nil
-		}
-		if msg.err != nil {
-			s.errMessage = msg.err.Error()
-			return nil
-		}
-		s.errMessage = ""
-		s.images = document.WithImage(document.Document{Images: s.images}, msg.image).Images
-		s.insertBlock(document.ImageMarkdown(msg.alt, msg.image.Name))
-		s.status = "Inserted image " + msg.image.Name
-		cmd := s.focusBody()
-		s.layoutEditor()
-		return cmd
+		return s.imageLoaded(msg)
 	case tea.KeyMsg:
 		cmd := s.updateKey(msg)
 		s.layoutEditor()
@@ -386,6 +324,114 @@ func (s *documentsScreen) update(message tea.Msg) tea.Cmd {
 		return cmd
 	}
 	return nil
+}
+
+func (s *documentsScreen) autosaveFinished(msg documentAutosaveFinishedMsg) tea.Cmd {
+	if msg.session != s.autosaveSession {
+		return nil
+	}
+	if s.autosaveCancel != nil {
+		s.autosaveCancel()
+		s.autosaveCancel = nil
+	}
+	switch {
+	case msg.err != nil:
+	case msg.cleared:
+		s.draftStored, s.lastAutosave = false, nil
+	default:
+		state := msg.state
+		s.lastAutosave = &state
+	}
+	if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
+		s.errMessage = "Autosave failed: " + msg.err.Error()
+	}
+	return s.scheduleDocumentAutosave(msg.session)
+}
+
+func (s *documentsScreen) documentSaved(msg documentSavedMsg) tea.Cmd {
+	s.finishOperation()
+	s.pending = false
+	s.refreshHistory()
+	if msg.err != nil {
+		if isCancelled(msg.err) {
+			s.errMessage, s.status = "", "Save cancelled; unsaved changes remain"
+		} else {
+			s.errMessage = msg.err.Error()
+		}
+		return s.resumeAutosave()
+	}
+	s.loadDocument(msg.document)
+	s.errMessage, s.status = "", "Saved “"+msg.document.Title+"”"
+	if msg.cleanupErr != nil {
+		s.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
+	}
+	return s.resumeAutosave()
+}
+
+func (s *documentsScreen) documentReloaded(msg documentReloadedMsg) tea.Cmd {
+	s.finishOperation()
+	s.pending = false
+	s.refreshHistory()
+	if msg.err != nil {
+		s.errMessage = msg.err.Error()
+		return s.resumeAutosave()
+	}
+	if !s.dirty() || msg.showChanges {
+		// The proposal recorded the edits, so the editor returns to the
+		// saved document.
+		s.loadDocument(msg.document)
+	} else {
+		s.snapshot = msg.document
+	}
+	if s.reading {
+		s.refreshReader()
+	}
+	s.changes = msg.changes
+	s.selectedChange = max(min(s.selectedChange, len(s.changes)-1), 0)
+	if msg.showChanges {
+		s.showChanges, s.reviewing = true, false
+	}
+	if s.reviewing {
+		s.setChangeReviewContent()
+	}
+	s.errMessage, s.status = "", msg.description
+	if msg.cleanupErr != nil {
+		s.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
+	}
+	return s.resumeAutosave()
+}
+
+func (s *documentsScreen) documentChangesLoaded(msg documentChangesLoadedMsg) {
+	s.finishOperation()
+	s.pending = false
+	if msg.err != nil {
+		s.errMessage = msg.err.Error()
+		return
+	}
+	s.changes = msg.changes
+	s.selectedChange = max(min(s.selectedChange, len(s.changes)-1), 0)
+	s.showChanges, s.reviewing = true, false
+	s.errMessage = ""
+}
+
+func (s *documentsScreen) imageLoaded(msg imageLoadedMsg) tea.Cmd {
+	s.finishOperation()
+	s.pending = false
+	if errors.Is(msg.err, context.Canceled) {
+		s.errMessage, s.status = "", "Image insert cancelled"
+		return nil
+	}
+	if msg.err != nil {
+		s.errMessage = msg.err.Error()
+		return nil
+	}
+	s.errMessage = ""
+	s.images = document.WithImage(document.Document{Images: s.images}, msg.image).Images
+	s.insertBlock(document.ImageMarkdown(msg.alt, msg.image.Name))
+	s.status = "Inserted image " + msg.image.Name
+	cmd := s.focusBody()
+	s.layoutEditor()
+	return cmd
 }
 
 func isCancelled(err error) bool {
