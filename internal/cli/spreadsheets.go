@@ -101,24 +101,7 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 				return err
 			}
 			if len(args) == 2 {
-				if cmd.Flags().Changed("formula") {
-					return errors.New("--formula is only valid when setting a cell")
-				}
-				cellValue := spreadsheet.Cell{}
-				if row <= len(book.Sheets[sheetIndex].Rows) && column <= len(book.Sheets[sheetIndex].Rows[row-1]) {
-					cellValue = book.Sheets[sheetIndex].Rows[row-1][column-1]
-				}
-				if cellValue.Formula != "" {
-					value, err := spreadsheet.Evaluate(&book, sheetIndex, row, column)
-					if err != nil {
-						return err
-					}
-					_, err = fmt.Fprintf(streams.out, "%s\t= %s\t%s\n", args[1],
-						strings.TrimPrefix(cellValue.Formula, "="), strconv.FormatFloat(value, 'f', -1, 64))
-					return err
-				}
-				_, err = fmt.Fprintln(streams.out, cellValue.Value)
-				return err
+				return readSpreadsheetCell(streams.out, cmd, book, sheetIndex, row, column, args[1])
 			}
 			value := args[2]
 			formula, _ := cmd.Flags().GetBool("formula")
@@ -183,6 +166,27 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 		},
 	})
 
+}
+
+func readSpreadsheetCell(out io.Writer, cmd *cobra.Command, book spreadsheet.Spreadsheet, sheetIndex, row, column int, cellRef string) error {
+	if cmd.Flags().Changed("formula") {
+		return errors.New("--formula is only valid when setting a cell")
+	}
+	cellValue := spreadsheet.Cell{}
+	if row <= len(book.Sheets[sheetIndex].Rows) && column <= len(book.Sheets[sheetIndex].Rows[row-1]) {
+		cellValue = book.Sheets[sheetIndex].Rows[row-1][column-1]
+	}
+	if cellValue.Formula != "" {
+		value, err := spreadsheet.Evaluate(&book, sheetIndex, row, column)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(out, "%s\t= %s\t%s\n", cellRef,
+			strings.TrimPrefix(cellValue.Formula, "="), strconv.FormatFloat(value, 'f', -1, 64))
+		return err
+	}
+	_, err := fmt.Fprintln(out, cellValue.Value)
+	return err
 }
 
 func readSpreadsheetCSV(input io.Reader, maxBytes int64) ([][]spreadsheet.Cell, error) {
