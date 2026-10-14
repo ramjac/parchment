@@ -129,8 +129,8 @@ func (s *documentsScreen) toolbarView() string {
 	buttons := s.toolbarButtons()
 	normal := lipgloss.NewStyle().Foreground(s.theme.primary).Background(lipgloss.AdaptiveColor{Light: "#e7e3f5", Dark: "#2f2b45"})
 	active := normal.Reverse(true).Bold(true)
-	lines := make([]string, rows)
-	groupSeen := map[int]string{}
+	lineBuilders := make([]strings.Builder, rows)
+	groupSeen := make([]string, rows)
 	for _, p := range placed {
 		b := buttons[p.index]
 		style := normal
@@ -139,13 +139,21 @@ func (s *documentsScreen) toolbarView() string {
 		}
 		if p.x > 0 && p.x == runewidth.StringWidth(b.group)+1 && groupSeen[p.row] == "" {
 			groupSeen[p.row] = b.group
-			lines[p.row] += b.group + " "
-		} else if p.x > 0 && lines[p.row] != "" {
-			lines[p.row] += " "
+			lineBuilders[p.row].WriteString(b.group)
+			lineBuilders[p.row].WriteByte(' ')
+		} else if p.x > 0 && lineBuilders[p.row].Len() > 0 {
+			lineBuilders[p.row].WriteByte(' ')
 		}
-		lines[p.row] += style.Render(" " + b.label + " ")
+		lineBuilders[p.row].WriteString(style.Render(" " + b.label + " "))
 	}
-	return strings.Join(lines, "\n")
+	var result strings.Builder
+	for i := range lineBuilders {
+		if i > 0 {
+			result.WriteByte('\n')
+		}
+		result.WriteString(lineBuilders[i].String())
+	}
+	return result.String()
 }
 
 // startEdit opens d in the editor. It refuses documents the editor widgets
