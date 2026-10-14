@@ -35,30 +35,47 @@ type presentationHistoryMsg struct {
 	err         error
 }
 
+type presentationViewState struct {
+	page          int
+	scroll        int
+	showNotes     bool
+	width, height int
+}
+
+type presentationEditorState struct {
+	editing        bool
+	editor         textarea.Model
+	discardWarning bool
+}
+
+type presentationOpState struct {
+	pending             bool
+	seq                 int
+	newOperationContext func() (context.Context, context.CancelFunc)
+	cancelOperation     context.CancelFunc
+}
+
+type presentationUIState struct {
+	status       string
+	errMessage   string
+	loadedStatus string
+	theme        theme
+}
+
 // presentationModel is a single-deck slide viewer and Markdown source editor.
 // It owns only UI state; it reads and edits the deck file through the
 // presentation service.
 type presentationModel struct {
-	service             *presentation.Service
-	path                string
-	item                presentation.Presentation
-	deck                presentation.Deck
-	loaded              bool
-	page                int
-	scroll              int
-	showNotes           bool
-	width, height       int
-	editing             bool
-	editor              textarea.Model
-	discardWarning      bool
-	pending             bool
-	seq                 int
-	status              string
-	errMessage          string
-	loadedStatus        string
-	theme               theme
-	newOperationContext func() (context.Context, context.CancelFunc)
-	cancelOperation     context.CancelFunc
+	service *presentation.Service
+	path    string
+	item    presentation.Presentation
+	deck    presentation.Deck
+	loaded  bool
+
+	presentationViewState
+	presentationEditorState
+	presentationOpState
+	presentationUIState
 }
 
 func newPresentationModel(service *presentation.Service, path string) *presentationModel {
@@ -68,13 +85,21 @@ func newPresentationModel(service *presentation.Service, path string) *presentat
 	editor.CharLimit = 5_000_000
 	editor.MaxHeight = 0
 	return &presentationModel{
-		service: service, path: path, editor: editor,
-		newOperationContext: func() (context.Context, context.CancelFunc) {
-			return context.WithCancel(context.Background())
+		service: service,
+		path:    path,
+		presentationEditorState: presentationEditorState{
+			editor: editor,
 		},
-		theme: theme{
-			primary: lipgloss.AdaptiveColor{Light: "#4b3f72", Dark: "#c4b5fd"},
-			border:  lipgloss.AdaptiveColor{Light: "#b8b4c7", Dark: "#55516a"},
+		presentationOpState: presentationOpState{
+			newOperationContext: func() (context.Context, context.CancelFunc) {
+				return context.WithCancel(context.Background())
+			},
+		},
+		presentationUIState: presentationUIState{
+			theme: theme{
+				primary: lipgloss.AdaptiveColor{Light: "#4b3f72", Dark: "#c4b5fd"},
+				border:  lipgloss.AdaptiveColor{Light: "#b8b4c7", Dark: "#55516a"},
+			},
 		},
 	}
 }
