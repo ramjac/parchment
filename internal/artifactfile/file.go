@@ -408,7 +408,17 @@ func transientID(kind artifact.Kind, data []byte) string {
 }
 
 func titleFromBody(body string) string {
-	for _, line := range strings.Split(body, "\n") {
+	start := 0
+	for start < len(body) {
+		var line string
+		idx := strings.IndexByte(body[start:], '\n')
+		if idx < 0 {
+			line = body[start:]
+			start = len(body)
+		} else {
+			line = body[start : start+idx]
+			start += idx + 1
+		}
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
