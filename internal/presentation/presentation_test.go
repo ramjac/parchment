@@ -407,3 +407,113 @@ func TestMetadataBlockIsInspectable(t *testing.T) {
 		t.Fatalf("embedded metadata = %+v", file.Artifact)
 	}
 }
+
+func TestPresentationOperation(t *testing.T) {
+	ctx := context.Background()
+	before := testPresentation()
+	before.Path = "test.md"
+	before.Source = "# Title\n\n## Slide 1\n\nBefore\n"
+
+	after := before
+	after.Source = "# Title\n\n## Slide 1\n\nAfter\n"
+
+	t.Run("Apply and Undo and Description", func(t *testing.T) {
+		repo := newMemoryRepository()
+		repo.items[before.Path] = before
+
+		op := presentationOperation{
+			repository:  repo,
+			before:      &before,
+			after:       &after,
+			description: "Update slide",
+		}
+
+		if got := op.Description(); got != "Update slide" {
+			t.Errorf("Description() = %q, want %q", got, "Update slide")
+		}
+
+		if err := op.Apply(ctx); err != nil {
+			t.Fatalf("Apply() error = %v", err)
+		}
+
+		current, err := repo.GetPresentation(ctx, before.Path)
+		if err != nil {
+			t.Fatalf("GetPresentation() error = %v", err)
+		}
+		if current.Source != after.Source {
+			t.Errorf("after Apply, source = %q, want %q", current.Source, after.Source)
+		}
+
+		if err := op.Undo(ctx); err != nil {
+			t.Fatalf("Undo() error = %v", err)
+		}
+
+		current, err = repo.GetPresentation(ctx, before.Path)
+		if err != nil {
+			t.Fatalf("GetPresentation() error = %v", err)
+		}
+		if current.Source != before.Source {
+			t.Errorf("after Undo, source = %q, want %q", current.Source, before.Source)
+		}
+	})
+
+	t.Run("Missing Before or After", func(t *testing.T) {
+		repo := newMemoryRepository()
+		p := testPresentation()
+
+		tests := []struct {
+			name   string
+			before *Presentation
+			after  *Presentation
+		}{
+			{"nil before", nil, &p},
+			{"nil after", &p, nil},
+			{"nil both", nil, nil},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				op := presentationOperation{
+					repository: repo,
+					before:     tt.before,
+					after:      tt.after,
+				}
+				if err := op.Apply(ctx); err == nil || !strings.Contains(err.Error(), "must have a before and after value") {
+					t.Errorf("Apply() error = %v, want missing before/after error", err)
+				}
+				if err := op.Undo(ctx); err == nil || !strings.Contains(err.Error(), "must have a before and after value") {
+					t.Errorf("Undo() error = %v, want missing before/after error", err)
+				}
+			})
+		}
+	})
+
+	t.Run("Repository Transition Error", func(t *testing.T) {
+		failRepo := &failingRepository{err: errors.New("transition failed")}
+		op := presentationOperation{
+			repository: failRepo,
+			before:     &before,
+			after:      &after,
+		}
+
+		if err := op.Apply(ctx); err == nil || err.Error() != "transition failed" {
+			t.Errorf("Apply() error = %v, want 'transition failed'", err)
+		}
+
+		if err := op.Undo(ctx); err == nil || err.Error() != "transition failed" {
+			t.Errorf("Undo() error = %v, want 'transition failed'", err)
+		}
+	})
+}
+
+type failingRepository struct {
+	err error
+}
+
+func (f *failingRepository) GetPresentation(_ context.Context, _ string) (Presentation, error) {
+	return Presentation{}, f.err
+}
+
+func (f *failingRepository) TransitionPresentation(_ context.Context, _ string, _, _ *Presentation) error {
+	return f.err
+}

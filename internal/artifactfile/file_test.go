@@ -535,6 +535,144 @@ func assertEnvelopeKeys(t *testing.T, metadata []byte) {
 	}
 }
 
+func TestStripPrivateBlocks(t *testing.T) {
+	tests := []struct {
+		name     string
+		markdown string
+		want     string
+	}{
+		{
+			name:     "empty markdown",
+			markdown: "",
+			want:     "",
+		},
+		{
+			name:     "plain markdown without fences",
+			markdown: "# Title\n\nThis is plain text.\n",
+			want:     "# Title\n\nThis is plain text.\n",
+		},
+		{
+			name:     "simple parchment private block with backticks",
+			markdown: "before\n```parchment-secret\nhidden content\n```\nafter\n",
+			want:     "before\nafter\n",
+		},
+		{
+			name:     "simple parchment private block with tildes",
+			markdown: "before\n~~~parchment-secret\nhidden content\n~~~\nafter\n",
+			want:     "before\nafter\n",
+		},
+		{
+			name:     "ordinary code fence preserved",
+			markdown: "before\n```go\nfmt.Println(\"hello\")\n```\nafter\n",
+			want:     "before\n```go\nfmt.Println(\"hello\")\n```\nafter\n",
+		},
+		{
+			name:     "longer opening fence requires matching closing fence",
+			markdown: "````parchment-secret\n```\nstill hidden\n````\nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "shorter closing fence does not close longer private fence",
+			markdown: "````parchment-secret\ncontent\n```\nstill inside\n````\nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "closing fence with trailing spaces",
+			markdown: "```parchment-secret\nhidden\n```   \nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "private block with info string arguments",
+			markdown: "```parchment-data json extra\n{\"key\": \"val\"}\n```\nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "CRLF line endings in private block",
+			markdown: "before\r\n```parchment-secret\r\nhidden\r\n```\r\nafter\r\n",
+			want:     "before\r\nafter\r\n",
+		},
+		{
+			name:     "indented private block (1 to 3 spaces)",
+			markdown: "  ```parchment-secret\n  hidden\n  ```\nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "indented code block (4 spaces) is not a fence",
+			markdown: "    ```parchment-secret\n    visible indented code\n",
+			want:     "    ```parchment-secret\n    visible indented code\n",
+		},
+		{
+			name:     "quoted private block in blockquote",
+			markdown: "> ```parchment-secret\n> hidden\n> ```\nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "nested blockquote private block",
+			markdown: "> > ```parchment-secret\n> > hidden\n> > ```\nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "quoted ordinary fence containing private fence syntax",
+			markdown: "> ```go\n> ```parchment-example\n> visible\n> ```\n> ```\n",
+			want:     "> ```go\n> ```parchment-example\n> visible\n> ```\n> ```\n",
+		},
+		{
+			name:     "unordered list private block",
+			markdown: "- ```parchment-secret\n  hidden list item\n  ```\nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "ordered list private block",
+			markdown: "1. ```parchment-secret\n   hidden item\n   ```\nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "deep list continuation private block",
+			markdown: "10. Item\n\n    ```parchment-deep-list\n    deeply-hidden\n    ```\nafter\n",
+			want:     "10. Item\n\nafter\n",
+		},
+		{
+			name:     "ordinary code fence with inner parchment-like text",
+			markdown: "```go\n// parchment-secret\ncode line\n```\n",
+			want:     "```go\n// parchment-secret\ncode line\n```\n",
+		},
+		{
+			name:     "unterminated private block at EOF",
+			markdown: "before\n```parchment-secret\nhidden at eof",
+			want:     "before\n",
+		},
+		{
+			name:     "tilde private fence not closed by backticks",
+			markdown: "~~~parchment-secret\n```\nstill hidden\n~~~\nafter\n",
+			want:     "after\n",
+		},
+		{
+			name:     "backtick fence with invalid backtick in info string is ignored as fence",
+			markdown: "```parchment`invalid\ncontent\n```\n",
+			want:     "```parchment`invalid\ncontent\n```\n",
+		},
+		{
+			name:     "multiple consecutive private blocks",
+			markdown: "```parchment-one\none\n```\n\n```parchment-two\ntwo\n```\nafter\n",
+			want:     "\nafter\n",
+		},
+		{
+			name:     "private block exiting blockquote container prematurely",
+			markdown: "> ```parchment-quote\n> quoted-hidden\n\noutside-quote\n",
+			want:     "\noutside-quote\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := StripPrivateBlocks(tt.markdown)
+			if got != tt.want {
+				t.Errorf("StripPrivateBlocks(%q) =\n%q\nwant:\n%q", tt.markdown, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestStripPrivateBlocksPreservesOrdinaryCodeFences(t *testing.T) {
 	markdown := "before\n\n```parchment-secret\nhidden\n```\n\n```go\n```parchment-example\nvisible\n```\n```\nafter\n"
 	got := StripPrivateBlocks(markdown)
