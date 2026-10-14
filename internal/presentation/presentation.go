@@ -135,183 +135,218 @@ func (s *Service) Redo(ctx context.Context) (string, error) { return s.history.R
 // : speaker-note lines. Markdown text is preserved for the view layer.
 func Parse(source string) (Deck, error) {
 	source = artifactfile.StripPrivateBlocks(source)
-	var deck Deck
+	p := newDeckParser()
+	return p.parse(source)
+}
+
+type deckParser struct {
+	deck            Deck
+	lineNumber      int
+	inFence         bool
+	fenceMarker     string
+	fenceListIndent int
+	listIndents     []int
+	current         *Slide
+	header          strings.Builder
+	body            strings.Builder
+	notes           strings.Builder
+}
+
+func newDeckParser() *deckParser {
+	return &deckParser{}
+}
+
+func (p *deckParser) parse(source string) (Deck, error) {
 	scanner := bufio.NewScanner(strings.NewReader(source))
 	scanner.Buffer(make([]byte, 4096), 4<<20)
-	lineNumber := 0
-	inFence := false
-	fenceMarker := ""
-	fenceListIndent := 0
-	var listIndents []int
-	listIndent := 0
-	var current *Slide
-	var header, body, notes strings.Builder
-	flush := func() {
-		if current != nil {
-			current.Body = strings.Trim(body.String(), "\r\n")
-			current.Notes = strings.TrimSpace(notes.String())
-			deck.Slides = append(deck.Slides, *current)
-			current = nil
-			body.Reset()
-			notes.Reset()
-		}
-	}
+
 	for scanner.Scan() {
-		lineNumber++
+		p.lineNumber++
 		line := strings.TrimSuffix(scanner.Text(), "\r")
-		trimmed := strings.TrimSpace(line)
-		if lineNumber == 1 {
-			line = strings.TrimPrefix(line, "\uFEFF")
-			trimmed = strings.TrimSpace(line)
-		}
-		if deck.Title == "" && trimmed != "" &&
-			(isIndentedCode(line) || !strings.HasPrefix(trimmed, "# ")) {
-			return Deck{}, fmt.Errorf("line %d: presentation must begin with a '# Title' heading", lineNumber)
-		}
-		if len(listIndents) > 0 {
-			listIndent = listIndents[len(listIndents)-1]
-		} else {
-			listIndent = 0
-		}
-		listContent, itemIndent, isListItem := listItemContent(line, listIndent)
-		marker := markdownFence(trimmed)
-		markerIndent := 0
-		if inFence && fenceListIndent > 0 {
-			if trimmed != "" && leadingSpaces(line) < fenceListIndent {
-				inFence, fenceMarker, fenceListIndent = false, "", 0
-			} else if isListItem {
-				marker = ""
-			} else if leadingSpaces(line) >= fenceListIndent {
-				content := line[fenceListIndent:]
-				if !hasFourSpaceFenceIndent(content) {
-					marker = markdownFence(strings.TrimSpace(content))
-				} else {
-					marker = ""
-				}
-				markerIndent = fenceListIndent
-			} else {
-				marker = ""
-			}
-		}
-		if !inFence {
-			if isListItem {
-				for len(listIndents) > 0 && listIndents[len(listIndents)-1] >= itemIndent {
-					listIndents = listIndents[:len(listIndents)-1]
-				}
-				listIndents = append(listIndents, itemIndent)
-				if !hasFourSpaceFenceIndent(listContent) {
-					marker, markerIndent = markdownFence(strings.TrimSpace(listContent)), itemIndent
-				} else {
-					marker = ""
-				}
-			} else if trimmed != "" {
-				for len(listIndents) > 0 && leadingSpaces(line) < listIndents[len(listIndents)-1] {
-					listIndents = listIndents[:len(listIndents)-1]
-				}
-			}
-			if len(listIndents) > 0 {
-				listIndent = listIndents[len(listIndents)-1]
-			} else {
-				listIndent = 0
-			}
-			if !isListItem && listIndent > 0 && leadingSpaces(line) >= listIndent {
-				content := line[listIndent:]
-				if !hasFourSpaceFenceIndent(content) {
-					marker = markdownFence(strings.TrimSpace(content))
-				} else {
-					marker = ""
-				}
-				markerIndent = listIndent
-			} else if !isListItem && marker == "" && !isIndentedCode(line) {
-				marker = markdownFence(trimmed)
-			}
-		}
-		listContinuation := !isListItem && listIndent > 0 && leadingSpaces(line) >= listIndent
-		if marker != "" && (!isIndentedCode(line) || markerIndent > 0) {
-			if !inFence {
-				inFence, fenceMarker, fenceListIndent = true, marker, markerIndent
-			} else if marker[0] == fenceMarker[0] && len(marker) >= len(fenceMarker) &&
-				strings.TrimSpace(trimmed[len(marker):]) == "" {
-				inFence, fenceMarker, fenceListIndent = false, "", 0
-			}
-			if current != nil {
-				body.WriteString(line + "\n")
-			} else if deck.Title != "" {
-				header.WriteString(line + "\n")
-			}
-			continue
-		}
-		if inFence {
-			if current != nil {
-				body.WriteString(line + "\n")
-			} else if deck.Title != "" {
-				header.WriteString(line + "\n")
-			}
-			continue
-		}
-		if isIndentedCode(line) {
-			if current != nil {
-				body.WriteString(line + "\n")
-			} else if deck.Title != "" {
-				header.WriteString(line + "\n")
-			}
-			continue
-		}
-		if strings.HasPrefix(trimmed, "# ") && !listContinuation {
-			if deck.Title != "" || current != nil {
-				return Deck{}, fmt.Errorf("line %d: only one top-level presentation title is allowed", lineNumber)
-			}
-			deck.Title = strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))
-			continue
-		}
-		if strings.HasPrefix(trimmed, "## ") && !strings.HasPrefix(trimmed, "### ") &&
-			!listContinuation {
-			flush()
-			title := strings.TrimSpace(strings.TrimPrefix(trimmed, "## "))
-			title = stripAnchor(title)
-			if title == "" {
-				return Deck{}, fmt.Errorf("line %d: slide title is required", lineNumber)
-			}
-			current = &Slide{Title: title}
-			continue
-		}
-		if deck.Title == "" {
-			if trimmed != "" {
-				return Deck{}, fmt.Errorf("line %d: presentation must begin with a '# Title' heading", lineNumber)
-			}
-			continue
-		}
-		if strings.HasPrefix(trimmed, "//") {
-			continue
-		}
-		if strings.HasPrefix(line, ": ") {
-			if current == nil {
-				return Deck{}, fmt.Errorf("line %d: speaker notes must follow a slide heading", lineNumber)
-			}
-			notes.WriteString(strings.TrimPrefix(line, ": ") + "\n")
-			continue
-		}
-		if current != nil {
-			body.WriteString(line + "\n")
-		} else {
-			header.WriteString(line + "\n")
+		if err := p.processLine(line); err != nil {
+			return Deck{}, err
 		}
 	}
+
 	if err := scanner.Err(); err != nil {
 		return Deck{}, fmt.Errorf("read presentation Markdown: %w", err)
 	}
-	if inFence {
+	if p.inFence {
 		return Deck{}, errors.New("presentation contains an unclosed fenced code block")
 	}
-	flush()
-	if deck.Title == "" {
+	p.flush()
+	if p.deck.Title == "" {
 		return Deck{}, errors.New("presentation title is required as a '# Title' heading")
 	}
-	if len(deck.Slides) == 0 {
+	if len(p.deck.Slides) == 0 {
 		return Deck{}, errors.New("presentation must contain at least one '## Slide' heading")
 	}
-	deck.Header = strings.Trim(header.String(), "\r\n")
-	return deck, nil
+	p.deck.Header = strings.Trim(p.header.String(), "\r\n")
+	return p.deck, nil
+}
+
+func (p *deckParser) processLine(line string) error {
+	trimmed := strings.TrimSpace(line)
+	if p.lineNumber == 1 {
+		line = strings.TrimPrefix(line, "\uFEFF")
+		trimmed = strings.TrimSpace(line)
+	}
+
+	if p.deck.Title == "" && trimmed != "" &&
+		(isIndentedCode(line) || !strings.HasPrefix(trimmed, "# ")) {
+		return fmt.Errorf("line %d: presentation must begin with a '# Title' heading", p.lineNumber)
+	}
+
+	marker, markerIndent, listContinuation := p.evaluateListAndFence(line, trimmed)
+
+	if marker != "" && (!isIndentedCode(line) || markerIndent > 0) {
+		p.updateFenceState(marker, markerIndent, trimmed)
+		p.appendContent(line)
+		return nil
+	}
+
+	if p.inFence || isIndentedCode(line) {
+		p.appendContent(line)
+		return nil
+	}
+
+	return p.processLineDirective(line, trimmed, listContinuation)
+}
+
+func (p *deckParser) updateFenceState(marker string, markerIndent int, trimmed string) {
+	if !p.inFence {
+		p.inFence, p.fenceMarker, p.fenceListIndent = true, marker, markerIndent
+	} else if marker[0] == p.fenceMarker[0] && len(marker) >= len(p.fenceMarker) &&
+		strings.TrimSpace(trimmed[len(marker):]) == "" {
+		p.inFence, p.fenceMarker, p.fenceListIndent = false, "", 0
+	}
+}
+
+func (p *deckParser) evaluateListAndFence(line, trimmed string) (marker string, markerIndent int, listContinuation bool) {
+	listIndent := p.currentListIndent()
+	listContent, itemIndent, isListItem := listItemContent(line, listIndent)
+	marker = markdownFence(trimmed)
+	markerIndent = 0
+
+	if p.inFence && p.fenceListIndent > 0 {
+		if trimmed != "" && leadingSpaces(line) < p.fenceListIndent {
+			p.inFence, p.fenceMarker, p.fenceListIndent = false, "", 0
+		} else if isListItem {
+			marker = ""
+		} else if leadingSpaces(line) >= p.fenceListIndent {
+			content := line[p.fenceListIndent:]
+			if !hasFourSpaceFenceIndent(content) {
+				marker = markdownFence(strings.TrimSpace(content))
+			} else {
+				marker = ""
+			}
+			markerIndent = p.fenceListIndent
+		} else {
+			marker = ""
+		}
+	}
+
+	if !p.inFence {
+		if isListItem {
+			for len(p.listIndents) > 0 && p.listIndents[len(p.listIndents)-1] >= itemIndent {
+				p.listIndents = p.listIndents[:len(p.listIndents)-1]
+			}
+			p.listIndents = append(p.listIndents, itemIndent)
+			if !hasFourSpaceFenceIndent(listContent) {
+				marker, markerIndent = markdownFence(strings.TrimSpace(listContent)), itemIndent
+			} else {
+				marker = ""
+			}
+		} else if trimmed != "" {
+			for len(p.listIndents) > 0 && leadingSpaces(line) < p.listIndents[len(p.listIndents)-1] {
+				p.listIndents = p.listIndents[:len(p.listIndents)-1]
+			}
+		}
+		listIndent = p.currentListIndent()
+		if !isListItem && listIndent > 0 && leadingSpaces(line) >= listIndent {
+			content := line[listIndent:]
+			if !hasFourSpaceFenceIndent(content) {
+				marker = markdownFence(strings.TrimSpace(content))
+			} else {
+				marker = ""
+			}
+			markerIndent = listIndent
+		} else if !isListItem && marker == "" && !isIndentedCode(line) {
+			marker = markdownFence(trimmed)
+		}
+	}
+
+	listContinuation = !isListItem && listIndent > 0 && leadingSpaces(line) >= listIndent
+	return marker, markerIndent, listContinuation
+}
+
+func (p *deckParser) processLineDirective(line, trimmed string, listContinuation bool) error {
+	if strings.HasPrefix(trimmed, "# ") && !listContinuation {
+		if p.deck.Title != "" || p.current != nil {
+			return fmt.Errorf("line %d: only one top-level presentation title is allowed", p.lineNumber)
+		}
+		p.deck.Title = strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))
+		return nil
+	}
+
+	if strings.HasPrefix(trimmed, "## ") && !strings.HasPrefix(trimmed, "### ") && !listContinuation {
+		p.flush()
+		title := strings.TrimSpace(strings.TrimPrefix(trimmed, "## "))
+		title = stripAnchor(title)
+		if title == "" {
+			return fmt.Errorf("line %d: slide title is required", p.lineNumber)
+		}
+		p.current = &Slide{Title: title}
+		return nil
+	}
+
+	if p.deck.Title == "" {
+		if trimmed != "" {
+			return fmt.Errorf("line %d: presentation must begin with a '# Title' heading", p.lineNumber)
+		}
+		return nil
+	}
+
+	if strings.HasPrefix(trimmed, "//") {
+		return nil
+	}
+
+	if strings.HasPrefix(line, ": ") {
+		if p.current == nil {
+			return fmt.Errorf("line %d: speaker notes must follow a slide heading", p.lineNumber)
+		}
+		p.notes.WriteString(strings.TrimPrefix(line, ": ") + "\n")
+		return nil
+	}
+
+	p.appendContent(line)
+	return nil
+}
+
+func (p *deckParser) currentListIndent() int {
+	if len(p.listIndents) > 0 {
+		return p.listIndents[len(p.listIndents)-1]
+	}
+	return 0
+}
+
+func (p *deckParser) appendContent(line string) {
+	if p.current != nil {
+		p.body.WriteString(line + "\n")
+	} else if p.deck.Title != "" {
+		p.header.WriteString(line + "\n")
+	}
+}
+
+func (p *deckParser) flush() {
+	if p.current != nil {
+		p.current.Body = strings.Trim(p.body.String(), "\r\n")
+		p.current.Notes = strings.TrimSpace(p.notes.String())
+		p.deck.Slides = append(p.deck.Slides, *p.current)
+		p.current = nil
+		p.body.Reset()
+		p.notes.Reset()
+	}
 }
 
 func isIndentedCode(line string) bool {
