@@ -148,9 +148,8 @@ func (p *bodyPaginator) layoutFlatRun(flat []string, marks []headMark, pos, colu
 			p.newPage()
 		}
 		if len(p.current) == 0 {
-			blanks := leadingBlanks(flat)
-			pos += blanks
-			flat = flat[blanks:]
+			pos += leadingBlanks(flat)
+			flat = trimBlankEnds(flat)
 			if len(flat) == 0 {
 				break
 			}
