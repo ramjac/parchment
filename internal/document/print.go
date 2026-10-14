@@ -318,19 +318,37 @@ var (
 )
 
 func inlineText(text string) string {
-	text = imageRE.ReplaceAllStringFunc(text, func(match string) string {
-		alt := strings.TrimSpace(imageRE.FindStringSubmatch(match)[1])
-		if alt == "" {
-			return "[Image]"
-		}
-		return "[Image: " + alt + "]"
-	})
-	text = linkRE.ReplaceAllString(text, "$1 ($2)")
-	text = boldRE.ReplaceAllString(text, "$1")
-	text = boldUnderRE.ReplaceAllString(text, "$1")
-	text = italicRE.ReplaceAllString(text, "$1")
-	text = strikeRE.ReplaceAllString(text, "$1")
-	return codeRE.ReplaceAllString(text, "$1")
+	if !strings.ContainsAny(text, "![*_~`") {
+		return text
+	}
+	if strings.Contains(text, "![") {
+		text = imageRE.ReplaceAllStringFunc(text, func(match string) string {
+			alt := strings.TrimSpace(imageRE.FindStringSubmatch(match)[1])
+			if alt == "" {
+				return "[Image]"
+			}
+			return "[Image: " + alt + "]"
+		})
+	}
+	if strings.Contains(text, "[") {
+		text = linkRE.ReplaceAllString(text, "$1 ($2)")
+	}
+	if strings.Contains(text, "**") {
+		text = boldRE.ReplaceAllString(text, "$1")
+	}
+	if strings.Contains(text, "__") {
+		text = boldUnderRE.ReplaceAllString(text, "$1")
+	}
+	if strings.Contains(text, "*") {
+		text = italicRE.ReplaceAllString(text, "$1")
+	}
+	if strings.Contains(text, "~~") {
+		text = strikeRE.ReplaceAllString(text, "$1")
+	}
+	if strings.Contains(text, "`") {
+		text = codeRE.ReplaceAllString(text, "$1")
+	}
+	return text
 }
 
 type paragraph struct {
