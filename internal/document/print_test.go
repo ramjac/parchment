@@ -255,6 +255,15 @@ func TestMarkdownIsConvertedToPrintableText(t *testing.T) {
 	}
 }
 
+func TestLinkOnlyInlineText(t *testing.T) {
+	in := "[link](https://example.com)"
+	got := inlineText(in)
+	want := "link (https://example.com)"
+	if got != want {
+		t.Fatalf("inlineText(%q) = %q, want %q", in, got, want)
+	}
+}
+
 func TestLayoutValidationAndGeometry(t *testing.T) {
 	if err := DefaultLayout().Validate(); err != nil {
 		t.Fatal(err)
