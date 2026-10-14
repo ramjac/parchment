@@ -9,12 +9,10 @@ import (
 	"unicode"
 
 	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/artifactfile"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/note"
 	"example.com/parchment/internal/presentation"
@@ -116,19 +114,7 @@ type Model struct {
 	opened fileOpenedMsg
 
 	// Note editor state.
-	snapshot        note.Note
-	originalBody    string
-	bodyInput       textarea.Model
-	previewing      bool
-	preview         viewport.Model
-	discardWarning  bool
-	canUndo         bool
-	canRedo         bool
-	autosaveSession uint64
-	autosaveCancel  context.CancelFunc
-	// draftStored reports that a recovery draft for this file may exist.
-	draftStored       bool
-	autosaveScheduler func(uint64) tea.Cmd
+	noteEditor
 
 	documents *documentsScreen
 	sheet     *spreadsheetModel
@@ -137,16 +123,11 @@ type Model struct {
 
 // NewModel creates the interactive editor for config.Path.
 func NewModel(config Config) Model {
-	body := textarea.New()
-	body.Prompt = ""
-	body.ShowLineNumbers = false
-	body.Placeholder = "Write Markdown…"
-	body.CharLimit = 1_000_000
 	m := Model{
 		path: config.Path, kind: config.Kind, edit: config.Edit,
 		service: config.Notes, spreadsheets: config.Spreadsheets, presentations: config.Presentations,
 		recoveryStore: config.Recovery,
-		bodyInput:     body, preview: viewport.New(0, 0),
+		noteEditor:    newNoteEditor(),
 		newOperationContext: func() (context.Context, context.CancelFunc) {
 			return context.WithCancel(context.Background())
 		},
@@ -157,11 +138,6 @@ func NewModel(config Config) Model {
 	}
 	if m.service != nil {
 		m.canUndo, m.canRedo = m.service.CanUndo(), m.service.CanRedo()
-	}
-	m.autosaveScheduler = func(session uint64) tea.Cmd {
-		return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
-			return autosaveTickMsg{session: session}
-		})
 	}
 	if config.Documents != nil {
 		m.documents = newDocumentsScreen(config.Documents, config.Path, m.theme, m.newOperationContext)
@@ -677,14 +653,6 @@ func (m *Model) startEdit(n note.Note) bool {
 	return true
 }
 
-// loadNote makes n the saved state of the editor.
-func (m *Model) loadNote(n note.Note) {
-	m.snapshot = n
-	m.originalBody = n.Body
-	m.bodyInput.SetValue(n.Body)
-	m.discardWarning = false
-}
-
 func (m *Model) saveNote() tea.Cmd {
 	body, expected := m.bodyInput.Value(), m.snapshot
 	store, path, service := m.recoveryStore, m.path, m.service
@@ -713,31 +681,15 @@ func (m *Model) finishOperation() {
 }
 
 func (m *Model) resizePreview() {
-	m.preview.Width, m.preview.Height = max(m.width-2, 1), max(m.height-4, 1)
-	n := m.snapshot
-	n.Body = m.bodyInput.Value()
-	m.preview.SetContent(preview(n))
-	m.preview.GotoTop()
+	m.noteEditor.resizePreview(m.width, m.height)
 }
 
 func (m *Model) resizeEditors() {
-	width := max(m.width-8, 20)
-	m.bodyInput.SetWidth(width)
-	m.bodyInput.SetHeight(max(m.height-5, 3))
-	if m.previewing {
-		m.resizePreview()
-	}
+	m.noteEditor.resizeEditors(m.width, m.height)
 }
 
 func (m Model) dirty() bool {
 	return m.stage == stageNote && m.bodyInput.Value() != m.originalBody
-}
-
-func preview(n note.Note) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "# %s\n", sanitizeTerminalLine(n.Title))
-	fmt.Fprintf(&b, "\n%s", sanitizeTerminalText(artifactfile.StripPrivateBlocks(n.Body)))
-	return b.String()
 }
 
 func sanitizeTerminalLine(value string) string {
