@@ -103,6 +103,51 @@ func TestReadMetadataRequiresCurrentFormatMarker(t *testing.T) {
 	}
 }
 
+func TestTitleFromBody(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"empty", "", "Untitled"},
+		{"whitespace only", "   \n\t\n  \r\n", "Untitled"},
+		{"simple text", "Hello World", "Hello World"},
+		{"heading", "# My Title", "My Title"},
+		{"heading with spaces", "   #   My Title   \nSecond line", "My Title"},
+		{"leading blank lines", "\n\n  \n# Header\nBody", "Header"},
+		{"crlf line endings", "\r\n\r\n# Title CRLF\r\nBody", "Title CRLF"},
+		{"plain first non-empty line", "First line without hash\n# Second line", "First line without hash"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := titleFromBody(tt.body)
+			if got != tt.want {
+				t.Errorf("titleFromBody(%q) = %q, want %q", tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
+func BenchmarkTitleFromBody(b *testing.B) {
+	smallBody := "# Small Document\nThis is a small body text.\nSecond line.\n"
+	largeBody := strings.Repeat("This is a random line in a large markdown file.\n", 10000) + "# Title at the End\n"
+
+	b.Run("SmallBody", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = titleFromBody(smallBody)
+		}
+	})
+
+	b.Run("LargeBody", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = titleFromBody(largeBody)
+		}
+	})
+}
+
 func TestReadMetadataRejectsPreviousArtifactFormat(t *testing.T) {
 	data, err := Encode(testArtifact(), "body", nil)
 	if err != nil {
