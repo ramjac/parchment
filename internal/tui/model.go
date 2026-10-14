@@ -9,7 +9,6 @@ import (
 	"unicode"
 
 	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -116,19 +115,7 @@ type Model struct {
 	opened fileOpenedMsg
 
 	// Note editor state.
-	snapshot        note.Note
-	originalBody    string
-	bodyInput       textarea.Model
-	previewing      bool
-	preview         viewport.Model
-	discardWarning  bool
-	canUndo         bool
-	canRedo         bool
-	autosaveSession uint64
-	autosaveCancel  context.CancelFunc
-	// draftStored reports that a recovery draft for this file may exist.
-	draftStored       bool
-	autosaveScheduler func(uint64) tea.Cmd
+	notes *notesScreen
 
 	documents *documentsScreen
 	sheet     *spreadsheetModel
@@ -137,16 +124,10 @@ type Model struct {
 
 // NewModel creates the interactive editor for config.Path.
 func NewModel(config Config) Model {
-	body := textarea.New()
-	body.Prompt = ""
-	body.ShowLineNumbers = false
-	body.Placeholder = "Write Markdown…"
-	body.CharLimit = 1_000_000
 	m := Model{
 		path: config.Path, kind: config.Kind, edit: config.Edit,
 		service: config.Notes, spreadsheets: config.Spreadsheets, presentations: config.Presentations,
 		recoveryStore: config.Recovery,
-		bodyInput:     body, preview: viewport.New(0, 0),
 		newOperationContext: func() (context.Context, context.CancelFunc) {
 			return context.WithCancel(context.Background())
 		},
@@ -155,14 +136,7 @@ func NewModel(config Config) Model {
 			border:  lipgloss.AdaptiveColor{Light: "#b8b4c7", Dark: "#55516a"},
 		},
 	}
-	if m.service != nil {
-		m.canUndo, m.canRedo = m.service.CanUndo(), m.service.CanRedo()
-	}
-	m.autosaveScheduler = func(session uint64) tea.Cmd {
-		return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
-			return autosaveTickMsg{session: session}
-		})
-	}
+	m.notes = newNotesScreen(config.Notes, config.Path, config.Recovery, m.theme, m.newOperationContext)
 	if config.Documents != nil {
 		m.documents = newDocumentsScreen(config.Documents, config.Path, m.theme, m.newOperationContext)
 		m.documents.recoveryStore = config.Recovery
@@ -243,7 +217,7 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	size, resized := message.(tea.WindowSizeMsg)
 	if resized {
 		m.width, m.height = size.Width, size.Height
-		m.resizeEditors()
+		m.notes.resize(size.Width, size.Height)
 		if m.documents != nil {
 			m.documents.resize(size.Width, size.Height)
 		}
@@ -293,61 +267,61 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "Autosaved draft discarded"
 		return m, m.enterEditor()
 	case autosaveTickMsg:
-		if msg.session == m.autosaveSession && m.stage == stageNote {
-			return m, m.saveNoteRecovery(msg.session)
+		if msg.session == m.notes.autosaveSession && m.stage == stageNote {
+			return m, m.notes.saveNoteRecovery(msg.session)
 		}
 	case autosaveFinishedMsg:
-		if msg.session == m.autosaveSession {
-			if m.autosaveCancel != nil {
-				m.autosaveCancel()
-				m.autosaveCancel = nil
+		if msg.session == m.notes.autosaveSession {
+			if m.notes.autosaveCancel != nil {
+				m.notes.autosaveCancel()
+				m.notes.autosaveCancel = nil
 			}
 			if msg.cleared && msg.err == nil {
-				m.draftStored = false
+				m.notes.draftStored = false
 			}
 			if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 				m.errMessage = "Autosave failed: " + msg.err.Error()
 			}
 			if m.stage == stageNote {
-				return m, m.scheduleAutosave(msg.session)
+				return m, m.notes.scheduleAutosave(msg.session)
 			}
 		}
 	case noteSavedMsg:
 		m.finishOperation()
 		m.pending = false
-		m.refreshHistoryAvailability()
+		m.notes.refreshHistoryAvailability()
 		if msg.err != nil {
 			if errors.Is(msg.err, context.Canceled) {
 				m.errMessage, m.status = "", "Save cancelled; unsaved changes remain"
 			} else {
 				m.errMessage = msg.err.Error()
 			}
-			m.startAutosaveSession()
-			return m, m.scheduleAutosave(m.autosaveSession)
+			m.notes.startAutosaveSession()
+			return m, m.notes.scheduleAutosave(m.notes.autosaveSession)
 		}
-		m.loadNote(msg.note)
+		m.notes.loadNote(msg.note)
 		m.errMessage, m.status = "", "Saved “"+msg.note.Title+"”"
 		if msg.cleanupErr != nil {
 			m.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
 		}
-		m.startAutosaveSession()
-		return m, m.scheduleAutosave(m.autosaveSession)
+		m.notes.startAutosaveSession()
+		return m, m.notes.scheduleAutosave(m.notes.autosaveSession)
 	case historyChangedMsg:
 		m.finishOperation()
 		m.pending = false
-		m.refreshHistoryAvailability()
+		m.notes.refreshHistoryAvailability()
 		if msg.err != nil {
 			m.errMessage = msg.err.Error()
 			return m, nil
 		}
-		m.loadNote(msg.note)
+		m.notes.loadNote(msg.note)
 		m.errMessage, m.status = "", msg.description
 	case tea.MouseMsg:
-		if m.stage == stageNote && !m.pending && !m.previewing &&
+		if m.stage == stageNote && !m.pending && !m.notes.previewing &&
 			msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			// The body starts below the header, state, and blank lines.
-			if placeTextareaCursor(&m.bodyInput, msg.X, msg.Y-3) {
-				return m, m.bodyInput.Focus()
+			if placeTextareaCursor(&m.notes.bodyInput, msg.X, msg.Y-3) {
+				return m, m.notes.bodyInput.Focus()
 			}
 		}
 	case tea.KeyMsg:
@@ -360,12 +334,15 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) enterEditor() tea.Cmd {
 	switch m.opened.kind {
 	case artifact.NoteKind:
-		if !m.startEdit(m.opened.note) {
+		errMsg, ok := m.notes.startEdit(m.opened.note)
+		if !ok {
+			m.errMessage = errMsg
+			m.status = ""
 			m.stage = stageFailed
 			return nil
 		}
 		m.stage = stageNote
-		return tea.Batch(m.bodyInput.Focus(), m.scheduleAutosave(m.autosaveSession))
+		return tea.Batch(m.notes.bodyInput.Focus(), m.notes.scheduleAutosave(m.notes.autosaveSession))
 	case artifact.SpreadsheetKind:
 		m.sheet = newSpreadsheetModel(m.spreadsheets, m.path)
 		m.sheet.newOperationContext, m.sheet.theme = m.newOperationContext, m.theme
@@ -471,16 +448,16 @@ func (m *Model) updateNoteKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	if key != "esc" && key != "ctrl+c" {
-		m.discardWarning = false
+		m.notes.discardWarning = false
 	}
-	if m.previewing {
+	if m.notes.previewing {
 		switch key {
 		case "esc", "f5":
-			m.previewing = false
+			m.notes.previewing = false
 		case "ctrl+c":
 			return m.requestClose()
 		default:
-			m.preview, _ = m.preview.Update(msg)
+			m.notes.preview, _ = m.notes.preview.Update(msg)
 		}
 		return nil
 	}
@@ -488,29 +465,30 @@ func (m *Model) updateNoteKey(msg tea.KeyMsg) tea.Cmd {
 	case "esc", "ctrl+c":
 		return m.requestClose()
 	case "ctrl+s":
-		m.stopAutosave()
+		m.notes.stopAutosave()
 		m.pending = true
-		return m.saveNote()
+		return m.notes.saveNote(m.startOperation)
 	case "f5":
-		m.previewing = true
-		m.resizePreview()
+		m.notes.previewing = true
+		m.notes.resizePreview()
 		return nil
 	case "ctrl+z", "ctrl+r":
 		if m.dirty() {
 			m.status = "Save or discard your edits before undo or redo"
 			return nil
 		}
-		return m.history(key == "ctrl+z")
+		m.pending = true
+		return m.notes.history(key == "ctrl+z", m.startOperation)
 	}
 	var command tea.Cmd
-	m.bodyInput, command = m.bodyInput.Update(msg)
+	m.notes.bodyInput, command = m.notes.bodyInput.Update(msg)
 	return command
 }
 
 // requestClose quits, first asking for confirmation when edits are unsaved.
 func (m *Model) requestClose() tea.Cmd {
-	if m.dirty() && !m.discardWarning {
-		m.discardWarning = true
+	if m.dirty() && !m.notes.discardWarning {
+		m.notes.discardWarning = true
 		m.status = "Unsaved changes: Ctrl+S saves, Esc again discards and quits"
 		return nil
 	}
@@ -520,7 +498,7 @@ func (m *Model) requestClose() tea.Cmd {
 // close discards the autosaved draft and quits. Only an abnormal exit leaves
 // a draft to recover.
 func (m *Model) close() tea.Cmd {
-	m.stopAutosave()
+	m.notes.stopAutosave()
 	return closeEditor(m.recoveryStore, m.path)
 }
 
@@ -532,24 +510,6 @@ func closeEditor(store recovery.Store, path string) tea.Cmd {
 		_ = store.DeleteRecovery(context.Background(), path)
 		return nil
 	}, tea.Quit)
-}
-
-func (m *Model) history(undo bool) tea.Cmd {
-	m.pending = true
-	ctx := m.startOperation()
-	service, path := m.service, m.path
-	return func() tea.Msg {
-		run, prefix := service.Redo, "Redid "
-		if undo {
-			run, prefix = service.Undo, "Undid "
-		}
-		description, err := run(ctx)
-		if err != nil {
-			return historyChangedMsg{err: err}
-		}
-		n, err := service.Get(ctx, path)
-		return historyChangedMsg{description: prefix + strings.ToLower(description), note: n, err: err}
-	}
 }
 
 // View renders the current model without performing application operations.
@@ -595,10 +555,10 @@ func (m Model) View() string {
 	if m.dirty() {
 		state += " • unsaved"
 	}
-	if m.previewing {
-		return header + "\nPreview  ·  ↑/↓ scroll  ·  Esc returns to the editor\n" + m.preview.View() + m.statusLine()
+	if m.notes.previewing {
+		return header + "\nPreview  ·  ↑/↓ scroll  ·  Esc returns to the editor\n" + m.notes.preview.View() + m.statusLine()
 	}
-	bodyInput := m.bodyInput
+	bodyInput := m.notes.bodyInput
 	sanitizeTextareaView(&bodyInput)
 	return header + "\n" + state + "  ·  Ctrl+S saves  ·  F5 preview  ·  Ctrl+Z/Ctrl+R undo/redo  ·  Esc quits\n\n" +
 		bodyInput.View() + m.statusLine()
@@ -608,10 +568,10 @@ func (m Model) tooSmall() bool { return m.width < 40 || m.height < 10 }
 
 func (m Model) statusLine() string {
 	undo, redo := "undo unavailable", "redo unavailable"
-	if m.canUndo {
+	if m.notes.canUndo {
 		undo = "undo available"
 	}
-	if m.canRedo {
+	if m.notes.canRedo {
 		redo = "redo available"
 	}
 	message := m.status
@@ -622,49 +582,6 @@ func (m Model) statusLine() string {
 		message = "Ready"
 	}
 	return "\n" + sanitizeTerminalLine(message) + "  ·  " + undo + "  ·  " + redo
-}
-
-func (m *Model) refreshHistoryAvailability() {
-	m.canUndo = m.service.CanUndo()
-	m.canRedo = m.service.CanRedo()
-}
-
-// startEdit loads n into the editor, refusing notes the editor widgets would
-// truncate or alter.
-func (m *Model) startEdit(n note.Note) bool {
-	m.bodyInput.SetValue(n.Body)
-	if m.bodyInput.Value() != n.Body {
-		m.errMessage = "This note exceeds editor limits or contains text the editor cannot preserve; edit it with a text editor"
-		m.status = ""
-		return false
-	}
-	m.loadNote(n)
-	m.resizeEditors()
-	m.errMessage = ""
-	m.startAutosaveSession()
-	return true
-}
-
-// loadNote makes n the saved state of the editor.
-func (m *Model) loadNote(n note.Note) {
-	m.snapshot = n
-	m.originalBody = n.Body
-	m.bodyInput.SetValue(n.Body)
-	m.discardWarning = false
-}
-
-func (m *Model) saveNote() tea.Cmd {
-	body, expected := m.bodyInput.Value(), m.snapshot
-	store, path, service := m.recoveryStore, m.path, m.service
-	ctx := m.startOperation()
-	return func() tea.Msg {
-		n, err := service.UpdateExpected(ctx, expected, body)
-		var cleanupErr error
-		if err == nil && store != nil {
-			cleanupErr = store.DeleteRecovery(context.Background(), path)
-		}
-		return noteSavedMsg{note: n, err: err, cleanupErr: cleanupErr}
-	}
 }
 
 func (m *Model) startOperation() context.Context {
@@ -680,25 +597,8 @@ func (m *Model) finishOperation() {
 	}
 }
 
-func (m *Model) resizePreview() {
-	m.preview.Width, m.preview.Height = max(m.width-2, 1), max(m.height-4, 1)
-	n := m.snapshot
-	n.Body = m.bodyInput.Value()
-	m.preview.SetContent(preview(n))
-	m.preview.GotoTop()
-}
-
-func (m *Model) resizeEditors() {
-	width := max(m.width-8, 20)
-	m.bodyInput.SetWidth(width)
-	m.bodyInput.SetHeight(max(m.height-5, 3))
-	if m.previewing {
-		m.resizePreview()
-	}
-}
-
 func (m Model) dirty() bool {
-	return m.stage == stageNote && m.bodyInput.Value() != m.originalBody
+	return m.stage == stageNote && m.notes.dirty()
 }
 
 func preview(n note.Note) string {
@@ -711,7 +611,7 @@ func preview(n note.Note) string {
 func sanitizeTerminalLine(value string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
-			return '�'
+			return '\ufffd'
 		}
 		return r
 	}, value)
@@ -720,7 +620,7 @@ func sanitizeTerminalLine(value string) string {
 func sanitizeTerminalText(value string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) && r != '\n' {
-			return '�'
+			return '\ufffd'
 		}
 		return r
 	}, value)

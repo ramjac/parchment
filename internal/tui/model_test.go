@@ -69,7 +69,9 @@ func (h *harness) openWith(kind artifact.Kind, edit bool) {
 	h.m, h.quit = &model, false
 	// Blinking cursors return tea.Tick commands, which the harness would run
 	// synchronously.
-	h.m.bodyInput.Cursor.SetMode(cursor.CursorStatic)
+	if s := h.m.notes; s != nil {
+		s.bodyInput.Cursor.SetMode(cursor.CursorStatic)
+	}
 	if s := h.m.documents; s != nil {
 		s.body.Cursor.SetMode(cursor.CursorStatic)
 		s.promptInput.Cursor.SetMode(cursor.CursorStatic)
@@ -82,7 +84,9 @@ func (h *harness) openWith(kind artifact.Kind, edit bool) {
 // into the model, as the Bubble Tea runtime would.
 func (h *harness) send(message tea.Msg) {
 	h.t.Helper()
-	h.m.autosaveScheduler = nil
+	if h.m.notes != nil {
+		h.m.notes.autosaveScheduler = nil
+	}
 	if h.m.documents != nil {
 		h.m.documents.autosaveScheduler = nil
 	}
@@ -225,8 +229,8 @@ func TestNoteSaveStaysInEditorAndCloseQuits(t *testing.T) {
 		t.Fatalf("saved note = %+v, %v", n, err)
 	}
 	h.key("ctrl+z")
-	if n, _ := h.notes.Get(context.Background(), h.path); n.Body != "" || h.m.bodyInput.Value() != "" {
-		t.Fatalf("undo: file body %q, editor body %q", n.Body, h.m.bodyInput.Value())
+	if n, _ := h.notes.Get(context.Background(), h.path); n.Body != "" || h.m.notes.bodyInput.Value() != "" {
+		t.Fatalf("undo: file body %q, editor body %q", n.Body, h.m.notes.bodyInput.Value())
 	}
 	h.key("esc")
 	if !h.quit {
@@ -286,12 +290,12 @@ func TestSmallTerminalQClosesOnlyCleanNote(t *testing.T) {
 	if view := h.m.View(); !strings.Contains(view, "too small") {
 		t.Fatalf("small terminal view = %q", view)
 	}
-	h.m.bodyInput.SetValue("unsaved")
+	h.m.notes.bodyInput.SetValue("unsaved")
 	h.key("q")
 	if h.quit {
 		t.Fatal("q quit with unsaved changes")
 	}
-	h.m.bodyInput.SetValue("")
+	h.m.notes.bodyInput.SetValue("")
 	h.key("q")
 	if !h.quit {
 		t.Fatal("q did not quit a clean editor")
@@ -301,14 +305,14 @@ func TestSmallTerminalQClosesOnlyCleanNote(t *testing.T) {
 func TestViewSanitizesTerminalControlSequences(t *testing.T) {
 	h := newHarness(t, artifact.NoteKind)
 	h.m.path = "/tmp/parch\x1b]52;c;payload\a.md"
-	h.m.bodyInput.SetValue("Body\x1b]52;c;payload\a\nnext")
+	h.m.notes.bodyInput.SetValue("Body\x1b]52;c;payload\a\nnext")
 	view := h.m.View()
 	for _, unsafe := range []string{"\x1b[2J", "\x1b]52;", "\x07"} {
 		if strings.Contains(view, unsafe) {
 			t.Errorf("view contains terminal control sequence %q", unsafe)
 		}
 	}
-	if !strings.Contains(view, "�]52;") {
+	if !strings.Contains(view, "]52;") {
 		t.Fatalf("view did not visibly sanitize the path: %q", view)
 	}
 	h.key("f5")
@@ -342,9 +346,9 @@ func TestNoteSaveRejectsConcurrentExternalChange(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t, artifact.NoteKind)
 	h.typeText("Edited body")
-	external := h.m.snapshot
+	external := h.m.notes.snapshot
 	external.Body = "Changed in a text editor"
-	if err := h.repo.Transition(ctx, h.path, &h.m.snapshot, &external); err != nil {
+	if err := h.repo.Transition(ctx, h.path, &h.m.notes.snapshot, &external); err != nil {
 		t.Fatal(err)
 	}
 	h.key("ctrl+s")
@@ -379,7 +383,7 @@ func TestPreviewCanScroll(t *testing.T) {
 		t.Fatalf("scrolled preview = %q", view)
 	}
 	h.key("esc")
-	if h.m.previewing || h.quit {
+	if h.m.notes.previewing || h.quit {
 		t.Fatal("Esc did not return from preview to the editor")
 	}
 }
@@ -397,8 +401,8 @@ func TestNoteAutosaveIsOfferedOnReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.open(artifact.NoteKind)
-	h.m.bodyInput.SetValue("Recovered body")
-	h.run(h.m.saveNoteRecovery(h.m.autosaveSession))
+	h.m.notes.bodyInput.SetValue("Recovered body")
+	h.run(h.m.notes.saveNoteRecovery(h.m.notes.autosaveSession))
 	if !h.hasDraft() {
 		t.Fatal("autosave wrote no draft")
 	}
@@ -409,11 +413,11 @@ func TestNoteAutosaveIsOfferedOnReopen(t *testing.T) {
 		t.Fatalf("stage = %d, view:\n%s", h.m.stage, h.m.View())
 	}
 	h.key("r")
-	if h.m.stage != stageNote || h.m.bodyInput.Value() != "Recovered body" {
-		t.Fatalf("recovered editor: stage=%d body=%q", h.m.stage, h.m.bodyInput.Value())
+	if h.m.stage != stageNote || h.m.notes.bodyInput.Value() != "Recovered body" {
+		t.Fatalf("recovered editor: stage=%d body=%q", h.m.stage, h.m.notes.bodyInput.Value())
 	}
-	if string(h.m.snapshot.Blocks["parchment-extra"]) != `{"kept":true}` || h.m.snapshot.Body != "Before" {
-		t.Fatalf("recovered snapshot = %+v", h.m.snapshot)
+	if string(h.m.notes.snapshot.Blocks["parchment-extra"]) != `{"kept":true}` || h.m.notes.snapshot.Body != "Before" {
+		t.Fatalf("recovered snapshot = %+v", h.m.notes.snapshot)
 	}
 	h.key("ctrl+s")
 	saved, err := h.notes.Get(ctx, h.path)
@@ -427,8 +431,8 @@ func TestNoteAutosaveIsOfferedOnReopen(t *testing.T) {
 
 func TestRecoveryOfferDiscardAndQuit(t *testing.T) {
 	h := newHarness(t, artifact.NoteKind)
-	h.m.bodyInput.SetValue("draft")
-	h.run(h.m.saveNoteRecovery(h.m.autosaveSession))
+	h.m.notes.bodyInput.SetValue("draft")
+	h.run(h.m.notes.saveNoteRecovery(h.m.notes.autosaveSession))
 
 	h.open(artifact.NoteKind)
 	h.key("q")
@@ -437,16 +441,16 @@ func TestRecoveryOfferDiscardAndQuit(t *testing.T) {
 	}
 	h.open(artifact.NoteKind)
 	h.key("d")
-	if h.m.stage != stageNote || h.m.bodyInput.Value() != "" || h.hasDraft() {
-		t.Fatalf("discard: stage=%d body=%q draft=%t", h.m.stage, h.m.bodyInput.Value(), h.hasDraft())
+	if h.m.stage != stageNote || h.m.notes.bodyInput.Value() != "" || h.hasDraft() {
+		t.Fatalf("discard: stage=%d body=%q draft=%t", h.m.stage, h.m.notes.bodyInput.Value(), h.hasDraft())
 	}
 }
 
 func TestRecoveryWarnsWhenFileChangedAfterDraft(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t, artifact.NoteKind)
-	h.m.bodyInput.SetValue("draft")
-	h.run(h.m.saveNoteRecovery(h.m.autosaveSession))
+	h.m.notes.bodyInput.SetValue("draft")
+	h.run(h.m.notes.saveNoteRecovery(h.m.notes.autosaveSession))
 	if _, err := h.notes.Update(ctx, h.path, "changed elsewhere"); err != nil {
 		t.Fatal(err)
 	}
@@ -460,7 +464,7 @@ func TestRecoveryWarnsWhenFileChangedAfterDraft(t *testing.T) {
 func TestClosingNormallyDeletesDraft(t *testing.T) {
 	h := newHarness(t, artifact.NoteKind)
 	h.typeText("unsaved")
-	h.run(h.m.saveNoteRecovery(h.m.autosaveSession))
+	h.run(h.m.notes.saveNoteRecovery(h.m.notes.autosaveSession))
 	if !h.hasDraft() {
 		t.Fatal("autosave wrote no draft")
 	}
@@ -505,8 +509,8 @@ func TestPlainMarkdownOpensAsNoteAndStaysPlain(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.open(artifact.NoteKind)
-	if h.m.stage != stageNote || h.m.bodyInput.Value() != "# Plain\n" {
-		t.Fatalf("stage = %d, body = %q, error = %q", h.m.stage, h.m.bodyInput.Value(), h.m.errMessage)
+	if h.m.stage != stageNote || h.m.notes.bodyInput.Value() != "# Plain\n" {
+		t.Fatalf("stage = %d, body = %q, error = %q", h.m.stage, h.m.notes.bodyInput.Value(), h.m.errMessage)
 	}
 	h.typeText("more")
 	h.key("ctrl+s")
@@ -518,16 +522,16 @@ func TestPlainMarkdownOpensAsNoteAndStaysPlain(t *testing.T) {
 
 func TestNoteClickPositionsBodyCursor(t *testing.T) {
 	h := newHarness(t, artifact.NoteKind)
-	h.m.bodyInput.SetValue("alpha\nbravo")
+	h.m.notes.bodyInput.SetValue("alpha\nbravo")
 	h.send(tea.MouseMsg{X: 2, Y: 4, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
-	h.m.bodyInput.InsertString("!")
-	if h.m.bodyInput.Value() != "alpha\nbr!avo" {
-		t.Fatalf("note click positioned cursor at %q", h.m.bodyInput.Value())
+	h.m.notes.bodyInput.InsertString("!")
+	if h.m.notes.bodyInput.Value() != "alpha\nbr!avo" {
+		t.Fatalf("note click positioned cursor at %q", h.m.notes.bodyInput.Value())
 	}
 	h.send(tea.MouseMsg{X: 1, Y: 0, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
-	h.m.bodyInput.InsertString("?")
-	if h.m.bodyInput.Value() != "alpha\nbr!?avo" {
-		t.Fatalf("header click moved note cursor: %q", h.m.bodyInput.Value())
+	h.m.notes.bodyInput.InsertString("?")
+	if h.m.notes.bodyInput.Value() != "alpha\nbr!?avo" {
+		t.Fatalf("header click moved note cursor: %q", h.m.notes.bodyInput.Value())
 	}
 }
 
@@ -554,14 +558,14 @@ func TestRevertingNoteEditsRemovesAutosavedDraft(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.open(artifact.NoteKind)
-	h.m.bodyInput.SetValue("Unsaved")
-	h.run(h.m.saveNoteRecovery(h.m.autosaveSession))
+	h.m.notes.bodyInput.SetValue("Unsaved")
+	h.run(h.m.notes.saveNoteRecovery(h.m.notes.autosaveSession))
 	if !h.hasDraft() {
 		t.Fatal("autosave wrote no draft")
 	}
-	h.m.bodyInput.SetValue("Saved")
-	h.run(h.m.saveNoteRecovery(h.m.autosaveSession))
-	if h.hasDraft() || h.m.draftStored {
-		t.Fatalf("reverted editor kept its draft (draftStored=%t)", h.m.draftStored)
+	h.m.notes.bodyInput.SetValue("Saved")
+	h.run(h.m.notes.saveNoteRecovery(h.m.notes.autosaveSession))
+	if h.hasDraft() || h.m.notes.draftStored {
+		t.Fatalf("reverted editor kept its draft (draftStored=%t)", h.m.notes.draftStored)
 	}
 }

@@ -1,17 +1,14 @@
 package tui
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/note"
-	"example.com/parchment/internal/recovery"
 )
 
 // noteRecoveryData is the autosaved note editor state: the saved note the
@@ -21,60 +18,6 @@ type noteRecoveryData struct {
 	SnapshotBody   string                     `json:"snapshot_body"`
 	SnapshotBlocks map[string]json.RawMessage `json:"snapshot_blocks,omitempty"`
 	Body           string                     `json:"body"`
-}
-
-func (m *Model) startAutosaveSession() {
-	m.autosaveSession++
-	if m.autosaveCancel != nil {
-		m.autosaveCancel()
-		m.autosaveCancel = nil
-	}
-}
-
-func (m *Model) scheduleAutosave(session uint64) tea.Cmd {
-	if m.recoveryStore == nil || m.autosaveScheduler == nil {
-		return nil
-	}
-	return m.autosaveScheduler(session)
-}
-
-func (m *Model) stopAutosave() { m.startAutosaveSession() }
-
-func (m *Model) saveNoteRecovery(session uint64) tea.Cmd {
-	if m.recoveryStore == nil {
-		return nil
-	}
-	if !m.dirty() {
-		if !m.draftStored {
-			return m.scheduleAutosave(session)
-		}
-		// The edits were reverted after a draft was autosaved; remove it so a
-		// crash does not offer changes the user already undid.
-		store, path := m.recoveryStore, m.path
-		return func() tea.Msg {
-			return autosaveFinishedMsg{session: session, err: store.DeleteRecovery(context.Background(), path), cleared: true}
-		}
-	}
-	m.draftStored = true
-	data := noteRecoveryData{
-		Snapshot: m.snapshot, SnapshotBody: m.snapshot.Body,
-		SnapshotBlocks: cloneRawMessages(m.snapshot.Blocks),
-		Body:           m.bodyInput.Value(),
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	m.autosaveCancel = cancel
-	store := m.recoveryStore
-	draft := recovery.Draft{
-		Path: m.path, Kind: string(artifact.NoteKind), UpdatedAt: time.Now().UTC(),
-	}
-	return func() tea.Msg {
-		encoded, err := json.Marshal(data)
-		if err == nil {
-			draft.Data = encoded
-			err = store.SaveRecovery(ctx, draft)
-		}
-		return autosaveFinishedMsg{session: session, err: err}
-	}
 }
 
 func cloneRawMessages(source map[string]json.RawMessage) map[string]json.RawMessage {
@@ -106,18 +49,20 @@ func (m *Model) recoverDraft() tea.Cmd {
 		}
 		snapshot := data.Snapshot
 		snapshot.Body, snapshot.Blocks, snapshot.Path = data.SnapshotBody, cloneRawMessages(data.SnapshotBlocks), m.path
-		if !m.startEdit(snapshot) {
+		if errMsg, ok := m.notes.startEdit(snapshot); !ok {
+			m.errMessage = errMsg
+			m.status = ""
 			m.stage = stageFailed
 			return nil
 		}
-		m.bodyInput.SetValue(data.Body)
-		m.draftStored = true
+		m.notes.bodyInput.SetValue(data.Body)
+		m.notes.draftStored = true
 		m.stage = stageNote
 		m.status = "Recovered unsaved note draft"
 		if !note.Equal(snapshot, opened.note) {
 			m.status += "; the file changed after the draft was saved, so saving will report a conflict"
 		}
-		return tea.Batch(m.bodyInput.Focus(), m.scheduleAutosave(m.autosaveSession))
+		return tea.Batch(m.notes.bodyInput.Focus(), m.notes.scheduleAutosave(m.notes.autosaveSession))
 	case artifact.DocumentKind:
 		var data documentRecoveryData
 		if err := json.Unmarshal(draft.Data, &data); err != nil {

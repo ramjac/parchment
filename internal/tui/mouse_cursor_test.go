@@ -92,18 +92,18 @@ func TestNoteEditorShowsCursorAwayFromTextEnd(t *testing.T) {
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
 	model := NewModel(Config{Path: "note.md", Kind: artifact.NoteKind})
 	model.width, model.height = 80, 24
-	model.resizeEditors()
+	model.notes.resize(model.width, model.height)
 	body := note.Note{Body: strings.Repeat("line\n", 60) + "end"}
-	if !model.startEdit(body) {
+	if _, ok := model.notes.startEdit(body); !ok {
 		t.Fatal("note did not open for editing")
 	}
 	model.stage = stageNote
-	model.bodyInput.Focus()
+	model.notes.bodyInput.Focus()
 	for i := 0; i < 59; i++ {
-		model.bodyInput.CursorUp()
+		model.notes.bodyInput.CursorUp()
 	}
 	if !strings.Contains(model.View(), "\x1b[7m") {
-		t.Fatalf("cursor at line %d is not visible in the editor view", model.bodyInput.Line())
+		t.Fatalf("cursor at line %d is not visible in the editor view", model.notes.bodyInput.Line())
 	}
 }
 
