@@ -172,7 +172,8 @@ func printCell(out io.Writer, cmd *cobra.Command, book *spreadsheet.Spreadsheet,
 	if cmd.Flags().Changed("formula") {
 		return errors.New("--formula is only valid when setting a cell")
 	}
-	cell := getCellAt(book, sheetIndex, row, column)
+	sheet := &book.Sheets[sheetIndex]
+	cell := cellAt(sheet, row, column)
 	if cell.Formula != "" {
 		value, err := spreadsheet.Evaluate(book, sheetIndex, row, column)
 		if err != nil {
@@ -186,12 +187,8 @@ func printCell(out io.Writer, cmd *cobra.Command, book *spreadsheet.Spreadsheet,
 	return err
 }
 
-func getCellAt(book *spreadsheet.Spreadsheet, sheetIndex, row, column int) spreadsheet.Cell {
-	if sheetIndex < 0 || sheetIndex >= len(book.Sheets) {
-		return spreadsheet.Cell{}
-	}
-	sheet := &book.Sheets[sheetIndex]
-	if row >= 1 && row <= len(sheet.Rows) && column >= 1 && column <= len(sheet.Rows[row-1]) {
+func cellAt(sheet *spreadsheet.Sheet, row, column int) spreadsheet.Cell {
+	if row <= len(sheet.Rows) && column <= len(sheet.Rows[row-1]) {
 		return sheet.Rows[row-1][column-1]
 	}
 	return spreadsheet.Cell{}
