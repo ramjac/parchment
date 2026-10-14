@@ -112,7 +112,7 @@ func TestLoadErrors(t *testing.T) {
 	}
 
 	// 2. Unreadable file permissions
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
 		unreadablePath := filepath.Join(t.TempDir(), "unreadable.toml")
 		if err := os.WriteFile(unreadablePath, []byte("version = 1\n"), 0o000); err != nil {
 			t.Fatal(err)
