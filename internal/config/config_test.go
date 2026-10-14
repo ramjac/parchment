@@ -127,7 +127,28 @@ func TestEnsureDefaultConcurrentLaunchesSeeCompleteFile(t *testing.T) {
 	}
 }
 
+func clearEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"PARCHMENT_EDITOR",
+		"PARCHMENT_THEME",
+		"PARCHMENT_UNDO_LIMIT",
+		"PARCHMENT_LOG_LEVEL",
+		"PARCHMENT_LOG_FORMAT",
+		"PARCHMENT_CONFIG",
+	} {
+		if val, ok := os.LookupEnv(key); ok {
+			os.Unsetenv(key)
+			k, v := key, val
+			t.Cleanup(func() {
+				os.Setenv(k, v)
+			})
+		}
+	}
+}
+
 func TestLoadEmptyPathAndMissingFile(t *testing.T) {
+	clearEnv(t)
 	// Empty path should return defaults
 	settings, err := Load("")
 	if err != nil {
@@ -173,6 +194,7 @@ func TestLoadFileErrors(t *testing.T) {
 }
 
 func TestLoadAllFieldsAndEnvironment(t *testing.T) {
+	clearEnv(t)
 	tomlContent := `
 version = 1
 editor = "emacs"
@@ -249,6 +271,7 @@ func TestLoadUndoLimitValidationBoundaries(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			clearEnv(t)
 			path := filepath.Join(dir, tc.name+".toml")
 			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
 				t.Fatal(err)
