@@ -550,31 +550,53 @@ func updateListContainers(lists []listContainer, line string, blockquotes int) [
 
 func parseListContinuationFence(lists []listContainer, line string) (opening, fenceContainers, bool) {
 	for i := len(lists) - 1; i >= 0; i-- {
-		container := lists[i]
-		if leadingSpaces(line) >= container.indent {
-			content := stripIndent(line, container.indent)
-			content, blockquotes := stripBlockquotePrefixes(content)
-			if blockquotes >= container.blockquotes {
-				if marker, info, ok := parseFence(content); ok {
-					return opening{marker: marker, name: info},
-						fenceContainers{blockquotes: blockquotes, listIndent: container.indent}, true
-				}
-			}
-		}
-		content, leadingBlockquotes := stripBlockquotePrefixes(line)
-		if leadingBlockquotes >= container.blockquotes && leadingSpaces(content) >= container.indent {
-			content = stripIndent(content, container.indent)
-			content, nestedBlockquotes := stripBlockquotePrefixes(content)
-			if marker, info, ok := parseFence(content); ok {
-				return opening{marker: marker, name: info},
-					fenceContainers{
-						blockquotes: leadingBlockquotes + nestedBlockquotes,
-						listIndent:  container.indent,
-					}, true
-			}
+		if block, fc, ok := matchContainerFence(lists[i], line); ok {
+			return block, fc, true
 		}
 	}
 	return opening{}, fenceContainers{}, false
+}
+
+func matchContainerFence(container listContainer, line string) (opening, fenceContainers, bool) {
+	if block, fc, ok := matchIndentFirstFence(container, line); ok {
+		return block, fc, true
+	}
+	return matchBlockquoteFirstFence(container, line)
+}
+
+func matchIndentFirstFence(container listContainer, line string) (opening, fenceContainers, bool) {
+	if leadingSpaces(line) < container.indent {
+		return opening{}, fenceContainers{}, false
+	}
+	content := stripIndent(line, container.indent)
+	content, blockquotes := stripBlockquotePrefixes(content)
+	if blockquotes < container.blockquotes {
+		return opening{}, fenceContainers{}, false
+	}
+	marker, info, ok := parseFence(content)
+	if !ok {
+		return opening{}, fenceContainers{}, false
+	}
+	return opening{marker: marker, name: info},
+		fenceContainers{blockquotes: blockquotes, listIndent: container.indent}, true
+}
+
+func matchBlockquoteFirstFence(container listContainer, line string) (opening, fenceContainers, bool) {
+	content, leadingBlockquotes := stripBlockquotePrefixes(line)
+	if leadingBlockquotes < container.blockquotes || leadingSpaces(content) < container.indent {
+		return opening{}, fenceContainers{}, false
+	}
+	content = stripIndent(content, container.indent)
+	content, nestedBlockquotes := stripBlockquotePrefixes(content)
+	marker, info, ok := parseFence(content)
+	if !ok {
+		return opening{}, fenceContainers{}, false
+	}
+	return opening{marker: marker, name: info},
+		fenceContainers{
+			blockquotes: leadingBlockquotes + nestedBlockquotes,
+			listIndent:  container.indent,
+		}, true
 }
 
 func leadingSpaces(line string) int {

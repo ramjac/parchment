@@ -11,6 +11,7 @@ type testOperation struct {
 	before      int
 	after       int
 	fail        bool
+	failUndo    bool
 	description string
 }
 
@@ -18,12 +19,19 @@ func (o testOperation) Apply(context.Context) error {
 	if o.fail {
 		return errors.New("failed")
 	}
-	*o.value = o.after
+	if o.value != nil {
+		*o.value = o.after
+	}
 	return nil
 }
 
 func (o testOperation) Undo(context.Context) error {
-	*o.value = o.before
+	if o.failUndo {
+		return errors.New("undo failed")
+	}
+	if o.value != nil {
+		*o.value = o.before
+	}
 	return nil
 }
 
@@ -114,5 +122,67 @@ func TestFailedOperationDoesNotEnterHistory(t *testing.T) {
 	}
 	if !stack.CanRedo() {
 		t.Fatal("failed operation cleared redo history")
+	}
+}
+
+func TestNewDefaultLimit(t *testing.T) {
+	stack := New(0)
+	if stack.limit != 100 {
+		t.Fatalf("expected limit to default to 100, got %d", stack.limit)
+	}
+	stackNegative := New(-5)
+	if stackNegative.limit != 100 {
+		t.Fatalf("expected limit to default to 100, got %d", stackNegative.limit)
+	}
+}
+
+func TestUndoError(t *testing.T) {
+	ctx := context.Background()
+	stack := New(5)
+	op := testOperation{failUndo: true, description: "fail undo op"}
+	if err := stack.Execute(ctx, op); err != nil {
+		t.Fatal(err)
+	}
+	_, err := stack.Undo(ctx)
+	if err == nil {
+		t.Fatal("expected error on Undo, got nil")
+	}
+	if err.Error() != "undo failed" {
+		t.Fatalf("got error %q, want %q", err.Error(), "undo failed")
+	}
+}
+
+func TestRedoEmpty(t *testing.T) {
+	ctx := context.Background()
+	stack := New(5)
+	_, err := stack.Redo(ctx)
+	if err == nil {
+		t.Fatal("expected error on Redo on empty stack, got nil")
+	}
+	if err.Error() != "nothing to redo" {
+		t.Fatalf("got error %q, want %q", err.Error(), "nothing to redo")
+	}
+}
+
+func TestRedoError(t *testing.T) {
+	ctx := context.Background()
+	stack := New(5)
+	op := testOperation{description: "op"}
+	if err := stack.Execute(ctx, op); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stack.Undo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Modify operation to fail on Apply for Redo
+	opFail := testOperation{fail: true, description: "op fail"}
+	stack.redo[0] = opFail
+
+	_, err := stack.Redo(ctx)
+	if err == nil {
+		t.Fatal("expected error on Redo, got nil")
+	}
+	if err.Error() != "failed" {
+		t.Fatalf("got error %q, want %q", err.Error(), "failed")
 	}
 }
