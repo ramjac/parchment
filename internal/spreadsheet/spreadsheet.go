@@ -204,9 +204,21 @@ func (s *Service) InsertColumnInSheet(ctx context.Context, path, name string, co
 	})
 }
 
+// NewSheet constructs a Sheet initialized with the given name and a 1x1 empty cell grid.
+func NewSheet(name string) Sheet {
+	return Sheet{
+		Name: name,
+		Rows: newDefaultGrid(),
+	}
+}
+
+func newDefaultGrid() [][]Cell {
+	return [][]Cell{{Cell{}}}
+}
+
 func (s *Service) AddSheet(ctx context.Context, path, name string) (Spreadsheet, error) {
 	return s.modify(ctx, path, "Add sheet", func(book *Spreadsheet) error {
-		book.Sheets = append(book.Sheets, Sheet{Name: name, Rows: [][]Cell{{{}}}})
+		book.Sheets = append(book.Sheets, NewSheet(name))
 		return nil
 	})
 }
@@ -256,53 +268,68 @@ func Normalize(book *Spreadsheet) error {
 	}
 	var names []string
 	for i := range book.Sheets {
-		sheet := &book.Sheets[i]
-		sheet.Name = strings.TrimSpace(sheet.Name)
-		if !utf8.ValidString(sheet.Name) {
-			return errors.New("sheet names must be valid UTF-8")
+		if err := normalizeSheet(&book.Sheets[i], &names); err != nil {
+			return err
 		}
-		duplicate := false
-		for _, name := range names {
-			if strings.EqualFold(name, sheet.Name) {
-				duplicate = true
-				break
-			}
+	}
+	return validateFormulas(book)
+}
+
+func normalizeSheet(sheet *Sheet, existingNames *[]string) error {
+	sheet.Name = strings.TrimSpace(sheet.Name)
+	if !utf8.ValidString(sheet.Name) {
+		return errors.New("sheet names must be valid UTF-8")
+	}
+	duplicate := false
+	for _, name := range *existingNames {
+		if strings.EqualFold(name, sheet.Name) {
+			duplicate = true
+			break
 		}
-		if sheet.Name == "" || len(sheet.Name) > 128 || duplicate {
-			return errors.New("sheet names must be non-empty, at most 128 characters, and unique")
+	}
+	if sheet.Name == "" || len(sheet.Name) > 128 || duplicate {
+		return errors.New("sheet names must be non-empty, at most 128 characters, and unique")
+	}
+	*existingNames = append(*existingNames, sheet.Name)
+	if len(sheet.Rows) == 0 {
+		sheet.Rows = newDefaultGrid()
+	}
+	width := rowWidth(sheet.Rows)
+	if len(sheet.Rows) > MaxRows || width > MaxColumns {
+		return fmt.Errorf("sheet %q cannot exceed %d rows or %d columns", sheet.Name, MaxRows, MaxColumns)
+	}
+	return normalizeRows(sheet, width)
+}
+
+func normalizeRows(sheet *Sheet, width int) error {
+	for row := range sheet.Rows {
+		if len(sheet.Rows[row]) < width {
+			sheet.Rows[row] = append(sheet.Rows[row], make([]Cell, width-len(sheet.Rows[row]))...)
 		}
-		names = append(names, sheet.Name)
-		if len(sheet.Rows) == 0 {
-			sheet.Rows = [][]Cell{{{}}}
-		}
-		width := rowWidth(sheet.Rows)
-		if len(sheet.Rows) > MaxRows || width > MaxColumns {
-			return fmt.Errorf("sheet %q cannot exceed %d rows or %d columns", sheet.Name, MaxRows, MaxColumns)
-		}
-		for row := range sheet.Rows {
-			if len(sheet.Rows[row]) < width {
-				sheet.Rows[row] = append(sheet.Rows[row], make([]Cell, width-len(sheet.Rows[row]))...)
-			}
-			for column, cell := range sheet.Rows[row] {
-				if err := validateCell(cell); err != nil {
-					return fmt.Errorf("sheet %q cell %s: %w", sheet.Name, CellName(row+1, column+1), err)
-				}
+		for column, cell := range sheet.Rows[row] {
+			if err := validateCell(cell); err != nil {
+				return fmt.Errorf("sheet %q cell %s: %w", sheet.Name, CellName(row+1, column+1), err)
 			}
 		}
 	}
+	return nil
+}
+
+func validateFormulas(book *Spreadsheet) error {
 	evaluator := evaluator{
-		book: book, visiting: make(map[cellCoordinate]bool),
-		cache: make(map[cellCoordinate]float64), depth: make(map[cellCoordinate]int),
+		book:     book,
+		visiting: make(map[cellCoordinate]bool),
+		cache:    make(map[cellCoordinate]float64),
+		depth:    make(map[cellCoordinate]int),
 	}
-	for sheetIndex := range book.Sheets {
-		for row := range book.Sheets[sheetIndex].Rows {
-			for column, cell := range book.Sheets[sheetIndex].Rows[row] {
+	for sheetIndex, sheet := range book.Sheets {
+		for row, rowCells := range sheet.Rows {
+			for column, cell := range rowCells {
 				if cell.Formula == "" {
 					continue
 				}
 				if _, err := evaluator.cell(sheetIndex, row+1, column+1); err != nil {
-					return fmt.Errorf("sheet %q cell %s formula: %w", book.Sheets[sheetIndex].Name,
-						CellName(row+1, column+1), err)
+					return fmt.Errorf("sheet %q cell %s formula: %w", sheet.Name, CellName(row+1, column+1), err)
 				}
 			}
 		}

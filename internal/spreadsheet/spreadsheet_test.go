@@ -46,6 +46,27 @@ func TestSingleFileWorkbookEncodesMetadataCellsAndFormulas(t *testing.T) {
 	}
 }
 
+func TestNewSheetAndAddSheet(t *testing.T) {
+	ctx := context.Background()
+	repository := newMemoryRepository()
+	service := NewService(repository, 20)
+	book, err := service.Create(ctx, "sheets.md", [][]Cell{{{Value: "1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := service.AddSheet(ctx, book.Path, "Sheet2")
+	if err != nil {
+		t.Fatalf("AddSheet failed: %v", err)
+	}
+	if len(updated.Sheets) != 2 {
+		t.Fatalf("expected 2 sheets, got %d", len(updated.Sheets))
+	}
+	if updated.Sheets[1].Name != "Sheet2" {
+		t.Fatalf("expected sheet name Sheet2, got %q", updated.Sheets[1].Name)
+	}
+}
+
 func TestNormalizeRejectsNamesThatSheetIndexTreatsAsEqual(t *testing.T) {
 	book := formulaChain(0)
 	book.Sheets = []Sheet{
