@@ -103,6 +103,166 @@ func TestReadMetadataRequiresCurrentFormatMarker(t *testing.T) {
 	}
 }
 
+func TestEncodeErrorPaths(t *testing.T) {
+	invalidArtifact := testArtifact()
+	invalidArtifact.Kind = "invalid"
+	if _, err := Encode(invalidArtifact, "body", nil); err == nil || !strings.Contains(err.Error(), "validate artifact metadata") {
+		t.Fatalf("Encode invalid artifact error = %v", err)
+	}
+
+	for _, invalidName := range []string{"invalid", "parchment-meta", "parchment-NOTE", "parchment_note"} {
+		if _, err := Encode(testArtifact(), "body", map[string]any{invalidName: "val"}); err == nil || !strings.Contains(err.Error(), "invalid Parchment block name") {
+			t.Fatalf("Encode invalid block name %q error = %v", invalidName, err)
+		}
+	}
+
+	invalidRaw := json.RawMessage(`{"invalid": json}`)
+	if _, err := Encode(testArtifact(), "body", map[string]any{"parchment-note": invalidRaw}); err == nil || !strings.Contains(err.Error(), "invalid JSON") {
+		t.Fatalf("Encode invalid json.RawMessage error = %v", err)
+	}
+
+	unmarshalable := map[string]any{"ch": make(chan int)}
+	if _, err := Encode(testArtifact(), "body", map[string]any{"parchment-note": unmarshalable}); err == nil {
+		t.Fatalf("Encode unmarshalable error expected, got nil")
+	}
+}
+
+func TestDecodeTrailingBlockErrorPaths(t *testing.T) {
+	validHeader, err := Encode(testArtifact(), "Body content\n", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		append  string
+		wantErr string
+	}{
+		{
+			name:    "unclosed code fence",
+			append:  "\n" + trailingBlocksBoundary + "\n```parchment-note\n{\"key\":\"value\"}\n",
+			wantErr: "closing code fence is missing",
+		},
+		{
+			name:    "duplicate metadata block in trailing blocks",
+			append:  "\n" + trailingBlocksBoundary + "\n```parchment-meta\n{}\n```\n",
+			wantErr: "duplicate Parchment metadata block",
+		},
+		{
+			name:    "duplicate trailing block name",
+			append:  "\n" + trailingBlocksBoundary + "\n```parchment-note\n{}\n```\n```parchment-note\n{}\n```\n",
+			wantErr: "duplicate parchment-note block",
+		},
+		{
+			name:    "non-JSON block content",
+			append:  "\n" + trailingBlocksBoundary + "\n```parchment-note\nnot valid json\n```\n",
+			wantErr: "parchment-note block must contain JSON",
+		},
+		{
+			name:    "invalid block opening prefix",
+			append:  "\n" + trailingBlocksBoundary + "\n```parchment-invalid extra\n{}\n```\n",
+			wantErr: "invalid Parchment trailing block opening",
+		},
+		{
+			name:    "invalid block content opening",
+			append:  "\n" + trailingBlocksBoundary + "\n```parchment-note\n{}\n```\n```not-parchment\n{}\n```\n",
+			wantErr: "invalid content in Parchment trailing blocks",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := append([]byte(nil), validHeader...)
+			data = append(data, []byte(tt.append)...)
+			_, err := Decode(data)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Decode() error = %v, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestDecodeMetadataValidationErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(map[string]any)
+		wantErr string
+	}{
+		{
+			name: "unsupported kind",
+			mutate: func(m map[string]any) {
+				m["kind"] = "invalid_kind"
+			},
+			wantErr: "unsupported artifact kind",
+		},
+		{
+			name: "unsupported format version",
+			mutate: func(m map[string]any) {
+				m["format_version"] = 999
+			},
+			wantErr: "unsupported artifact format version",
+		},
+		{
+			name: "missing created_at",
+			mutate: func(m map[string]any) {
+				delete(m, "created_at")
+			},
+			wantErr: "artifact timestamps are required",
+		},
+		{
+			name: "zero modified_at",
+			mutate: func(m map[string]any) {
+				m["modified_at"] = time.Time{}
+			},
+			wantErr: "artifact timestamps are required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := map[string]any{
+				"parchment_format": envelopeFormat,
+				"kind":             artifact.NoteKind,
+				"format_version":   artifact.FormatVersion,
+				"created_at":       time.Now().UTC(),
+				"modified_at":      time.Now().UTC(),
+			}
+			tt.mutate(m)
+			data, err := json.MarshalIndent(m, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := "```parchment-meta\n" + string(data) + "\n```\n\n" + bodyBoundary + "\nbody\n"
+			_, err = Decode([]byte(source))
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Decode() error = %v, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestMaxFileSizeConstraints(t *testing.T) {
+	oversized := make([]byte, MaxFileSize+1)
+
+	if _, err := Decode(oversized); err == nil || !strings.Contains(err.Error(), "larger than 64 MiB") {
+		t.Fatalf("Decode oversized data error = %v", err)
+	}
+
+	if _, err := ReadMetadata(oversized); err == nil || !strings.Contains(err.Error(), "larger than 64 MiB") {
+		t.Fatalf("ReadMetadata oversized data error = %v", err)
+	}
+
+	oversizedMeta := "```parchment-meta\n" + strings.Repeat("a", MaxFileSize+1) + "\n```\n"
+	if _, err := ReadMetadataFrom(strings.NewReader(oversizedMeta)); err == nil || !strings.Contains(err.Error(), "larger than 64 MiB") {
+		t.Fatalf("ReadMetadataFrom oversized stream error = %v", err)
+	}
+
+	largeBody := string(make([]byte, MaxFileSize+100))
+	if _, err := Encode(testArtifact(), largeBody, nil); err == nil || !strings.Contains(err.Error(), "larger than 64 MiB") {
+		t.Fatalf("Encode oversized artifact error = %v", err)
+	}
+}
+
 func TestTitleFromBody(t *testing.T) {
 	tests := []struct {
 		name string
