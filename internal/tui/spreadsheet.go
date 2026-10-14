@@ -279,7 +279,13 @@ func (m *spreadsheetModel) saveCell(row, column int, cell spreadsheet.Cell, draf
 	m.status, m.errMessage = "Saving…", ""
 	service, path, name := m.service, m.path, m.book.Sheets[m.sheet].Name
 	return func() tea.Msg {
-		book, err := service.SetCellInSheet(ctx, path, name, row+1, column+1, cell)
+		book, err := service.SetCellInSheet(ctx, spreadsheet.SetCellParams{
+			Path:   path,
+			Sheet:  name,
+			Row:    row + 1,
+			Column: column + 1,
+			Cell:   cell,
+		})
 		return spreadsheetCellSavedMsg{seq: seq, book: book, row: row, column: column, draft: draft, err: err}
 	}
 }

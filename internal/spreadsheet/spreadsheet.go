@@ -126,32 +126,47 @@ func (s *Service) Create(ctx context.Context, path string, rows [][]Cell) (Sprea
 	return s.repository.GetSpreadsheet(ctx, path)
 }
 
-func (s *Service) SetCell(ctx context.Context, path string, row, column int, cell Cell) (Spreadsheet, error) {
-	return s.SetCellInSheet(ctx, path, "Sheet1", row, column, cell)
+// SetCellParams holds the options for setting a cell in a sheet.
+type SetCellParams struct {
+	Path   string
+	Sheet  string
+	Row    int
+	Column int
+	Cell   Cell
 }
 
-func (s *Service) SetCellInSheet(ctx context.Context, path, name string, row, column int, cell Cell) (Spreadsheet, error) {
-	if row < 1 || row > MaxRows || column < 1 || column > MaxColumns {
+func (s *Service) SetCell(ctx context.Context, path string, row, column int, cell Cell) (Spreadsheet, error) {
+	return s.SetCellInSheet(ctx, SetCellParams{
+		Path:   path,
+		Sheet:  "Sheet1",
+		Row:    row,
+		Column: column,
+		Cell:   cell,
+	})
+}
+
+func (s *Service) SetCellInSheet(ctx context.Context, params SetCellParams) (Spreadsheet, error) {
+	if params.Row < 1 || params.Row > MaxRows || params.Column < 1 || params.Column > MaxColumns {
 		return Spreadsheet{}, fmt.Errorf("cell coordinates must be within %d rows and %d columns", MaxRows, MaxColumns)
 	}
-	if err := validateCell(cell); err != nil {
+	if err := validateCell(params.Cell); err != nil {
 		return Spreadsheet{}, err
 	}
-	return s.modify(ctx, path, "Set cell", func(sheet *Spreadsheet) error {
-		index, err := SheetIndex(*sheet, name)
+	return s.modify(ctx, params.Path, "Set cell", func(sheet *Spreadsheet) error {
+		index, err := SheetIndex(*sheet, params.Sheet)
 		if err != nil {
 			return err
 		}
 		grid := &sheet.Sheets[index].Rows
-		if row > len(*grid) {
-			*grid = append(*grid, make([][]Cell, row-len(*grid))...)
+		if params.Row > len(*grid) {
+			*grid = append(*grid, make([][]Cell, params.Row-len(*grid))...)
 		}
 		for i := range *grid {
-			if len((*grid)[i]) < column {
-				(*grid)[i] = append((*grid)[i], make([]Cell, column-len((*grid)[i]))...)
+			if len((*grid)[i]) < params.Column {
+				(*grid)[i] = append((*grid)[i], make([]Cell, params.Column-len((*grid)[i]))...)
 			}
 		}
-		(*grid)[row-1][column-1] = cell
+		(*grid)[params.Row-1][params.Column-1] = params.Cell
 		return nil
 	})
 }
