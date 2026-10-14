@@ -87,72 +87,102 @@ type headMark struct {
 	title string
 }
 
+type bodyPaginator struct {
+	textCols      int
+	bodyRows      int
+	sections      *[]Section
+	pages         [][]string
+	current       []string
+	pendingBreaks int
+}
+
 func paginateBody(body string, defaultColumns, textCols, bodyRows int, sections *[]Section) [][]string {
-	var pages [][]string
-	var current []string
-	pendingBreaks := 0
-	newPage := func() {
-		pages = append(pages, current)
-		current = nil
+	p := bodyPaginator{
+		textCols: textCols,
+		bodyRows: bodyRows,
+		sections: sections,
 	}
+	return p.paginate(body, defaultColumns)
+}
+
+func (p *bodyPaginator) paginate(body string, defaultColumns int) [][]string {
 	for _, r := range splitRuns(body, defaultColumns) {
-		columns := clampColumns(r.columns, textCols)
-		width := ColumnWidth(textCols, columns)
-		var marks []headMark
-		raw := formatBlocks(r.lines, width, &marks)
-		flat := trimBlankEnds(raw)
-		pos := 0 // index of flat[0] within raw
-		for pos < len(raw) && raw[pos] == "" {
-			pos++
-		}
-		record := func(consumed int) {
-			for len(marks) > 0 && marks[0].line < pos+consumed {
-				if sections != nil {
-					*sections = append(*sections, Section{Level: marks[0].level, Title: marks[0].title, Page: len(pages) + 1})
-				}
-				marks = marks[1:]
-			}
-		}
-		if len(flat) > 0 {
-			for ; pendingBreaks > 0; pendingBreaks-- {
-				newPage()
-			}
-			balance := columns > 1 && r.end == sectionBreak && r.continuous
-			if len(current) > 0 && current[len(current)-1] != "" && bodyRows-len(current) > 1 {
-				current = append(current, "")
-			}
-			for len(flat) > 0 {
-				if len(current) >= bodyRows {
-					newPage()
-				}
-				if len(current) == 0 {
-					pos += leadingBlanks(flat)
-					flat = trimBlankEnds(flat)
-					if len(flat) == 0 {
-						break
-					}
-				}
-				remaining := bodyRows - len(current)
-				n := min(len(flat), remaining*columns)
-				chunk := flat[:n]
-				flat = flat[n:]
-				height := min(remaining, n)
-				if balance && len(flat) == 0 {
-					height = (n + columns - 1) / columns
-				}
-				current = append(current, columnRows(chunk, columns, width, height)...)
-				pos += n
-				record(0)
-			}
-		}
-		if r.end == pageBreak || (r.end == sectionBreak && !r.continuous) {
-			pendingBreaks++
-		}
+		p.processRun(r)
 	}
-	if len(current) > 0 || len(pages) == 0 {
-		pages = append(pages, current)
+	if len(p.current) > 0 || len(p.pages) == 0 {
+		p.newPage()
 	}
-	return pages
+	return p.pages
+}
+
+func (p *bodyPaginator) newPage() {
+	p.pages = append(p.pages, p.current)
+	p.current = nil
+}
+
+func (p *bodyPaginator) processRun(r run) {
+	columns := clampColumns(r.columns, p.textCols)
+	width := ColumnWidth(p.textCols, columns)
+	var marks []headMark
+	raw := formatBlocks(r.lines, width, &marks)
+	flat := trimBlankEnds(raw)
+
+	if len(flat) > 0 {
+		for ; p.pendingBreaks > 0; p.pendingBreaks-- {
+			p.newPage()
+		}
+		p.layoutRunLines(flat, &marks, raw, columns, width, r.end, r.continuous)
+	}
+
+	if r.end == pageBreak || (r.end == sectionBreak && !r.continuous) {
+		p.pendingBreaks++
+	}
+}
+
+func (p *bodyPaginator) layoutRunLines(flat []string, marks *[]headMark, raw []string, columns, width int, end directiveKind, continuous bool) {
+	pos := leadingBlanks(raw)
+	balance := columns > 1 && end == sectionBreak && continuous
+
+	if len(p.current) > 0 && p.current[len(p.current)-1] != "" && p.bodyRows-len(p.current) > 1 {
+		p.current = append(p.current, "")
+	}
+
+	for len(flat) > 0 {
+		if len(p.current) >= p.bodyRows {
+			p.newPage()
+		}
+		if len(p.current) == 0 {
+			pos += leadingBlanks(flat)
+			flat = trimBlankEnds(flat)
+			if len(flat) == 0 {
+				break
+			}
+		}
+		remaining := p.bodyRows - len(p.current)
+		n := min(len(flat), remaining*columns)
+		chunk := flat[:n]
+		flat = flat[n:]
+		height := min(remaining, n)
+		if balance && len(flat) == 0 {
+			height = (n + columns - 1) / columns
+		}
+		p.current = append(p.current, columnRows(chunk, columns, width, height)...)
+		pos += n
+		p.recordMarks(marks, pos)
+	}
+}
+
+func (p *bodyPaginator) recordMarks(marks *[]headMark, pos int) {
+	for len(*marks) > 0 && (*marks)[0].line < pos {
+		if p.sections != nil {
+			*p.sections = append(*p.sections, Section{
+				Level: (*marks)[0].level,
+				Title: (*marks)[0].title,
+				Page:  len(p.pages) + 1,
+			})
+		}
+		*marks = (*marks)[1:]
+	}
 }
 
 func leadingBlanks(lines []string) int {
