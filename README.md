@@ -255,30 +255,43 @@ does not survive a restart.
 ## Future work
 
 Parchment supports notes, documents, basic spreadsheets, and Markdown
-presentations. Planned work includes:
+presentations. Planned work is organized into five implementation phases:
 
-- Markdown links for within the document navigation. Clicking on a link should move the document viewer view to the link target.
-- Explicit, opt-in conversion of a plain Markdown file into a Parchment
-  artifact (plain Markdown currently opens and saves as a plain note).
-- Autosave recovery drafts for the spreadsheet and presentation editors.
-- Handling for commonly used editing key combinations like Ctrl+del to remove whole words. Ctrl+arrow for moving the cursor word by word. Tab for inserting several spaces or a tab.  Also Shift+arrow keys for selections.
+### Phase 1: Foundations & Bug Fixes
+- Notes editor terminal height and width allocation (leaves an unused bottom row and 8-column right margin; fix resize calculation)
+- Connect configuration settings to runtime behavior
+  - Respect configured theme (`theme` / `PARCHMENT_THEME`) across all TUI screens instead of hardcoding colors
+  - Implement file logging for `logging.level` and `logging.format` (`PARCHMENT_LOG_LEVEL`, `PARCHMENT_LOG_FORMAT`) under `~/.parchment/`
+  - Implement local backup destination (`backup.local.destination`) for automatic artifact snapshots on save
+- Dedicated text editor widget with micro-style text selection (Shift+arrows, mouse drag, double/triple click, clipboard copy/cut/paste, replacement typing) and standard key combinations (Ctrl+arrows for word navigation, Ctrl+del/Ctrl+backspace for word deletion, Tab for spaces)
+
+### Phase 2: State Safety & CLI Core
+- Autosave recovery drafts for the spreadsheet and presentation editors
+- Explicit, opt-in conversion of a plain Markdown file into a Parchment artifact (plain Markdown currently opens and saves as a plain note; default to Document conversion)
+- Spreadsheet deletion & CSV export: row and column deletion (`delete-row`, `delete-column`) and sheet removal with formula reference shifting and `#REF!` error handling; CSV export command (`spreadsheet export --csv`)
+- Document embedded image management: commands to list embedded images, view metadata, extract image files to disk, and remove unused images
+
+### Phase 3: Rendering & TUI Features
 - Overall visual improvements
-  - Document viewer and other previewers don't do anything to render Markdown as anything other than text. They should add what they can similar to [Glow](https://github.com/charmbracelet/glow)
-  - Notes editor doesn't use full height of terminal (has this been fixed?)
-  - Parchment app components at the bottom of the page like the "Ready" status and undo/redo indicators are not visually separated from the content of the artifact being shown. The same is true for the app components at the top of the page.
-- Persistent undo/redo, stored under `~/.parchment/`, with explicit storage
-  and recovery semantics. History currently lasts only for the running process.
-- Make a plan for importing and exporting to/from common document file
-  formats. Acknowledge that this will be a "lossy" process in the sense that
-  Parchment doesn't support many of the features of those formats, like
-  multiple fonts or exact image/object positioning.
-  - Export to ODF file format
-  - Export to DOCX file format
-  - Import from ODF file format
-  - Import from DOCX file format
-- Basic image-editing features for files opened directly by Parchment.
-  - Crop
-  - Resize
+  - Document viewer and other previewers render rich Markdown using [Glamour](https://github.com/charmbracelet/glamour). Embedded images appear as links/placeholders in the editor, but render as fully visible graphical images in document previews and readers (using Kitty/Sixel/iTerm2 protocols with ANSI half-block fallback)
+  - Parchment app components at the bottom of the page like the "Ready" status and undo/redo indicators are not visually separated from the content of the artifact being shown. The same is true for the app components at the top of the page
+- Document navigation pane and in-document link navigation (strictly for Documents; does not apply to Notes or Presentations)
+  - Navigation pane to the left of the Document editor displaying headings and anchors; clicking or selecting an entry jumps the editor cursor to that section
+  - In document preview and reader views, inline Markdown links are clickable to jump to the corresponding target heading or page
+- In-editor search and find across all artifact viewers and editors (notes, documents, spreadsheets, presentations)
+- Document and presentation printer font selection for printer-oriented rendering
+
+### Phase 4: Extended Domain Engines
+- Dedicated spreadsheet formula AST and evaluation engine supporting rectangular ranges (`A1:B10`), aggregate functions (`SUM`, `AVERAGE`, `COUNT`, `MIN`, `MAX`), nested function calls, cross-sheet references (`Sheet2!A1`), and standard error propagation (`#REF!`, `#DIV/0!`, `#NAME?`, `#VALUE!`, `#CIRCULAR!`)
+- Presentation media, directives, and export
+  - Support embedded images in slide decks
+  - Support Go present command directives (e.g. `.image`, `.code`)
+  - Export presentations to standalone slide formats (HTML slides, PDF)
+- Basic image-editing features for files opened directly by Parchment (crop, resize)
+
+### Phase 5: External Interop & Persistence
+- Make a plan for importing and exporting to/from common document file formats (ODF, DOCX; lossy conversion reporting unsupported features)
+- Make a plan for persistent undo/redo storage format under `~/.parchment/`, with explicit storage and recovery semantics (planning only)
 
 ## Development
 
