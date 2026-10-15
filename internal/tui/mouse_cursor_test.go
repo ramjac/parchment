@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
@@ -12,40 +11,25 @@ import (
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/note"
 	"example.com/parchment/internal/spreadsheet"
+	"example.com/parchment/internal/tui/editor"
 )
 
-func TestPlaceTextareaCursorInScrolledAndWrappedText(t *testing.T) {
-	editor := textarea.New()
-	editor.Prompt = ""
-	editor.ShowLineNumbers = false
-	editor.SetWidth(12)
-	editor.SetHeight(3)
-	editor.SetValue("first\nsecond\nthird\nfourth\nfifth")
-	editor.Focus()
-	editor.View()
-	for range 4 {
-		editor, _ = editor.Update(tea.KeyMsg{Type: tea.KeyDown})
-		editor.View()
-	}
-	if !placeTextareaCursor(&editor, 2, 0) {
-		copy := editor
-		copy.Cursor.Blink = false
-		t.Fatalf("click in scrolled textarea was ignored: %q", copy.View())
-	}
-	editor.InsertString("!")
-	if !strings.Contains(editor.Value(), "th!ird") {
-		t.Fatalf("click inserted on wrong line: %q", editor.Value())
-	}
-	editor.SetValue("abcdefghijklmnopqrstuv")
-	editor.SetWidth(8)
-	editor.SetHeight(4)
-	editor.Focus()
-	if !placeTextareaCursor(&editor, 3, 1) {
-		t.Fatal("click in wrapped line was ignored")
-	}
-	editor.InsertString("!")
-	if editor.Value() != "abcdefghijk!lmnopqrstuv" {
-		t.Fatalf("wrapped click inserted at %q", editor.Value())
+func TestEditorClickAndScrolledText(t *testing.T) {
+	ed := editor.New()
+	ed.SetWidth(12)
+	ed.SetHeight(3)
+	ed.SetValue("first\nsecond\nthird\nfourth\nfifth")
+	ed.Focus()
+	ed.Update(tea.KeyMsg{Type: tea.KeyDown})
+	ed.Update(tea.KeyMsg{Type: tea.KeyDown})
+	ed.Update(tea.KeyMsg{Type: tea.KeyDown})
+	ed.Update(tea.KeyMsg{Type: tea.KeyDown})
+
+	// Click on visible line 0, col 2 -> line 2 ("third"), col 2
+	ed.Update(tea.MouseMsg{X: 2, Y: 0, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	ed.InsertRune('!')
+	if !strings.Contains(ed.Value(), "th!ird") {
+		t.Fatalf("click inserted on wrong line: %q", ed.Value())
 	}
 }
 
@@ -54,13 +38,13 @@ func TestPresentationClickPositionsSourceCursor(t *testing.T) {
 	m.beginEdit()
 	m.editor.SetValue("alpha\nbravo")
 	m.editor.Focus()
-	m.Update(tea.MouseMsg{X: 5, Y: 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
-	m.editor.InsertString("!")
+	m.Update(tea.MouseMsg{X: 2, Y: 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m.editor.InsertRune('!')
 	if m.editor.Value() != "alpha\nbr!avo" {
 		t.Fatalf("presentation click positioned cursor at %q", m.editor.Value())
 	}
 	m.Update(tea.MouseMsg{X: 0, Y: 0, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
-	m.editor.InsertString("?")
+	m.editor.InsertRune('?')
 	if m.editor.Value() != "alpha\nbr!?avo" {
 		t.Fatalf("header click moved presentation cursor: %q", m.editor.Value())
 	}
@@ -104,29 +88,5 @@ func TestNoteEditorShowsCursorAwayFromTextEnd(t *testing.T) {
 	}
 	if !strings.Contains(model.View(), "\x1b[7m") {
 		t.Fatalf("cursor at line %d is not visible in the editor view", model.bodyInput.Line())
-	}
-}
-
-func TestPlaceTextareaCursorWithGrowingLineNumbers(t *testing.T) {
-	editor := textarea.New()
-	editor.Prompt = ""
-	editor.ShowLineNumbers = true
-	editor.MaxHeight = 0
-	editor.SetWidth(30)
-	editor.SetHeight(14)
-	lines := make([]string, 12)
-	for i := range lines {
-		lines[i] = "abcdef"
-	}
-	editor.SetValue(strings.Join(lines, "\n"))
-	editor.Focus()
-	editor.View()
-	// Line 12 has a two-digit number, so its text starts one column later.
-	if !placeTextareaCursor(&editor, 6, 11) {
-		t.Fatal("click on a two-digit line was ignored")
-	}
-	editor.InsertString("!")
-	if got := strings.Split(editor.Value(), "\n")[11]; got != "ab!cdef" {
-		t.Fatalf("click on line 12 inserted at %q", got)
 	}
 }

@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/presentation"
+	"example.com/parchment/internal/tui/editor"
 )
 
 // presentationChromeLines counts the header, status, and help lines.
@@ -54,7 +54,7 @@ type presentationViewState struct {
 
 type presentationEditorState struct {
 	editing        bool
-	editor         textarea.Model
+	editor         editor.Model
 	discardWarning bool
 }
 
@@ -74,16 +74,12 @@ type presentationModel struct {
 }
 
 func newPresentationModel(service *presentation.Service, path string) *presentationModel {
-	editor := textarea.New()
-	editor.Prompt = ""
-	editor.ShowLineNumbers = true
-	editor.CharLimit = 5_000_000
-	editor.MaxHeight = 0
+	body := editor.New()
 	return &presentationModel{
 		service: service,
 		path:    path,
 		presentationEditorState: presentationEditorState{
-			editor: editor,
+			editor: body,
 		},
 		presentationOpState: presentationOpState{
 			newOperationContext: func() (context.Context, context.CancelFunc) {
@@ -147,8 +143,12 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.updateBrowseKey(msg)
 	case tea.MouseMsg:
-		if m.editing && !m.pending && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-			placeTextareaCursor(&m.editor, msg.X, msg.Y-1)
+		if m.editing && !m.pending {
+			mouseMsg := msg
+			mouseMsg.Y = msg.Y - 1
+			var cmd tea.Cmd
+			m.editor, cmd = m.editor.Update(mouseMsg)
+			return m, cmd
 		}
 		return m, nil
 	}
@@ -267,13 +267,13 @@ func (m *presentationModel) beginEdit() tea.Cmd {
 }
 
 func (m *presentationModel) moveEditorToLine(line int) {
-	for guard := m.editor.LineCount() * 64; m.editor.Line() > line && guard > 0; guard-- {
-		m.editor.CursorUp()
+	if len(m.editor.Lines) > 0 {
+		m.editor.Cursor.Line = min(max(line, 0), len(m.editor.Lines)-1)
+	} else {
+		m.editor.Cursor.Line = 0
 	}
-	for guard := m.editor.LineCount() * 64; m.editor.Line() < line && guard > 0; guard-- {
-		m.editor.CursorDown()
-	}
-	m.editor.CursorStart()
+	m.editor.Cursor.Col = 0
+	m.editor.StickyCol = 0
 }
 
 // slideSourceLine finds the source line of a page's heading for cursor

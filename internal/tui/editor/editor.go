@@ -82,6 +82,16 @@ func (m Model) Value() string {
 	return sb.String()
 }
 
+// LineCount returns the number of lines in the buffer.
+func (m Model) LineCount() int {
+	return len(m.Lines)
+}
+
+// Line returns the current cursor line.
+func (m Model) Line() int {
+	return m.Cursor.Line
+}
+
 // SetWidth updates the editor width.
 func (m *Model) SetWidth(w int) {
 	if w < 1 {
@@ -107,6 +117,41 @@ func (m *Model) Focus() tea.Cmd {
 // Blur removes focus.
 func (m *Model) Blur() {
 	m.Focused = false
+}
+
+// CursorUp moves the cursor up one line.
+func (m *Model) CursorUp() {
+	if m.Cursor.Line > 0 {
+		m.Cursor.Line--
+		lineLen := len(m.Lines[m.Cursor.Line])
+		if m.StickyCol > lineLen {
+			m.Cursor.Col = lineLen
+		} else {
+			m.Cursor.Col = m.StickyCol
+		}
+	}
+	m.ensureCursorVisible()
+}
+
+// CursorDown moves the cursor down one line.
+func (m *Model) CursorDown() {
+	if m.Cursor.Line < len(m.Lines)-1 {
+		m.Cursor.Line++
+		lineLen := len(m.Lines[m.Cursor.Line])
+		if m.StickyCol > lineLen {
+			m.Cursor.Col = lineLen
+		} else {
+			m.Cursor.Col = m.StickyCol
+		}
+	}
+	m.ensureCursorVisible()
+}
+
+// CursorStart moves the cursor to the beginning of the line.
+func (m *Model) CursorStart() {
+	m.Cursor.Col = 0
+	m.StickyCol = 0
+	m.ensureCursorVisible()
 }
 
 // pointLess reports whether a is strictly before b in the buffer.
@@ -320,6 +365,9 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 }
 
 func (m *Model) handleMouse(msg tea.MouseMsg) {
+	if msg.Y < 0 {
+		return
+	}
 	line := m.TopLine + msg.Y
 	col := m.LeftCol + msg.X
 	if line < 0 {
@@ -358,12 +406,31 @@ func (m *Model) handleMouse(msg tea.MouseMsg) {
 				if startCol >= len(l) {
 					startCol = len(l) - 1
 				}
-				for startCol > 0 && isWordChar(l[startCol-1]) {
-					startCol--
+				endCol = startCol
+				if isWordChar(l[startCol]) {
+					for startCol > 0 && isWordChar(l[startCol-1]) {
+						startCol--
+					}
+					for endCol < len(l) && isWordChar(l[endCol]) {
+						endCol++
+					}
+				} else if unicode.IsSpace(l[startCol]) {
+					for startCol > 0 && unicode.IsSpace(l[startCol-1]) {
+						startCol--
+					}
+					for endCol < len(l) && unicode.IsSpace(l[endCol]) {
+						endCol++
+					}
+				} else {
+					for startCol > 0 && !isWordChar(l[startCol-1]) && !unicode.IsSpace(l[startCol-1]) {
+						startCol--
+					}
+					for endCol < len(l) && !isWordChar(l[endCol]) && !unicode.IsSpace(l[endCol]) {
+						endCol++
+					}
 				}
-				for endCol < len(l) && isWordChar(l[endCol]) {
-					endCol++
-				}
+			} else {
+				startCol, endCol = 0, 0
 			}
 			m.Selection = Selection{Anchor: Point{Line: pos.Line, Col: startCol}, Active: true}
 			m.Cursor = Point{Line: pos.Line, Col: endCol}
@@ -393,15 +460,21 @@ func (m *Model) handleMouse(msg tea.MouseMsg) {
 	}
 }
 
-func (m *Model) handleKey(msg tea.KeyMsg) {
-	shift := msg.Type == tea.KeyShiftLeft || msg.Type == tea.KeyShiftRight ||
-		msg.Type == tea.KeyShiftUp || msg.Type == tea.KeyShiftDown ||
-		msg.Type == tea.KeyShiftHome || msg.Type == tea.KeyShiftEnd ||
-		msg.Runes != nil && len(msg.Runes) > 0 && msg.Alt
-	keyStr := msg.String()
-	if strings.HasPrefix(keyStr, "shift+") || strings.HasPrefix(keyStr, "ctrl+shift+") {
-		shift = true
+func isShiftKey(msg tea.KeyMsg) bool {
+	switch msg.Type {
+	case tea.KeyShiftLeft, tea.KeyShiftRight, tea.KeyShiftUp, tea.KeyShiftDown,
+		tea.KeyShiftHome, tea.KeyShiftEnd,
+		tea.KeyCtrlShiftLeft, tea.KeyCtrlShiftRight, tea.KeyCtrlShiftUp, tea.KeyCtrlShiftDown,
+		tea.KeyCtrlShiftHome, tea.KeyCtrlShiftEnd:
+		return true
 	}
+	keyStr := msg.String()
+	return strings.HasPrefix(keyStr, "shift+") || strings.HasPrefix(keyStr, "ctrl+shift+")
+}
+
+func (m *Model) handleKey(msg tea.KeyMsg) {
+	shift := isShiftKey(msg)
+	keyStr := msg.String()
 
 	if shift {
 		if !m.Selection.Active {
@@ -414,12 +487,17 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 		if !shift && m.Selection.Active {
 			start, _, _ := m.SelectedSpan()
 			m.Cursor = start
-			m.Selection.Active = false
-		} else if m.Cursor.Col > 0 {
-			m.Cursor.Col--
-		} else if m.Cursor.Line > 0 {
-			m.Cursor.Line--
-			m.Cursor.Col = len(m.Lines[m.Cursor.Line])
+			m.Selection = Selection{Anchor: start, Active: false}
+		} else {
+			if m.Cursor.Col > 0 {
+				m.Cursor.Col--
+			} else if m.Cursor.Line > 0 {
+				m.Cursor.Line--
+				m.Cursor.Col = len(m.Lines[m.Cursor.Line])
+			}
+			if !shift {
+				m.Selection = Selection{Anchor: m.Cursor, Active: false}
+			}
 		}
 		m.StickyCol = m.Cursor.Col
 
@@ -427,19 +505,21 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 		if !shift && m.Selection.Active {
 			_, end, _ := m.SelectedSpan()
 			m.Cursor = end
-			m.Selection.Active = false
-		} else if m.Cursor.Col < len(m.Lines[m.Cursor.Line]) {
-			m.Cursor.Col++
-		} else if m.Cursor.Line < len(m.Lines)-1 {
-			m.Cursor.Line++
-			m.Cursor.Col = 0
+			m.Selection = Selection{Anchor: end, Active: false}
+		} else {
+			if m.Cursor.Col < len(m.Lines[m.Cursor.Line]) {
+				m.Cursor.Col++
+			} else if m.Cursor.Line < len(m.Lines)-1 {
+				m.Cursor.Line++
+				m.Cursor.Col = 0
+			}
+			if !shift {
+				m.Selection = Selection{Anchor: m.Cursor, Active: false}
+			}
 		}
 		m.StickyCol = m.Cursor.Col
 
 	case "up", "shift+up":
-		if !shift {
-			m.Selection.Active = false
-		}
 		if m.Cursor.Line > 0 {
 			m.Cursor.Line--
 			lineLen := len(m.Lines[m.Cursor.Line])
@@ -449,11 +529,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 				m.Cursor.Col = m.StickyCol
 			}
 		}
+		if !shift {
+			m.Selection = Selection{Anchor: m.Cursor, Active: false}
+		}
 
 	case "down", "shift+down":
-		if !shift {
-			m.Selection.Active = false
-		}
 		if m.Cursor.Line < len(m.Lines)-1 {
 			m.Cursor.Line++
 			lineLen := len(m.Lines[m.Cursor.Line])
@@ -463,26 +543,35 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 				m.Cursor.Col = m.StickyCol
 			}
 		}
+		if !shift {
+			m.Selection = Selection{Anchor: m.Cursor, Active: false}
+		}
 
 	case "home", "shift+home":
-		if !shift {
-			m.Selection.Active = false
-		}
 		m.Cursor.Col = 0
 		m.StickyCol = 0
+		if !shift {
+			m.Selection = Selection{Anchor: m.Cursor, Active: false}
+		}
 
 	case "end", "shift+end":
-		if !shift {
-			m.Selection.Active = false
-		}
 		m.Cursor.Col = len(m.Lines[m.Cursor.Line])
 		m.StickyCol = m.Cursor.Col
+		if !shift {
+			m.Selection = Selection{Anchor: m.Cursor, Active: false}
+		}
 
 	case "ctrl+left", "ctrl+shift+left":
 		m.moveWordLeft()
+		if !shift {
+			m.Selection = Selection{Anchor: m.Cursor, Active: false}
+		}
 
 	case "ctrl+right", "ctrl+shift+right":
 		m.moveWordRight()
+		if !shift {
+			m.Selection = Selection{Anchor: m.Cursor, Active: false}
+		}
 
 	case "ctrl+c":
 		if m.Selection.Active {
@@ -556,11 +645,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 		}
 	}
 
-	if !shift && keyStr != "ctrl+c" && keyStr != "ctrl+x" {
-		if !m.Selection.Active {
-			m.Selection = Selection{Anchor: m.Cursor, Active: false}
-		}
-	}
 	m.ensureCursorVisible()
 }
 
@@ -587,24 +671,32 @@ func (m Model) View() string {
 
 		for colIdx := 0; colIdx < m.Width; colIdx++ {
 			realCol := m.LeftCol + colIdx
+			pt := Point{Line: lineIdx, Col: realCol}
+
 			if realCol >= len(lineRunes) {
-				if m.Focused && lineIdx == m.Cursor.Line && realCol == m.Cursor.Col && !hasSelection {
+				isCursor := m.Focused && lineIdx == m.Cursor.Line && realCol == m.Cursor.Col
+				isLineBreakSelected := hasSelection && (pointLess(start, pt) || start == pt) && pointLess(pt, end)
+
+				if isCursor {
 					sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(" "))
+				} else if isLineBreakSelected {
+					sb.WriteString(m.SelectStyle.Render(" "))
 				}
 				break
 			}
 
 			r := lineRunes[realCol]
-			pt := Point{Line: lineIdx, Col: realCol}
-
 			isSelected := hasSelection && (pointLess(start, pt) || start == pt) && pointLess(pt, end)
-			isCursor := m.Focused && pt == m.Cursor && !hasSelection
+			isCursor := m.Focused && pt == m.Cursor
 
 			charStr := string(r)
-			if isSelected {
-				charStr = m.SelectStyle.Render(charStr)
-			} else if isCursor {
+			if unicode.IsControl(r) && r != '\t' {
+				charStr = ""
+			}
+			if isCursor {
 				charStr = lipgloss.NewStyle().Reverse(true).Render(charStr)
+			} else if isSelected {
+				charStr = m.SelectStyle.Render(charStr)
 			}
 
 			sb.WriteString(charStr)
