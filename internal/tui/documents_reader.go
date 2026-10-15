@@ -238,7 +238,7 @@ func (s *documentsScreen) readerView(header string) string {
 	}
 	pane := func(width int, content string) string {
 		return lipgloss.NewStyle().Width(width).Height(max(s.height-5, 1)).MaxHeight(max(s.height-3, 1)).
-			Border(lipgloss.NormalBorder()).BorderForeground(s.theme.border).Padding(0, 1).Render(content)
+			Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1).Render(content)
 	}
 	content := "Page " + s.readerPageLabel() + "\n" + s.reader.View()
 	footer = "click outline to jump  " + footer

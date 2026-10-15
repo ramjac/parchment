@@ -16,8 +16,6 @@ const Version = 1
 
 // Settings is the fully resolved application configuration.
 type Settings struct {
-	Editor      string
-	Theme       string
 	UndoLimit   int
 	LogLevel    string
 	LogFormat   string
@@ -25,10 +23,8 @@ type Settings struct {
 }
 
 type fileConfig struct {
-	Version   int     `toml:"version"`
-	Editor    *string `toml:"editor"`
-	Theme     *string `toml:"theme"`
-	UndoLimit *int    `toml:"undo_limit"`
+	Version   int  `toml:"version"`
+	UndoLimit *int `toml:"undo_limit"`
 	Logging   struct {
 		Level  *string `toml:"level"`
 		Format *string `toml:"format"`
@@ -45,9 +41,14 @@ const defaultFile = "version = 1\n"
 // Load resolves built-in defaults, the TOML file at path, and environment
 // overrides. A missing file leaves the defaults in place.
 func Load(path string) (Settings, error) {
+	dir, _ := Directory()
+	defaultBackup := ""
+	if dir != "" {
+		defaultBackup = filepath.Join(dir, "backups")
+	}
 	settings := Settings{
-		Editor: "vi", Theme: "adaptive", UndoLimit: 100,
-		LogLevel: "warn", LogFormat: "text",
+		UndoLimit: 100, LogLevel: "warn", LogFormat: "text",
+		LocalBackup: defaultBackup,
 	}
 	if path != "" {
 		cfg, err := read(path)
@@ -181,12 +182,6 @@ func read(path string) (fileConfig, error) {
 }
 
 func apply(settings *Settings, cfg fileConfig) {
-	if cfg.Editor != nil {
-		settings.Editor = *cfg.Editor
-	}
-	if cfg.Theme != nil {
-		settings.Theme = *cfg.Theme
-	}
 	if cfg.UndoLimit != nil {
 		settings.UndoLimit = *cfg.UndoLimit
 	}
@@ -202,12 +197,6 @@ func apply(settings *Settings, cfg fileConfig) {
 }
 
 func applyEnvironment(settings *Settings) {
-	if value, ok := os.LookupEnv("PARCHMENT_EDITOR"); ok {
-		settings.Editor = value
-	}
-	if value, ok := os.LookupEnv("PARCHMENT_THEME"); ok {
-		settings.Theme = value
-	}
 	if value, ok := os.LookupEnv("PARCHMENT_UNDO_LIMIT"); ok {
 		if limit, err := strconv.Atoi(value); err == nil {
 			settings.UndoLimit = limit

@@ -272,12 +272,12 @@ func TestAltFormattingFromToolbarFocusesBody(t *testing.T) {
 	h := newDocumentHarness(t, document.Draft{})
 	s := h.m.documents
 	h.key("tab")
-	if s.focus != focusToolbar || s.body.Focused() {
+	if s.focus != focusToolbar || s.body.Focused {
 		t.Fatal("Tab did not move focus from the body to the toolbar")
 	}
 	h.send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b"), Alt: true})
 	h.typeText("x")
-	if !s.body.Focused() {
+	if !s.body.Focused {
 		t.Fatal("formatting from the toolbar did not focus the body")
 	}
 	if s.body.Value() != "**x**" {

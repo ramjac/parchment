@@ -11,8 +11,6 @@ import (
 func clearEnv(t *testing.T) {
 	t.Helper()
 	keys := []string{
-		"PARCHMENT_EDITOR",
-		"PARCHMENT_THEME",
 		"PARCHMENT_UNDO_LIMIT",
 		"PARCHMENT_LOG_LEVEL",
 		"PARCHMENT_LOG_FORMAT",
@@ -30,12 +28,12 @@ func clearEnv(t *testing.T) {
 
 func TestLoadEmptyPathAndMissingFile(t *testing.T) {
 	clearEnv(t)
+	dir, _ := Directory()
 	expectedDefaults := Settings{
-		Editor:    "vi",
-		Theme:     "adaptive",
-		UndoLimit: 100,
-		LogLevel:  "warn",
-		LogFormat: "text",
+		UndoLimit:   100,
+		LogLevel:    "warn",
+		LogFormat:   "text",
+		LocalBackup: filepath.Join(dir, "backups"),
 	}
 
 	t.Run("empty path", func(t *testing.T) {
@@ -68,8 +66,6 @@ func TestLoadFileParsingAndErrors(t *testing.T) {
 		path := filepath.Join(dir, "parchment.toml")
 		content := `
 version = 1
-editor = "nvim"
-theme = "dark"
 undo_limit = 50
 
 [logging]
@@ -87,8 +83,6 @@ destination = "/tmp/backup"
 			t.Fatalf("unexpected error: %v", err)
 		}
 		expected := Settings{
-			Editor:      "nvim",
-			Theme:       "dark",
 			UndoLimit:   50,
 			LogLevel:    "debug",
 			LogFormat:   "json",
@@ -120,8 +114,6 @@ destination = "/tmp/backup"
 
 func TestLoadEnvironmentOverrides(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("PARCHMENT_EDITOR", "emacs")
-	t.Setenv("PARCHMENT_THEME", "light")
 	t.Setenv("PARCHMENT_UNDO_LIMIT", "200")
 	t.Setenv("PARCHMENT_LOG_LEVEL", "DEBUG")
 	t.Setenv("PARCHMENT_LOG_FORMAT", "JSON")
@@ -131,12 +123,12 @@ func TestLoadEnvironmentOverrides(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	dir, _ := Directory()
 	expected := Settings{
-		Editor:    "emacs",
-		Theme:     "light",
-		UndoLimit: 200,
-		LogLevel:  "debug",
-		LogFormat: "json",
+		UndoLimit:   200,
+		LogLevel:    "debug",
+		LogFormat:   "json",
+		LocalBackup: filepath.Join(dir, "backups"),
 	}
 
 	if settings != expected {
@@ -181,23 +173,22 @@ func TestLoadUndoLimitValidation(t *testing.T) {
 
 func TestLoadPrecedenceAndValidation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "parchment.toml")
-	if err := os.WriteFile(path, []byte("version = 1\ntheme = \"file\"\nundo_limit = 12\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version = 1\nundo_limit = 12\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	settings, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.Theme != "file" || settings.UndoLimit != 12 {
+	if settings.UndoLimit != 12 {
 		t.Fatalf("settings = %+v", settings)
 	}
-	t.Setenv("PARCHMENT_THEME", "environment")
 	t.Setenv("PARCHMENT_UNDO_LIMIT", "16")
 	settings, err = Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.Theme != "environment" || settings.UndoLimit != 16 {
+	if settings.UndoLimit != 16 {
 		t.Fatalf("settings = %+v", settings)
 	}
 	t.Setenv("PARCHMENT_UNDO_LIMIT", "invalid")
@@ -254,13 +245,13 @@ func TestPathAndEnsureDefault(t *testing.T) {
 	if info, err := os.Stat(filepath.Dir(path)); err != nil || info.Mode().Perm() != 0o700 {
 		t.Fatalf("config directory = %v, %v", info, err)
 	}
-	if err := os.WriteFile(path, []byte("version = 1\ntheme = \"kept\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version = 1\nundo_limit = 50\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := EnsureDefault(path); err != nil {
 		t.Fatal(err)
 	}
-	if settings, err := Load(path); err != nil || settings.Theme != "kept" {
+	if settings, err := Load(path); err != nil || settings.UndoLimit != 50 {
 		t.Fatalf("existing config was replaced: %+v, %v", settings, err)
 	}
 	override := filepath.Join(t.TempDir(), "custom.toml")
