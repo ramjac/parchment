@@ -212,6 +212,26 @@ func TestLoadPrecedenceAndValidation(t *testing.T) {
 	}
 }
 
+func TestLoadUnreadableFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file permissions differ on windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root user bypasses file read permissions")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "unreadable.toml")
+	if err := os.WriteFile(path, []byte("version = 1\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.ReadFile(path); err == nil {
+		t.Skip("file permission 000 is not enforced in this environment")
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected error when reading unreadable config file, got nil")
+	}
+}
+
 func TestPathAndEnsureDefault(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
