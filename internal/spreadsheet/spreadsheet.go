@@ -126,32 +126,45 @@ func (s *Service) Create(ctx context.Context, path string, rows [][]Cell) (Sprea
 	return s.repository.GetSpreadsheet(ctx, path)
 }
 
-func (s *Service) SetCell(ctx context.Context, path string, row, column int, cell Cell) (Spreadsheet, error) {
-	return s.SetCellInSheet(ctx, path, "Sheet1", row, column, cell)
+// SetCellOptions contains options for setting a cell in a sheet.
+type SetCellOptions struct {
+	Sheet  string
+	Row    int
+	Column int
+	Cell   Cell
 }
 
-func (s *Service) SetCellInSheet(ctx context.Context, path, name string, row, column int, cell Cell) (Spreadsheet, error) {
-	if row < 1 || row > MaxRows || column < 1 || column > MaxColumns {
+func (s *Service) SetCell(ctx context.Context, path string, row, column int, cell Cell) (Spreadsheet, error) {
+	return s.SetCellInSheet(ctx, path, SetCellOptions{
+		Sheet:  "Sheet1",
+		Row:    row,
+		Column: column,
+		Cell:   cell,
+	})
+}
+
+func (s *Service) SetCellInSheet(ctx context.Context, path string, opts SetCellOptions) (Spreadsheet, error) {
+	if opts.Row < 1 || opts.Row > MaxRows || opts.Column < 1 || opts.Column > MaxColumns {
 		return Spreadsheet{}, fmt.Errorf("cell coordinates must be within %d rows and %d columns", MaxRows, MaxColumns)
 	}
-	if err := validateCell(cell); err != nil {
+	if err := validateCell(opts.Cell); err != nil {
 		return Spreadsheet{}, err
 	}
 	return s.modify(ctx, path, "Set cell", func(sheet *Spreadsheet) error {
-		index, err := SheetIndex(*sheet, name)
+		index, err := SheetIndex(*sheet, opts.Sheet)
 		if err != nil {
 			return err
 		}
 		grid := &sheet.Sheets[index].Rows
-		if row > len(*grid) {
-			*grid = append(*grid, make([][]Cell, row-len(*grid))...)
+		if opts.Row > len(*grid) {
+			*grid = append(*grid, make([][]Cell, opts.Row-len(*grid))...)
 		}
 		for i := range *grid {
-			if len((*grid)[i]) < column {
-				(*grid)[i] = append((*grid)[i], make([]Cell, column-len((*grid)[i]))...)
+			if len((*grid)[i]) < opts.Column {
+				(*grid)[i] = append((*grid)[i], make([]Cell, opts.Column-len((*grid)[i]))...)
 			}
 		}
-		(*grid)[row-1][column-1] = cell
+		(*grid)[opts.Row-1][opts.Column-1] = opts.Cell
 		return nil
 	})
 }
@@ -257,39 +270,55 @@ func Normalize(book *Spreadsheet) error {
 	var names []string
 	for i := range book.Sheets {
 		sheet := &book.Sheets[i]
-		sheet.Name = strings.TrimSpace(sheet.Name)
-		if !utf8.ValidString(sheet.Name) {
-			return errors.New("sheet names must be valid UTF-8")
-		}
-		duplicate := false
-		for _, name := range names {
-			if strings.EqualFold(name, sheet.Name) {
-				duplicate = true
-				break
-			}
-		}
-		if sheet.Name == "" || len(sheet.Name) > 128 || duplicate {
-			return errors.New("sheet names must be non-empty, at most 128 characters, and unique")
+		if err := validateSheetName(sheet, names); err != nil {
+			return err
 		}
 		names = append(names, sheet.Name)
-		if len(sheet.Rows) == 0 {
-			sheet.Rows = [][]Cell{{{}}}
+		if err := normalizeSheetGrid(sheet); err != nil {
+			return err
 		}
-		width := rowWidth(sheet.Rows)
-		if len(sheet.Rows) > MaxRows || width > MaxColumns {
-			return fmt.Errorf("sheet %q cannot exceed %d rows or %d columns", sheet.Name, MaxRows, MaxColumns)
+	}
+	return validateFormulas(book)
+}
+
+func validateSheetName(sheet *Sheet, seen []string) error {
+	sheet.Name = strings.TrimSpace(sheet.Name)
+	if !utf8.ValidString(sheet.Name) {
+		return errors.New("sheet names must be valid UTF-8")
+	}
+	for _, name := range seen {
+		if strings.EqualFold(name, sheet.Name) {
+			return errors.New("sheet names must be non-empty, at most 128 characters, and unique")
 		}
-		for row := range sheet.Rows {
-			if len(sheet.Rows[row]) < width {
-				sheet.Rows[row] = append(sheet.Rows[row], make([]Cell, width-len(sheet.Rows[row]))...)
-			}
-			for column, cell := range sheet.Rows[row] {
-				if err := validateCell(cell); err != nil {
-					return fmt.Errorf("sheet %q cell %s: %w", sheet.Name, CellName(row+1, column+1), err)
-				}
+	}
+	if sheet.Name == "" || len(sheet.Name) > 128 {
+		return errors.New("sheet names must be non-empty, at most 128 characters, and unique")
+	}
+	return nil
+}
+
+func normalizeSheetGrid(sheet *Sheet) error {
+	if len(sheet.Rows) == 0 {
+		sheet.Rows = [][]Cell{{{}}}
+	}
+	width := rowWidth(sheet.Rows)
+	if len(sheet.Rows) > MaxRows || width > MaxColumns {
+		return fmt.Errorf("sheet %q cannot exceed %d rows or %d columns", sheet.Name, MaxRows, MaxColumns)
+	}
+	for row := range sheet.Rows {
+		if len(sheet.Rows[row]) < width {
+			sheet.Rows[row] = append(sheet.Rows[row], make([]Cell, width-len(sheet.Rows[row]))...)
+		}
+		for column, cell := range sheet.Rows[row] {
+			if err := validateCell(cell); err != nil {
+				return fmt.Errorf("sheet %q cell %s: %w", sheet.Name, CellName(row+1, column+1), err)
 			}
 		}
 	}
+	return nil
+}
+
+func validateFormulas(book *Spreadsheet) error {
 	evaluator := evaluator{
 		book: book, visiting: make(map[cellCoordinate]bool),
 		cache: make(map[cellCoordinate]float64), depth: make(map[cellCoordinate]int),

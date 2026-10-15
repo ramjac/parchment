@@ -8,6 +8,177 @@ import (
 	"testing"
 )
 
+func clearEnv(t *testing.T) {
+	t.Helper()
+	keys := []string{
+		"PARCHMENT_EDITOR",
+		"PARCHMENT_THEME",
+		"PARCHMENT_UNDO_LIMIT",
+		"PARCHMENT_LOG_LEVEL",
+		"PARCHMENT_LOG_FORMAT",
+		"PARCHMENT_CONFIG",
+	}
+	for _, k := range keys {
+		if val, ok := os.LookupEnv(k); ok {
+			os.Unsetenv(k)
+			v := val
+			key := k
+			t.Cleanup(func() { os.Setenv(key, v) })
+		}
+	}
+}
+
+func TestLoadEmptyPathAndMissingFile(t *testing.T) {
+	clearEnv(t)
+	expectedDefaults := Settings{
+		Editor:    "vi",
+		Theme:     "adaptive",
+		UndoLimit: 100,
+		LogLevel:  "warn",
+		LogFormat: "text",
+	}
+
+	t.Run("empty path", func(t *testing.T) {
+		settings, err := Load("")
+		if err != nil {
+			t.Fatalf("unexpected error loading empty path: %v", err)
+		}
+		if settings != expectedDefaults {
+			t.Fatalf("got settings %+v, want %+v", settings, expectedDefaults)
+		}
+	})
+
+	t.Run("missing file", func(t *testing.T) {
+		nonExistentPath := filepath.Join(t.TempDir(), "nonexistent.toml")
+		settings, err := Load(nonExistentPath)
+		if err != nil {
+			t.Fatalf("unexpected error loading missing file: %v", err)
+		}
+		if settings != expectedDefaults {
+			t.Fatalf("got settings %+v, want %+v", settings, expectedDefaults)
+		}
+	})
+}
+
+func TestLoadFileParsingAndErrors(t *testing.T) {
+	clearEnv(t)
+
+	t.Run("full toml config", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "parchment.toml")
+		content := `
+version = 1
+editor = "nvim"
+theme = "dark"
+undo_limit = 50
+
+[logging]
+level = "debug"
+format = "json"
+
+[backup.local]
+destination = "/tmp/backup"
+`
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		settings, err := Load(path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := Settings{
+			Editor:      "nvim",
+			Theme:       "dark",
+			UndoLimit:   50,
+			LogLevel:    "debug",
+			LogFormat:   "json",
+			LocalBackup: "/tmp/backup",
+		}
+		if settings != expected {
+			t.Fatalf("got %+v, want %+v", settings, expected)
+		}
+	})
+
+	t.Run("invalid toml", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "parchment.toml")
+		if err := os.WriteFile(path, []byte("version = 1\n[invalid toml ==="), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Fatal("expected error for invalid TOML, got nil")
+		}
+	})
+
+	t.Run("unreadable file directory", func(t *testing.T) {
+		dir := t.TempDir()
+		if _, err := Load(dir); err == nil {
+			t.Fatal("expected error when path is a directory, got nil")
+		}
+	})
+}
+
+func TestLoadEnvironmentOverrides(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("PARCHMENT_EDITOR", "emacs")
+	t.Setenv("PARCHMENT_THEME", "light")
+	t.Setenv("PARCHMENT_UNDO_LIMIT", "200")
+	t.Setenv("PARCHMENT_LOG_LEVEL", "DEBUG")
+	t.Setenv("PARCHMENT_LOG_FORMAT", "JSON")
+
+	settings, err := Load("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expected := Settings{
+		Editor:    "emacs",
+		Theme:     "light",
+		UndoLimit: 200,
+		LogLevel:  "debug",
+		LogFormat: "json",
+	}
+
+	if settings != expected {
+		t.Fatalf("got %+v, want %+v", settings, expected)
+	}
+}
+
+func TestLoadUndoLimitValidation(t *testing.T) {
+	clearEnv(t)
+
+	tests := []struct {
+		name    string
+		limit   string
+		wantErr bool
+	}{
+		{name: "lower bound valid", limit: "1", wantErr: false},
+		{name: "upper bound valid", limit: "10000", wantErr: false},
+		{name: "too low invalid", limit: "0", wantErr: true},
+		{name: "too high invalid", limit: "10001", wantErr: true},
+		{name: "negative invalid", limit: "-5", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("PARCHMENT_UNDO_LIMIT", tt.limit)
+			settings, err := Load("")
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Load() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && settings.UndoLimit != func() int {
+				var v int
+				for _, ch := range tt.limit {
+					v = v*10 + int(ch-'0')
+				}
+				return v
+			}() {
+				t.Fatalf("settings.UndoLimit = %d, want %s", settings.UndoLimit, tt.limit)
+			}
+		})
+	}
+}
+
 func TestLoadPrecedenceAndValidation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "parchment.toml")
 	if err := os.WriteFile(path, []byte("version = 1\ntheme = \"file\"\nundo_limit = 12\n"), 0o600); err != nil {
