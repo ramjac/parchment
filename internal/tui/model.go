@@ -84,10 +84,10 @@ type autosaveFinishedMsg struct {
 
 const autosaveInterval = 2 * time.Second
 
-type theme struct {
-	primary lipgloss.AdaptiveColor
-	border  lipgloss.AdaptiveColor
-}
+var (
+	primaryColor = lipgloss.AdaptiveColor{Light: "#4b3f72", Dark: "#c4b5fd"}
+	borderColor  = lipgloss.AdaptiveColor{Light: "#b8b4c7", Dark: "#55516a"}
+)
 
 // Model is the interactive editor for one artifact file. It owns UI state
 // only; artifact rules live in the services.
@@ -102,7 +102,6 @@ type Model struct {
 	stage         stage
 	width         int
 	height        int
-	theme         theme
 	pending       bool
 	status        string
 	errMessage    string
@@ -131,16 +130,12 @@ func NewModel(config Config) Model {
 		newOperationContext: func() (context.Context, context.CancelFunc) {
 			return context.WithCancel(context.Background())
 		},
-		theme: theme{
-			primary: lipgloss.AdaptiveColor{Light: "#4b3f72", Dark: "#c4b5fd"},
-			border:  lipgloss.AdaptiveColor{Light: "#b8b4c7", Dark: "#55516a"},
-		},
 	}
 	if m.service != nil {
 		m.canUndo, m.canRedo = m.service.CanUndo(), m.service.CanRedo()
 	}
 	if config.Documents != nil {
-		m.documents = newDocumentsScreen(config.Documents, config.Path, m.theme, m.newOperationContext)
+		m.documents = newDocumentsScreen(config.Documents, config.Path, m.newOperationContext)
 		m.documents.recoveryStore = config.Recovery
 		m.documents.autosaveScheduler = func(session uint64) tea.Cmd {
 			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
@@ -376,7 +371,7 @@ func (m *Model) enterEditor() tea.Cmd {
 		return tea.Batch(m.bodyInput.Focus(), m.scheduleAutosave(m.autosaveSession))
 	case artifact.SpreadsheetKind:
 		m.sheet = newSpreadsheetModel(m.spreadsheets, m.path)
-		m.sheet.newOperationContext, m.sheet.theme = m.newOperationContext, m.theme
+		m.sheet.newOperationContext = m.newOperationContext
 		m.sheet.width, m.sheet.height = m.width, m.height
 		m.sheet.setBook(m.opened.book)
 		m.sheet.status = m.status
@@ -385,7 +380,7 @@ func (m *Model) enterEditor() tea.Cmd {
 		return cmd
 	case artifact.PresentationKind:
 		m.deck = newPresentationModel(m.presentations, m.path)
-		m.deck.newOperationContext, m.deck.theme = m.newOperationContext, m.theme
+		m.deck.newOperationContext = m.newOperationContext
 		m.deck.width, m.deck.height = m.width, m.height
 		m.deck.setItem(m.opened.deck)
 		m.deck.status = m.status
@@ -565,7 +560,7 @@ func (m Model) View() string {
 	if m.tooSmall() {
 		return "parchment — terminal too small (minimum 40×10)\nResize the terminal, or press q to quit."
 	}
-	header := lipgloss.NewStyle().Bold(true).Foreground(m.theme.primary).
+	header := lipgloss.NewStyle().Bold(true).Foreground(primaryColor).
 		Render("parchment  ·  " + sanitizeTerminalLine(m.path))
 	switch m.stage {
 	case stageOpening:
@@ -640,17 +635,33 @@ func (m *Model) refreshHistoryAvailability() {
 // startEdit loads n into the editor, refusing notes the editor widgets would
 // truncate or alter.
 func (m *Model) startEdit(n note.Note) bool {
-	m.bodyInput.SetValue(n.Body)
-	if m.bodyInput.Value() != n.Body {
+	if isUnpreservableText(n.Body) {
 		m.errMessage = "This note exceeds editor limits or contains text the editor cannot preserve; edit it with a text editor"
 		m.status = ""
 		return false
 	}
+	m.bodyInput.SetValue(n.Body)
 	m.loadNote(n)
 	m.resizeEditors()
 	m.errMessage = ""
 	m.startAutosaveSession()
 	return true
+}
+
+func isUnpreservableText(text string) bool {
+	if len(text) > 1_000_000 {
+		return true
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) > 10_000 {
+		return true
+	}
+	for _, r := range text {
+		if r == '\t' || (unicode.IsControl(r) && r != '\n') {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Model) saveNote() tea.Cmd {

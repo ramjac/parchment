@@ -74,7 +74,6 @@ type spreadsheetModel struct {
 	loaded  bool
 	editing bool
 	input   textinput.Model
-	theme   theme
 
 	spreadsheetGrid
 	spreadsheetAsync
@@ -88,10 +87,6 @@ func newSpreadsheetModel(service *spreadsheet.Service, path string) *spreadsheet
 		service: service,
 		path:    path,
 		input:   input,
-		theme: theme{
-			primary: lipgloss.AdaptiveColor{Light: "#4b3f72", Dark: "#c4b5fd"},
-			border:  lipgloss.AdaptiveColor{Light: "#b8b4c7", Dark: "#55516a"},
-		},
 	}
 	m.newOperationContext = func() (context.Context, context.CancelFunc) {
 		return context.WithCancel(context.Background())
@@ -495,8 +490,8 @@ func (m *spreadsheetModel) View() string {
 	if m.width < 20 || m.height < spreadsheetChromeLines+1 {
 		return "Terminal too small. Press q to quit."
 	}
-	accent := lipgloss.NewStyle().Foreground(m.theme.primary).Bold(true)
-	muted := lipgloss.NewStyle().Foreground(m.theme.border)
+	accent := lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
+	muted := lipgloss.NewStyle().Foreground(borderColor)
 	selected := lipgloss.NewStyle().Reverse(true)
 	var b strings.Builder
 

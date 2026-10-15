@@ -11,8 +11,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
+	"example.com/parchment/internal/tui/editor"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mattn/go-runewidth"
@@ -185,7 +185,7 @@ type documentChangesState struct {
 // documentEditorState holds state for editing a document.
 type documentEditorState struct {
 	snapshot     document.Document
-	body         textarea.Model
+	body         editor.Model
 	layout       document.Layout
 	images       []document.Image
 	original     editorDraft
@@ -216,7 +216,6 @@ type documentReaderState struct {
 type documentsScreen struct {
 	service       *document.Service
 	path          string
-	theme         theme
 	width, height int
 	pending       bool
 	canUndo       bool
@@ -245,17 +244,13 @@ type editorDraft struct {
 	layout       document.Layout
 }
 
-func newDocumentsScreen(service *document.Service, path string, t theme, newContext func() (context.Context, context.CancelFunc)) *documentsScreen {
-	body := textarea.New()
-	body.Prompt = ""
-	body.ShowLineNumbers = false
+func newDocumentsScreen(service *document.Service, path string, newContext func() (context.Context, context.CancelFunc)) *documentsScreen {
+	body := editor.New()
 	body.Placeholder = "Write Markdown…"
-	body.CharLimit = 5_000_000
-	body.MaxHeight = 0
 	prompt := textinput.New()
 	prompt.CharLimit = document.MaxRunningTextLength * 2
 	return &documentsScreen{
-		service: service, path: path, theme: t,
+		service: service, path: path,
 		documentEditorState: documentEditorState{
 			body:        body,
 			promptInput: prompt,

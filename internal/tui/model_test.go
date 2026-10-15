@@ -69,9 +69,7 @@ func (h *harness) openWith(kind artifact.Kind, edit bool) {
 	h.m, h.quit = &model, false
 	// Blinking cursors return tea.Tick commands, which the harness would run
 	// synchronously.
-	h.m.bodyInput.Cursor.SetMode(cursor.CursorStatic)
 	if s := h.m.documents; s != nil {
-		s.body.Cursor.SetMode(cursor.CursorStatic)
 		s.promptInput.Cursor.SetMode(cursor.CursorStatic)
 	}
 	h.send(tea.WindowSizeMsg{Width: 100, Height: 30})

@@ -127,7 +127,7 @@ const toolbarTop = 2
 func (s *documentsScreen) toolbarView() string {
 	placed, rows := s.buttonLayout(max(s.width, 20))
 	buttons := s.toolbarButtons()
-	normal := lipgloss.NewStyle().Foreground(s.theme.primary).Background(lipgloss.AdaptiveColor{Light: "#e7e3f5", Dark: "#2f2b45"})
+	normal := lipgloss.NewStyle().Foreground(primaryColor).Background(lipgloss.AdaptiveColor{Light: "#e7e3f5", Dark: "#2f2b45"})
 	active := normal.Reverse(true).Bold(true)
 	lineBuilders := make([]strings.Builder, rows)
 	groupSeen := make([]string, rows)
@@ -160,13 +160,13 @@ func (s *documentsScreen) toolbarView() string {
 // would truncate or alter; saving after any edit would otherwise overwrite the
 // full stored text.
 func (s *documentsScreen) startEdit(d document.Document) (tea.Cmd, bool) {
-	s.body.SetValue(d.Body)
-	if s.body.Value() != d.Body {
+	if isUnpreservableText(d.Body) {
 		s.body.SetValue("")
 		s.errMessage = "This document exceeds editor limits or contains text the editor cannot preserve; edit it with a text editor"
 		s.status = ""
 		return nil, false
 	}
+	s.body.SetValue(d.Body)
 	s.loadDocument(d)
 	s.prompt, s.previewing, s.showChanges, s.reviewing = promptNone, false, false, false
 	s.toolbarIndex = 0
@@ -185,7 +185,6 @@ func (s *documentsScreen) loadDocument(d document.Document) {
 	}
 	s.images = d.Images
 	s.body.SetValue(d.Body)
-	s.body.CursorStart()
 	s.original = s.currentDraft()
 	s.discardWarning = false
 }
@@ -225,7 +224,6 @@ func (s *documentsScreen) restoreRecovery(data documentRecoveryData) (tea.Cmd, b
 		return nil, false
 	}
 	s.body.SetValue(draft.Body)
-	s.body.CursorStart()
 	s.draftStored = true
 	s.layout, s.images = draft.Layout, draft.Images
 	if s.layout == (document.Layout{}) {
@@ -442,19 +440,26 @@ func (s *documentsScreen) updateMouse(msg tea.MouseMsg) tea.Cmd {
 	if s.pending || s.showChanges || s.prompt != promptNone || s.previewing {
 		return nil
 	}
-	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
-		return nil
-	}
 	placed, _ := s.buttonLayout(max(s.width, 20))
 	buttons := s.toolbarButtons()
-	for _, p := range placed {
-		if msg.Y == toolbarTop+p.row && msg.X >= p.x && msg.X < p.x+p.width {
-			s.toolbarIndex = p.index
-			return s.act(buttons[p.index].action)
+	if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		for _, p := range placed {
+			if msg.Y == toolbarTop+p.row && msg.X >= p.x && msg.X < p.x+p.width {
+				s.toolbarIndex = p.index
+				return s.act(buttons[p.index].action)
+			}
 		}
 	}
-	if placeTextareaCursor(&s.body, msg.X, msg.Y-(toolbarTop+s.toolbarRows()+1)) {
-		return s.focusBody()
+	editorY := msg.Y - (toolbarTop + s.toolbarRows() + 1)
+	if editorY >= 0 {
+		mouseMsg := msg
+		mouseMsg.Y = editorY
+		var cmd tea.Cmd
+		s.body, cmd = s.body.Update(mouseMsg)
+		if msg.Action == tea.MouseActionPress {
+			return tea.Batch(cmd, s.focusBody())
+		}
+		return cmd
 	}
 	return nil
 }
@@ -695,9 +700,9 @@ func (s *documentsScreen) moveLeft(n int) {
 }
 
 // prepareBody focuses the body widget itself, not just the focus marker, so
-// cursor movement and later typing reach the textarea.
+// cursor movement and later typing reach the editor.
 func (s *documentsScreen) prepareBody() {
-	if s.focus != focusBody || !s.body.Focused() {
+	if s.focus != focusBody || !s.body.Focused {
 		s.focusBody()
 	}
 }
@@ -716,7 +721,8 @@ func (s *documentsScreen) wrap(open, close string) {
 // linePrefix starts the current line with a Markdown marker.
 func (s *documentsScreen) linePrefix(prefix string) {
 	s.prepareBody()
-	s.body.CursorStart()
+	s.body.Cursor.Col = 0
+	s.body.StickyCol = 0
 	s.body.InsertString(prefix)
 }
 
@@ -724,7 +730,7 @@ func (s *documentsScreen) linePrefix(prefix string) {
 func (s *documentsScreen) insertBlock(text string) {
 	s.prepareBody()
 	prefix := "\n\n"
-	if s.body.Value() == "" || s.body.LineInfo().ColumnOffset == 0 && s.body.LineInfo().StartColumn == 0 && s.currentLineEmpty() {
+	if s.body.Value() == "" || (s.body.Cursor.Col == 0 && s.currentLineEmpty()) {
 		prefix = ""
 	}
 	s.body.InsertString(prefix + text + "\n\n")
@@ -732,7 +738,7 @@ func (s *documentsScreen) insertBlock(text string) {
 
 func (s *documentsScreen) currentLineEmpty() bool {
 	lines := strings.Split(s.body.Value(), "\n")
-	row := s.body.Line()
+	row := s.body.Cursor.Line
 	return row < len(lines) && strings.TrimSpace(lines[row]) == ""
 }
 
@@ -758,13 +764,11 @@ func (s *documentsScreen) editorView(header string) string {
 		title := runewidth.Truncate("Print preview  ·  "+position+"  ·  ↑/↓ scroll  ·  ←/→ pages  ·  Esc returns", max(s.width, 1), "…")
 		return header + "\n" + title + "\n" + pageText(visible, max(s.width, 1))
 	}
-	body := s.body
-	sanitizeTextareaView(&body)
 	var b strings.Builder
 	b.WriteString(header + "\n" + state + "\n" + s.toolbarView() + "\n")
 	if s.prompt != promptNone {
 		b.WriteString(s.promptInput.View())
 	}
-	b.WriteString("\n" + body.View())
+	b.WriteString("\n" + s.body.View())
 	return b.String() + s.statusLine()
 }
