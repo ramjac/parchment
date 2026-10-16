@@ -95,8 +95,8 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.editor.SetWidth(max(1, m.width))
-		m.editor.SetHeight(max(1, m.height-presentationChromeLines))
+		m.editor.SetWidth(max(1, m.width-4))
+		m.editor.SetHeight(max(1, m.height-5))
 		m.clampScroll()
 		return m, nil
 	case presentationLoadedMsg:
@@ -145,7 +145,8 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		if m.editing && !m.pending {
 			mouseMsg := msg
-			mouseMsg.Y = msg.Y - 1
+			mouseMsg.Y = msg.Y - 2
+			mouseMsg.X = msg.X - 2
 			var cmd tea.Cmd
 			m.editor, cmd = m.editor.Update(mouseMsg)
 			return m, cmd
@@ -440,7 +441,7 @@ func (m *presentationModel) pageLines() []string {
 	if !m.loaded {
 		return nil
 	}
-	width := max(1, m.width)
+	width := max(1, m.width-4)
 	var text strings.Builder
 	var title string
 	if m.page == 0 {
@@ -474,7 +475,7 @@ func (m *presentationModel) pageLines() []string {
 }
 
 func (m *presentationModel) visibleLines() int {
-	return max(1, m.height-presentationChromeLines)
+	return max(1, m.height-5)
 }
 
 func (m *presentationModel) clampScroll() {
@@ -504,17 +505,28 @@ func (m *presentationModel) View() string {
 	}
 	b.WriteString(accent.Render(runewidth.Truncate(header, m.width, "…")) + "\n")
 
+	var content string
 	if m.editing {
-		b.WriteString(m.editor.View() + "\n")
+		content = m.editor.View()
 	} else {
 		lines := m.pageLines()
+		var slideBuf strings.Builder
 		for i := 0; i < m.visibleLines(); i++ {
-			if index := m.scroll + i; index < len(lines) {
-				b.WriteString(lines[index])
+			if i > 0 {
+				slideBuf.WriteByte('\n')
 			}
-			b.WriteString("\n")
+			if index := m.scroll + i; index < len(lines) {
+				slideBuf.WriteString(lines[index])
+			}
 		}
+		content = slideBuf.String()
 	}
+
+	paneHeight := max(1, m.height-3)
+	pane := lipgloss.NewStyle().Width(max(1, m.width)).Height(paneHeight).
+		Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1).Render(content)
+
+	b.WriteString(pane + "\n")
 
 	status := m.status
 	if m.errMessage != "" {
