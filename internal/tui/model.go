@@ -8,7 +8,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -349,12 +348,12 @@ func (m *Model) handleHistoryChanged(msg historyChangedMsg) (tea.Model, tea.Cmd)
 }
 
 func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	if m.stage == stageNote && !m.pending && !m.previewing &&
-		msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-		// The body starts below the header, state, and blank lines.
-		if placeTextareaCursor(&m.bodyInput, msg.X, msg.Y-3) {
-			return m, m.bodyInput.Focus()
-		}
+	if m.stage == stageNote && !m.pending && !m.previewing {
+		mouseMsg := msg
+		mouseMsg.Y = msg.Y - 3
+		var cmd tea.Cmd
+		m.bodyInput, cmd = m.bodyInput.Update(mouseMsg)
+		return m, cmd
 	}
 	return m, nil
 }
@@ -488,7 +487,14 @@ func (m *Model) updateNoteKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	switch key {
-	case "esc", "ctrl+c":
+	case "ctrl+c":
+		if m.bodyInput.Selection.Active {
+			var cmd tea.Cmd
+			m.bodyInput, cmd = m.bodyInput.Update(msg)
+			return cmd
+		}
+		return m.requestClose()
+	case "esc":
 		return m.requestClose()
 	case "ctrl+s":
 		m.stopAutosave()
@@ -601,10 +607,8 @@ func (m Model) View() string {
 	if m.previewing {
 		return header + "\nPreview  ·  ↑/↓ scroll  ·  Esc returns to the editor\n" + m.preview.View() + m.statusLine()
 	}
-	bodyInput := m.bodyInput
-	sanitizeTextareaView(&bodyInput)
 	return header + "\n" + state + "  ·  Ctrl+S saves  ·  F5 preview  ·  Ctrl+Z/Ctrl+R undo/redo  ·  Esc quits\n\n" +
-		bodyInput.View() + m.statusLine()
+		m.bodyInput.View() + m.statusLine()
 }
 
 func (m Model) tooSmall() bool { return m.width < 40 || m.height < 10 }
@@ -735,11 +739,3 @@ func Run(ctx context.Context, config Config) error {
 	return err
 }
 
-// sanitizeTextareaView replaces control characters in a textarea copy that is
-// only rendered, leaving the canonical editor value untouched.
-func sanitizeTextareaView(editor *textarea.Model) {
-	value := editor.Value()
-	if sanitized := sanitizeTerminalText(value); sanitized != value {
-		editor.SetValue(sanitized)
-	}
-}

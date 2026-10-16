@@ -6,19 +6,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"example.com/parchment/internal/artifactfile"
 	"example.com/parchment/internal/note"
+	"example.com/parchment/internal/tui/editor"
 )
 
 // noteEditor holds UI and autosave state for the note editor.
 type noteEditor struct {
 	snapshot          note.Note
 	originalBody      string
-	bodyInput         textarea.Model
+	bodyInput         editor.Model
 	previewing        bool
 	preview           viewport.Model
 	discardWarning    bool
@@ -31,11 +31,8 @@ type noteEditor struct {
 }
 
 func newNoteEditor() noteEditor {
-	body := textarea.New()
-	body.Prompt = ""
-	body.ShowLineNumbers = false
+	body := editor.New()
 	body.Placeholder = "Write Markdown…"
-	body.CharLimit = 1_000_000
 	return noteEditor{
 		bodyInput: body,
 		preview:   viewport.New(0, 0),
@@ -74,9 +71,9 @@ func (n *noteEditor) resizePreview(width, height int) {
 }
 
 func (n *noteEditor) resizeEditors(width, height int) {
-	inputWidth := max(width-8, 20)
+	inputWidth := max(width, 10)
 	n.bodyInput.SetWidth(inputWidth)
-	n.bodyInput.SetHeight(max(height-5, 3))
+	n.bodyInput.SetHeight(max(height-4, 3))
 	if n.previewing {
 		n.resizePreview(width, height)
 	}
