@@ -63,7 +63,7 @@ func (n *noteEditor) loadNote(savedNote note.Note) {
 }
 
 func (n *noteEditor) resizePreview(width, height int) {
-	n.preview.Width, n.preview.Height = max(width-2, 1), max(height-4, 1)
+	n.preview.Width, n.preview.Height = max(width-4, 1), max(height-6, 1)
 	saved := n.snapshot
 	saved.Body = n.bodyInput.Value()
 	n.preview.SetContent(preview(saved))
@@ -71,9 +71,9 @@ func (n *noteEditor) resizePreview(width, height int) {
 }
 
 func (n *noteEditor) resizeEditors(width, height int) {
-	inputWidth := max(width, 10)
+	inputWidth := max(width-4, 1)
 	n.bodyInput.SetWidth(inputWidth)
-	n.bodyInput.SetHeight(max(height-4, 3))
+	n.bodyInput.SetHeight(max(height-6, 1))
 	if n.previewing {
 		n.resizePreview(width, height)
 	}

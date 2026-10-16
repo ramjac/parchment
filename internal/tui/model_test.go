@@ -517,7 +517,7 @@ func TestPlainMarkdownOpensAsNoteAndStaysPlain(t *testing.T) {
 func TestNoteClickPositionsBodyCursor(t *testing.T) {
 	h := newHarness(t, artifact.NoteKind)
 	h.m.bodyInput.SetValue("alpha\nbravo")
-	h.send(tea.MouseMsg{X: 2, Y: 4, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	h.send(tea.MouseMsg{X: 4, Y: 4, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	h.m.bodyInput.InsertString("!")
 	if h.m.bodyInput.Value() != "alpha\nbr!avo" {
 		t.Fatalf("note click positioned cursor at %q", h.m.bodyInput.Value())
@@ -534,7 +534,7 @@ func TestDocumentClickPositionsBodyCursor(t *testing.T) {
 	s := h.m.documents
 	s.body.SetValue("alpha\nbravo")
 	y := toolbarTop + s.toolbarRows() + 1
-	h.send(tea.MouseMsg{X: 2, Y: y + 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	h.send(tea.MouseMsg{X: 4, Y: y + 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	s.body.InsertString("!")
 	if s.body.Value() != "alpha\nbr!avo" {
 		t.Fatalf("document click positioned cursor at %q", s.body.Value())
