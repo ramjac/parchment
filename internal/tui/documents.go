@@ -701,10 +701,10 @@ func changeLayoutDescription(layout document.Layout) string {
 
 func (s *documentsScreen) statusLine() string {
 	undo, redo := "undo unavailable", "redo unavailable"
-	if s.canUndo {
+	if s.canUndo || s.body.CanUndo() {
 		undo = "undo available"
 	}
-	if s.canRedo {
+	if s.canRedo || s.body.CanRedo() {
 		redo = "redo available"
 	}
 	message := s.status

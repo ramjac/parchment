@@ -54,7 +54,7 @@ func TestPresentationClickPositionsSourceCursor(t *testing.T) {
 	m.beginEdit()
 	m.editor.SetValue("alpha\nbravo")
 	m.editor.Focus()
-	m.Update(tea.MouseMsg{X: 5, Y: 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m.Update(tea.MouseMsg{X: 2, Y: 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	m.editor.InsertString("!")
 	if m.editor.Value() != "alpha\nbr!avo" {
 		t.Fatalf("presentation click positioned cursor at %q", m.editor.Value())
@@ -100,10 +100,10 @@ func TestNoteEditorShowsCursorAwayFromTextEnd(t *testing.T) {
 	model.stage = stageNote
 	model.bodyInput.Focus()
 	for i := 0; i < 59; i++ {
-		model.bodyInput.CursorUp()
+		model.bodyInput.Update(tea.KeyMsg{Type: tea.KeyUp})
 	}
 	if !strings.Contains(model.View(), "\x1b[7m") {
-		t.Fatalf("cursor at line %d is not visible in the editor view", model.bodyInput.Line())
+		t.Fatalf("cursor at line %d is not visible in the editor view", model.bodyInput.Cursor.Line)
 	}
 }
 

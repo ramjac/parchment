@@ -349,11 +349,15 @@ func (m *Model) handleHistoryChanged(msg historyChangedMsg) (tea.Model, tea.Cmd)
 }
 
 func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	if m.stage == stageNote && !m.pending && !m.previewing &&
-		msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-		// The body starts below the header, state, and blank lines.
-		if placeTextareaCursor(&m.bodyInput, msg.X, msg.Y-3) {
-			return m, m.bodyInput.Focus()
+	if m.stage == stageNote && !m.pending && !m.previewing {
+		mouseY := msg.Y - 3
+		if mouseY >= 0 {
+			mouseMsg := msg
+			mouseMsg.Y = mouseY
+			m.bodyInput, _ = m.bodyInput.Update(mouseMsg)
+			if msg.Action == tea.MouseActionPress {
+				return m, m.bodyInput.Focus()
+			}
 		}
 	}
 	return m, nil
@@ -498,9 +502,13 @@ func (m *Model) updateNoteKey(msg tea.KeyMsg) tea.Cmd {
 		m.previewing = true
 		m.resizePreview()
 		return nil
-	case "ctrl+z", "ctrl+r":
-		if m.dirty() {
-			m.status = "Save or discard your edits before undo or redo"
+	case "ctrl+z", "ctrl+r", "ctrl+y", "ctrl+shift+z":
+		if key == "ctrl+z" && m.bodyInput.CanUndo() {
+			m.bodyInput.Undo()
+			return nil
+		}
+		if (key == "ctrl+r" || key == "ctrl+y" || key == "ctrl+shift+z") && m.bodyInput.CanRedo() {
+			m.bodyInput.Redo()
 			return nil
 		}
 		return m.history(key == "ctrl+z")
@@ -601,20 +609,18 @@ func (m Model) View() string {
 	if m.previewing {
 		return header + "\nPreview  ·  ↑/↓ scroll  ·  Esc returns to the editor\n" + m.preview.View() + m.statusLine()
 	}
-	bodyInput := m.bodyInput
-	sanitizeTextareaView(&bodyInput)
 	return header + "\n" + state + "  ·  Ctrl+S saves  ·  F5 preview  ·  Ctrl+Z/Ctrl+R undo/redo  ·  Esc quits\n\n" +
-		bodyInput.View() + m.statusLine()
+		m.bodyInput.View() + m.statusLine()
 }
 
 func (m Model) tooSmall() bool { return m.width < 40 || m.height < 10 }
 
 func (m Model) statusLine() string {
 	undo, redo := "undo unavailable", "redo unavailable"
-	if m.canUndo {
+	if m.canUndo || m.bodyInput.CanUndo() {
 		undo = "undo available"
 	}
-	if m.canRedo {
+	if m.canRedo || m.bodyInput.CanRedo() {
 		redo = "redo available"
 	}
 	message := m.status

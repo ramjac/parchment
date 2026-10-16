@@ -47,6 +47,30 @@ func newDocumentHarness(t *testing.T, draft document.Draft) *harness {
 	return h
 }
 
+func TestDocumentEditModeSeamlessUndoRedo(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{})
+	s := h.m.documents
+	h.typeText("IntroText")
+	if !s.dirty() || s.body.Value() != "IntroText" {
+		t.Fatalf("dirty=%t body=%q", s.dirty(), s.body.Value())
+	}
+
+	// Press Ctrl+Z with unsaved edits - should undo seamlessly
+	h.key("ctrl+z")
+	if s.errMessage != "" || s.status == "Save or discard your edits before undo or redo" {
+		t.Fatalf("unexpected status %q or error %q", s.status, s.errMessage)
+	}
+	if s.body.Value() != "" {
+		t.Fatalf("after undo: body = %q, want empty", s.body.Value())
+	}
+
+	// Press Ctrl+R with unsaved edits - should redo seamlessly
+	h.key("ctrl+r")
+	if s.body.Value() != "IntroText" {
+		t.Fatalf("after redo: body = %q, want IntroText", s.body.Value())
+	}
+}
+
 func TestDocumentEditorHasToolbarAndSavesLayout(t *testing.T) {
 	h := newDocumentHarness(t, document.Draft{})
 	view := h.m.View()

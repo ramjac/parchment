@@ -132,6 +132,30 @@ func TestPresentationViewNavigatesSlidesAndNotes(t *testing.T) {
 	}
 }
 
+func TestPresentationEditModeSeamlessUndoRedo(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+	drivePresentation(t, m, sheetKey("e"))
+	if !m.editing {
+		t.Fatal("e did not start editing")
+	}
+	drivePresentation(t, m, sheetKey("!"))
+	if m.editor.Value() == m.item.Source {
+		t.Fatal("typing ! did not edit source")
+	}
+
+	// Press Ctrl+Z with unsaved edits - should undo seamlessly
+	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyCtrlZ})
+	if m.editor.Value() != m.item.Source {
+		t.Fatalf("after undo: source = %q, want %q", m.editor.Value(), m.item.Source)
+	}
+
+	// Press Ctrl+R with unsaved edits - should redo seamlessly
+	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyCtrlR})
+	if !strings.Contains(m.editor.Value(), "!") {
+		t.Fatalf("after redo: source = %q, want containing !", m.editor.Value())
+	}
+}
+
 func TestPresentationEditSavesSourceAndUndoes(t *testing.T) {
 	m, _, path := newPresentationTestModel(t)
 	original := m.item.Source
@@ -140,7 +164,7 @@ func TestPresentationEditSavesSourceAndUndoes(t *testing.T) {
 	if !m.editing {
 		t.Fatal("e did not start editing")
 	}
-	if line := m.editor.Line(); line != slideSourceLine(original, 1) || line == 0 {
+	if line := m.editor.Cursor.Line; line != slideSourceLine(original, 1) || line == 0 {
 		t.Fatalf("cursor line = %d", line)
 	}
 	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyEnd})

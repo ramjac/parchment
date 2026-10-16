@@ -250,9 +250,9 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		if m.cell(m.row, m.column) != (spreadsheet.Cell{}) {
 			return m.saveCell(m.row, m.column, spreadsheet.Cell{}, "")
 		}
-	case "u":
+	case "u", "ctrl+z":
 		return m.history("Undid", m.service.Undo)
-	case "ctrl+r":
+	case "ctrl+r", "ctrl+y", "ctrl+shift+z":
 		return m.history("Redid", m.service.Redo)
 	}
 	return nil

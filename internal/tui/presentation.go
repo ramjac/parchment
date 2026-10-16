@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/presentation"
+	"example.com/parchment/internal/tui/editor"
 )
 
 // presentationChromeLines counts the header, status, and help lines.
@@ -54,7 +54,7 @@ type presentationViewState struct {
 
 type presentationEditorState struct {
 	editing        bool
-	editor         textarea.Model
+	editor         editor.Model
 	discardWarning bool
 }
 
@@ -74,16 +74,13 @@ type presentationModel struct {
 }
 
 func newPresentationModel(service *presentation.Service, path string) *presentationModel {
-	editor := textarea.New()
-	editor.Prompt = ""
-	editor.ShowLineNumbers = true
-	editor.CharLimit = 5_000_000
-	editor.MaxHeight = 0
+	ed := editor.New()
+	ed.ShowLineNums = true
 	return &presentationModel{
 		service: service,
 		path:    path,
 		presentationEditorState: presentationEditorState{
-			editor: editor,
+			editor: ed,
 		},
 		presentationOpState: presentationOpState{
 			newOperationContext: func() (context.Context, context.CancelFunc) {
@@ -147,8 +144,13 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.updateBrowseKey(msg)
 	case tea.MouseMsg:
-		if m.editing && !m.pending && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-			placeTextareaCursor(&m.editor, msg.X, msg.Y-1)
+		if m.editing && !m.pending {
+			mouseY := msg.Y - 1
+			if mouseY >= 0 {
+				mouseMsg := msg
+				mouseMsg.Y = mouseY
+				m.editor, _ = m.editor.Update(mouseMsg)
+			}
 		}
 		return m, nil
 	}
@@ -178,6 +180,19 @@ func (m *presentationModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
 	switch key {
 	case "ctrl+s":
 		return m.save()
+	case "ctrl+z", "ctrl+r", "ctrl+y", "ctrl+shift+z":
+		if key == "ctrl+z" && m.editor.CanUndo() {
+			m.editor.Undo()
+			return nil
+		}
+		if (key == "ctrl+r" || key == "ctrl+y" || key == "ctrl+shift+z") && m.editor.CanRedo() {
+			m.editor.Redo()
+			return nil
+		}
+		if key == "ctrl+z" {
+			return m.history("Undid", m.service.Undo)
+		}
+		return m.history("Redid", m.service.Redo)
 	case "esc":
 		if m.editor.Value() != m.item.Source && !m.discardWarning {
 			m.discardWarning = true
@@ -237,9 +252,9 @@ func (m *presentationModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		m.clampScroll()
 	case "enter", "e":
 		return m.beginEdit()
-	case "u":
+	case "u", "ctrl+z":
 		return m.history("Undid", m.service.Undo)
-	case "ctrl+r":
+	case "ctrl+r", "ctrl+y", "ctrl+shift+z":
 		return m.history("Redid", m.service.Redo)
 	}
 	return nil
@@ -261,19 +276,18 @@ func (m *presentationModel) beginEdit() tea.Cmd {
 	m.editor.SetValue(m.item.Source)
 	m.moveEditorToLine(slideSourceLine(m.item.Source, m.page))
 	cmd := m.editor.Focus()
-	// Let the textarea scroll its viewport to the repositioned cursor.
-	m.editor, _ = m.editor.Update(nil)
 	return cmd
 }
 
 func (m *presentationModel) moveEditorToLine(line int) {
-	for guard := m.editor.LineCount() * 64; m.editor.Line() > line && guard > 0; guard-- {
-		m.editor.CursorUp()
+	if line < 0 {
+		line = 0
 	}
-	for guard := m.editor.LineCount() * 64; m.editor.Line() < line && guard > 0; guard-- {
-		m.editor.CursorDown()
+	if line >= len(m.editor.Lines) {
+		line = len(m.editor.Lines) - 1
 	}
-	m.editor.CursorStart()
+	m.editor.Cursor = editor.Point{Line: line, Col: 0}
+	m.editor.StickyCol = 0
 }
 
 // slideSourceLine finds the source line of a page's heading for cursor
@@ -335,7 +349,7 @@ func pageForSourceLine(source string, line int) int {
 
 // leaveEditor returns to the viewer on the slide containing the cursor.
 func (m *presentationModel) leaveEditor() {
-	m.goToPage(pageForSourceLine(m.editor.Value(), m.editor.Line()))
+	m.goToPage(pageForSourceLine(m.editor.Value(), m.editor.Cursor.Line))
 	m.editing, m.discardWarning = false, false
 	m.editor.Blur()
 }

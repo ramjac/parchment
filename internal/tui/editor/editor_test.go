@@ -135,3 +135,43 @@ func TestEditorDoubleTripleClick(t *testing.T) {
 		t.Fatalf("SelectedText() on triple click = %q, want %q", sel, "Hello World")
 	}
 }
+
+func TestEditorUndoAndRedo(t *testing.T) {
+	ed := New()
+	ed.SetValue("Hello")
+	ed.Cursor = Point{Line: 0, Col: 5}
+
+	if ed.CanUndo() {
+		t.Fatal("CanUndo should be false on fresh SetValue")
+	}
+
+	ed.InsertString(" World")
+	if ed.Value() != "Hello World" {
+		t.Fatalf("Value = %q, want %q", ed.Value(), "Hello World")
+	}
+	if !ed.CanUndo() {
+		t.Fatal("CanUndo should be true after InsertString")
+	}
+
+	if !ed.Undo() || ed.Value() != "Hello" {
+		t.Fatalf("Undo failed: Value = %q, want %q", ed.Value(), "Hello")
+	}
+	if !ed.CanRedo() {
+		t.Fatal("CanRedo should be true after Undo")
+	}
+
+	if !ed.Redo() || ed.Value() != "Hello World" {
+		t.Fatalf("Redo failed: Value = %q, want %q", ed.Value(), "Hello World")
+	}
+
+	// Test key handling
+	ed.Update(tea.KeyMsg{Type: tea.KeyCtrlZ})
+	if ed.Value() != "Hello" {
+		t.Fatalf("Ctrl+Z failed: Value = %q, want %q", ed.Value(), "Hello")
+	}
+
+	ed.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	if ed.Value() != "Hello World" {
+		t.Fatalf("Ctrl+R failed: Value = %q, want %q", ed.Value(), "Hello World")
+	}
+}

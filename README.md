@@ -219,7 +219,7 @@ and document editors and select cells and slides.
 
 In the note editor, `Ctrl+S` saves
 and keeps editing, `F5` toggles a plain-text preview (`↑`/`↓` scroll), and
-`Ctrl+Z`/`Ctrl+R` undo and redo saved changes; save or discard edits first.
+`Ctrl+Z`/`Ctrl+R` undo and redo edits seamlessly.
 `Esc` or `Ctrl+C` closes the editor, asking for confirmation when there are
 unsaved changes. `Ctrl+C` during a save cancels the save and keeps the editor
 open. Very small terminals show a minimum-size message; `q` then quits only

@@ -209,6 +209,29 @@ func TestEditorOpensFileOfWrongKindAsFailure(t *testing.T) {
 	}
 }
 
+func TestNoteEditModeSeamlessUndoRedo(t *testing.T) {
+	h := newHarness(t, artifact.NoteKind)
+	h.typeText("Hello")
+	if !h.m.dirty() || h.m.bodyInput.Value() != "Hello" {
+		t.Fatalf("dirty=%t body=%q", h.m.dirty(), h.m.bodyInput.Value())
+	}
+
+	// Press Ctrl+Z with unsaved edits - should undo "Hello" seamlessly without error
+	h.key("ctrl+z")
+	if h.m.errMessage != "" || h.m.status == "Save or discard your edits before undo or redo" {
+		t.Fatalf("unexpected status %q or error %q", h.m.status, h.m.errMessage)
+	}
+	if h.m.bodyInput.Value() != "" {
+		t.Fatalf("after undo: body = %q, want empty", h.m.bodyInput.Value())
+	}
+
+	// Press Ctrl+R with unsaved edits - should redo "Hello" seamlessly
+	h.key("ctrl+r")
+	if h.m.bodyInput.Value() != "Hello" {
+		t.Fatalf("after redo: body = %q, want Hello", h.m.bodyInput.Value())
+	}
+}
+
 func TestNoteSaveStaysInEditorAndCloseQuits(t *testing.T) {
 	h := newHarness(t, artifact.NoteKind)
 	h.typeText("Hello")
