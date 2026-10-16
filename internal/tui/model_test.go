@@ -313,6 +313,10 @@ func TestViewSanitizesTerminalControlSequences(t *testing.T) {
 	if view := h.m.View(); strings.Contains(view, "\x1b]52;") || !strings.Contains(view, "Preview") {
 		t.Fatalf("preview = %q", view)
 	}
+	h.key("q")
+	if h.m.previewing {
+		t.Fatal("q did not exit preview mode")
+	}
 }
 
 func TestEditorRefusesNotesItWouldNormalize(t *testing.T) {

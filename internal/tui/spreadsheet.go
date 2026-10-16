@@ -200,8 +200,10 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		if m.pending {
 			m.cancelPending()
 			m.status, m.errMessage = "Cancelled", ""
+			return nil
 		}
-		return nil
+		m.cancelPending()
+		return tea.Quit
 	}
 	if m.pending {
 		m.status = "Working… (esc cancels)"
@@ -556,11 +558,11 @@ func (m *spreadsheetModel) View() string {
 		status = fmt.Sprintf("%d×%d", len(m.book.Sheets[m.sheet].Rows), len(m.book.Sheets[m.sheet].Rows[0]))
 	}
 	b.WriteString(runewidth.Truncate(sanitizeTerminalLine(status), m.width, "…") + "\n")
-	help := "arrows move • enter edit • del clear • f formulas • tab sheet • u undo • ctrl+r redo • r reload • q quit"
+	help := "arrows move • enter edit • del clear • f formulas • tab sheet • u undo • ctrl+r redo • r reload • esc/q quit"
 	if m.editing {
 		help = "enter save • esc cancel • =formula • 'literal"
 	} else if !m.loaded {
-		help = "r retry • q quit"
+		help = "r retry • esc/q quit"
 	}
 	b.WriteString(muted.Render(runewidth.Truncate(help, m.width, "…")))
 	return b.String()

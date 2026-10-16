@@ -478,7 +478,7 @@ func (m *Model) updateNoteKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	if m.previewing {
 		switch key {
-		case "esc", "f5":
+		case "esc", "f5", "q":
 			m.previewing = false
 		case "ctrl+c":
 			return m.requestClose()

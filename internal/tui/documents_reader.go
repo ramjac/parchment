@@ -226,7 +226,7 @@ func (s *documentsScreen) readerPageLabel() string {
 }
 
 func (s *documentsScreen) readerView(header string) string {
-	footer := "e edit  ↑/↓ scroll  ←/→ or [ ] page  { } section  v changes  u undo  Ctrl+R redo  q quit"
+	footer := "e edit  ↑/↓ scroll  ←/→ or [ ] page  { } section  v changes  u undo  Ctrl+R redo  esc/q quit"
 	if !s.wideReader() {
 		return header + "\nPage " + s.readerPageLabel() + "\n" + s.reader.View() + "\n" +
 			runewidth.Truncate(footer, max(s.width, 1), "…") + s.statusLine()
