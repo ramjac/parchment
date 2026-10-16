@@ -18,8 +18,8 @@ import (
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/tui/editor"
 	"example.com/parchment/internal/recovery"
+	"example.com/parchment/internal/tui/editor"
 )
 
 // newDocumentHarness opens the editor on a document file, creating it with
@@ -206,7 +206,7 @@ func TestDocumentChangeReviewScrollsAndBoundsChangeList(t *testing.T) {
 	if !sawCurrent || !sawProposed {
 		t.Fatal("scrolling did not reveal both document bodies")
 	}
-	if !strings.Contains(view, "a accept") || !strings.Contains(view, "Esc return") {
+	if !strings.Contains(view, "a accept") || !strings.Contains(view, "Esc/q return") {
 		t.Fatalf("review controls disappeared while scrolling:\n%s", view)
 	}
 	for _, label := range []string{"Header:", "Footer:", "Page numbers:"} {
@@ -258,7 +258,7 @@ func TestDocumentChangeReviewReflowsLongLinesOnResize(t *testing.T) {
 	if !sawCurrent || !sawProposed {
 		t.Fatal("reflowed review did not make the ends of both long lines inspectable")
 	}
-	if review := s.viewChanges("header"); !strings.Contains(review, "a accept") || !strings.Contains(review, "Esc return") {
+	if review := s.viewChanges("header"); !strings.Contains(review, "a accept") || !strings.Contains(review, "Esc/q return") {
 		t.Fatal("review controls disappeared after reflow")
 	}
 }

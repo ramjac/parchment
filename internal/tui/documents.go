@@ -11,8 +11,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/charmbracelet/bubbles/textinput"
 	"example.com/parchment/internal/tui/editor"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mattn/go-runewidth"
@@ -496,7 +496,7 @@ func (s *documentsScreen) updateChangesKey(msg tea.KeyMsg) tea.Cmd {
 	key := msg.String()
 	if s.reviewing {
 		switch key {
-		case "esc", "left":
+		case "esc", "left", "q":
 			s.reviewing = false
 		case "up", "down", "j", "k", "pgup", "pgdown", "home", "end":
 			s.changeReview, _ = s.changeReview.Update(msg)
@@ -523,7 +523,7 @@ func (s *documentsScreen) updateChangesKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	switch key {
-	case "esc", "left", "f4", "v":
+	case "esc", "left", "f4", "v", "q":
 		s.showChanges = false
 		if s.reading {
 			return nil
@@ -662,9 +662,9 @@ func (s *documentsScreen) viewChanges(header string) string {
 			b.WriteString(s.changeReview.View())
 			b.WriteString("\n\n")
 			if change.Status == document.ChangePending {
-				b.WriteString("a accept  ·  r reject  ·  ↑/↓ scroll  ·  PgUp/PgDn  ·  Esc return")
+				b.WriteString("a accept  ·  r reject  ·  ↑/↓ scroll  ·  PgUp/PgDn  ·  Esc/q return")
 			} else {
-				b.WriteString("↑/↓ scroll  ·  PgUp/PgDn  ·  Esc return")
+				b.WriteString("↑/↓ scroll  ·  PgUp/PgDn  ·  Esc/q return")
 			}
 		}
 	} else {
@@ -686,7 +686,7 @@ func (s *documentsScreen) viewChanges(header string) string {
 		if s.reading {
 			back = "the reader"
 		}
-		b.WriteString("\n↑/↓ select  Enter review  ·  Esc returns to " + back)
+		b.WriteString("\n↑/↓ select  Enter review  ·  Esc/q returns to " + back)
 	}
 	return b.String() + s.statusLine()
 }

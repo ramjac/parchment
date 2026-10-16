@@ -247,7 +247,6 @@ func TestEditorUndoAndRedo(t *testing.T) {
 		t.Fatalf("Ctrl+R failed: Value = %q, want %q", ed.Value(), "Hello World")
 	}
 }
-
 func TestEditorMouseWheelAndPageUpDown(t *testing.T) {
 	ed := New()
 	lines := make([]string, 30)

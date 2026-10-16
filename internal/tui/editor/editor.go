@@ -910,7 +910,7 @@ func (m Model) View() string {
 			isCursor := m.Focused && pt == m.Cursor && !hasSelection
 
 			charStr := string(r)
-			if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			if unicode.IsControl(r) && r != '\t' {
 				charStr = ""
 			}
 			if isSelected {

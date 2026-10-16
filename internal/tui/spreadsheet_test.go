@@ -222,8 +222,8 @@ func TestSpreadsheetTypingQWhileEditingDoesNotQuit(t *testing.T) {
 	if got := storedCell(t, service, id, 1, 1); got != (spreadsheet.Cell{Value: "q"}) {
 		t.Fatalf("cell = %#v", got)
 	}
-	if _, ok := driveSheet(t, m, sheetKey("q")).(tea.QuitMsg); !ok {
-		t.Fatal("q while browsing did not quit")
+	if _, ok := driveSheet(t, m, sheetKey("esc")).(tea.QuitMsg); !ok {
+		t.Fatal("esc while browsing did not quit")
 	}
 }
 

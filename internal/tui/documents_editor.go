@@ -320,9 +320,9 @@ func (s *documentsScreen) layoutEditor() {
 	if s.width == 0 {
 		return
 	}
-	s.body.SetWidth(max(s.width, 10))
-	// Header, state, toolbar, prompt line, status line, and a spare row.
-	s.body.SetHeight(max(s.height-s.toolbarRows()-5, 3))
+	s.body.SetWidth(max(s.width-4, 1))
+	// Header, state, toolbar, prompt line, status line, and border.
+	s.body.SetHeight(max(s.height-s.toolbarRows()-6, 1))
 }
 
 func (s *documentsScreen) editorDocument() document.Document {
@@ -460,9 +460,11 @@ func (s *documentsScreen) updateMouse(msg tea.MouseMsg) tea.Cmd {
 		}
 	}
 	editorY := msg.Y - (toolbarTop + s.toolbarRows() + 1)
-	if editorY >= 0 {
+	editorX := msg.X - 2
+	if editorY >= 0 && editorX >= 0 {
 		mouseMsg := msg
 		mouseMsg.Y = editorY
+		mouseMsg.X = editorX
 		var cmd tea.Cmd
 		s.body, cmd = s.body.Update(mouseMsg)
 		if msg.Action == tea.MouseActionPress {
@@ -790,11 +792,15 @@ func (s *documentsScreen) editorView(header string) string {
 		title := runewidth.Truncate("Print preview  ·  "+position+"  ·  ↑/↓ scroll  ·  ←/→ pages  ·  Esc returns", max(s.width, 1), "…")
 		return header + "\n" + title + "\n" + pageText(visible, max(s.width, 1))
 	}
-	var b strings.Builder
-	b.WriteString(header + "\n" + state + "\n" + s.toolbarView() + "\n")
+	var content strings.Builder
 	if s.prompt != promptNone {
-		b.WriteString(s.promptInput.View())
+		content.WriteString(s.promptInput.View() + "\n")
 	}
-	b.WriteString("\n" + s.body.View())
-	return b.String() + s.statusLine()
+	content.WriteString(s.body.View())
+
+	paneHeight := max(s.height-s.toolbarRows()-4, 3)
+	pane := lipgloss.NewStyle().Width(max(s.width, 10)).Height(paneHeight).
+		Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1).Render(content.String())
+
+	return header + "\n" + state + "\n" + s.toolbarView() + "\n" + pane + s.statusLine()
 }
