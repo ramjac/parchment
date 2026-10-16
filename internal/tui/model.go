@@ -487,7 +487,14 @@ func (m *Model) updateNoteKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	switch key {
-	case "esc", "ctrl+c":
+	case "ctrl+c":
+		if m.bodyInput.Selection.Active {
+			var cmd tea.Cmd
+			m.bodyInput, cmd = m.bodyInput.Update(msg)
+			return cmd
+		}
+		return m.requestClose()
+	case "esc":
 		return m.requestClose()
 	case "ctrl+s":
 		m.stopAutosave()

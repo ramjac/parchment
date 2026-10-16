@@ -45,6 +45,8 @@ type Model struct {
 	isDragging    bool
 }
 
+var internalClipboard string
+
 // New creates a new Model with default settings.
 func New() Model {
 	return Model{
@@ -575,17 +577,25 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 
 	case "ctrl+c":
 		if m.Selection.Active {
-			_ = clipboard.WriteAll(m.SelectedText())
+			text := m.SelectedText()
+			internalClipboard = text
+			_ = clipboard.WriteAll(text)
 		}
 
 	case "ctrl+x":
 		if m.Selection.Active {
-			_ = clipboard.WriteAll(m.SelectedText())
+			text := m.SelectedText()
+			internalClipboard = text
+			_ = clipboard.WriteAll(text)
 			m.DeleteSelection()
 		}
 
 	case "ctrl+v":
-		if text, err := clipboard.ReadAll(); err == nil && text != "" {
+		text, err := clipboard.ReadAll()
+		if err != nil || text == "" {
+			text = internalClipboard
+		}
+		if text != "" {
 			m.InsertString(text)
 		}
 

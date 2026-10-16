@@ -163,6 +163,11 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 func (m *presentationModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
 	key := msg.String()
 	if key == "ctrl+c" {
+		if m.editor.Selection.Active {
+			var cmd tea.Cmd
+			m.editor, cmd = m.editor.Update(msg)
+			return cmd
+		}
 		m.cancelPending()
 		return tea.Quit
 	}

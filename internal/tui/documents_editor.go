@@ -376,6 +376,11 @@ func (s *documentsScreen) updateEditorKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		return s.history(key == "ctrl+z")
 	case "ctrl+c":
+		if s.body.Selection.Active {
+			var cmd tea.Cmd
+			s.body, cmd = s.body.Update(msg)
+			return cmd
+		}
 		return s.requestClose("Esc")
 	case "esc":
 		if s.focus == focusToolbar {
@@ -670,8 +675,12 @@ func (s *documentsScreen) finishPrompt(kind promptKind, value string) tea.Cmd {
 		if value == "" {
 			return nil
 		}
-		s.insertText("[](" + value + ")")
-		s.moveLeft(len([]rune(value)) + 3)
+		if sel := s.body.SelectedText(); sel != "" {
+			s.body.InsertString("[" + sel + "](" + value + ")")
+		} else {
+			s.insertText("[](" + value + ")")
+			s.moveLeft(len([]rune(value)) + 3)
+		}
 		return s.focusBody()
 	case promptImage:
 		if value == "" {
@@ -712,18 +721,31 @@ func (s *documentsScreen) insertText(text string) {
 	s.body.InsertString(text)
 }
 
-// wrap inserts paired markers with the cursor between them.
+// wrap inserts paired markers with the cursor between them, or around selected text.
 func (s *documentsScreen) wrap(open, close string) {
-	s.insertText(open + close)
-	s.moveLeft(len([]rune(close)))
+	s.prepareBody()
+	if sel := s.body.SelectedText(); sel != "" {
+		s.body.InsertString(open + sel + close)
+	} else {
+		s.body.InsertString(open + close)
+		s.moveLeft(len([]rune(close)))
+	}
 }
 
-// linePrefix starts the current line with a Markdown marker.
+// linePrefix starts the current line (or selected lines) with a Markdown marker.
 func (s *documentsScreen) linePrefix(prefix string) {
 	s.prepareBody()
-	s.body.Cursor.Col = 0
-	s.body.StickyCol = 0
-	s.body.InsertString(prefix)
+	if sel := s.body.SelectedText(); sel != "" {
+		lines := strings.Split(sel, "\n")
+		for i, l := range lines {
+			lines[i] = prefix + l
+		}
+		s.body.InsertString(strings.Join(lines, "\n"))
+	} else {
+		s.body.Cursor.Col = 0
+		s.body.StickyCol = 0
+		s.body.InsertString(prefix)
+	}
 }
 
 // insertBlock places a block on its own paragraph.
