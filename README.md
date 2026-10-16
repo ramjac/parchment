@@ -230,13 +230,13 @@ An existing document opens in a reader: an outline of its headings sits beside
 the rendered printed pages (only the pages on narrow terminals). `↑`/`↓` scroll
 and continue onto the neighbouring page, `←`/`→` or `[`/`]` change pages,
 `{`/`}` move between sections, clicking an outline entry jumps to it, `v`
-lists proposals, `u`/`Ctrl+R` undo and redo, and `q` quits. Press `e` to edit;
+lists proposals, `u`/`Ctrl+R` undo and redo, and `Esc` or `q` quits. Press `e` to edit;
 `Esc` in the editor returns to the reader, asking first when there are unsaved
 changes. New documents and restored drafts open directly in the editor.
 
 Spreadsheets open as a grid: use arrow keys to select a cell, `Enter` to edit,
 `=` to enter a formula, and `u`/`Ctrl+R` for undo/redo. Presentations open as
-slides with an editable Markdown source. Press `q` to quit either editor.
+slides with an editable Markdown source. Press `Esc` or `q` to quit either viewer.
 
 While editing a note or document, Parchment autosaves recovery drafts every couple of seconds to
 `~/.parchment/recovery/`, never next to the artifact. Saving, proposing, or

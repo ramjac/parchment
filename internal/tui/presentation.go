@@ -209,8 +209,10 @@ func (m *presentationModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		if m.pending {
 			m.cancelPending()
 			m.status, m.errMessage = "Cancelled", ""
+			return nil
 		}
-		return nil
+		m.cancelPending()
+		return tea.Quit
 	}
 	if m.pending {
 		m.status = "Working… (esc cancels)"
@@ -527,11 +529,11 @@ func (m *presentationModel) View() string {
 		}
 	}
 	b.WriteString(runewidth.Truncate(sanitizeTerminalLine(status), m.width, "…") + "\n")
-	help := "←/→ slide • ↑/↓ scroll • e edit • s notes • u undo • ctrl+r redo • r reload • q quit"
+	help := "←/→ slide • ↑/↓ scroll • e edit • s notes • u undo • ctrl+r redo • r reload • esc/q quit"
 	if m.editing {
 		help = "ctrl+s save • esc cancel • ctrl+c quit"
 	} else if !m.loaded {
-		help = "r retry • q quit"
+		help = "r retry • esc/q quit"
 	}
 	b.WriteString(muted.Render(runewidth.Truncate(help, m.width, "…")))
 	return b.String()

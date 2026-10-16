@@ -477,7 +477,7 @@ func (m *Model) updateNoteKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	if m.previewing {
 		switch key {
-		case "esc", "f5":
+		case "esc", "f5", "q":
 			m.previewing = false
 		case "ctrl+c":
 			return m.requestClose()
@@ -605,7 +605,7 @@ func (m Model) View() string {
 		state += " • unsaved"
 	}
 	if m.previewing {
-		return header + "\nPreview  ·  ↑/↓ scroll  ·  Esc returns to the editor\n" + m.preview.View() + m.statusLine()
+		return header + "\nPreview  ·  ↑/↓ scroll  ·  Esc/q returns to the editor\n" + m.preview.View() + m.statusLine()
 	}
 	return header + "\n" + state + "  ·  Ctrl+S saves  ·  F5 preview  ·  Ctrl+Z/Ctrl+R undo/redo  ·  Esc quits\n\n" +
 		m.bodyInput.View() + m.statusLine()

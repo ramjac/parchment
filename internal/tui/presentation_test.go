@@ -127,8 +127,8 @@ func TestPresentationViewNavigatesSlidesAndNotes(t *testing.T) {
 	if m.page != 0 {
 		t.Fatalf("navigation passed title page: %d", m.page)
 	}
-	if _, ok := drivePresentation(t, m, sheetKey("q")).(tea.QuitMsg); !ok {
-		t.Fatal("q did not quit")
+	if _, ok := drivePresentation(t, m, sheetKey("esc")).(tea.QuitMsg); !ok {
+		t.Fatal("esc did not quit")
 	}
 }
 
