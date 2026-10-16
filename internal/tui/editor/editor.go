@@ -684,7 +684,7 @@ func (m Model) View() string {
 			pt := Point{Line: lineIdx, Col: realCol}
 
 			if realCol >= len(lineRunes) {
-				isCursor := m.Focused && lineIdx == m.Cursor.Line && realCol == m.Cursor.Col
+				isCursor := m.Focused && lineIdx == m.Cursor.Line && realCol == m.Cursor.Col && !hasSelection
 				isLineBreakSelected := hasSelection && (pointLess(start, pt) || start == pt) && pointLess(pt, end)
 
 				if isCursor {
@@ -697,16 +697,16 @@ func (m Model) View() string {
 
 			r := lineRunes[realCol]
 			isSelected := hasSelection && (pointLess(start, pt) || start == pt) && pointLess(pt, end)
-			isCursor := m.Focused && pt == m.Cursor
+			isCursor := m.Focused && pt == m.Cursor && !hasSelection
 
 			charStr := string(r)
 			if unicode.IsControl(r) && r != '\t' {
 				charStr = ""
 			}
-			if isCursor {
-				charStr = lipgloss.NewStyle().Reverse(true).Render(charStr)
-			} else if isSelected {
+			if isSelected {
 				charStr = m.SelectStyle.Render(charStr)
+			} else if isCursor {
+				charStr = lipgloss.NewStyle().Reverse(true).Render(charStr)
 			}
 
 			sb.WriteString(charStr)
