@@ -208,6 +208,45 @@ func TestEditorDoubleTripleClick(t *testing.T) {
 	}
 }
 
+func TestEditorMouseWheelAndPageUpDown(t *testing.T) {
+	ed := New()
+	lines := make([]string, 30)
+	for i := range lines {
+		lines[i] = "line"
+	}
+	ed.SetValue(strings.Join(lines, "\n"))
+	ed.SetWidth(20)
+	ed.SetHeight(10)
+	ed.Focus()
+
+	// Mouse wheel down
+	ed.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	if ed.TopLine != 3 {
+		t.Fatalf("TopLine after WheelDown = %d, want 3", ed.TopLine)
+	}
+	if ed.Selection.Active {
+		t.Fatalf("WheelDown should not activate selection")
+	}
+
+	// Mouse wheel up
+	ed.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp})
+	if ed.TopLine != 0 {
+		t.Fatalf("TopLine after WheelUp = %d, want 0", ed.TopLine)
+	}
+
+	// PgDn
+	ed.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	if ed.Cursor.Line != 10 {
+		t.Fatalf("Cursor.Line after PgDn = %d, want 10", ed.Cursor.Line)
+	}
+
+	// PgUp
+	ed.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	if ed.Cursor.Line != 0 {
+		t.Fatalf("Cursor.Line after PgUp = %d, want 0", ed.Cursor.Line)
+	}
+}
+
 func TestEditorViewRendering(t *testing.T) {
 	ed := New()
 	ed.SetValue("Hello")

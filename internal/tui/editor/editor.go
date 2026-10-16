@@ -367,6 +367,29 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 }
 
 func (m *Model) handleMouse(msg tea.MouseMsg) {
+	if msg.Button == tea.MouseButtonWheelUp {
+		if m.TopLine > 0 {
+			m.TopLine -= 3
+			if m.TopLine < 0 {
+				m.TopLine = 0
+			}
+		}
+		return
+	}
+	if msg.Button == tea.MouseButtonWheelDown {
+		maxTop := len(m.Lines) - m.Height
+		if maxTop < 0 {
+			maxTop = 0
+		}
+		if m.TopLine < maxTop {
+			m.TopLine += 3
+			if m.TopLine > maxTop {
+				m.TopLine = maxTop
+			}
+		}
+		return
+	}
+
 	if msg.Y < 0 {
 		return
 	}
@@ -520,6 +543,36 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 			}
 		}
 		m.StickyCol = m.Cursor.Col
+
+	case "pgup", "shift+pgup":
+		m.Cursor.Line -= m.Height
+		if m.Cursor.Line < 0 {
+			m.Cursor.Line = 0
+		}
+		lineLen := len(m.Lines[m.Cursor.Line])
+		if m.StickyCol > lineLen {
+			m.Cursor.Col = lineLen
+		} else {
+			m.Cursor.Col = m.StickyCol
+		}
+		if !shift {
+			m.Selection = Selection{Anchor: m.Cursor, Active: false}
+		}
+
+	case "pgdown", "shift+pgdown":
+		m.Cursor.Line += m.Height
+		if m.Cursor.Line >= len(m.Lines) {
+			m.Cursor.Line = len(m.Lines) - 1
+		}
+		lineLen := len(m.Lines[m.Cursor.Line])
+		if m.StickyCol > lineLen {
+			m.Cursor.Col = lineLen
+		} else {
+			m.Cursor.Col = m.StickyCol
+		}
+		if !shift {
+			m.Selection = Selection{Anchor: m.Cursor, Active: false}
+		}
 
 	case "up", "shift+up":
 		if m.Cursor.Line > 0 {
