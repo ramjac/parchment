@@ -17,9 +17,9 @@ import (
 
 const (
 	spreadsheetColumnWidth = 12
-	// spreadsheetChromeLines counts the title, formula bar, column header,
+	// spreadsheetChromeLines counts the title, formula bar, top/bottom border, column header,
 	// status, and help lines surrounding the grid.
-	spreadsheetChromeLines = 5
+	spreadsheetChromeLines = 7
 )
 
 type spreadsheetLoadedMsg struct {
@@ -152,10 +152,11 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				if msg.Y == 1 {
 					m.input.SetCursor(max(msg.X-len(spreadsheet.CellName(m.row+1, m.column+1))-3, 0))
 				}
-			} else if m.loaded && msg.Y >= 3 && msg.Y < 3+m.visibleRows() {
-				column := (msg.X - m.rowHeaderWidth() - 1) / (spreadsheetColumnWidth + 1)
-				if msg.X > m.rowHeaderWidth() && column >= 0 && column < m.visibleColumns() {
-					m.row = min(m.rowOffset+msg.Y-3, spreadsheet.MaxRows-1)
+			} else if m.loaded && msg.Y >= 4 && msg.Y < 4+m.visibleRows() {
+				gridX := msg.X - 2
+				column := (gridX - m.rowHeaderWidth() - 1) / (spreadsheetColumnWidth + 1)
+				if gridX > m.rowHeaderWidth() && column >= 0 && column < m.visibleColumns() {
+					m.row = min(m.rowOffset+msg.Y-4, spreadsheet.MaxRows-1)
 					m.column = min(m.columnOffset+column, spreadsheet.MaxColumns-1)
 					m.scrollToSelection()
 				}
@@ -461,7 +462,7 @@ func (m *spreadsheetModel) visibleRows() int {
 }
 
 func (m *spreadsheetModel) visibleColumns() int {
-	return max(1, (m.width-m.rowHeaderWidth())/(spreadsheetColumnWidth+1))
+	return max(1, (m.width-4-m.rowHeaderWidth())/(spreadsheetColumnWidth+1))
 }
 
 func (m *spreadsheetModel) scrollToSelection() {
@@ -517,29 +518,38 @@ func (m *spreadsheetModel) View() string {
 		b.WriteString(runewidth.Truncate(reference+" │ "+sanitizeTerminalLine(cellDraft(m.cell(m.row, m.column))), m.width, "…") + "\n")
 	}
 
+	var gridBuf strings.Builder
 	rowWidth := m.rowHeaderWidth()
 	columns := m.visibleColumns()
 	line := strings.Repeat(" ", rowWidth)
 	for c := m.columnOffset; c < m.columnOffset+columns && c < spreadsheet.MaxColumns; c++ {
 		line += " " + fitCell(columnName(c), spreadsheetColumnWidth)
 	}
-	b.WriteString(muted.Render(line) + "\n")
+	gridBuf.WriteString(muted.Render(line) + "\n")
 
 	for r := m.rowOffset; r < m.rowOffset+m.visibleRows(); r++ {
 		if r >= spreadsheet.MaxRows {
-			b.WriteString("\n")
+			gridBuf.WriteString("\n")
 			continue
 		}
-		b.WriteString(muted.Render(fmt.Sprintf("%*d", rowWidth, r+1)))
+		gridBuf.WriteString(muted.Render(fmt.Sprintf("%*d", rowWidth, r+1)))
 		for c := m.columnOffset; c < m.columnOffset+columns && c < spreadsheet.MaxColumns; c++ {
 			text := fitCell(m.displayValue(r, c), spreadsheetColumnWidth)
 			if r == m.row && c == m.column {
 				text = selected.Render(text)
 			}
-			b.WriteString(" " + text)
+			gridBuf.WriteString(" " + text)
 		}
-		b.WriteString("\n")
+		if r < m.rowOffset+m.visibleRows()-1 {
+			gridBuf.WriteString("\n")
+		}
 	}
+
+	paneHeight := max(m.height-4, 3)
+	pane := lipgloss.NewStyle().Width(max(m.width, 20)).Height(paneHeight).
+		Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1).Render(gridBuf.String())
+
+	b.WriteString(pane + "\n")
 
 	status := m.status
 	if m.errMessage != "" {

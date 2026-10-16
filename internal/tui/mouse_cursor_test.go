@@ -38,7 +38,7 @@ func TestPresentationClickPositionsSourceCursor(t *testing.T) {
 	m.beginEdit()
 	m.editor.SetValue("alpha\nbravo")
 	m.editor.Focus()
-	m.Update(tea.MouseMsg{X: 2, Y: 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m.Update(tea.MouseMsg{X: 4, Y: 3, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	m.editor.InsertRune('!')
 	if m.editor.Value() != "alpha\nbr!avo" {
 		t.Fatalf("presentation click positioned cursor at %q", m.editor.Value())
@@ -52,12 +52,12 @@ func TestPresentationClickPositionsSourceCursor(t *testing.T) {
 
 func TestSpreadsheetClickSelectsCellAndPositionsInput(t *testing.T) {
 	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "One"}, {Value: "Two"}}})
-	m.Update(tea.MouseMsg{X: m.rowHeaderWidth() + spreadsheetColumnWidth + 3, Y: 3,
+	m.Update(tea.MouseMsg{X: 2 + m.rowHeaderWidth() + spreadsheetColumnWidth + 3, Y: 4,
 		Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	if m.column != 1 || m.row != 0 {
 		t.Fatalf("clicked cell selected row=%d column=%d", m.row, m.column)
 	}
-	m.Update(tea.MouseMsg{X: 0, Y: 3, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m.Update(tea.MouseMsg{X: 0, Y: 4, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	if m.column != 1 || m.row != 0 {
 		t.Fatalf("row-header click selected row=%d column=%d", m.row, m.column)
 	}

@@ -351,6 +351,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.stage == stageNote && !m.pending && !m.previewing {
 		mouseMsg := msg
 		mouseMsg.Y = msg.Y - 3
+		mouseMsg.X = msg.X - 2
 		var cmd tea.Cmd
 		m.bodyInput, cmd = m.bodyInput.Update(mouseMsg)
 		return m, cmd
@@ -604,11 +605,16 @@ func (m Model) View() string {
 	if m.dirty() {
 		state += " • unsaved"
 	}
-	if m.previewing {
-		return header + "\nPreview  ·  ↑/↓ scroll  ·  Esc/q returns to the editor\n" + m.preview.View() + m.statusLine()
+	pane := func(content string) string {
+		return lipgloss.NewStyle().Width(max(m.width, 10)).Height(max(m.height-4, 3)).
+			Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1).Render(content)
 	}
-	return header + "\n" + state + "  ·  Ctrl+S saves  ·  F5 preview  ·  Ctrl+Z/Ctrl+R undo/redo  ·  Esc quits\n\n" +
-		m.bodyInput.View() + m.statusLine()
+	if m.previewing {
+		return header + "\nPreview  ·  ↑/↓ scroll  ·  Esc returns to the editor\n" +
+			pane(m.preview.View()) + m.statusLine()
+	}
+	return header + "\n" + state + "  ·  Ctrl+S saves  ·  F5 preview  ·  Ctrl+Z/Ctrl+R undo/redo  ·  Esc quits\n" +
+		pane(m.bodyInput.View()) + m.statusLine()
 }
 
 func (m Model) tooSmall() bool { return m.width < 40 || m.height < 10 }
