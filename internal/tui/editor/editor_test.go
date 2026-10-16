@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -90,6 +91,77 @@ func TestEditorWordNavigationAndDeletion(t *testing.T) {
 	}
 }
 
+func TestEditorShiftSelectionAndCollapse(t *testing.T) {
+	ed := New()
+	ed.SetValue("Hello World")
+	ed.Focus()
+
+	// Shift+Right 5 times -> select "Hello"
+	for range 5 {
+		ed.Update(tea.KeyMsg{Type: tea.KeyShiftRight})
+	}
+	if !ed.Selection.Active {
+		t.Fatalf("Selection should be active after Shift+Right")
+	}
+	if sel := ed.SelectedText(); sel != "Hello" {
+		t.Fatalf("SelectedText() = %q, want %q", sel, "Hello")
+	}
+
+	// Unshifted Left moves to start (0) and collapses
+	ed.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	if ed.Selection.Active {
+		t.Fatalf("Selection should collapse on unshifted Left")
+	}
+	if ed.Cursor.Col != 0 {
+		t.Fatalf("Cursor.Col = %d, want 0", ed.Cursor.Col)
+	}
+
+	// Select again
+	for range 5 {
+		ed.Update(tea.KeyMsg{Type: tea.KeyShiftRight})
+	}
+	// Unshifted Right moves to end (5) and collapses
+	ed.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if ed.Selection.Active {
+		t.Fatalf("Selection should collapse on unshifted Right")
+	}
+	if ed.Cursor.Col != 5 {
+		t.Fatalf("Cursor.Col = %d, want 5", ed.Cursor.Col)
+	}
+}
+
+func TestEditorDestructiveOperations(t *testing.T) {
+	// Enter replaces selection
+	ed := New()
+	ed.SetValue("Hello World")
+	ed.Selection = Selection{Anchor: Point{Line: 0, Col: 5}, Active: true}
+	ed.Cursor = Point{Line: 0, Col: 11}
+	ed.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if ed.Value() != "Hello\n" {
+		t.Fatalf("Value() after Enter = %q, want %q", ed.Value(), "Hello\n")
+	}
+
+	// Tab replaces selection with two spaces
+	ed = New()
+	ed.SetValue("Hello World")
+	ed.Selection = Selection{Anchor: Point{Line: 0, Col: 5}, Active: true}
+	ed.Cursor = Point{Line: 0, Col: 11}
+	ed.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if ed.Value() != "Hello  " {
+		t.Fatalf("Value() after Tab = %q, want %q", ed.Value(), "Hello  ")
+	}
+
+	// Backspace deletes selection
+	ed = New()
+	ed.SetValue("Hello World")
+	ed.Selection = Selection{Anchor: Point{Line: 0, Col: 0}, Active: true}
+	ed.Cursor = Point{Line: 0, Col: 6}
+	ed.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if ed.Value() != "World" {
+		t.Fatalf("Value() after Backspace = %q, want %q", ed.Value(), "World")
+	}
+}
+
 func TestEditorMouseClickAndSelection(t *testing.T) {
 	ed := New()
 	ed.SetValue("Hello World\nSecond Line")
@@ -173,5 +245,65 @@ func TestEditorUndoAndRedo(t *testing.T) {
 	ed.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
 	if ed.Value() != "Hello World" {
 		t.Fatalf("Ctrl+R failed: Value = %q, want %q", ed.Value(), "Hello World")
+	}
+}
+
+func TestEditorMouseWheelAndPageUpDown(t *testing.T) {
+	ed := New()
+	lines := make([]string, 30)
+	for i := range lines {
+		lines[i] = "line"
+	}
+	ed.SetValue(strings.Join(lines, "\n"))
+	ed.SetWidth(20)
+	ed.SetHeight(10)
+	ed.Focus()
+
+	// Mouse wheel down
+	ed.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	if ed.TopLine != 3 {
+		t.Fatalf("TopLine after WheelDown = %d, want 3", ed.TopLine)
+	}
+	if ed.Selection.Active {
+		t.Fatalf("WheelDown should not activate selection")
+	}
+
+	// Mouse wheel up
+	ed.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp})
+	if ed.TopLine != 0 {
+		t.Fatalf("TopLine after WheelUp = %d, want 0", ed.TopLine)
+	}
+
+	// PgDn
+	ed.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	if ed.Cursor.Line != 10 {
+		t.Fatalf("Cursor.Line after PgDn = %d, want 10", ed.Cursor.Line)
+	}
+
+	// PgUp
+	ed.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	if ed.Cursor.Line != 0 {
+		t.Fatalf("Cursor.Line after PgUp = %d, want 0", ed.Cursor.Line)
+	}
+}
+
+func TestEditorViewRendering(t *testing.T) {
+	ed := New()
+	ed.SetValue("Hello")
+	ed.SetWidth(10)
+	ed.SetHeight(2)
+	ed.Focus()
+
+	view := ed.View()
+	if !strings.Contains(view, "Hello") {
+		t.Fatalf("View() missing text: %q", view)
+	}
+
+	// Select "ell"
+	ed.Selection = Selection{Anchor: Point{Line: 0, Col: 1}, Active: true}
+	ed.Cursor = Point{Line: 0, Col: 4}
+	selectedView := ed.View()
+	if selectedView == "" {
+		t.Fatalf("View() with selection returned empty")
 	}
 }

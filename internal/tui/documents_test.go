@@ -18,6 +18,7 @@ import (
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
+	"example.com/parchment/internal/tui/editor"
 	"example.com/parchment/internal/recovery"
 )
 
@@ -306,6 +307,20 @@ func TestAltFormattingFromToolbarFocusesBody(t *testing.T) {
 	}
 	if s.body.Value() != "**x**" {
 		t.Fatalf("body = %q", s.body.Value())
+	}
+}
+
+func TestToolbarFormattingOnSelectedText(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{})
+	s := h.m.documents
+	s.body.SetValue("Hello World")
+	s.body.Selection = editor.Selection{Anchor: editor.Point{Line: 0, Col: 6}, Active: true}
+	s.body.Cursor = editor.Point{Line: 0, Col: 11}
+
+	// Alt+B triggers "bold" toolbar action
+	h.send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b"), Alt: true})
+	if s.body.Value() != "Hello **World**" {
+		t.Fatalf("body after bolding selection = %q, want %q", s.body.Value(), "Hello **World**")
 	}
 }
 

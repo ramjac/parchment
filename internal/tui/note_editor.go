@@ -33,7 +33,6 @@ type noteEditor struct {
 func newNoteEditor() noteEditor {
 	body := editor.New()
 	body.Placeholder = "Write Markdown…"
-	body.ShowLineNums = false
 	return noteEditor{
 		bodyInput: body,
 		preview:   viewport.New(0, 0),
@@ -72,9 +71,9 @@ func (n *noteEditor) resizePreview(width, height int) {
 }
 
 func (n *noteEditor) resizeEditors(width, height int) {
-	inputWidth := max(width-8, 20)
+	inputWidth := max(width, 10)
 	n.bodyInput.SetWidth(inputWidth)
-	n.bodyInput.SetHeight(max(height-5, 3))
+	n.bodyInput.SetHeight(max(height-4, 3))
 	if n.previewing {
 		n.resizePreview(width, height)
 	}

@@ -74,13 +74,13 @@ type presentationModel struct {
 }
 
 func newPresentationModel(service *presentation.Service, path string) *presentationModel {
-	ed := editor.New()
-	ed.ShowLineNums = true
+	body := editor.New()
+	body.ShowLineNums = true
 	return &presentationModel{
 		service: service,
 		path:    path,
 		presentationEditorState: presentationEditorState{
-			editor: ed,
+			editor: body,
 		},
 		presentationOpState: presentationOpState{
 			newOperationContext: func() (context.Context, context.CancelFunc) {
@@ -145,12 +145,11 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.updateBrowseKey(msg)
 	case tea.MouseMsg:
 		if m.editing && !m.pending {
-			mouseY := msg.Y - 1
-			if mouseY >= 0 {
-				mouseMsg := msg
-				mouseMsg.Y = mouseY
-				m.editor, _ = m.editor.Update(mouseMsg)
-			}
+			mouseMsg := msg
+			mouseMsg.Y = msg.Y - 1
+			var cmd tea.Cmd
+			m.editor, cmd = m.editor.Update(mouseMsg)
+			return m, cmd
 		}
 		return m, nil
 	}
@@ -165,6 +164,11 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 func (m *presentationModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
 	key := msg.String()
 	if key == "ctrl+c" {
+		if m.editor.Selection.Active {
+			var cmd tea.Cmd
+			m.editor, cmd = m.editor.Update(msg)
+			return cmd
+		}
 		m.cancelPending()
 		return tea.Quit
 	}
@@ -280,13 +284,12 @@ func (m *presentationModel) beginEdit() tea.Cmd {
 }
 
 func (m *presentationModel) moveEditorToLine(line int) {
-	if line < 0 {
-		line = 0
+	if len(m.editor.Lines) > 0 {
+		m.editor.Cursor.Line = min(max(line, 0), len(m.editor.Lines)-1)
+	} else {
+		m.editor.Cursor.Line = 0
 	}
-	if line >= len(m.editor.Lines) {
-		line = len(m.editor.Lines) - 1
-	}
-	m.editor.Cursor = editor.Point{Line: line, Col: 0}
+	m.editor.Cursor.Col = 0
 	m.editor.StickyCol = 0
 }
 

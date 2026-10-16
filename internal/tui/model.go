@@ -8,7 +8,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -492,7 +491,14 @@ func (m *Model) updateNoteKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	switch key {
-	case "esc", "ctrl+c":
+	case "ctrl+c":
+		if m.bodyInput.Selection.Active {
+			var cmd tea.Cmd
+			m.bodyInput, cmd = m.bodyInput.Update(msg)
+			return cmd
+		}
+		return m.requestClose()
+	case "esc":
 		return m.requestClose()
 	case "ctrl+s":
 		m.stopAutosave()
@@ -712,7 +718,7 @@ func (m Model) dirty() bool {
 func sanitizeTerminalLine(value string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
-			return '�'
+			return '\uFFFD'
 		}
 		return r
 	}, value)
@@ -721,7 +727,7 @@ func sanitizeTerminalLine(value string) string {
 func sanitizeTerminalText(value string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) && r != '\n' {
-			return '�'
+			return '\uFFFD'
 		}
 		return r
 	}, value)
@@ -739,13 +745,4 @@ func Run(ctx context.Context, config Config) error {
 	program := tea.NewProgram(&model, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx))
 	_, err := program.Run()
 	return err
-}
-
-// sanitizeTextareaView replaces control characters in a textarea copy that is
-// only rendered, leaving the canonical editor value untouched.
-func sanitizeTextareaView(editor *textarea.Model) {
-	value := editor.Value()
-	if sanitized := sanitizeTerminalText(value); sanitized != value {
-		editor.SetValue(sanitized)
-	}
 }
