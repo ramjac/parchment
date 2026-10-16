@@ -22,6 +22,19 @@ type Selection struct {
 	Active bool
 }
 
+type editKind int
+
+const (
+	editNone editKind = iota
+	editTyping
+	editOther
+)
+
+type editorSnapshot struct {
+	Lines  [][]rune
+	Cursor Point
+}
+
 // Model is a line-based rune buffer text editor with micro-style visual selections.
 type Model struct {
 	Lines        [][]rune
@@ -37,6 +50,11 @@ type Model struct {
 	ShowLineNums bool
 	Style        lipgloss.Style
 	SelectStyle  lipgloss.Style
+
+	// Undo/Redo history
+	undoStack    []editorSnapshot
+	redoStack    []editorSnapshot
+	lastEditType editKind
 
 	// Mouse click tracking for double/triple click detection
 	lastClickTime time.Time
@@ -58,6 +76,79 @@ func New() Model {
 	}
 }
 
+func cloneLines(lines [][]rune) [][]rune {
+	out := make([][]rune, len(lines))
+	for i, l := range lines {
+		out[i] = append([]rune(nil), l...)
+	}
+	return out
+}
+
+func (m *Model) saveSnapshot() {
+	m.undoStack = append(m.undoStack, editorSnapshot{
+		Lines:  cloneLines(m.Lines),
+		Cursor: m.Cursor,
+	})
+	if len(m.undoStack) > 200 {
+		m.undoStack = append([]editorSnapshot(nil), m.undoStack[len(m.undoStack)-200:]...)
+	}
+	m.redoStack = nil
+}
+
+// CanUndo reports whether an undo operation is available.
+func (m Model) CanUndo() bool {
+	return len(m.undoStack) > 0
+}
+
+// CanRedo reports whether a redo operation is available.
+func (m Model) CanRedo() bool {
+	return len(m.redoStack) > 0
+}
+
+// Undo restores the buffer to the previous snapshot state.
+func (m *Model) Undo() bool {
+	if len(m.undoStack) == 0 {
+		return false
+	}
+	m.lastEditType = editNone
+	m.redoStack = append(m.redoStack, editorSnapshot{
+		Lines:  cloneLines(m.Lines),
+		Cursor: m.Cursor,
+	})
+	snap := m.undoStack[len(m.undoStack)-1]
+	m.undoStack = m.undoStack[:len(m.undoStack)-1]
+
+	m.Lines = snap.Lines
+	m.Cursor = snap.Cursor
+	m.StickyCol = snap.Cursor.Col
+	m.Selection = Selection{Anchor: m.Cursor, Active: false}
+	m.clampCursor()
+	m.ensureCursorVisible()
+	return true
+}
+
+// Redo reapplies the most recently undone edit state.
+func (m *Model) Redo() bool {
+	if len(m.redoStack) == 0 {
+		return false
+	}
+	m.lastEditType = editNone
+	m.undoStack = append(m.undoStack, editorSnapshot{
+		Lines:  cloneLines(m.Lines),
+		Cursor: m.Cursor,
+	})
+	snap := m.redoStack[len(m.redoStack)-1]
+	m.redoStack = m.redoStack[:len(m.redoStack)-1]
+
+	m.Lines = snap.Lines
+	m.Cursor = snap.Cursor
+	m.StickyCol = snap.Cursor.Col
+	m.Selection = Selection{Anchor: m.Cursor, Active: false}
+	m.clampCursor()
+	m.ensureCursorVisible()
+	return true
+}
+
 // SetValue loads text into the editor lines.
 func (m *Model) SetValue(text string) {
 	lines := strings.Split(text, "\n")
@@ -70,6 +161,9 @@ func (m *Model) SetValue(text string) {
 	m.Selection = Selection{}
 	m.TopLine = 0
 	m.LeftCol = 0
+	m.undoStack = nil
+	m.redoStack = nil
+	m.lastEditType = editNone
 }
 
 // Value returns the canonical string content of the buffer.
@@ -205,6 +299,9 @@ func (m *Model) DeleteSelection() bool {
 		m.Selection.Active = false
 		return false
 	}
+	m.saveSnapshot()
+	m.lastEditType = editOther
+
 	if start.Line == end.Line {
 		m.Lines[start.Line] = append(m.Lines[start.Line][:start.Col], m.Lines[start.Line][end.Col:]...)
 	} else {
@@ -226,7 +323,17 @@ func (m *Model) DeleteSelection() bool {
 
 // InsertRune inserts a rune at cursor position, deleting selection first if active.
 func (m *Model) InsertRune(r rune) {
-	m.DeleteSelection()
+	if m.Selection.Active && m.Selection.Anchor != m.Cursor {
+		m.DeleteSelection()
+	} else {
+		if m.lastEditType != editTyping || unicode.IsSpace(r) || unicode.IsPunct(r) {
+			m.saveSnapshot()
+		}
+		m.lastEditType = editTyping
+		if unicode.IsSpace(r) || unicode.IsPunct(r) {
+			m.lastEditType = editNone
+		}
+	}
 	line := m.Lines[m.Cursor.Line]
 	col := m.Cursor.Col
 	line = append(line[:col], append([]rune{r}, line[col:]...)...)
@@ -239,19 +346,34 @@ func (m *Model) InsertRune(r rune) {
 
 // InsertString inserts multiple lines/characters at cursor position.
 func (m *Model) InsertString(s string) {
-	m.DeleteSelection()
+	if m.Selection.Active && m.Selection.Anchor != m.Cursor {
+		m.DeleteSelection()
+	} else {
+		m.saveSnapshot()
+		m.lastEditType = editOther
+	}
 	runes := []rune(s)
 	for _, r := range runes {
 		if r == '\n' {
-			m.insertNewline()
+			m.insertNewlineWithoutSnapshot()
 		} else {
-			m.InsertRune(r)
+			m.insertRuneWithoutSnapshot(r)
 		}
 	}
 }
 
-func (m *Model) insertNewline() {
-	m.DeleteSelection()
+func (m *Model) insertRuneWithoutSnapshot(r rune) {
+	line := m.Lines[m.Cursor.Line]
+	col := m.Cursor.Col
+	line = append(line[:col], append([]rune{r}, line[col:]...)...)
+	m.Lines[m.Cursor.Line] = line
+	m.Cursor.Col++
+	m.StickyCol = m.Cursor.Col
+	m.Selection = Selection{Anchor: m.Cursor, Active: false}
+	m.ensureCursorVisible()
+}
+
+func (m *Model) insertNewlineWithoutSnapshot() {
 	current := m.Lines[m.Cursor.Line]
 	left := append([]rune{}, current[:m.Cursor.Col]...)
 	right := append([]rune{}, current[m.Cursor.Col:]...)
@@ -268,6 +390,16 @@ func (m *Model) insertNewline() {
 	m.StickyCol = 0
 	m.Selection = Selection{Anchor: m.Cursor, Active: false}
 	m.ensureCursorVisible()
+}
+
+func (m *Model) insertNewline() {
+	if m.Selection.Active && m.Selection.Anchor != m.Cursor {
+		m.DeleteSelection()
+	} else {
+		m.saveSnapshot()
+		m.lastEditType = editOther
+	}
+	m.insertNewlineWithoutSnapshot()
 }
 
 func (m *Model) clampCursor() {
@@ -367,6 +499,7 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 }
 
 func (m *Model) handleMouse(msg tea.MouseMsg) {
+	m.lastEditType = editNone
 	if msg.Button == tea.MouseButtonWheelUp {
 		if m.TopLine > 0 {
 			m.TopLine -= 3
@@ -509,6 +642,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 
 	switch keyStr {
 	case "left", "shift+left":
+		m.lastEditType = editNone
 		if !shift && m.Selection.Active {
 			start, _, _ := m.SelectedSpan()
 			m.Cursor = start
@@ -527,6 +661,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 		m.StickyCol = m.Cursor.Col
 
 	case "right", "shift+right":
+		m.lastEditType = editNone
 		if !shift && m.Selection.Active {
 			_, end, _ := m.SelectedSpan()
 			m.Cursor = end
@@ -545,6 +680,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 		m.StickyCol = m.Cursor.Col
 
 	case "pgup", "shift+pgup":
+		m.lastEditType = editNone
 		m.Cursor.Line -= m.Height
 		if m.Cursor.Line < 0 {
 			m.Cursor.Line = 0
@@ -560,6 +696,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 		}
 
 	case "pgdown", "shift+pgdown":
+		m.lastEditType = editNone
 		m.Cursor.Line += m.Height
 		if m.Cursor.Line >= len(m.Lines) {
 			m.Cursor.Line = len(m.Lines) - 1
@@ -575,6 +712,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 		}
 
 	case "up", "shift+up":
+		m.lastEditType = editNone
 		if m.Cursor.Line > 0 {
 			m.Cursor.Line--
 			lineLen := len(m.Lines[m.Cursor.Line])
@@ -589,6 +727,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 		}
 
 	case "down", "shift+down":
+		m.lastEditType = editNone
 		if m.Cursor.Line < len(m.Lines)-1 {
 			m.Cursor.Line++
 			lineLen := len(m.Lines[m.Cursor.Line])
@@ -603,6 +742,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 		}
 
 	case "home", "shift+home":
+		m.lastEditType = editNone
 		m.Cursor.Col = 0
 		m.StickyCol = 0
 		if !shift {
@@ -610,6 +750,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 		}
 
 	case "end", "shift+end":
+		m.lastEditType = editNone
 		m.Cursor.Col = len(m.Lines[m.Cursor.Line])
 		m.StickyCol = m.Cursor.Col
 		if !shift {
@@ -617,16 +758,24 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 		}
 
 	case "ctrl+left", "ctrl+shift+left":
+		m.lastEditType = editNone
 		m.moveWordLeft()
 		if !shift {
 			m.Selection = Selection{Anchor: m.Cursor, Active: false}
 		}
 
 	case "ctrl+right", "ctrl+shift+right":
+		m.lastEditType = editNone
 		m.moveWordRight()
 		if !shift {
 			m.Selection = Selection{Anchor: m.Cursor, Active: false}
 		}
+
+	case "ctrl+z":
+		m.Undo()
+
+	case "ctrl+r", "ctrl+y", "ctrl+shift+z":
+		m.Redo()
 
 	case "ctrl+c":
 		if m.Selection.Active {
@@ -654,6 +803,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 
 	case "ctrl+backspace":
 		if !m.DeleteSelection() {
+			m.saveSnapshot()
+			m.lastEditType = editOther
 			m.Selection = Selection{Anchor: m.Cursor, Active: true}
 			m.moveWordLeft()
 			m.DeleteSelection()
@@ -661,6 +812,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 
 	case "ctrl+delete":
 		if !m.DeleteSelection() {
+			m.saveSnapshot()
+			m.lastEditType = editOther
 			m.Selection = Selection{Anchor: m.Cursor, Active: true}
 			m.moveWordRight()
 			m.DeleteSelection()
@@ -668,6 +821,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 
 	case "backspace":
 		if !m.DeleteSelection() {
+			m.saveSnapshot()
+			m.lastEditType = editOther
 			if m.Cursor.Col > 0 {
 				line := m.Lines[m.Cursor.Line]
 				m.Lines[m.Cursor.Line] = append(line[:m.Cursor.Col-1], line[m.Cursor.Col:]...)
@@ -685,6 +840,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 
 	case "delete":
 		if !m.DeleteSelection() {
+			m.saveSnapshot()
+			m.lastEditType = editOther
 			line := m.Lines[m.Cursor.Line]
 			if m.Cursor.Col < len(line) {
 				m.Lines[m.Cursor.Line] = append(line[:m.Cursor.Col], line[m.Cursor.Col+1:]...)

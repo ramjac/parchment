@@ -11,8 +11,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/charmbracelet/bubbles/textinput"
 	"example.com/parchment/internal/tui/editor"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mattn/go-runewidth"
@@ -701,10 +701,10 @@ func changeLayoutDescription(layout document.Layout) string {
 
 func (s *documentsScreen) statusLine() string {
 	undo, redo := "undo unavailable", "redo unavailable"
-	if s.canUndo {
+	if s.canUndo || s.body.CanUndo() {
 		undo = "undo available"
 	}
-	if s.canRedo {
+	if s.canRedo || s.body.CanRedo() {
 		redo = "redo available"
 	}
 	message := s.status

@@ -184,6 +184,19 @@ func (m *presentationModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
 	switch key {
 	case "ctrl+s":
 		return m.save()
+	case "ctrl+z", "ctrl+r", "ctrl+y", "ctrl+shift+z":
+		if key == "ctrl+z" && m.editor.CanUndo() {
+			m.editor.Undo()
+			return nil
+		}
+		if (key == "ctrl+r" || key == "ctrl+y" || key == "ctrl+shift+z") && m.editor.CanRedo() {
+			m.editor.Redo()
+			return nil
+		}
+		if key == "ctrl+z" {
+			return m.history("Undid", m.service.Undo)
+		}
+		return m.history("Redid", m.service.Redo)
 	case "esc":
 		if m.editor.Value() != m.item.Source && !m.discardWarning {
 			m.discardWarning = true
@@ -245,9 +258,9 @@ func (m *presentationModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		m.clampScroll()
 	case "enter", "e":
 		return m.beginEdit()
-	case "u":
+	case "u", "ctrl+z":
 		return m.history("Undid", m.service.Undo)
-	case "ctrl+r":
+	case "ctrl+r", "ctrl+y", "ctrl+shift+z":
 		return m.history("Redid", m.service.Redo)
 	}
 	return nil
@@ -269,8 +282,6 @@ func (m *presentationModel) beginEdit() tea.Cmd {
 	m.editor.SetValue(m.item.Source)
 	m.moveEditorToLine(slideSourceLine(m.item.Source, m.page))
 	cmd := m.editor.Focus()
-	// Let the textarea scroll its viewport to the repositioned cursor.
-	m.editor, _ = m.editor.Update(nil)
 	return cmd
 }
 
@@ -343,7 +354,7 @@ func pageForSourceLine(source string, line int) int {
 
 // leaveEditor returns to the viewer on the slide containing the cursor.
 func (m *presentationModel) leaveEditor() {
-	m.goToPage(pageForSourceLine(m.editor.Value(), m.editor.Line()))
+	m.goToPage(pageForSourceLine(m.editor.Value(), m.editor.Cursor.Line))
 	m.editing, m.discardWarning = false, false
 	m.editor.Blur()
 }

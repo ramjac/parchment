@@ -369,9 +369,13 @@ func (s *documentsScreen) updateEditorKey(msg tea.KeyMsg) tea.Cmd {
 	case "f5":
 		s.openPreview()
 		return nil
-	case "ctrl+z", "ctrl+r":
-		if s.dirty() {
-			s.status = "Save or discard your edits before undo or redo"
+	case "ctrl+z", "ctrl+r", "ctrl+y", "ctrl+shift+z":
+		if key == "ctrl+z" && s.body.CanUndo() {
+			s.body.Undo()
+			return nil
+		}
+		if (key == "ctrl+r" || key == "ctrl+y" || key == "ctrl+shift+z") && s.body.CanRedo() {
+			s.body.Redo()
 			return nil
 		}
 		return s.history(key == "ctrl+z")

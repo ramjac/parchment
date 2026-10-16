@@ -505,9 +505,13 @@ func (m *Model) updateNoteKey(msg tea.KeyMsg) tea.Cmd {
 		m.previewing = true
 		m.resizePreview()
 		return nil
-	case "ctrl+z", "ctrl+r":
-		if m.dirty() {
-			m.status = "Save or discard your edits before undo or redo"
+	case "ctrl+z", "ctrl+r", "ctrl+y", "ctrl+shift+z":
+		if key == "ctrl+z" && m.bodyInput.CanUndo() {
+			m.bodyInput.Undo()
+			return nil
+		}
+		if (key == "ctrl+r" || key == "ctrl+y" || key == "ctrl+shift+z") && m.bodyInput.CanRedo() {
+			m.bodyInput.Redo()
 			return nil
 		}
 		return m.history(key == "ctrl+z")
@@ -621,10 +625,10 @@ func (m Model) tooSmall() bool { return m.width < 40 || m.height < 10 }
 
 func (m Model) statusLine() string {
 	undo, redo := "undo unavailable", "redo unavailable"
-	if m.canUndo {
+	if m.canUndo || m.bodyInput.CanUndo() {
 		undo = "undo available"
 	}
-	if m.canRedo {
+	if m.canRedo || m.bodyInput.CanRedo() {
 		redo = "redo available"
 	}
 	message := m.status
@@ -716,7 +720,7 @@ func (m Model) dirty() bool {
 func sanitizeTerminalLine(value string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
-			return '�'
+			return '\uFFFD'
 		}
 		return r
 	}, value)
@@ -725,7 +729,7 @@ func sanitizeTerminalLine(value string) string {
 func sanitizeTerminalText(value string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) && r != '\n' {
-			return '�'
+			return '\uFFFD'
 		}
 		return r
 	}, value)
@@ -744,4 +748,3 @@ func Run(ctx context.Context, config Config) error {
 	_, err := program.Run()
 	return err
 }
-

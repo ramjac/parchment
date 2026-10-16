@@ -84,7 +84,7 @@ func TestNoteEditorShowsCursorAwayFromTextEnd(t *testing.T) {
 	model.stage = stageNote
 	model.bodyInput.Focus()
 	for i := 0; i < 59; i++ {
-		model.bodyInput.CursorUp()
+		model.bodyInput.Update(tea.KeyMsg{Type: tea.KeyUp})
 	}
 	if !strings.Contains(model.View(), "\x1b[7m") {
 		t.Fatalf("cursor at line %d is not visible in the editor view", model.bodyInput.Line())
