@@ -574,10 +574,24 @@ func (s *documentsScreen) setChangeReviewContent() {
 
 func wrapReviewText(content string, width int) string {
 	var wrapped strings.Builder
-	for lineIndex, line := range strings.Split(content, "\n") {
+	wrapped.Grow(len(content))
+	remaining := content
+	lineIndex := 0
+	for {
+		var line string
+		idx := strings.IndexByte(remaining, '\n')
+		if idx >= 0 {
+			line = remaining[:idx]
+			remaining = remaining[idx+1:]
+		} else {
+			line = remaining
+		}
+
 		if lineIndex > 0 {
 			wrapped.WriteByte('\n')
 		}
+		lineIndex++
+
 		lineWidth := 0
 		for _, r := range line {
 			runeWidth := max(runewidth.RuneWidth(r), 0)
@@ -587,6 +601,10 @@ func wrapReviewText(content string, width int) string {
 			}
 			wrapped.WriteRune(r)
 			lineWidth += runeWidth
+		}
+
+		if idx < 0 {
+			break
 		}
 	}
 	return wrapped.String()
