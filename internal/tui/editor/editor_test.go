@@ -8,6 +8,35 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+func TestEditorNew(t *testing.T) {
+	ed := New()
+
+	if len(ed.Lines) != 1 || len(ed.Lines[0]) != 0 {
+		t.Fatalf("New().Lines = %v, want [][]rune{{}}", ed.Lines)
+	}
+	if ed.Width != 80 {
+		t.Fatalf("New().Width = %d, want 80", ed.Width)
+	}
+	if ed.Height != 20 {
+		t.Fatalf("New().Height = %d, want 20", ed.Height)
+	}
+	if !ed.Focused {
+		t.Fatalf("New().Focused = false, want true")
+	}
+	if ed.Cursor.Line != 0 || ed.Cursor.Col != 0 {
+		t.Fatalf("New().Cursor = %+v, want Point{Line: 0, Col: 0}", ed.Cursor)
+	}
+	if ed.Selection.Active {
+		t.Fatalf("New().Selection.Active = true, want false")
+	}
+	if ed.Value() != "" {
+		t.Fatalf("New().Value() = %q, want %q", ed.Value(), "")
+	}
+	if ed.LineCount() != 1 {
+		t.Fatalf("New().LineCount() = %d, want 1", ed.LineCount())
+	}
+}
+
 func TestEditorSetValueAndValue(t *testing.T) {
 	ed := New()
 	content := "Hello\nWorld\n"
@@ -245,6 +274,51 @@ func TestEditorUndoAndRedo(t *testing.T) {
 	ed.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
 	if ed.Value() != "Hello World" {
 		t.Fatalf("Ctrl+R failed: Value = %q, want %q", ed.Value(), "Hello World")
+	}
+}
+
+func TestEditorCanRedo(t *testing.T) {
+	ed := New()
+	ed.SetValue("Initial")
+
+	if ed.CanRedo() {
+		t.Fatal("CanRedo should return false initially")
+	}
+
+	ed.InsertString(" edit")
+	if ed.CanRedo() {
+		t.Fatal("CanRedo should return false after edit without undo")
+	}
+
+	ed.Undo()
+	if !ed.CanRedo() {
+		t.Fatal("CanRedo should return true after undo")
+	}
+
+	ed.Redo()
+	if ed.CanRedo() {
+		t.Fatal("CanRedo should return false after redo")
+	}
+
+	// Undo again, then make a new edit; redo stack should be cleared
+	ed.Undo()
+	if !ed.CanRedo() {
+		t.Fatal("CanRedo should return true after second undo")
+	}
+
+	ed.InsertString(" another edit")
+	if ed.CanRedo() {
+		t.Fatal("CanRedo should return false after new edit clears redo stack")
+	}
+
+	// Undo and SetValue reset
+	ed.Undo()
+	if !ed.CanRedo() {
+		t.Fatal("CanRedo should return true after undo")
+	}
+	ed.SetValue("Reset")
+	if ed.CanRedo() {
+		t.Fatal("CanRedo should return false after SetValue clears redo stack")
 	}
 }
 func TestEditorMouseWheelAndPageUpDown(t *testing.T) {
