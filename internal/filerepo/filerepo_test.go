@@ -96,6 +96,18 @@ func TestCreateIsExclusive(t *testing.T) {
 	}
 }
 
+func TestKindError(t *testing.T) {
+	err := &filerepo.KindError{
+		Path: "doc.md",
+		Kind: artifact.DocumentKind,
+		Want: artifact.NoteKind,
+	}
+	wantMsg := "doc.md is a document, not a note"
+	if got := err.Error(); got != wantMsg {
+		t.Fatalf("KindError.Error() = %q, want %q", got, wantMsg)
+	}
+}
+
 func TestKindDetectionAndMismatch(t *testing.T) {
 	ctx := context.Background()
 	repo, _, folder := newRepo(t)
