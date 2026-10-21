@@ -276,6 +276,51 @@ func TestEditorUndoAndRedo(t *testing.T) {
 		t.Fatalf("Ctrl+R failed: Value = %q, want %q", ed.Value(), "Hello World")
 	}
 }
+
+func TestEditorCanRedo(t *testing.T) {
+	ed := New()
+	ed.SetValue("Initial")
+
+	if ed.CanRedo() {
+		t.Fatal("CanRedo should return false initially")
+	}
+
+	ed.InsertString(" edit")
+	if ed.CanRedo() {
+		t.Fatal("CanRedo should return false after edit without undo")
+	}
+
+	ed.Undo()
+	if !ed.CanRedo() {
+		t.Fatal("CanRedo should return true after undo")
+	}
+
+	ed.Redo()
+	if ed.CanRedo() {
+		t.Fatal("CanRedo should return false after redo")
+	}
+
+	// Undo again, then make a new edit; redo stack should be cleared
+	ed.Undo()
+	if !ed.CanRedo() {
+		t.Fatal("CanRedo should return true after second undo")
+	}
+
+	ed.InsertString(" another edit")
+	if ed.CanRedo() {
+		t.Fatal("CanRedo should return false after new edit clears redo stack")
+	}
+
+	// Undo and SetValue reset
+	ed.Undo()
+	if !ed.CanRedo() {
+		t.Fatal("CanRedo should return true after undo")
+	}
+	ed.SetValue("Reset")
+	if ed.CanRedo() {
+		t.Fatal("CanRedo should return false after SetValue clears redo stack")
+	}
+}
 func TestEditorMouseWheelAndPageUpDown(t *testing.T) {
 	ed := New()
 	lines := make([]string, 30)
