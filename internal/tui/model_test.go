@@ -836,6 +836,25 @@ func TestNewModel(t *testing.T) {
 	sheets := spreadsheet.NewService(repo, 10)
 	decks := presentation.NewService(repo, 10)
 
+	t.Run("ZeroConfigDefaults", func(t *testing.T) {
+		m := NewModel(Config{})
+		if m.path != "" || m.kind != "" || m.edit != false {
+			t.Errorf("expected empty path/kind/edit, got path=%q kind=%q edit=%t", m.path, m.kind, m.edit)
+		}
+		if m.service != nil || m.spreadsheets != nil || m.presentations != nil || m.recoveryStore != nil {
+			t.Errorf("expected nil services/store for zero config")
+		}
+		if m.documents != nil {
+			t.Errorf("expected nil documents screen")
+		}
+		if m.stage != stageChooseKind {
+			t.Errorf("stage = %v, want stageChooseKind", m.stage)
+		}
+		if m.canUndo || m.canRedo {
+			t.Errorf("canUndo/canRedo should be false when notes service is nil")
+		}
+	})
+
 	t.Run("EmptyKindSetsChooseKindStage", func(t *testing.T) {
 		cfg := Config{
 			Path:          "/path/to/file.md",
@@ -882,7 +901,7 @@ func TestNewModel(t *testing.T) {
 		}
 	})
 
-	t.Run("DocumentsServiceInitialization", func(t *testing.T) {
+	t.Run("DocumentsServiceInitializationAndAutosaveScheduler", func(t *testing.T) {
 		cfg := Config{
 			Path:      "/path/to/file.md",
 			Documents: docs,
@@ -899,7 +918,13 @@ func TestNewModel(t *testing.T) {
 			t.Errorf("documents recoveryStore = %v, want %v", m.documents.recoveryStore, repo)
 		}
 		if m.documents.autosaveScheduler == nil {
-			t.Errorf("documents autosaveScheduler is nil")
+			t.Fatal("documents autosaveScheduler is nil")
+		}
+
+		// Exercise the documents autosaveScheduler callback and its returned command
+		cmd := m.documents.autosaveScheduler(42)
+		if cmd == nil {
+			t.Fatal("autosaveScheduler returned nil tea.Cmd")
 		}
 	})
 
