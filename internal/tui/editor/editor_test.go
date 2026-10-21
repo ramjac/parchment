@@ -362,48 +362,77 @@ func TestEditorUndoAndRedo(t *testing.T) {
 }
 
 func TestEditorCanRedo(t *testing.T) {
-	ed := New()
-	ed.SetValue("Initial")
+	t.Run("initially false on new editor and after SetValue", func(t *testing.T) {
+		ed := New()
+		if ed.CanRedo() {
+			t.Error("CanRedo() = true for new editor, want false")
+		}
 
-	if ed.CanRedo() {
-		t.Fatal("CanRedo should return false initially")
-	}
+		ed.SetValue("Initial content")
+		if ed.CanRedo() {
+			t.Error("CanRedo() = true after SetValue, want false")
+		}
+	})
 
-	ed.InsertString(" edit")
-	if ed.CanRedo() {
-		t.Fatal("CanRedo should return false after edit without undo")
-	}
+	t.Run("false after edit without undo", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Initial")
+		ed.InsertString(" edit")
+		if ed.CanRedo() {
+			t.Error("CanRedo() = true after edit without undo, want false")
+		}
+	})
 
-	ed.Undo()
-	if !ed.CanRedo() {
-		t.Fatal("CanRedo should return true after undo")
-	}
+	t.Run("true after undo", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Initial")
+		ed.InsertString(" edit")
+		ed.Undo()
+		if !ed.CanRedo() {
+			t.Error("CanRedo() = false after undo, want true")
+		}
+	})
 
-	ed.Redo()
-	if ed.CanRedo() {
-		t.Fatal("CanRedo should return false after redo")
-	}
+	t.Run("false after redo", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Initial")
+		ed.InsertString(" edit")
+		ed.Undo()
+		ed.Redo()
+		if ed.CanRedo() {
+			t.Error("CanRedo() = true after redo, want false")
+		}
+	})
 
-	// Undo again, then make a new edit; redo stack should be cleared
-	ed.Undo()
-	if !ed.CanRedo() {
-		t.Fatal("CanRedo should return true after second undo")
-	}
+	t.Run("false when new edit clears redo stack", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Initial")
+		ed.InsertString(" edit")
+		ed.Undo()
+		if !ed.CanRedo() {
+			t.Fatal("CanRedo() = false after undo, want true")
+		}
 
-	ed.InsertString(" another edit")
-	if ed.CanRedo() {
-		t.Fatal("CanRedo should return false after new edit clears redo stack")
-	}
+		ed.InsertString(" new edit")
+		if ed.CanRedo() {
+			t.Error("CanRedo() = true after new edit, want false")
+		}
+	})
 
-	// Undo and SetValue reset
-	ed.Undo()
-	if !ed.CanRedo() {
-		t.Fatal("CanRedo should return true after undo")
-	}
-	ed.SetValue("Reset")
-	if ed.CanRedo() {
-		t.Fatal("CanRedo should return false after SetValue clears redo stack")
-	}
+	t.Run("false when SetValue clears redo stack", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Initial")
+		ed.InsertString(" edit")
+		ed.Undo()
+		if !ed.CanRedo() {
+			t.Fatal("CanRedo() = false after undo, want true")
+		}
+
+		ed.SetValue("Reset")
+		if ed.CanRedo() {
+			t.Error("CanRedo() = true after SetValue, want false")
+		}
+	})
 }
 
 func TestEditorCanUndo(t *testing.T) {
