@@ -35,6 +35,23 @@ func BenchmarkInlineText_Mixed(b *testing.B) {
 	}
 }
 
+func BenchmarkWrap_ShortText(b *testing.B) {
+	text := "This is a simple sentence that needs to be word wrapped across multiple lines."
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = wrap(text, 40, "", "")
+	}
+}
+
+func BenchmarkWrap_LongText(b *testing.B) {
+	text := "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum. "
+	text = text + text + text + text // ~1.8KB of text
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = wrap(text, 80, "> ", "> ")
+	}
+}
+
 func BenchmarkPaginate(b *testing.B) {
 	body := `# Title
 
