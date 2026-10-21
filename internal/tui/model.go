@@ -736,7 +736,7 @@ func sanitizeTerminalText(value string) string {
 }
 
 // Run starts the full-screen editor for one artifact file.
-func Run(ctx context.Context, config Config) error {
+func Run(ctx context.Context, config Config, opts ...tea.ProgramOption) error {
 	model := NewModel(config)
 	model.newOperationContext = func() (context.Context, context.CancelFunc) {
 		return context.WithCancel(ctx)
@@ -744,7 +744,8 @@ func Run(ctx context.Context, config Config) error {
 	if model.documents != nil {
 		model.documents.newOperationContext = model.newOperationContext
 	}
-	program := tea.NewProgram(&model, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx))
+	options := append([]tea.ProgramOption{tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx)}, opts...)
+	program := tea.NewProgram(&model, options...)
 	_, err := program.Run()
 	return err
 }

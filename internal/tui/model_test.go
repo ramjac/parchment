@@ -590,3 +590,50 @@ func TestRevertingNoteEditsRemovesAutosavedDraft(t *testing.T) {
 		t.Fatalf("reverted editor kept its draft (draftStored=%t)", h.m.draftStored)
 	}
 }
+
+func TestRun(t *testing.T) {
+	repo, err := filerepo.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "note.md")
+
+	headlessOpts := []tea.ProgramOption{
+		tea.WithInput(strings.NewReader("")),
+		tea.WithoutRenderer(),
+	}
+
+	t.Run("canceled context with note config", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // pre-canceled context so program shuts down immediately
+
+		cfg := Config{
+			Path:     path,
+			Kind:     artifact.NoteKind,
+			Notes:    note.NewService(repo, 10),
+			Recovery: repo,
+		}
+
+		err := Run(ctx, cfg, headlessOpts...)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("unexpected error running program: %v", err)
+		}
+	})
+
+	t.Run("canceled context with documents config", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		cfg := Config{
+			Path:      path,
+			Kind:      artifact.DocumentKind,
+			Documents: document.NewService(repo, 10),
+			Recovery:  repo,
+		}
+
+		err := Run(ctx, cfg, headlessOpts...)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("unexpected error running program with documents config: %v", err)
+		}
+	})
+}
