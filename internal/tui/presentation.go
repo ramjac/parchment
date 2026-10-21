@@ -523,6 +523,14 @@ func (m *presentationModel) View() string {
 	muted := lipgloss.NewStyle().Foreground(borderColor)
 	var b strings.Builder
 
+	b.WriteString(m.renderHeader(accent) + "\n")
+	b.WriteString(m.renderContentPane() + "\n")
+	b.WriteString(m.renderStatus() + "\n")
+	b.WriteString(m.renderHelp(muted))
+	return b.String()
+}
+
+func (m *presentationModel) renderHeader(accent lipgloss.Style) string {
 	header := "Presentation"
 	if m.loaded {
 		header = sanitizeTerminalLine(m.deck.Title)
@@ -535,8 +543,10 @@ func (m *presentationModel) View() string {
 	if m.path != "" {
 		header += "  " + sanitizeTerminalLine(m.path)
 	}
-	b.WriteString(accent.Render(runewidth.Truncate(header, m.width, "…")) + "\n")
+	return accent.Render(runewidth.Truncate(header, m.width, "…"))
+}
 
+func (m *presentationModel) renderContentPane() string {
 	var content string
 	if m.editing {
 		content = m.editor.View()
@@ -555,11 +565,11 @@ func (m *presentationModel) View() string {
 	}
 
 	paneHeight := max(1, m.height-3)
-	pane := lipgloss.NewStyle().Width(max(1, m.width)).Height(paneHeight).
+	return lipgloss.NewStyle().Width(max(1, m.width)).Height(paneHeight).
 		Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1).Render(content)
+}
 
-	b.WriteString(pane + "\n")
-
+func (m *presentationModel) renderStatus() string {
 	status := m.status
 	if m.errMessage != "" {
 		status = "Error: " + m.errMessage
@@ -570,13 +580,15 @@ func (m *presentationModel) View() string {
 			status = fmt.Sprintf("Slide %d of %d", m.page, len(m.deck.Slides))
 		}
 	}
-	b.WriteString(runewidth.Truncate(sanitizeTerminalLine(status), m.width, "…") + "\n")
+	return runewidth.Truncate(sanitizeTerminalLine(status), m.width, "…")
+}
+
+func (m *presentationModel) renderHelp(muted lipgloss.Style) string {
 	help := "←/→ slide • ↑/↓ scroll • e edit • s notes • u undo • ctrl+r redo • r reload • esc/q quit"
 	if m.editing {
 		help = "ctrl+s save • esc cancel • ctrl+c quit"
 	} else if !m.loaded {
 		help = "r retry • esc/q quit"
 	}
-	b.WriteString(muted.Render(runewidth.Truncate(help, m.width, "…")))
-	return b.String()
+	return muted.Render(runewidth.Truncate(help, m.width, "…"))
 }
