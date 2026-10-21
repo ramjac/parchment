@@ -58,6 +58,19 @@ func TestEditorValue(t *testing.T) {
 		}
 	})
 
+	t.Run("nil or empty lines slice", func(t *testing.T) {
+		var ed Model
+		ed.Lines = nil
+		if got := ed.Value(); got != "" {
+			t.Errorf("Value() with nil Lines = %q, want %q", got, "")
+		}
+
+		ed.Lines = [][]rune{}
+		if got := ed.Value(); got != "" {
+			t.Errorf("Value() with empty Lines slice = %q, want %q", got, "")
+		}
+	})
+
 	t.Run("various string values via SetValue", func(t *testing.T) {
 		tests := []struct {
 			name     string
