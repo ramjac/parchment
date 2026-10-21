@@ -683,3 +683,137 @@ func TestPresentationFencedCodeBlocksAndEmptyNotes(t *testing.T) {
 		t.Fatalf("empty speaker notes did not render '(none)':\n%s", view)
 	}
 }
+
+func TestPresentationModelUpdateDirect(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+
+	// 1. tea.WindowSizeMsg
+	wMsg := tea.WindowSizeMsg{Width: 120, Height: 40}
+	updatedModel, cmd := m.Update(wMsg)
+	if updatedModel != m || cmd != nil {
+		t.Fatalf("WindowSizeMsg returned model %v, cmd %v", updatedModel, cmd)
+	}
+	if m.width != 120 || m.height != 40 {
+		t.Fatalf("width/height = %d/%d, want 120/40", m.width, m.height)
+	}
+	if m.editor.Width != 116 || m.editor.Height != 35 {
+		t.Fatalf("editor width/height = %d/%d, want 116/35", m.editor.Width, m.editor.Height)
+	}
+
+	// 2. presentationLoadedMsg
+	m.seq = 10
+	// Stale seq
+	updatedModel, cmd = m.Update(presentationLoadedMsg{seq: 1})
+	if updatedModel != m || cmd != nil {
+		t.Fatalf("stale presentationLoadedMsg returned model %v, cmd %v", updatedModel, cmd)
+	}
+	// Matching seq with error
+	m.pending = true
+	updatedModel, cmd = m.Update(presentationLoadedMsg{seq: 10, err: errors.New("load error")})
+	if updatedModel != m || cmd != nil || m.pending || !strings.Contains(m.errMessage, "Load failed: load error") {
+		t.Fatalf("loadedMsg error state: pending=%t, err=%q", m.pending, m.errMessage)
+	}
+	// Matching seq with success
+	m.seq = 11
+	m.pending = true
+	m.loadedStatus = "Loaded successfully"
+	updatedModel, cmd = m.Update(presentationLoadedMsg{seq: 11, item: m.item})
+	if updatedModel != m || cmd != nil || m.pending || m.status != "Loaded successfully" || m.loadedStatus != "" {
+		t.Fatalf("loadedMsg success state: pending=%t, status=%q", m.pending, m.status)
+	}
+
+	// 3. presentationSavedMsg
+	m.seq = 20
+	// Stale seq
+	updatedModel, cmd = m.Update(presentationSavedMsg{seq: 1})
+	if updatedModel != m || cmd != nil {
+		t.Fatalf("stale presentationSavedMsg returned model %v, cmd %v", updatedModel, cmd)
+	}
+	// Matching seq with error
+	m.editing = true
+	m.pending = true
+	updatedModel, cmd = m.Update(presentationSavedMsg{seq: 20, err: errors.New("save error")})
+	if updatedModel != m || cmd != nil || m.pending || !m.editing || !strings.Contains(m.errMessage, "Save failed: save error") {
+		t.Fatalf("savedMsg error state: pending=%t, editing=%t, err=%q", m.pending, m.editing, m.errMessage)
+	}
+	// Matching seq with success
+	m.seq = 21
+	m.pending = true
+	updatedModel, cmd = m.Update(presentationSavedMsg{seq: 21, item: m.item})
+	if updatedModel != m || cmd != nil || m.pending || m.editing || m.status != "Saved" {
+		t.Fatalf("savedMsg success state: pending=%t, editing=%t, status=%q", m.pending, m.editing, m.status)
+	}
+
+	// 4. presentationHistoryMsg
+	m.seq = 30
+	// Stale seq
+	updatedModel, cmd = m.Update(presentationHistoryMsg{seq: 1})
+	if updatedModel != m || cmd != nil {
+		t.Fatalf("stale presentationHistoryMsg returned model %v, cmd %v", updatedModel, cmd)
+	}
+	// Matching seq with error
+	m.pending = true
+	updatedModel, cmd = m.Update(presentationHistoryMsg{seq: 30, err: errors.New("history error")})
+	if updatedModel != m || cmd != nil || m.pending || !strings.Contains(m.errMessage, "History failed: history error") {
+		t.Fatalf("historyMsg error state: pending=%t, err=%q", m.pending, m.errMessage)
+	}
+	// Matching seq with success (triggers m.load() which starts a new load operation and sets pending=true)
+	m.seq = 31
+	m.pending = true
+	updatedModel, cmd = m.Update(presentationHistoryMsg{seq: 31, description: "Undid change"})
+	if updatedModel != m || cmd == nil || !m.pending || m.loadedStatus != "Undid change" {
+		t.Fatalf("historyMsg success state: pending=%t, cmd=%v, loadedStatus=%q", m.pending, cmd, m.loadedStatus)
+	}
+
+	// 5. tea.KeyMsg in browse and edit modes
+	m.cancelPending()
+	m.editing = false
+	updatedModel, cmd = m.Update(sheetKey("right"))
+	if updatedModel != m || m.page != 1 {
+		t.Fatalf("browse mode KeyMsg page=%d, want 1", m.page)
+	}
+
+	m.editing = true
+	m.pending = false
+	m.editor.Focus()
+	updatedModel, _ = m.Update(sheetKey("a"))
+	if updatedModel != m || !strings.Contains(m.editor.Value(), "a") {
+		t.Fatalf("edit mode KeyMsg editor value=%q", m.editor.Value())
+	}
+
+	// 6. tea.MouseMsg in browse and edit modes
+	m.editing = false
+	m.pending = false
+	mouseMsg := tea.MouseMsg{X: 10, Y: 10, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
+	updatedModel, cmd = m.Update(mouseMsg)
+	if updatedModel != m || cmd != nil {
+		t.Fatalf("browse mode MouseMsg returned model %v, cmd %v", updatedModel, cmd)
+	}
+
+	m.editing = true
+	m.pending = false
+	updatedModel, _ = m.Update(mouseMsg)
+	if updatedModel != m {
+		t.Fatalf("edit mode MouseMsg returned model %v", updatedModel)
+	}
+
+	m.pending = true
+	updatedModel, cmd = m.Update(mouseMsg)
+	if updatedModel != m || cmd != nil {
+		t.Fatalf("edit mode pending MouseMsg returned model %v, cmd %v", updatedModel, cmd)
+	}
+
+	// 7. Generic message in browse and edit modes
+	type genericMsg struct{}
+	m.editing = false
+	updatedModel, cmd = m.Update(genericMsg{})
+	if updatedModel != m || cmd != nil {
+		t.Fatalf("browse mode genericMsg returned model %v, cmd %v", updatedModel, cmd)
+	}
+
+	m.editing = true
+	updatedModel, _ = m.Update(genericMsg{})
+	if updatedModel != m {
+		t.Fatalf("edit mode genericMsg returned model %v", updatedModel)
+	}
+}
