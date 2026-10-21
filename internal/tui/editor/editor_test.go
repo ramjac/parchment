@@ -537,3 +537,114 @@ func TestEditorLineCountAndLine(t *testing.T) {
 		t.Fatalf("CursorUp() Line() = %d, want 2", line)
 	}
 }
+
+func TestEditorUndoDetailed(t *testing.T) {
+	t.Run("empty undo stack", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Initial")
+		if ed.Undo() {
+			t.Fatal("Undo() should return false when undo stack is empty")
+		}
+		if ed.Value() != "Initial" {
+			t.Fatalf("Value = %q, want %q", ed.Value(), "Initial")
+		}
+	})
+
+	t.Run("single undo restores cursor, stickyCol, selection and lines", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Hello")
+		ed.Cursor = Point{Line: 0, Col: 5}
+
+		// Save state parameters before insert
+		origCursor := ed.Cursor
+
+		ed.InsertString(" World") // creates snapshot
+
+		if ed.Value() != "Hello World" {
+			t.Fatalf("Value before Undo = %q, want %q", ed.Value(), "Hello World")
+		}
+
+		ok := ed.Undo()
+		if !ok {
+			t.Fatal("Undo() returned false, expected true")
+		}
+
+		if ed.Value() != "Hello" {
+			t.Fatalf("Value after Undo = %q, want %q", ed.Value(), "Hello")
+		}
+		if ed.Cursor != origCursor {
+			t.Fatalf("Cursor after Undo = %+v, want %+v", ed.Cursor, origCursor)
+		}
+		if ed.StickyCol != origCursor.Col {
+			t.Fatalf("StickyCol after Undo = %d, want %d", ed.StickyCol, origCursor.Col)
+		}
+		if ed.Selection.Active {
+			t.Fatal("Selection.Active should be false after Undo")
+		}
+		if ed.Selection.Anchor != ed.Cursor {
+			t.Fatalf("Selection.Anchor = %+v, want equal to Cursor %+v", ed.Selection.Anchor, ed.Cursor)
+		}
+	})
+
+	t.Run("multi-step LIFO undo", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Step 0")
+		ed.Cursor = Point{Line: 0, Col: len("Step 0")}
+
+		ed.InsertString("\nStep 1")
+		ed.InsertString("\nStep 2")
+
+		if ed.Value() != "Step 0\nStep 1\nStep 2" {
+			t.Fatalf("Value = %q, want %q", ed.Value(), "Step 0\nStep 1\nStep 2")
+		}
+
+		if !ed.Undo() || ed.Value() != "Step 0\nStep 1" {
+			t.Fatalf("First Undo failed: Value = %q, want %q", ed.Value(), "Step 0\nStep 1")
+		}
+
+		if !ed.Undo() || ed.Value() != "Step 0" {
+			t.Fatalf("Second Undo failed: Value = %q, want %q", ed.Value(), "Step 0")
+		}
+
+		if ed.Undo() {
+			t.Fatal("Third Undo should return false")
+		}
+	})
+
+	t.Run("undo selection deletion", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Keep Delete Keep")
+		// "Keep " is indices 0..5, "Delete" is 5..11
+		ed.Selection = Selection{Anchor: Point{Line: 0, Col: 5}, Active: true}
+		ed.Cursor = Point{Line: 0, Col: 11}
+
+		ed.DeleteSelection()
+		if ed.Value() != "Keep  Keep" {
+			t.Fatalf("Value after DeleteSelection = %q, want %q", ed.Value(), "Keep  Keep")
+		}
+
+		if !ed.Undo() || ed.Value() != "Keep Delete Keep" {
+			t.Fatalf("Undo DeleteSelection failed: Value = %q, want %q", ed.Value(), "Keep Delete Keep")
+		}
+	})
+
+	t.Run("undo history capacity limit", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Start")
+
+		// Push 210 edits
+		for range 210 {
+			ed.InsertString("a")
+		}
+
+		// Can undo up to 200 times
+		undoCount := 0
+		for ed.Undo() {
+			undoCount++
+		}
+
+		if undoCount != 200 {
+			t.Fatalf("Undo count = %d, want 200", undoCount)
+		}
+	})
+}
