@@ -650,23 +650,77 @@ func TestModelInit(t *testing.T) {
 		}
 	})
 
-	t.Run("returns openFile cmd when kind is specified", func(t *testing.T) {
-		h := newHarness(t, artifact.NoteKind)
+	kinds := []struct {
+		name string
+		kind artifact.Kind
+	}{
+		{"note", artifact.NoteKind},
+		{"document", artifact.DocumentKind},
+		{"spreadsheet", artifact.SpreadsheetKind},
+		{"presentation", artifact.PresentationKind},
+	}
+
+	for _, tc := range kinds {
+		t.Run("returns openFile cmd for "+tc.name, func(t *testing.T) {
+			repo, err := filerepo.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "testfile")
+			cfg := Config{
+				Path:          path,
+				Kind:          tc.kind,
+				Notes:         note.NewService(repo, 10),
+				Documents:     document.NewService(repo, 10),
+				Spreadsheets:  spreadsheet.NewService(repo, 10),
+				Presentations: presentation.NewService(repo, 10),
+				Recovery:      repo,
+			}
+			model := NewModel(cfg)
+
+			cmd := model.Init()
+			if cmd == nil {
+				t.Fatalf("expected non-nil cmd for kind %s, got nil", tc.kind)
+			}
+			if model.stage != stageOpening || !model.pending {
+				t.Fatalf("expected stageOpening and pending=true, got stage=%d pending=%t", model.stage, model.pending)
+			}
+
+			// Execute the command returned by Init()
+			msg := cmd()
+			openedMsg, ok := msg.(fileOpenedMsg)
+			if !ok {
+				t.Fatalf("expected fileOpenedMsg, got %T", msg)
+			}
+			if openedMsg.kind != tc.kind {
+				t.Fatalf("expected kind %s, got %s", tc.kind, openedMsg.kind)
+			}
+			if openedMsg.err != nil {
+				t.Fatalf("unexpected error opening %s file: %v", tc.kind, openedMsg.err)
+			}
+			if !openedMsg.created {
+				t.Fatalf("expected new file to be created for %s", tc.kind)
+			}
+		})
+	}
+
+	t.Run("returns error msg when opening unsupported kind", func(t *testing.T) {
+		unsupportedKind := artifact.Kind("unknown")
 		model := NewModel(Config{
-			Path:  h.path,
-			Kind:  artifact.NoteKind,
-			Notes: h.notes,
+			Path: "test.unknown",
+			Kind: unsupportedKind,
 		})
 		cmd := model.Init()
 		if cmd == nil {
-			t.Fatal("expected non-nil cmd when kind is specified, got nil")
+			t.Fatal("expected non-nil cmd when kind is unsupported, got nil")
 		}
-		// Execute the command returned by Init()
 		msg := cmd()
-		if openedMsg, ok := msg.(fileOpenedMsg); !ok {
+		openedMsg, ok := msg.(fileOpenedMsg)
+		if !ok {
 			t.Fatalf("expected fileOpenedMsg, got %T", msg)
-		} else if openedMsg.kind != artifact.NoteKind {
-			t.Fatalf("expected kind %s, got %s", artifact.NoteKind, openedMsg.kind)
+		}
+		if openedMsg.err == nil || !strings.Contains(openedMsg.err.Error(), "cannot open") {
+			t.Fatalf("expected error containing 'cannot open', got %v", openedMsg.err)
 		}
 	})
 }
