@@ -622,6 +622,126 @@ func TestEditorLineCountAndLine(t *testing.T) {
 	}
 }
 
+func TestEditorLine(t *testing.T) {
+	t.Run("initial and SetValue state", func(t *testing.T) {
+		ed := New()
+		if got := ed.Line(); got != 0 {
+			t.Errorf("New().Line() = %d, want 0", got)
+		}
+
+		ed.SetValue("First Line\nSecond Line\nThird Line")
+		if got := ed.Line(); got != 0 {
+			t.Errorf("SetValue().Line() = %d, want 0", got)
+		}
+	})
+
+	t.Run("cursor navigation movements", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Line 0\nLine 1\nLine 2\nLine 3")
+
+		ed.CursorDown()
+		if got := ed.Line(); got != 1 {
+			t.Errorf("after CursorDown() Line() = %d, want 1", got)
+		}
+
+		ed.CursorDown()
+		if got := ed.Line(); got != 2 {
+			t.Errorf("after second CursorDown() Line() = %d, want 2", got)
+		}
+
+		ed.CursorUp()
+		if got := ed.Line(); got != 1 {
+			t.Errorf("after CursorUp() Line() = %d, want 1", got)
+		}
+
+		ed.CursorUp()
+		ed.CursorUp() // Should clamp at line 0
+		if got := ed.Line(); got != 0 {
+			t.Errorf("after boundary CursorUp() Line() = %d, want 0", got)
+		}
+	})
+
+	t.Run("key msg updates", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Line 0\nLine 1\nLine 2")
+		ed.Focus()
+
+		ed.Update(tea.KeyMsg{Type: tea.KeyDown})
+		if got := ed.Line(); got != 1 {
+			t.Errorf("after KeyDown Line() = %d, want 1", got)
+		}
+
+		ed.Update(tea.KeyMsg{Type: tea.KeyUp})
+		if got := ed.Line(); got != 0 {
+			t.Errorf("after KeyUp Line() = %d, want 0", got)
+		}
+
+		// PgDown
+		ed.SetHeight(2)
+		ed.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+		if got := ed.Line(); got != 2 {
+			t.Errorf("after KeyPgDown Line() = %d, want 2", got)
+		}
+	})
+
+	t.Run("mouse click updates", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Line 0\nLine 1\nLine 2")
+		ed.SetWidth(20)
+		ed.SetHeight(10)
+
+		ed.handleMouse(tea.MouseMsg{X: 2, Y: 2, Action: tea.MouseActionPress})
+		if got := ed.Line(); got != 2 {
+			t.Errorf("after handleMouse Y: 2 Line() = %d, want 2", got)
+		}
+
+		ed.handleMouse(tea.MouseMsg{X: 1, Y: 0, Action: tea.MouseActionPress})
+		if got := ed.Line(); got != 0 {
+			t.Errorf("after handleMouse Y: 0 Line() = %d, want 0", got)
+		}
+	})
+
+	t.Run("text insertion, newline, and deletion", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Line 0")
+		ed.Cursor = Point{Line: 0, Col: 6}
+
+		ed.InsertString("\nLine 1")
+		if got := ed.Line(); got != 1 {
+			t.Errorf("after InsertString newline Line() = %d, want 1", got)
+		}
+
+		ed.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		// Backspacing at start of Line 1 joins lines and moves cursor back to Line 0
+		ed.CursorStart()
+		ed.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		if got := ed.Line(); got != 0 {
+			t.Errorf("after joining line via Backspace Line() = %d, want 0", got)
+		}
+	})
+
+	t.Run("undo and redo operations", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Line 0")
+		ed.Cursor = Point{Line: 0, Col: 6}
+
+		ed.InsertString("\nLine 1")
+		if got := ed.Line(); got != 1 {
+			t.Errorf("before Undo Line() = %d, want 1", got)
+		}
+
+		ed.Undo()
+		if got := ed.Line(); got != 0 {
+			t.Errorf("after Undo Line() = %d, want 0", got)
+		}
+
+		ed.Redo()
+		if got := ed.Line(); got != 1 {
+			t.Errorf("after Redo Line() = %d, want 1", got)
+		}
+	})
+}
+
 func TestEditorUndoDetailed(t *testing.T) {
 	t.Run("empty undo stack", func(t *testing.T) {
 		ed := New()
