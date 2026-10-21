@@ -825,3 +825,97 @@ func TestModelUpdateAutosaveAndRecoveryMessages(t *testing.T) {
 		t.Fatalf("unhandled msg returned cmd %v", cmdUnknown)
 	}
 }
+
+func TestNewModel(t *testing.T) {
+	repo, err := filerepo.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := note.NewService(repo, 10)
+	docs := document.NewService(repo, 10)
+	sheets := spreadsheet.NewService(repo, 10)
+	decks := presentation.NewService(repo, 10)
+
+	t.Run("EmptyKindSetsChooseKindStage", func(t *testing.T) {
+		cfg := Config{
+			Path:          "/path/to/file.md",
+			Kind:          "",
+			Edit:          true,
+			Notes:         notes,
+			Spreadsheets:  sheets,
+			Presentations: decks,
+			Recovery:      repo,
+		}
+		m := NewModel(cfg)
+		if m.path != cfg.Path || m.kind != cfg.Kind || m.edit != cfg.Edit {
+			t.Errorf("fields not matched: path=%q kind=%q edit=%t", m.path, m.kind, m.edit)
+		}
+		if m.service != cfg.Notes || m.spreadsheets != cfg.Spreadsheets || m.presentations != cfg.Presentations || m.recoveryStore != cfg.Recovery {
+			t.Errorf("services/store not assigned correctly")
+		}
+		if m.stage != stageChooseKind {
+			t.Errorf("stage = %v, want stageChooseKind (%v)", m.stage, stageChooseKind)
+		}
+		if m.documents != nil {
+			t.Errorf("documents screen should be nil when config.Documents is nil")
+		}
+	})
+
+	t.Run("SpecifiedKindKeepsDefaultStage", func(t *testing.T) {
+		cfg := Config{
+			Path: "/path/to/file.md",
+			Kind: artifact.NoteKind,
+		}
+		m := NewModel(cfg)
+		if m.stage != stageOpening {
+			t.Errorf("stage = %v, want stageOpening (%v)", m.stage, stageOpening)
+		}
+	})
+
+	t.Run("NotesServiceUndoRedoState", func(t *testing.T) {
+		cfg := Config{
+			Notes: notes,
+		}
+		m := NewModel(cfg)
+		if m.canUndo != notes.CanUndo() || m.canRedo != notes.CanRedo() {
+			t.Errorf("canUndo=%t canRedo=%t, want notes service state (%t, %t)", m.canUndo, m.canRedo, notes.CanUndo(), notes.CanRedo())
+		}
+	})
+
+	t.Run("DocumentsServiceInitialization", func(t *testing.T) {
+		cfg := Config{
+			Path:      "/path/to/file.md",
+			Documents: docs,
+			Recovery:  repo,
+		}
+		m := NewModel(cfg)
+		if m.documents == nil {
+			t.Fatal("documents screen is nil")
+		}
+		if m.documents.service != docs {
+			t.Errorf("documents service = %v, want %v", m.documents.service, docs)
+		}
+		if m.documents.recoveryStore != repo {
+			t.Errorf("documents recoveryStore = %v, want %v", m.documents.recoveryStore, repo)
+		}
+		if m.documents.autosaveScheduler == nil {
+			t.Errorf("documents autosaveScheduler is nil")
+		}
+	})
+
+	t.Run("OperationContextFunction", func(t *testing.T) {
+		cfg := Config{Path: "/path/to/file.md"}
+		m := NewModel(cfg)
+		if m.newOperationContext == nil {
+			t.Fatal("newOperationContext is nil")
+		}
+		ctx, cancel := m.newOperationContext()
+		if ctx == nil || cancel == nil {
+			t.Fatal("newOperationContext returned nil context or cancel func")
+		}
+		cancel()
+		if ctx.Err() == nil {
+			t.Errorf("expected cancelled context, got nil error")
+		}
+	})
+}
