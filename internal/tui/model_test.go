@@ -644,31 +644,63 @@ func TestModelInit(t *testing.T) {
 			Path: "test.md",
 			Kind: "",
 		})
+		if model.stage != stageChooseKind {
+			t.Fatalf("expected stage %v, got %v", stageChooseKind, model.stage)
+		}
 		cmd := model.Init()
 		if cmd != nil {
 			t.Fatalf("expected nil cmd when stage is stageChooseKind, got %v", cmd)
 		}
+		if model.pending {
+			t.Fatal("expected pending to be false when stage is stageChooseKind")
+		}
 	})
 
-	t.Run("returns openFile cmd when kind is specified", func(t *testing.T) {
-		h := newHarness(t, artifact.NoteKind)
-		model := NewModel(Config{
-			Path:  h.path,
-			Kind:  artifact.NoteKind,
-			Notes: h.notes,
+	kinds := []artifact.Kind{
+		artifact.NoteKind,
+		artifact.DocumentKind,
+		artifact.SpreadsheetKind,
+		artifact.PresentationKind,
+	}
+
+	for _, k := range kinds {
+		t.Run("returns openFile cmd when kind is "+string(k), func(t *testing.T) {
+			h := newHarness(t, k)
+			model := NewModel(Config{
+				Path:          h.path,
+				Kind:          k,
+				Notes:         h.notes,
+				Documents:     h.docs,
+				Spreadsheets:  h.sheets,
+				Presentations: h.decks,
+				Recovery:      h.repo,
+			})
+
+			cmd := model.Init()
+			if cmd == nil {
+				t.Fatalf("expected non-nil cmd for kind %s, got nil", k)
+			}
+			if model.stage != stageOpening {
+				t.Fatalf("expected stage %v after Init, got %v", stageOpening, model.stage)
+			}
+			if !model.pending {
+				t.Fatal("expected pending to be true after Init")
+			}
+			if model.cancelOperation == nil {
+				t.Fatal("expected cancelOperation to be non-nil after Init")
+			}
+
+			// Execute the command returned by Init()
+			msg := cmd()
+			openedMsg, ok := msg.(fileOpenedMsg)
+			if !ok {
+				t.Fatalf("expected fileOpenedMsg for kind %s, got %T", k, msg)
+			}
+			if openedMsg.kind != k {
+				t.Fatalf("expected msg kind %s, got %s", k, openedMsg.kind)
+			}
 		})
-		cmd := model.Init()
-		if cmd == nil {
-			t.Fatal("expected non-nil cmd when kind is specified, got nil")
-		}
-		// Execute the command returned by Init()
-		msg := cmd()
-		if openedMsg, ok := msg.(fileOpenedMsg); !ok {
-			t.Fatalf("expected fileOpenedMsg, got %T", msg)
-		} else if openedMsg.kind != artifact.NoteKind {
-			t.Fatalf("expected kind %s, got %s", artifact.NoteKind, openedMsg.kind)
-		}
-	})
+	}
 }
 
 func TestModelUpdateWindowSizeMsgAndDelegation(t *testing.T) {
