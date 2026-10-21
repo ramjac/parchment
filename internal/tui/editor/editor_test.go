@@ -131,6 +131,30 @@ func TestEditorValue(t *testing.T) {
 		if got, want := ed.Value(), "Hello\nWorld"; got != want {
 			t.Errorf("Value() after Redo = %q, want %q", got, want)
 		}
+
+		ed.InsertRune('!')
+		if got, want := ed.Value(), "Hello\nWorld!"; got != want {
+			t.Errorf("Value() after InsertRune = %q, want %q", got, want)
+		}
+
+		ed.Selection = Selection{Anchor: Point{Line: 0, Col: 0}, Active: true}
+		ed.Cursor = Point{Line: 1, Col: 0}
+		ed.DeleteSelection()
+		if got, want := ed.Value(), "World!"; got != want {
+			t.Errorf("Value() after DeleteSelection = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("empty or nil lines slice", func(t *testing.T) {
+		var ed Model
+		if got := ed.Value(); got != "" {
+			t.Errorf("zero-value Model.Value() = %q, want %q", got, "")
+		}
+
+		ed.Lines = [][]rune{}
+		if got := ed.Value(); got != "" {
+			t.Errorf("Model with empty Lines Value() = %q, want %q", got, "")
+		}
 	})
 }
 
