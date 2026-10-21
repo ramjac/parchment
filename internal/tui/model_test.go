@@ -670,3 +670,158 @@ func TestModelInit(t *testing.T) {
 		}
 	})
 }
+
+func TestModelUpdateWindowSizeMsgAndDelegation(t *testing.T) {
+	// Note stage
+	hNote := newHarness(t, artifact.NoteKind)
+	hNote.send(tea.WindowSizeMsg{Width: 120, Height: 40})
+	if hNote.m.width != 120 || hNote.m.height != 40 {
+		t.Fatalf("note width/height = %d/%d, want 120/40", hNote.m.width, hNote.m.height)
+	}
+
+	// Document stage
+	hDoc := newHarness(t, artifact.DocumentKind)
+	hDoc.send(tea.WindowSizeMsg{Width: 110, Height: 35})
+	if hDoc.m.width != 110 || hDoc.m.height != 35 {
+		t.Fatalf("doc width/height = %d/%d, want 110/35", hDoc.m.width, hDoc.m.height)
+	}
+	if hDoc.m.documents == nil || hDoc.m.documents.width != 110 || hDoc.m.documents.height != 35 {
+		t.Fatalf("documents screen width/height = %d/%d, want 110/35", hDoc.m.documents.width, hDoc.m.documents.height)
+	}
+
+	// Spreadsheet stage
+	hSheet := newHarness(t, artifact.SpreadsheetKind)
+	hSheet.send(tea.WindowSizeMsg{Width: 90, Height: 25})
+	if hSheet.m.width != 90 || hSheet.m.height != 25 {
+		t.Fatalf("spreadsheet width/height = %d/%d, want 90/25", hSheet.m.width, hSheet.m.height)
+	}
+	if hSheet.m.sheet == nil || hSheet.m.sheet.width != 90 || hSheet.m.sheet.height != 25 {
+		t.Fatalf("sheet model width/height = %d/%d, want 90/25", hSheet.m.sheet.width, hSheet.m.sheet.height)
+	}
+
+	// Presentation stage
+	hDeck := newHarness(t, artifact.PresentationKind)
+	hDeck.send(tea.WindowSizeMsg{Width: 95, Height: 28})
+	if hDeck.m.width != 95 || hDeck.m.height != 28 {
+		t.Fatalf("presentation width/height = %d/%d, want 95/28", hDeck.m.width, hDeck.m.height)
+	}
+	if hDeck.m.deck == nil || hDeck.m.deck.width != 95 || hDeck.m.deck.height != 28 {
+		t.Fatalf("deck model width/height = %d/%d, want 95/28", hDeck.m.deck.width, hDeck.m.deck.height)
+	}
+}
+
+func TestModelUpdateStageDelegation(t *testing.T) {
+	// 1. Spreadsheet stage delegation
+	hSheet := newHarness(t, artifact.SpreadsheetKind)
+	if hSheet.m.stage != stageSpreadsheet {
+		t.Fatalf("stage = %d, want stageSpreadsheet", hSheet.m.stage)
+	}
+	// Down arrow in spreadsheet navigation mode
+	hSheet.key("down")
+	if hSheet.m.sheet.row != 1 {
+		t.Fatalf("sheet row after down key = %d, want 1", hSheet.m.sheet.row)
+	}
+
+	// 2. Presentation stage delegation
+	hDeck := newHarness(t, artifact.PresentationKind)
+	if hDeck.m.stage != stagePresentation {
+		t.Fatalf("stage = %d, want stagePresentation", hDeck.m.stage)
+	}
+	// 'e' toggles edit mode in presentation
+	hDeck.key("e")
+	if !hDeck.m.deck.editing {
+		t.Fatal("deck editing = false after pressing 'e', want true")
+	}
+
+	// 3. Document stage key/mouse input delegation
+	hDoc := newHarness(t, artifact.DocumentKind)
+	if hDoc.m.stage != stageDocument {
+		t.Fatalf("stage = %d, want stageDocument", hDoc.m.stage)
+	}
+	hDoc.typeText("Typed in document")
+	if hDoc.m.documents.body.Value() != "Typed in document" {
+		t.Fatalf("document body = %q, want 'Typed in document'", hDoc.m.documents.body.Value())
+	}
+
+	// 4. documentMessage delegation
+	var dummyDocMsg documentMessage = documentAutosaveFinishedMsg{session: 999, err: nil}
+	_, cmd := hDoc.m.Update(dummyDocMsg)
+	// Sending documentMessage shouldn't panic and returns a command or nil
+	_ = cmd
+}
+
+func TestModelUpdateAutosaveAndRecoveryMessages(t *testing.T) {
+	h := newHarness(t, artifact.NoteKind)
+
+	// 1. autosaveTickMsg
+	// Stage note & matching session triggering saveNoteRecovery
+	h.typeText("dirty note")
+	h.m.autosaveSession = 42
+	h.m.stage = stageNote
+	_, cmd := h.m.Update(autosaveTickMsg{session: 42})
+	if cmd == nil {
+		t.Fatal("autosaveTickMsg on matching session did not return a command")
+	}
+
+	// Mismatched session should do nothing
+	_, cmdMismatch := h.m.Update(autosaveTickMsg{session: 99})
+	if cmdMismatch != nil {
+		t.Fatal("autosaveTickMsg on mismatched session returned a command")
+	}
+
+	// 2. autosaveFinishedMsg
+	// Matching session with error and cleared
+	cancelCalled := false
+	h.m.autosaveCancel = func() { cancelCalled = true }
+	h.m.draftStored = true
+
+	testErr := errors.New("write error")
+	h.m.Update(autosaveFinishedMsg{
+		session: 42,
+		err:     testErr,
+		cleared: false,
+	})
+
+	if !cancelCalled {
+		t.Fatal("autosaveFinishedMsg did not invoke autosaveCancel")
+	}
+	if !strings.Contains(h.m.errMessage, "Autosave failed: write error") {
+		t.Fatalf("errMessage = %q, want containing 'Autosave failed: write error'", h.m.errMessage)
+	}
+
+	// Cleared with no error
+	h.m.draftStored = true
+	h.m.Update(autosaveFinishedMsg{
+		session: 42,
+		err:     nil,
+		cleared: true,
+	})
+	if h.m.draftStored {
+		t.Fatal("autosaveFinishedMsg with cleared=true did not set draftStored to false")
+	}
+
+	// Mismatched session for autosaveFinishedMsg
+	h.m.errMessage = ""
+	h.m.Update(autosaveFinishedMsg{
+		session: 100,
+		err:     testErr,
+	})
+	if h.m.errMessage != "" {
+		t.Fatal("mismatched autosaveFinishedMsg session updated errMessage")
+	}
+
+	// 3. recoveryDiscardedMsg with error
+	discardErr := errors.New("disk permission error")
+	h.m.Update(recoveryDiscardedMsg{err: discardErr})
+	if !strings.Contains(h.m.errMessage, "Discard autosaved draft: disk permission error") {
+		t.Fatalf("errMessage = %q, want containing discard error", h.m.errMessage)
+	}
+
+	// 4. Unhandled message type
+	type customUnknownMsg struct{}
+	h.m.errMessage = ""
+	model, cmdUnknown := h.m.Update(customUnknownMsg{})
+	if model != h.m || cmdUnknown != nil {
+		t.Fatalf("unhandled msg returned cmd %v", cmdUnknown)
+	}
+}
