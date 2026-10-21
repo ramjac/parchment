@@ -622,6 +622,109 @@ func TestEditorLineCountAndLine(t *testing.T) {
 	}
 }
 
+func TestEditorLine(t *testing.T) {
+	t.Run("initial state", func(t *testing.T) {
+		ed := New()
+		if got := ed.Line(); got != 0 {
+			t.Errorf("Line() = %d, want 0", got)
+		}
+	})
+
+	t.Run("after SetValue", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Alpha\nBeta\nGamma")
+		if got := ed.Line(); got != 0 {
+			t.Errorf("Line() = %d, want 0", got)
+		}
+	})
+
+	t.Run("cursor movement up and down", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Line 0\nLine 1\nLine 2")
+
+		ed.CursorDown()
+		if got := ed.Line(); got != 1 {
+			t.Errorf("Line() after CursorDown = %d, want 1", got)
+		}
+
+		ed.CursorDown()
+		if got := ed.Line(); got != 2 {
+			t.Errorf("Line() after second CursorDown = %d, want 2", got)
+		}
+
+		// CursorDown at bottom line should not change Line
+		ed.CursorDown()
+		if got := ed.Line(); got != 2 {
+			t.Errorf("Line() after CursorDown at bottom = %d, want 2", got)
+		}
+
+		ed.CursorUp()
+		if got := ed.Line(); got != 1 {
+			t.Errorf("Line() after CursorUp = %d, want 1", got)
+		}
+
+		ed.CursorUp()
+		if got := ed.Line(); got != 0 {
+			t.Errorf("Line() after second CursorUp = %d, want 0", got)
+		}
+
+		// CursorUp at top line should not change Line
+		ed.CursorUp()
+		if got := ed.Line(); got != 0 {
+			t.Errorf("Line() after CursorUp at top = %d, want 0", got)
+		}
+	})
+
+	t.Run("line insertion and newline typing", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Line 0")
+
+		ed.Cursor = Point{Line: 0, Col: 6}
+		ed.InsertString("\nLine 1")
+		if got := ed.Line(); got != 1 {
+			t.Errorf("Line() after InsertString newline = %d, want 1", got)
+		}
+
+		ed.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if got := ed.Line(); got != 2 {
+			t.Errorf("Line() after KeyEnter = %d, want 2", got)
+		}
+	})
+
+	t.Run("undo and redo navigation", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("First line")
+		ed.Cursor = Point{Line: 0, Col: 10}
+
+		ed.InsertString("\nSecond line")
+		if got := ed.Line(); got != 1 {
+			t.Errorf("Line() before undo = %d, want 1", got)
+		}
+
+		ed.Undo()
+		if got := ed.Line(); got != 0 {
+			t.Errorf("Line() after undo = %d, want 0", got)
+		}
+
+		ed.Redo()
+		if got := ed.Line(); got != 1 {
+			t.Errorf("Line() after redo = %d, want 1", got)
+		}
+	})
+
+	t.Run("mouse press positioning", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Row 0\nRow 1\nRow 2")
+		ed.SetHeight(10)
+		ed.SetWidth(20)
+
+		ed.handleMouse(tea.MouseMsg{X: 2, Y: 2, Action: tea.MouseActionPress})
+		if got := ed.Line(); got != 2 {
+			t.Errorf("Line() after mouse press on Y=2 = %d, want 2", got)
+		}
+	})
+}
+
 func TestEditorUndoDetailed(t *testing.T) {
 	t.Run("empty undo stack", func(t *testing.T) {
 		ed := New()
