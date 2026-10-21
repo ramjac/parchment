@@ -530,15 +530,19 @@ func wrap(text string, width int, first, rest string) []string {
 	var lines []string
 	first, rest = fitPrefix(first, width), fitPrefix(rest, width)
 	prefix := first
-	line := ""
+	var line strings.Builder
+	lineWidth := 0
 	room := func() int { return max(width-runewidth.StringWidth(prefix), 1) }
 	emit := func() {
-		lines = append(lines, prefix+line)
-		prefix, line = rest, ""
+		lines = append(lines, prefix+line.String())
+		prefix = rest
+		line.Reset()
+		lineWidth = 0
 	}
 	for _, word := range words {
-		for runewidth.StringWidth(word) > room() {
-			if line != "" {
+		wWidth := runewidth.StringWidth(word)
+		for wWidth > room() {
+			if line.Len() > 0 {
 				emit()
 				continue
 			}
@@ -546,22 +550,27 @@ func wrap(text string, width int, first, rest string) []string {
 			if head == "" {
 				head = string([]rune(word)[:1])
 			}
-			line = head
+			line.WriteString(head)
 			word = strings.TrimPrefix(word, head)
 			emit()
+			wWidth = runewidth.StringWidth(word)
 		}
 		switch {
 		case word == "":
-		case line == "":
-			line = word
-		case runewidth.StringWidth(line)+1+runewidth.StringWidth(word) <= room():
-			line += " " + word
+		case line.Len() == 0:
+			line.WriteString(word)
+			lineWidth = wWidth
+		case lineWidth+1+wWidth <= room():
+			line.WriteString(" ")
+			line.WriteString(word)
+			lineWidth += 1 + wWidth
 		default:
 			emit()
-			line = word
+			line.WriteString(word)
+			lineWidth = wWidth
 		}
 	}
-	if line != "" {
+	if line.Len() > 0 {
 		emit()
 	}
 	return lines
