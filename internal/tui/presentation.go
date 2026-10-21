@@ -298,18 +298,29 @@ func (m *presentationModel) moveEditorToLine(line int) {
 // slideSourceLine finds the source line of a page's heading for cursor
 // placement. Page 0 is the title page; it skips headings inside fences.
 func slideSourceLine(source string, page int) int {
-	lines := strings.Split(source, "\n")
 	slide, fence := 0, ""
-	for index, line := range lines {
+	index := 0
+	for len(source) > 0 || index == 0 {
+		var line string
+		if idx := strings.IndexByte(source, '\n'); idx >= 0 {
+			line = source[:idx]
+			source = source[idx+1:]
+		} else {
+			line = source
+			source = ""
+		}
+
 		trimmed := strings.TrimSpace(line)
 		if fence != "" {
 			if strings.HasPrefix(trimmed, fence) {
 				fence = ""
 			}
+			index++
 			continue
 		}
 		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			fence = trimmed[:3]
+			index++
 			continue
 		}
 		if page == 0 && strings.HasPrefix(trimmed, "# ") {
@@ -321,6 +332,7 @@ func slideSourceLine(source string, page int) int {
 				return index
 			}
 		}
+		index++
 	}
 	return 0
 }
@@ -330,24 +342,34 @@ func slideSourceLine(source string, page int) int {
 // the title page.
 func pageForSourceLine(source string, line int) int {
 	slide, fence := 0, ""
-	for index, text := range strings.Split(source, "\n") {
-		if index > line {
-			break
+	index := 0
+	for index <= line && (len(source) > 0 || index == 0) {
+		var text string
+		if idx := strings.IndexByte(source, '\n'); idx >= 0 {
+			text = source[:idx]
+			source = source[idx+1:]
+		} else {
+			text = source
+			source = ""
 		}
+
 		trimmed := strings.TrimSpace(text)
 		if fence != "" {
 			if strings.HasPrefix(trimmed, fence) {
 				fence = ""
 			}
+			index++
 			continue
 		}
 		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			fence = trimmed[:3]
+			index++
 			continue
 		}
 		if strings.HasPrefix(trimmed, "## ") {
 			slide++
 		}
+		index++
 	}
 	return slide
 }
