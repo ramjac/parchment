@@ -303,3 +303,80 @@ func TestPresentationLoadErrorsAndStaleResults(t *testing.T) {
 		t.Fatalf("history error = %q", m.errMessage)
 	}
 }
+
+func TestPageForSourceLineAndSlideSourceLine(t *testing.T) {
+	source := "# Presentation Title\n\nIntro text\n\n```markdown\n## Code block slide header inside fence\n```\n\n## Slide 1\nSlide 1 content\n\n## Slide 2\n~~~\n## Fence slide 2\n~~~\nSlide 2 content\n"
+
+	if got := slideSourceLine(source, 0); got != 0 {
+		t.Errorf("slideSourceLine(page 0) = %d, want 0", got)
+	}
+	if got := slideSourceLine(source, 1); got != 8 {
+		t.Errorf("slideSourceLine(page 1) = %d, want 8", got)
+	}
+	if got := slideSourceLine(source, 2); got != 11 {
+		t.Errorf("slideSourceLine(page 2) = %d, want 11", got)
+	}
+	if got := slideSourceLine(source, 99); got != 0 {
+		t.Errorf("slideSourceLine(page 99) = %d, want 0", got)
+	}
+
+	tests := []struct {
+		line int
+		want int
+	}{
+		{-1, 0},
+		{0, 0},
+		{5, 0},
+		{7, 0},
+		{8, 1},
+		{10, 1},
+		{11, 2},
+		{14, 2},
+		{100, 2},
+	}
+
+	for _, tt := range tests {
+		if got := pageForSourceLine(source, tt.line); got != tt.want {
+			t.Errorf("pageForSourceLine(line %d) = %d, want %d", tt.line, got, tt.want)
+		}
+	}
+
+	if got := slideSourceLine("", 0); got != 0 {
+		t.Errorf("slideSourceLine(\"\", 0) = %d, want 0", got)
+	}
+	if got := pageForSourceLine("", 0); got != 0 {
+		t.Errorf("pageForSourceLine(\"\", 0) = %d, want 0", got)
+	}
+	if got := pageForSourceLine("", 5); got != 0 {
+		t.Errorf("pageForSourceLine(\"\", 5) = %d, want 0", got)
+	}
+}
+
+func TestPageForSourceLineAndSlideSourceLineTrailingNewlines(t *testing.T) {
+	source := "line 1\n## Slide 1\n"
+	if got := slideSourceLine(source, 1); got != 1 {
+		t.Errorf("slideSourceLine = %d, want 1", got)
+	}
+
+	if got := pageForSourceLine(source, 0); got != 0 {
+		t.Errorf("pageForSourceLine(line 0) = %d, want 0", got)
+	}
+	if got := pageForSourceLine(source, 1); got != 1 {
+		t.Errorf("pageForSourceLine(line 1) = %d, want 1", got)
+	}
+	if got := pageForSourceLine(source, 2); got != 1 {
+		t.Errorf("pageForSourceLine(line 2) = %d, want 1", got)
+	}
+
+	multiline := "line 1\nline 2\n## Slide 1\n"
+	splitLines := strings.Split(multiline, "\n")
+	for i := range splitLines {
+		want := 0
+		if i >= 2 {
+			want = 1
+		}
+		if got := pageForSourceLine(multiline, i); got != want {
+			t.Errorf("pageForSourceLine(multiline, line %d) = %d, want %d", i, got, want)
+		}
+	}
+}
