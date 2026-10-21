@@ -622,6 +622,46 @@ func TestEditorLineCountAndLine(t *testing.T) {
 	}
 }
 
+func TestEditorLine(t *testing.T) {
+	t.Run("default initialized model returns line 0", func(t *testing.T) {
+		ed := New()
+		if got := ed.Line(); got != 0 {
+			t.Errorf("New().Line() = %d, want 0", got)
+		}
+	})
+
+	t.Run("returns line 0 after SetValue", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Alpha\nBeta\nGamma")
+		if got := ed.Line(); got != 0 {
+			t.Errorf("Line() after SetValue = %d, want 0", got)
+		}
+	})
+
+	t.Run("reflects direct modifications to Cursor.Line", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Line 0\nLine 1\nLine 2")
+
+		ed.Cursor.Line = 2
+		if got := ed.Line(); got != 2 {
+			t.Errorf("Line() after setting Cursor.Line = 2: got %d, want 2", got)
+		}
+
+		ed.Cursor.Line = 1
+		if got := ed.Line(); got != 1 {
+			t.Errorf("Line() after setting Cursor.Line = 1: got %d, want 1", got)
+		}
+	})
+
+	t.Run("reflects cursor position after InsertString with newlines", func(t *testing.T) {
+		ed := New()
+		ed.InsertString("Hello\nWorld\nGo")
+		if got := ed.Line(); got != 2 {
+			t.Errorf("Line() after multi-line InsertString = %d, want 2", got)
+		}
+	})
+}
+
 func TestEditorUndoDetailed(t *testing.T) {
 	t.Run("empty undo stack", func(t *testing.T) {
 		ed := New()
