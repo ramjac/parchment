@@ -130,140 +130,154 @@ func (s *Service) Update(ctx context.Context, expected Presentation, source stri
 func (s *Service) Undo(ctx context.Context) (string, error) { return s.history.Undo(ctx) }
 func (s *Service) Redo(ctx context.Context) (string, error) { return s.history.Redo(ctx) }
 
+type parser struct {
+	deck            Deck
+	lineNumber      int
+	inFence         bool
+	fenceMarker     string
+	fenceListIndent int
+	listIndents     []int
+	current         *Slide
+	header          strings.Builder
+	body            strings.Builder
+	notes           strings.Builder
+}
+
+func (p *parser) flush() {
+	if p.current != nil {
+		p.current.Body = strings.Trim(p.body.String(), "\r\n")
+		p.current.Notes = strings.TrimSpace(p.notes.String())
+		p.deck.Slides = append(p.deck.Slides, *p.current)
+		p.current = nil
+		p.body.Reset()
+		p.notes.Reset()
+	}
+}
+
+func (p *parser) writeContent(line string) {
+	if p.current != nil {
+		p.body.WriteString(line + "\n")
+	} else if p.deck.Title != "" {
+		p.header.WriteString(line + "\n")
+	}
+}
+
+func (p *parser) parseLine(rawLine string) error {
+	p.lineNumber++
+	line := strings.TrimSuffix(rawLine, "\r")
+	trimmed := strings.TrimSpace(line)
+	if p.lineNumber == 1 {
+		line = strings.TrimPrefix(line, "\uFEFF")
+		trimmed = strings.TrimSpace(line)
+	}
+	if p.deck.Title == "" && trimmed != "" &&
+		(isIndentedCode(line) || !strings.HasPrefix(trimmed, "# ")) {
+		return fmt.Errorf("line %d: presentation must begin with a '# Title' heading", p.lineNumber)
+	}
+	listIndent := currentListIndent(p.listIndents)
+	listContent, itemIndent, isListItem := listItemContent(line, listIndent)
+	marker := markdownFence(trimmed)
+	markerIndent := 0
+
+	if p.inFence && p.fenceListIndent > 0 {
+		if trimmed != "" && leadingSpaces(line) < p.fenceListIndent {
+			p.inFence, p.fenceMarker, p.fenceListIndent = false, "", 0
+		} else {
+			marker, markerIndent = evalListFenceMarker(line, p.fenceListIndent, isListItem)
+		}
+	}
+
+	if !p.inFence {
+		p.listIndents = updateListIndents(p.listIndents, line, trimmed, itemIndent, isListItem)
+		listIndent = currentListIndent(p.listIndents)
+		marker, markerIndent = evalOutsideFenceMarker(line, trimmed, listContent, listIndent, itemIndent, isListItem, marker)
+	}
+
+	listContinuation := !isListItem && listIndent > 0 && leadingSpaces(line) >= listIndent
+	if marker != "" && (!isIndentedCode(line) || markerIndent > 0) {
+		if !p.inFence {
+			p.inFence, p.fenceMarker, p.fenceListIndent = true, marker, markerIndent
+		} else if marker[0] == p.fenceMarker[0] && len(marker) >= len(p.fenceMarker) &&
+			strings.TrimSpace(trimmed[len(marker):]) == "" {
+			p.inFence, p.fenceMarker, p.fenceListIndent = false, "", 0
+		}
+		p.writeContent(line)
+		return nil
+	}
+	if p.inFence || isIndentedCode(line) {
+		p.writeContent(line)
+		return nil
+	}
+	if strings.HasPrefix(trimmed, "# ") && !listContinuation {
+		if p.deck.Title != "" || p.current != nil {
+			return fmt.Errorf("line %d: only one top-level presentation title is allowed", p.lineNumber)
+		}
+		p.deck.Title = strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))
+		return nil
+	}
+	if strings.HasPrefix(trimmed, "## ") && !strings.HasPrefix(trimmed, "### ") &&
+		!listContinuation {
+		p.flush()
+		title := strings.TrimSpace(strings.TrimPrefix(trimmed, "## "))
+		title = stripAnchor(title)
+		if title == "" {
+			return fmt.Errorf("line %d: slide title is required", p.lineNumber)
+		}
+		p.current = &Slide{Title: title}
+		return nil
+	}
+	if p.deck.Title == "" {
+		if trimmed != "" {
+			return fmt.Errorf("line %d: presentation must begin with a '# Title' heading", p.lineNumber)
+		}
+		return nil
+	}
+	if strings.HasPrefix(trimmed, "//") {
+		return nil
+	}
+	if strings.HasPrefix(line, ": ") {
+		if p.current == nil {
+			return fmt.Errorf("line %d: speaker notes must follow a slide heading", p.lineNumber)
+		}
+		p.notes.WriteString(strings.TrimPrefix(line, ": ") + "\n")
+		return nil
+	}
+	p.writeContent(line)
+	return nil
+}
+
+func (p *parser) finish() (Deck, error) {
+	if p.inFence {
+		return Deck{}, errors.New("presentation contains an unclosed fenced code block")
+	}
+	p.flush()
+	if p.deck.Title == "" {
+		return Deck{}, errors.New("presentation title is required as a '# Title' heading")
+	}
+	if len(p.deck.Slides) == 0 {
+		return Deck{}, errors.New("presentation must contain at least one '## Slide' heading")
+	}
+	p.deck.Header = strings.Trim(p.header.String(), "\r\n")
+	return p.deck, nil
+}
+
 // Parse parses the presentation-oriented subset of Go present's Markdown
 // syntax: an H1 title, H2 slide headings, H3 subsections, // comments, and
 // : speaker-note lines. Markdown text is preserved for the view layer.
 func Parse(source string) (Deck, error) {
 	source = artifactfile.StripPrivateBlocks(source)
-	var deck Deck
+	var p parser
 	scanner := bufio.NewScanner(strings.NewReader(source))
 	scanner.Buffer(make([]byte, 4096), 4<<20)
-	lineNumber := 0
-	inFence := false
-	fenceMarker := ""
-	fenceListIndent := 0
-	var listIndents []int
-	var current *Slide
-	var header, body, notes strings.Builder
-	flush := func() {
-		if current != nil {
-			current.Body = strings.Trim(body.String(), "\r\n")
-			current.Notes = strings.TrimSpace(notes.String())
-			deck.Slides = append(deck.Slides, *current)
-			current = nil
-			body.Reset()
-			notes.Reset()
-		}
-	}
 	for scanner.Scan() {
-		lineNumber++
-		line := strings.TrimSuffix(scanner.Text(), "\r")
-		trimmed := strings.TrimSpace(line)
-		if lineNumber == 1 {
-			line = strings.TrimPrefix(line, "\uFEFF")
-			trimmed = strings.TrimSpace(line)
+		if err := p.parseLine(scanner.Text()); err != nil {
+			return Deck{}, err
 		}
-		if deck.Title == "" && trimmed != "" &&
-			(isIndentedCode(line) || !strings.HasPrefix(trimmed, "# ")) {
-			return Deck{}, fmt.Errorf("line %d: presentation must begin with a '# Title' heading", lineNumber)
-		}
-		listIndent := currentListIndent(listIndents)
-		listContent, itemIndent, isListItem := listItemContent(line, listIndent)
-		marker := markdownFence(trimmed)
-		markerIndent := 0
-
-		if inFence && fenceListIndent > 0 {
-			if trimmed != "" && leadingSpaces(line) < fenceListIndent {
-				inFence, fenceMarker, fenceListIndent = false, "", 0
-			} else {
-				marker, markerIndent = evalListFenceMarker(line, fenceListIndent, isListItem)
-			}
-		}
-
-		if !inFence {
-			listIndents = updateListIndents(listIndents, line, trimmed, itemIndent, isListItem)
-			listIndent = currentListIndent(listIndents)
-			marker, markerIndent = evalOutsideFenceMarker(line, trimmed, listContent, listIndent, itemIndent, isListItem, marker)
-		}
-
-		writeContent := func(line string) {
-			if current != nil {
-				body.WriteString(line + "\n")
-			} else if deck.Title != "" {
-				header.WriteString(line + "\n")
-			}
-		}
-
-		listContinuation := !isListItem && listIndent > 0 && leadingSpaces(line) >= listIndent
-		if marker != "" && (!isIndentedCode(line) || markerIndent > 0) {
-			if !inFence {
-				inFence, fenceMarker, fenceListIndent = true, marker, markerIndent
-			} else if marker[0] == fenceMarker[0] && len(marker) >= len(fenceMarker) &&
-				strings.TrimSpace(trimmed[len(marker):]) == "" {
-				inFence, fenceMarker, fenceListIndent = false, "", 0
-			}
-			writeContent(line)
-			continue
-		}
-		if inFence {
-			writeContent(line)
-			continue
-		}
-		if isIndentedCode(line) {
-			writeContent(line)
-			continue
-		}
-		if strings.HasPrefix(trimmed, "# ") && !listContinuation {
-			if deck.Title != "" || current != nil {
-				return Deck{}, fmt.Errorf("line %d: only one top-level presentation title is allowed", lineNumber)
-			}
-			deck.Title = strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))
-			continue
-		}
-		if strings.HasPrefix(trimmed, "## ") && !strings.HasPrefix(trimmed, "### ") &&
-			!listContinuation {
-			flush()
-			title := strings.TrimSpace(strings.TrimPrefix(trimmed, "## "))
-			title = stripAnchor(title)
-			if title == "" {
-				return Deck{}, fmt.Errorf("line %d: slide title is required", lineNumber)
-			}
-			current = &Slide{Title: title}
-			continue
-		}
-		if deck.Title == "" {
-			if trimmed != "" {
-				return Deck{}, fmt.Errorf("line %d: presentation must begin with a '# Title' heading", lineNumber)
-			}
-			continue
-		}
-		if strings.HasPrefix(trimmed, "//") {
-			continue
-		}
-		if strings.HasPrefix(line, ": ") {
-			if current == nil {
-				return Deck{}, fmt.Errorf("line %d: speaker notes must follow a slide heading", lineNumber)
-			}
-			notes.WriteString(strings.TrimPrefix(line, ": ") + "\n")
-			continue
-		}
-		writeContent(line)
 	}
 	if err := scanner.Err(); err != nil {
 		return Deck{}, fmt.Errorf("read presentation Markdown: %w", err)
 	}
-	if inFence {
-		return Deck{}, errors.New("presentation contains an unclosed fenced code block")
-	}
-	flush()
-	if deck.Title == "" {
-		return Deck{}, errors.New("presentation title is required as a '# Title' heading")
-	}
-	if len(deck.Slides) == 0 {
-		return Deck{}, errors.New("presentation must contain at least one '## Slide' heading")
-	}
-	deck.Header = strings.Trim(header.String(), "\r\n")
-	return deck, nil
+	return p.finish()
 }
 
 func currentListIndent(listIndents []int) int {
