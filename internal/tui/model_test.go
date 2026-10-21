@@ -637,3 +637,36 @@ func TestRun(t *testing.T) {
 		}
 	})
 }
+
+func TestModelInit(t *testing.T) {
+	t.Run("returns nil when stage is stageChooseKind", func(t *testing.T) {
+		model := NewModel(Config{
+			Path: "test.md",
+			Kind: "",
+		})
+		cmd := model.Init()
+		if cmd != nil {
+			t.Fatalf("expected nil cmd when stage is stageChooseKind, got %v", cmd)
+		}
+	})
+
+	t.Run("returns openFile cmd when kind is specified", func(t *testing.T) {
+		h := newHarness(t, artifact.NoteKind)
+		model := NewModel(Config{
+			Path:  h.path,
+			Kind:  artifact.NoteKind,
+			Notes: h.notes,
+		})
+		cmd := model.Init()
+		if cmd == nil {
+			t.Fatal("expected non-nil cmd when kind is specified, got nil")
+		}
+		// Execute the command returned by Init()
+		msg := cmd()
+		if openedMsg, ok := msg.(fileOpenedMsg); !ok {
+			t.Fatalf("expected fileOpenedMsg, got %T", msg)
+		} else if openedMsg.kind != artifact.NoteKind {
+			t.Fatalf("expected kind %s, got %s", artifact.NoteKind, openedMsg.kind)
+		}
+	})
+}
