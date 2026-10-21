@@ -581,19 +581,106 @@ func TestEditorViewRendering(t *testing.T) {
 	}
 }
 
-func TestEditorLineCountAndLine(t *testing.T) {
+func TestEditorLineCount(t *testing.T) {
+	t.Run("default initialized editor", func(t *testing.T) {
+		ed := New()
+		if got := ed.LineCount(); got != 1 {
+			t.Errorf("New().LineCount() = %d, want 1", got)
+		}
+	})
+
+	t.Run("line count after SetValue", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			input    string
+			expected int
+		}{
+			{
+				name:     "empty string",
+				input:    "",
+				expected: 1,
+			},
+			{
+				name:     "single line without trailing newline",
+				input:    "Hello World",
+				expected: 1,
+			},
+			{
+				name:     "single line with trailing newline",
+				input:    "Hello World\n",
+				expected: 2,
+			},
+			{
+				name:     "multiple lines",
+				input:    "Line 1\nLine 2\nLine 3",
+				expected: 3,
+			},
+			{
+				name:     "multiple lines with trailing newline",
+				input:    "Line 1\nLine 2\nLine 3\n",
+				expected: 4,
+			},
+			{
+				name:     "consecutive newlines",
+				input:    "Line 1\n\n\nLine 4",
+				expected: 4,
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				ed := New()
+				ed.SetValue(tc.input)
+				if got := ed.LineCount(); got != tc.expected {
+					t.Errorf("LineCount() = %d, want %d for input %q", got, tc.expected, tc.input)
+				}
+			})
+		}
+	})
+
+	t.Run("line count after buffer modifications", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Line 1\nLine 2")
+		if got := ed.LineCount(); got != 2 {
+			t.Fatalf("LineCount() initial = %d, want 2", got)
+		}
+
+		// Insert newline
+		ed.Cursor = Point{Line: 1, Col: 6}
+		ed.InsertString("\nLine 3")
+		if got := ed.LineCount(); got != 3 {
+			t.Fatalf("LineCount() after InsertString = %d, want 3", got)
+		}
+
+		// Multiline selection delete
+		ed.Selection = Selection{Anchor: Point{Line: 0, Col: 0}, Active: true}
+		ed.Cursor = Point{Line: 2, Col: 0}
+		ed.DeleteSelection()
+		if got := ed.LineCount(); got != 1 {
+			t.Fatalf("LineCount() after DeleteSelection = %d, want 1", got)
+		}
+
+		// Undo selection delete
+		ed.Undo()
+		if got := ed.LineCount(); got != 3 {
+			t.Fatalf("LineCount() after Undo = %d, want 3", got)
+		}
+
+		// Redo selection delete
+		ed.Redo()
+		if got := ed.LineCount(); got != 1 {
+			t.Fatalf("LineCount() after Redo = %d, want 1", got)
+		}
+	})
+}
+
+func TestEditorLine(t *testing.T) {
 	ed := New()
-	if count := ed.LineCount(); count != 1 {
-		t.Fatalf("New() LineCount() = %d, want 1", count)
-	}
 	if line := ed.Line(); line != 0 {
 		t.Fatalf("New() Line() = %d, want 0", line)
 	}
 
 	ed.SetValue("Line 1\nLine 2\nLine 3")
-	if count := ed.LineCount(); count != 3 {
-		t.Fatalf("SetValue() LineCount() = %d, want 3", count)
-	}
 	if line := ed.Line(); line != 0 {
 		t.Fatalf("SetValue() Line() = %d, want 0", line)
 	}
@@ -609,9 +696,6 @@ func TestEditorLineCountAndLine(t *testing.T) {
 	}
 
 	ed.InsertString("\nLine 4")
-	if count := ed.LineCount(); count != 4 {
-		t.Fatalf("InsertString() LineCount() = %d, want 4", count)
-	}
 	if line := ed.Line(); line != 3 {
 		t.Fatalf("InsertString() Line() = %d, want 3", line)
 	}
