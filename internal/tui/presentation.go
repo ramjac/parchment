@@ -298,29 +298,39 @@ func (m *presentationModel) moveEditorToLine(line int) {
 // slideSourceLine finds the source line of a page's heading for cursor
 // placement. Page 0 is the title page; it skips headings inside fences.
 func slideSourceLine(source string, page int) int {
-	lines := strings.Split(source, "\n")
 	slide, fence := 0, ""
-	for index, line := range lines {
+	index := 0
+	for {
+		var line string
+		idx := strings.IndexByte(source, '\n')
+		if idx >= 0 {
+			line = source[:idx]
+			source = source[idx+1:]
+		} else {
+			line = source
+			source = ""
+		}
+
 		trimmed := strings.TrimSpace(line)
 		if fence != "" {
 			if strings.HasPrefix(trimmed, fence) {
 				fence = ""
 			}
-			continue
-		}
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+		} else if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			fence = trimmed[:3]
-			continue
-		}
-		if page == 0 && strings.HasPrefix(trimmed, "# ") {
+		} else if page == 0 && strings.HasPrefix(trimmed, "# ") {
 			return index
-		}
-		if strings.HasPrefix(trimmed, "## ") {
+		} else if strings.HasPrefix(trimmed, "## ") {
 			slide++
 			if slide == page {
 				return index
 			}
 		}
+
+		if idx < 0 {
+			break
+		}
+		index++
 	}
 	return 0
 }
@@ -330,24 +340,33 @@ func slideSourceLine(source string, page int) int {
 // the title page.
 func pageForSourceLine(source string, line int) int {
 	slide, fence := 0, ""
-	for index, text := range strings.Split(source, "\n") {
-		if index > line {
-			break
+	index := 0
+	for index <= line {
+		var text string
+		idx := strings.IndexByte(source, '\n')
+		if idx >= 0 {
+			text = source[:idx]
+			source = source[idx+1:]
+		} else {
+			text = source
+			source = ""
 		}
+
 		trimmed := strings.TrimSpace(text)
 		if fence != "" {
 			if strings.HasPrefix(trimmed, fence) {
 				fence = ""
 			}
-			continue
-		}
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+		} else if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			fence = trimmed[:3]
-			continue
-		}
-		if strings.HasPrefix(trimmed, "## ") {
+		} else if strings.HasPrefix(trimmed, "## ") {
 			slide++
 		}
+
+		if idx < 0 {
+			break
+		}
+		index++
 	}
 	return slide
 }
