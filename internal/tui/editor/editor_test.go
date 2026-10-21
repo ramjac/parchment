@@ -413,3 +413,44 @@ func TestEditorViewRendering(t *testing.T) {
 		t.Fatalf("View() with selection returned empty")
 	}
 }
+
+func TestEditorLineCountAndLine(t *testing.T) {
+	ed := New()
+	if count := ed.LineCount(); count != 1 {
+		t.Fatalf("New() LineCount() = %d, want 1", count)
+	}
+	if line := ed.Line(); line != 0 {
+		t.Fatalf("New() Line() = %d, want 0", line)
+	}
+
+	ed.SetValue("Line 1\nLine 2\nLine 3")
+	if count := ed.LineCount(); count != 3 {
+		t.Fatalf("SetValue() LineCount() = %d, want 3", count)
+	}
+	if line := ed.Line(); line != 0 {
+		t.Fatalf("SetValue() Line() = %d, want 0", line)
+	}
+
+	ed.CursorDown()
+	if line := ed.Line(); line != 1 {
+		t.Fatalf("CursorDown() Line() = %d, want 1", line)
+	}
+
+	ed.CursorDown()
+	if line := ed.Line(); line != 2 {
+		t.Fatalf("CursorDown() Line() = %d, want 2", line)
+	}
+
+	ed.InsertString("\nLine 4")
+	if count := ed.LineCount(); count != 4 {
+		t.Fatalf("InsertString() LineCount() = %d, want 4", count)
+	}
+	if line := ed.Line(); line != 3 {
+		t.Fatalf("InsertString() Line() = %d, want 3", line)
+	}
+
+	ed.CursorUp()
+	if line := ed.Line(); line != 2 {
+		t.Fatalf("CursorUp() Line() = %d, want 2", line)
+	}
+}
