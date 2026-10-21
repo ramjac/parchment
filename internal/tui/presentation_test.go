@@ -478,3 +478,208 @@ func TestPresentationViewBrowseModeAndScrolling(t *testing.T) {
 		t.Fatalf("error message not displayed properly in view:\n%s", view)
 	}
 }
+
+func TestPresentationUpdateMouseAndGenericMessages(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+
+	// In browse mode: MouseMsg and generic msg return (m, nil)
+	mouseMsg := tea.MouseMsg{X: 10, Y: 10, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
+	updatedModel, cmd := m.Update(mouseMsg)
+	if updatedModel != m || cmd != nil {
+		t.Fatalf("browse mode MouseMsg returned model %v, cmd %v", updatedModel, cmd)
+	}
+
+	type dummyMsg struct{}
+	updatedModel, cmd = m.Update(dummyMsg{})
+	if updatedModel != m || cmd != nil {
+		t.Fatalf("browse mode generic msg returned model %v, cmd %v", updatedModel, cmd)
+	}
+
+	// In edit mode: MouseMsg and generic msg are forwarded to m.editor
+	drivePresentation(t, m, sheetKey("e"))
+	if !m.editing {
+		t.Fatal("e did not enter edit mode")
+	}
+
+	updatedModel, _ = m.Update(mouseMsg)
+	if updatedModel != m {
+		t.Fatal("edit mode MouseMsg did not return model")
+	}
+
+	updatedModel, _ = m.Update(dummyMsg{})
+	if updatedModel != m {
+		t.Fatal("edit mode generic msg did not return model")
+	}
+}
+
+func TestPresentationUpdateStaleAndPendingOperations(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+
+	// Stale presentationSavedMsg and presentationHistoryMsg (msg.seq != m.seq)
+	m.seq = 5
+	updatedModel, cmd := m.Update(presentationSavedMsg{seq: 1, err: nil})
+	if updatedModel != m || cmd != nil {
+		t.Fatalf("stale presentationSavedMsg returned model %v, cmd %v", updatedModel, cmd)
+	}
+
+	updatedModel, cmd = m.Update(presentationHistoryMsg{seq: 1, err: nil})
+	if updatedModel != m || cmd != nil {
+		t.Fatalf("stale presentationHistoryMsg returned model %v, cmd %v", updatedModel, cmd)
+	}
+
+	// Pending state in browse mode: key press sets "Working… (esc cancels)"
+	m.pending = true
+	m.Update(sheetKey("x"))
+	if m.status != "Working… (esc cancels)" {
+		t.Fatalf("status = %q, want 'Working… (esc cancels)'", m.status)
+	}
+	m.cancelPending()
+
+	// Pending state in edit mode: esc cancels, other key shows "Saving… (esc cancels)"
+	drivePresentation(t, m, sheetKey("e"))
+	m.pending = true
+	m.Update(sheetKey("x"))
+	if m.status != "Saving… (esc cancels)" {
+		t.Fatalf("status = %q, want 'Saving… (esc cancels)'", m.status)
+	}
+
+	m.Update(sheetKey("esc"))
+	if m.pending || m.status != "Save cancelled" {
+		t.Fatalf("after esc while pending in edit mode: pending %t, status %q", m.pending, m.status)
+	}
+}
+
+func TestPresentationUpdateEditKeysAndSelection(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+	drivePresentation(t, m, sheetKey("e"))
+
+	// Ctrl+C with active selection forwards to editor instead of quitting
+	m.editor.Selection.Anchor = m.editor.Cursor
+	m.editor.Selection.Active = true
+	msg := drivePresentation(t, m, sheetKey("ctrl+c"))
+	if _, quit := msg.(tea.QuitMsg); quit {
+		t.Fatal("ctrl+c with active selection quit the app")
+	}
+
+	// Ctrl+Y and Ctrl+Shift+Z when editor can redo
+	m.editor.Selection.Active = false
+	drivePresentation(t, m, sheetKey("a"))
+	m.editor.Undo()
+	drivePresentation(t, m, sheetKey("ctrl+y"))
+	if !strings.Contains(m.editor.Value(), "a") {
+		t.Fatalf("after ctrl+y redo: source = %q", m.editor.Value())
+	}
+	m.editor.Undo()
+	drivePresentation(t, m, sheetKey("ctrl+shift+z"))
+	if !strings.Contains(m.editor.Value(), "a") {
+		t.Fatalf("after ctrl+shift+z redo: source = %q", m.editor.Value())
+	}
+
+	// Ctrl+Z / Ctrl+R when editor cannot undo/redo triggers backend service history
+	m.editor.SetValue(m.item.Source) // Fresh editor state with empty undo/redo stacks
+	m.Update(sheetKey("ctrl+z"))
+	if !m.pending {
+		t.Fatal("ctrl+z when editor cannot undo did not trigger service undo")
+	}
+	m.cancelPending()
+
+	m.Update(sheetKey("ctrl+r"))
+	if !m.pending {
+		t.Fatal("ctrl+r when editor cannot redo did not trigger service redo")
+	}
+	m.cancelPending()
+}
+
+func TestPresentationUpdateBrowseKeysAndNavigation(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+
+	// Test key aliases in browse mode: 'n' / 'p', 'j' / 'k', 'g' / 'G', pgup / pgdown
+	drivePresentation(t, m, sheetKey("n"))
+	if m.page != 1 {
+		t.Fatalf("after 'n': page = %d, want 1", m.page)
+	}
+	drivePresentation(t, m, sheetKey("p"))
+	if m.page != 0 {
+		t.Fatalf("after 'p': page = %d, want 0", m.page)
+	}
+
+	drivePresentation(t, m, sheetKey("n")) // go to slide 1
+	m.height = 6                           // reduce height so visibleLines() = 1 and scroll limit > 0
+	drivePresentation(t, m, sheetKey("j"))
+	if m.scroll == 0 {
+		t.Fatalf("after 'j': scroll = %d, want > 0", m.scroll)
+	}
+	drivePresentation(t, m, sheetKey("k"))
+	if m.scroll != 0 {
+		t.Fatalf("after 'k': scroll = %d, want 0", m.scroll)
+	}
+	m.height = 30 // restore height
+
+	drivePresentation(t, m, sheetKey("G"))
+	if m.page != len(m.deck.Slides) {
+		t.Fatalf("after 'G': page = %d, want %d", m.page, len(m.deck.Slides))
+	}
+	drivePresentation(t, m, sheetKey("g"))
+	if m.page != 0 {
+		t.Fatalf("after 'g': page = %d, want 0", m.page)
+	}
+
+	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyPgDown})
+	if m.page != 1 {
+		t.Fatalf("after pgdown: page = %d, want 1", m.page)
+	}
+	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyPgUp})
+	if m.page != 0 {
+		t.Fatalf("after pgup: page = %d, want 0", m.page)
+	}
+
+	// Redo key aliases in browse mode: ctrl+y and ctrl+shift+z
+	m.Update(sheetKey("ctrl+y"))
+	if !m.pending {
+		t.Fatal("ctrl+y in browse mode did not trigger redo")
+	}
+	m.cancelPending()
+
+	m.Update(sheetKey("ctrl+shift+z"))
+	if !m.pending {
+		t.Fatal("ctrl+shift+z in browse mode did not trigger redo")
+	}
+	m.cancelPending()
+
+	// Keys when !m.loaded (other than 'r', 'esc', 'q', 'ctrl+c') are ignored
+	m.loaded = false
+	drivePresentation(t, m, sheetKey("n"))
+	if m.page != 0 {
+		t.Fatalf("key press when !m.loaded modified state: page = %d", m.page)
+	}
+}
+
+func TestPresentationFencedCodeBlocksAndEmptyNotes(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+
+	// Source with fenced code blocks containing headings and slide with empty speaker notes
+	sourceWithFence := "# Fenced Title\n\n```\n# Code Heading inside backtick fence\n## Code Slide Heading inside backtick fence\n```\n\n~~~\n# Code Heading inside tilde fence\n## Code Slide Heading inside tilde fence\n~~~\n\n## Real Slide 1\n\nBody of slide 1\n\n<!-- parchment-notes\n-->\n"
+	m.setItem(presentation.Presentation{Source: sourceWithFence})
+
+	if m.pageCount() != 2 {
+		t.Fatalf("pageCount = %d, want 2 (fenced headings should be ignored)", m.pageCount())
+	}
+
+	line := slideSourceLine(sourceWithFence, 1)
+	if line <= 0 {
+		t.Fatalf("slideSourceLine for slide 1 = %d, want > 0", line)
+	}
+
+	page := pageForSourceLine(sourceWithFence, line)
+	if page != 1 {
+		t.Fatalf("pageForSourceLine = %d, want 1", page)
+	}
+
+	// Toggle speaker notes on slide with empty notes
+	drivePresentation(t, m, sheetKey("n"))
+	drivePresentation(t, m, sheetKey("s"))
+	view := m.View()
+	if !strings.Contains(view, "(none)") {
+		t.Fatalf("empty speaker notes did not render '(none)':\n%s", view)
+	}
+}
