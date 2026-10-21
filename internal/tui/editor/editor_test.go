@@ -276,7 +276,6 @@ func TestEditorUndoAndRedo(t *testing.T) {
 		t.Fatalf("Ctrl+R failed: Value = %q, want %q", ed.Value(), "Hello World")
 	}
 }
-
 func TestEditorCanRedo(t *testing.T) {
 	ed := New()
 	ed.SetValue("Initial")
@@ -319,6 +318,40 @@ func TestEditorCanRedo(t *testing.T) {
 	ed.SetValue("Reset")
 	if ed.CanRedo() {
 		t.Fatal("CanRedo should return false after SetValue clears redo stack")
+	}
+}
+
+func TestEditorCanUndo(t *testing.T) {
+	ed := New()
+	if ed.CanUndo() {
+		t.Fatal("CanUndo() should be false for a newly created editor")
+	}
+
+	ed.SetValue("Initial Content")
+	if ed.CanUndo() {
+		t.Fatal("CanUndo() should be false after SetValue()")
+	}
+
+	ed.InsertString(" Additional Content")
+	if !ed.CanUndo() {
+		t.Fatal("CanUndo() should be true after InsertString()")
+	}
+
+	ed.Undo()
+	if ed.CanUndo() {
+		t.Fatal("CanUndo() should be false after undoing back to initial state")
+	}
+
+	ed.InsertRune('X')
+	if !ed.CanUndo() {
+		t.Fatal("CanUndo() should be true after InsertRune()")
+	}
+
+	ed.Selection = Selection{Anchor: Point{Line: 0, Col: 0}, Active: true}
+	ed.Cursor = Point{Line: 0, Col: 1}
+	ed.DeleteSelection()
+	if !ed.CanUndo() {
+		t.Fatal("CanUndo() should be true after DeleteSelection()")
 	}
 }
 func TestEditorMouseWheelAndPageUpDown(t *testing.T) {
