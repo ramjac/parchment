@@ -731,6 +731,112 @@ func TestEditorUndoDetailed(t *testing.T) {
 			t.Fatalf("Undo count = %d, want 200", undoCount)
 		}
 	})
+
+	t.Run("undo resets lastEditType and pushes to redoStack", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Hello")
+		ed.Cursor = Point{Line: 0, Col: 5}
+
+		ed.InsertRune('a') // lastEditType becomes editTyping
+		if ed.lastEditType != editTyping {
+			t.Fatalf("lastEditType = %v, want editTyping", ed.lastEditType)
+		}
+		if ed.CanRedo() {
+			t.Fatal("CanRedo should be false before Undo")
+		}
+
+		if !ed.Undo() {
+			t.Fatal("Undo should return true")
+		}
+
+		if ed.lastEditType != editNone {
+			t.Fatalf("lastEditType after Undo = %v, want editNone", ed.lastEditType)
+		}
+		if !ed.CanRedo() {
+			t.Fatal("CanRedo should be true after Undo")
+		}
+
+		// Ensure next typing edit after Undo creates a new snapshot because lastEditType was editNone
+		ed.InsertRune('?')
+		if !ed.Undo() {
+			t.Fatal("Undo after new typing post-undo should succeed")
+		}
+		if ed.Value() != "Hello" {
+			t.Fatalf("Value = %q, want %q", ed.Value(), "Hello")
+		}
+	})
+
+	t.Run("undo adjusts viewport and visible cursor", func(t *testing.T) {
+		ed := New()
+		lines := make([]string, 50)
+		for i := range lines {
+			lines[i] = "line " + string(rune('A'+i%26))
+		}
+		ed.SetValue(strings.Join(lines, "\n"))
+		ed.SetWidth(10)
+		ed.SetHeight(5)
+
+		// Move cursor to line 0 col 0, save snapshot by typing string
+		ed.Cursor = Point{Line: 0, Col: 0}
+		ed.InsertString("NEW ") // snapshot saved at line 0 col 0
+
+		// Now move cursor far down to line 40
+		ed.Cursor = Point{Line: 40, Col: 0}
+		ed.ensureCursorVisible()
+		if ed.TopLine == 0 {
+			t.Fatalf("TopLine = %d, expected > 0 after moving cursor to line 40", ed.TopLine)
+		}
+
+		// Undo should restore cursor to line 0 col 4 (after "NEW " insertion restored)
+		if !ed.Undo() {
+			t.Fatal("Undo failed")
+		}
+
+		if ed.Cursor != (Point{Line: 0, Col: 0}) {
+			t.Fatalf("Cursor after Undo = %+v, want Point{Line: 0, Col: 0}", ed.Cursor)
+		}
+		if ed.TopLine != 0 {
+			t.Fatalf("TopLine after Undo = %d, want 0", ed.TopLine)
+		}
+	})
+
+	t.Run("undo key binding ctrl+z", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Original")
+		ed.Cursor = Point{Line: 0, Col: len("Original")}
+		ed.Focus()
+
+		ed.InsertString(" Modified")
+		if ed.Value() != "Original Modified" {
+			t.Fatalf("Value before Ctrl+Z = %q", ed.Value())
+		}
+
+		ed.Update(tea.KeyMsg{Type: tea.KeyCtrlZ})
+		if ed.Value() != "Original" {
+			t.Fatalf("Value after Ctrl+Z = %q, want %q", ed.Value(), "Original")
+		}
+	})
+
+	t.Run("undo newline and backspace operations", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("First\nSecond")
+		ed.Cursor = Point{Line: 1, Col: 6}
+		ed.Focus()
+
+		// Backspace at line 1 col 0 merges lines
+		ed.Cursor = Point{Line: 1, Col: 0}
+		ed.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		if ed.Value() != "FirstSecond" {
+			t.Fatalf("Value after Backspace = %q, want %q", ed.Value(), "FirstSecond")
+		}
+
+		if !ed.Undo() {
+			t.Fatal("Undo Backspace failed")
+		}
+		if ed.Value() != "First\nSecond" {
+			t.Fatalf("Value after Undo Backspace = %q, want %q", ed.Value(), "First\nSecond")
+		}
+	})
 }
 
 func TestSetValueResetState(t *testing.T) {
