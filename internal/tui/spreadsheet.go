@@ -489,15 +489,7 @@ func fitCell(value string, width int) string {
 	return runewidth.FillRight(value, width)
 }
 
-func (m *spreadsheetModel) View() string {
-	if m.width < 20 || m.height < spreadsheetChromeLines+1 {
-		return "Terminal too small. Press q to quit."
-	}
-	accent := lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
-	muted := lipgloss.NewStyle().Foreground(borderColor)
-	selected := lipgloss.NewStyle().Reverse(true)
-	var b strings.Builder
-
+func (m *spreadsheetModel) renderHeader() string {
 	title := "Spreadsheet"
 	if m.loaded {
 		title = m.book.Title
@@ -509,16 +501,23 @@ func (m *spreadsheetModel) View() string {
 	if m.path != "" {
 		header += "  " + sanitizeTerminalLine(m.path)
 	}
-	b.WriteString(accent.Render(runewidth.Truncate(header, m.width, "…")) + "\n")
+	accent := lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
+	return accent.Render(runewidth.Truncate(header, m.width, "…"))
+}
 
+func (m *spreadsheetModel) renderFormulaBar() string {
 	reference := spreadsheet.CellName(m.row+1, m.column+1)
 	if m.editing {
-		b.WriteString(reference + " > " + m.input.View() + "\n")
-	} else {
-		b.WriteString(runewidth.Truncate(reference+" │ "+sanitizeTerminalLine(cellDraft(m.cell(m.row, m.column))), m.width, "…") + "\n")
+		return reference + " > " + m.input.View()
 	}
+	return runewidth.Truncate(reference+" │ "+sanitizeTerminalLine(cellDraft(m.cell(m.row, m.column))), m.width, "…")
+}
 
+func (m *spreadsheetModel) renderGrid() string {
+	muted := lipgloss.NewStyle().Foreground(borderColor)
+	selected := lipgloss.NewStyle().Reverse(true)
 	var gridBuf strings.Builder
+
 	rowWidth := m.rowHeaderWidth()
 	columns := m.visibleColumns()
 	line := strings.Repeat(" ", rowWidth)
@@ -546,24 +545,40 @@ func (m *spreadsheetModel) View() string {
 	}
 
 	paneHeight := max(m.height-4, 3)
-	pane := lipgloss.NewStyle().Width(max(m.width, 20)).Height(paneHeight).
+	return lipgloss.NewStyle().Width(max(m.width, 20)).Height(paneHeight).
 		Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1).Render(gridBuf.String())
+}
 
-	b.WriteString(pane + "\n")
-
+func (m *spreadsheetModel) renderStatus() string {
 	status := m.status
 	if m.errMessage != "" {
 		status = "Error: " + m.errMessage
 	} else if status == "" && m.loaded {
 		status = fmt.Sprintf("%d×%d", len(m.book.Sheets[m.sheet].Rows), len(m.book.Sheets[m.sheet].Rows[0]))
 	}
-	b.WriteString(runewidth.Truncate(sanitizeTerminalLine(status), m.width, "…") + "\n")
+	return runewidth.Truncate(sanitizeTerminalLine(status), m.width, "…")
+}
+
+func (m *spreadsheetModel) renderHelp() string {
+	muted := lipgloss.NewStyle().Foreground(borderColor)
 	help := "arrows move • enter edit • del clear • f formulas • tab sheet • u undo • ctrl+r redo • r reload • esc/q quit"
 	if m.editing {
 		help = "enter save • esc cancel • =formula • 'literal"
 	} else if !m.loaded {
 		help = "r retry • esc/q quit"
 	}
-	b.WriteString(muted.Render(runewidth.Truncate(help, m.width, "…")))
+	return muted.Render(runewidth.Truncate(help, m.width, "…"))
+}
+
+func (m *spreadsheetModel) View() string {
+	if m.width < 20 || m.height < spreadsheetChromeLines+1 {
+		return "Terminal too small. Press q to quit."
+	}
+	var b strings.Builder
+	b.WriteString(m.renderHeader() + "\n")
+	b.WriteString(m.renderFormulaBar() + "\n")
+	b.WriteString(m.renderGrid() + "\n")
+	b.WriteString(m.renderStatus() + "\n")
+	b.WriteString(m.renderHelp())
 	return b.String()
 }
