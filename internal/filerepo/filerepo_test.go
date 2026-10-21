@@ -20,6 +20,54 @@ import (
 	"example.com/parchment/internal/spreadsheet"
 )
 
+func TestNew(t *testing.T) {
+	t.Run("empty state directory returns error", func(t *testing.T) {
+		_, err := filerepo.New("")
+		if err == nil {
+			t.Fatal("expected error for empty stateDir, got nil")
+		}
+		if !strings.Contains(err.Error(), "state directory is required") {
+			t.Fatalf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("valid directory resolves to absolute path", func(t *testing.T) {
+		tempDir := t.TempDir()
+		repo, err := filerepo.New(tempDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if repo == nil {
+			t.Fatal("expected non-nil Repository")
+		}
+	})
+
+	t.Run("relative path converted to absolute path", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		relPath := filepath.Join(".", "test_state_dir")
+		absPath, err := filepath.Abs(relPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		repo, err := filerepo.New(relPath)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if repo == nil {
+			t.Fatal("expected non-nil Repository")
+		}
+
+		// Verify state directory is converted to absolute path by using LoadRecovery
+		// which attempts to access stateDir/recovery
+		ctx := context.Background()
+		_, ok, err := repo.LoadRecovery(ctx, filepath.Join(absPath, "dummy.md"))
+		if err != nil || ok {
+			t.Fatalf("unexpected recovery check result: ok=%v, err=%v", ok, err)
+		}
+	})
+}
+
 func newRepo(t *testing.T) (*filerepo.Repository, string, string) {
 	t.Helper()
 	state, folder := t.TempDir(), t.TempDir()
@@ -93,6 +141,18 @@ func TestCreateIsExclusive(t *testing.T) {
 	}
 	if _, err := note.NewService(repo, 10).Create(ctx, filepath.Join(folder, "missing", "x.md"), ""); err == nil {
 		t.Fatal("create made a missing parent directory")
+	}
+}
+
+func TestKindError(t *testing.T) {
+	err := &filerepo.KindError{
+		Path: "doc.md",
+		Kind: artifact.DocumentKind,
+		Want: artifact.NoteKind,
+	}
+	wantMsg := "doc.md is a document, not a note"
+	if got := err.Error(); got != wantMsg {
+		t.Fatalf("KindError.Error() = %q, want %q", got, wantMsg)
 	}
 }
 

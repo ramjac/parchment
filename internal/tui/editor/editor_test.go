@@ -8,6 +8,35 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+func TestEditorNew(t *testing.T) {
+	ed := New()
+
+	if len(ed.Lines) != 1 || len(ed.Lines[0]) != 0 {
+		t.Fatalf("New().Lines = %v, want [][]rune{{}}", ed.Lines)
+	}
+	if ed.Width != 80 {
+		t.Fatalf("New().Width = %d, want 80", ed.Width)
+	}
+	if ed.Height != 20 {
+		t.Fatalf("New().Height = %d, want 20", ed.Height)
+	}
+	if !ed.Focused {
+		t.Fatalf("New().Focused = false, want true")
+	}
+	if ed.Cursor.Line != 0 || ed.Cursor.Col != 0 {
+		t.Fatalf("New().Cursor = %+v, want Point{Line: 0, Col: 0}", ed.Cursor)
+	}
+	if ed.Selection.Active {
+		t.Fatalf("New().Selection.Active = true, want false")
+	}
+	if ed.Value() != "" {
+		t.Fatalf("New().Value() = %q, want %q", ed.Value(), "")
+	}
+	if ed.LineCount() != 1 {
+		t.Fatalf("New().LineCount() = %d, want 1", ed.LineCount())
+	}
+}
+
 func TestEditorSetValueAndValue(t *testing.T) {
 	ed := New()
 	content := "Hello\nWorld\n"
@@ -247,6 +276,84 @@ func TestEditorUndoAndRedo(t *testing.T) {
 		t.Fatalf("Ctrl+R failed: Value = %q, want %q", ed.Value(), "Hello World")
 	}
 }
+func TestEditorCanRedo(t *testing.T) {
+	ed := New()
+	ed.SetValue("Initial")
+
+	if ed.CanRedo() {
+		t.Fatal("CanRedo should return false initially")
+	}
+
+	ed.InsertString(" edit")
+	if ed.CanRedo() {
+		t.Fatal("CanRedo should return false after edit without undo")
+	}
+
+	ed.Undo()
+	if !ed.CanRedo() {
+		t.Fatal("CanRedo should return true after undo")
+	}
+
+	ed.Redo()
+	if ed.CanRedo() {
+		t.Fatal("CanRedo should return false after redo")
+	}
+
+	// Undo again, then make a new edit; redo stack should be cleared
+	ed.Undo()
+	if !ed.CanRedo() {
+		t.Fatal("CanRedo should return true after second undo")
+	}
+
+	ed.InsertString(" another edit")
+	if ed.CanRedo() {
+		t.Fatal("CanRedo should return false after new edit clears redo stack")
+	}
+
+	// Undo and SetValue reset
+	ed.Undo()
+	if !ed.CanRedo() {
+		t.Fatal("CanRedo should return true after undo")
+	}
+	ed.SetValue("Reset")
+	if ed.CanRedo() {
+		t.Fatal("CanRedo should return false after SetValue clears redo stack")
+	}
+}
+
+func TestEditorCanUndo(t *testing.T) {
+	ed := New()
+	if ed.CanUndo() {
+		t.Fatal("CanUndo() should be false for a newly created editor")
+	}
+
+	ed.SetValue("Initial Content")
+	if ed.CanUndo() {
+		t.Fatal("CanUndo() should be false after SetValue()")
+	}
+
+	ed.InsertString(" Additional Content")
+	if !ed.CanUndo() {
+		t.Fatal("CanUndo() should be true after InsertString()")
+	}
+
+	ed.Undo()
+	if ed.CanUndo() {
+		t.Fatal("CanUndo() should be false after undoing back to initial state")
+	}
+
+	ed.InsertRune('X')
+	if !ed.CanUndo() {
+		t.Fatal("CanUndo() should be true after InsertRune()")
+	}
+
+	ed.Selection = Selection{Anchor: Point{Line: 0, Col: 0}, Active: true}
+	ed.Cursor = Point{Line: 0, Col: 1}
+	ed.DeleteSelection()
+	if !ed.CanUndo() {
+		t.Fatal("CanUndo() should be true after DeleteSelection()")
+	}
+}
 func TestEditorMouseWheelAndPageUpDown(t *testing.T) {
 	ed := New()
 	lines := make([]string, 30)
@@ -304,5 +411,46 @@ func TestEditorViewRendering(t *testing.T) {
 	selectedView := ed.View()
 	if selectedView == "" {
 		t.Fatalf("View() with selection returned empty")
+	}
+}
+
+func TestEditorLineCountAndLine(t *testing.T) {
+	ed := New()
+	if count := ed.LineCount(); count != 1 {
+		t.Fatalf("New() LineCount() = %d, want 1", count)
+	}
+	if line := ed.Line(); line != 0 {
+		t.Fatalf("New() Line() = %d, want 0", line)
+	}
+
+	ed.SetValue("Line 1\nLine 2\nLine 3")
+	if count := ed.LineCount(); count != 3 {
+		t.Fatalf("SetValue() LineCount() = %d, want 3", count)
+	}
+	if line := ed.Line(); line != 0 {
+		t.Fatalf("SetValue() Line() = %d, want 0", line)
+	}
+
+	ed.CursorDown()
+	if line := ed.Line(); line != 1 {
+		t.Fatalf("CursorDown() Line() = %d, want 1", line)
+	}
+
+	ed.CursorDown()
+	if line := ed.Line(); line != 2 {
+		t.Fatalf("CursorDown() Line() = %d, want 2", line)
+	}
+
+	ed.InsertString("\nLine 4")
+	if count := ed.LineCount(); count != 4 {
+		t.Fatalf("InsertString() LineCount() = %d, want 4", count)
+	}
+	if line := ed.Line(); line != 3 {
+		t.Fatalf("InsertString() Line() = %d, want 3", line)
+	}
+
+	ed.CursorUp()
+	if line := ed.Line(); line != 2 {
+		t.Fatalf("CursorUp() Line() = %d, want 2", line)
 	}
 }
