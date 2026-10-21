@@ -835,3 +835,130 @@ func TestSetValueEdgeCases(t *testing.T) {
 		})
 	}
 }
+
+func TestEditorUndo(t *testing.T) {
+	t.Run("empty undo stack returns false", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Initial Content")
+		if ed.Undo() {
+			t.Fatal("Undo() = true, want false when undo stack is empty")
+		}
+		if ed.Value() != "Initial Content" {
+			t.Fatalf("Value() = %q, want %q", ed.Value(), "Initial Content")
+		}
+	})
+
+	t.Run("restores buffer state and resets selection", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Hello World")
+		ed.Cursor = Point{Line: 0, Col: 11}
+		ed.InsertString("!!!")
+
+		// Create an active selection before undo
+		ed.Selection = Selection{Anchor: Point{Line: 0, Col: 0}, Active: true}
+
+		if !ed.Undo() {
+			t.Fatal("Undo() = false, want true")
+		}
+
+		if ed.Value() != "Hello World" {
+			t.Fatalf("Value() = %q, want %q", ed.Value(), "Hello World")
+		}
+		if ed.Cursor != (Point{Line: 0, Col: 11}) {
+			t.Fatalf("Cursor = %+v, want Point{0, 11}", ed.Cursor)
+		}
+		if ed.StickyCol != 11 {
+			t.Fatalf("StickyCol = %d, want 11", ed.StickyCol)
+		}
+		if ed.Selection.Active {
+			t.Fatal("Selection.Active = true, want false after Undo")
+		}
+		if ed.Selection.Anchor != ed.Cursor {
+			t.Fatalf("Selection.Anchor = %+v, want %+v", ed.Selection.Anchor, ed.Cursor)
+		}
+	})
+
+	t.Run("pushes pre-undo state to redo stack and resets lastEditType", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Original")
+		ed.Cursor = Point{Line: 0, Col: 8}
+
+		ed.InsertString(" Modified")
+		if ed.CanRedo() {
+			t.Fatal("CanRedo() = true before Undo, want false")
+		}
+
+		if !ed.Undo() {
+			t.Fatal("Undo() failed")
+		}
+
+		if !ed.CanRedo() {
+			t.Fatal("CanRedo() = false after Undo, want true")
+		}
+		if ed.lastEditType != editNone {
+			t.Fatalf("lastEditType = %v, want editNone", ed.lastEditType)
+		}
+
+		// Because lastEditType is editNone, typing a new rune should immediately save a snapshot
+		ed.InsertRune('A')
+		if len(ed.undoStack) != 1 {
+			t.Fatalf("len(undoStack) = %d, want 1 after typing with lastEditType=editNone", len(ed.undoStack))
+		}
+	})
+
+	t.Run("adjusts viewport when restoring cursor outside visible area", func(t *testing.T) {
+		ed := New()
+		ed.SetWidth(10)
+		ed.SetHeight(5)
+		ed.SetValue("Line 0\nLine 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7")
+
+		// Cursor at top
+		ed.Cursor = Point{Line: 0, Col: 0}
+		ed.TopLine = 0
+
+		// Insert newline string at top, pushing cursor far down
+		ed.InsertString("\n\n\n\n\n\n\nNew Top")
+
+		// Scroll viewport down manually
+		ed.TopLine = 7
+
+		// Undo the insertion, returning cursor to (0,0)
+		if !ed.Undo() {
+			t.Fatal("Undo() failed")
+		}
+
+		if ed.Cursor != (Point{Line: 0, Col: 0}) {
+			t.Fatalf("Cursor = %+v, want Point{0,0}", ed.Cursor)
+		}
+		if ed.TopLine != 0 {
+			t.Fatalf("TopLine after Undo = %d, want 0", ed.TopLine)
+		}
+	})
+
+	t.Run("multi-step LIFO undo operations across edit types", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Alpha")
+		ed.Cursor = Point{Line: 0, Col: 5}
+
+		ed.InsertString(" Beta")  // snapshot 1
+		ed.InsertString(" Gamma") // snapshot 2
+		ed.InsertRune('\n')       // snapshot 3
+
+		if got, want := ed.Value(), "Alpha Beta Gamma\n"; got != want {
+			t.Fatalf("Value = %q, want %q", got, want)
+		}
+
+		if !ed.Undo() || ed.Value() != "Alpha Beta Gamma" {
+			t.Fatalf("Undo 1 failed, Value = %q", ed.Value())
+		}
+		if !ed.Undo() || ed.Value() != "Alpha Beta" {
+			t.Fatalf("Undo 2 failed, Value = %q", ed.Value())
+		}
+		if !ed.Undo() || ed.Value() != "Alpha" {
+			t.Fatalf("Undo 3 failed, Value = %q", ed.Value())
+		}
+		if ed.Undo() {
+			t.Fatal("Undo 4 should return false when undo stack empty")
+		}
+	})
+}
