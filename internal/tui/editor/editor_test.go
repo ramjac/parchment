@@ -50,6 +50,90 @@ func TestEditorSetValueAndValue(t *testing.T) {
 	}
 }
 
+func TestEditorValue(t *testing.T) {
+	t.Run("default initialized editor", func(t *testing.T) {
+		ed := New()
+		if got := ed.Value(); got != "" {
+			t.Errorf("New().Value() = %q, want %q", got, "")
+		}
+	})
+
+	t.Run("various string values via SetValue", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			input    string
+			expected string
+		}{
+			{
+				name:     "empty string",
+				input:    "",
+				expected: "",
+			},
+			{
+				name:     "single line no trailing newline",
+				input:    "Hello World",
+				expected: "Hello World",
+			},
+			{
+				name:     "single line with trailing newline",
+				input:    "Hello World\n",
+				expected: "Hello World\n",
+			},
+			{
+				name:     "multiple lines no trailing newline",
+				input:    "Line 1\nLine 2\nLine 3",
+				expected: "Line 1\nLine 2\nLine 3",
+			},
+			{
+				name:     "multiple lines with trailing newline",
+				input:    "Line 1\nLine 2\nLine 3\n",
+				expected: "Line 1\nLine 2\nLine 3\n",
+			},
+			{
+				name:     "consecutive newlines",
+				input:    "Line 1\n\n\nLine 4",
+				expected: "Line 1\n\n\nLine 4",
+			},
+			{
+				name:     "unicode text",
+				input:    "Hello 🌍\n日本語 text\n✨",
+				expected: "Hello 🌍\n日本語 text\n✨",
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				ed := New()
+				ed.SetValue(tc.input)
+				if got := ed.Value(); got != tc.expected {
+					t.Errorf("Value() = %q, want %q", got, tc.expected)
+				}
+			})
+		}
+	})
+
+	t.Run("value after modifications", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Hello")
+
+		ed.Cursor = Point{Line: 0, Col: 5}
+		ed.InsertString("\nWorld")
+		if got, want := ed.Value(), "Hello\nWorld"; got != want {
+			t.Errorf("Value() after InsertString = %q, want %q", got, want)
+		}
+
+		ed.Undo()
+		if got, want := ed.Value(), "Hello"; got != want {
+			t.Errorf("Value() after Undo = %q, want %q", got, want)
+		}
+
+		ed.Redo()
+		if got, want := ed.Value(), "Hello\nWorld"; got != want {
+			t.Errorf("Value() after Redo = %q, want %q", got, want)
+		}
+	})
+}
+
 func TestEditorInsertAndRuneBuffer(t *testing.T) {
 	ed := New()
 	ed.SetValue("Hello World")
