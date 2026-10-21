@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -378,5 +379,102 @@ func TestPageForSourceLineAndSlideSourceLineTrailingNewlines(t *testing.T) {
 		if got := pageForSourceLine(multiline, i); got != want {
 			t.Errorf("pageForSourceLine(multiline, line %d) = %d, want %d", i, got, want)
 		}
+	}
+}
+
+func TestPresentationViewSmallTerminal(t *testing.T) {
+	service := presentation.NewService(newTestRepository(t), 10)
+	m := newPresentationModel(service, "deck.md")
+
+	m.width, m.height = 19, 30
+	if got := m.View(); got != "Terminal too small. Press q to quit." {
+		t.Fatalf("small width view = %q, want 'Terminal too small. Press q to quit.'", got)
+	}
+
+	m.width, m.height = 80, 4
+	if got := m.View(); got != "Terminal too small. Press q to quit." {
+		t.Fatalf("small height view = %q, want 'Terminal too small. Press q to quit.'", got)
+	}
+}
+
+func TestPresentationViewUnloadedAndErrorStates(t *testing.T) {
+	service := presentation.NewService(newTestRepository(t), 10)
+	m := newPresentationModel(service, "deck.md")
+	m.width, m.height = 80, 20
+
+	view := m.View()
+	if !strings.Contains(view, "Presentation") || !strings.Contains(view, "deck.md") || !strings.Contains(view, "r retry • esc/q quit") {
+		t.Fatalf("unloaded view missing expected strings:\n%s", view)
+	}
+
+	m.errMessage = "Failed to load"
+	view = m.View()
+	if !strings.Contains(view, "Error: Failed to load") {
+		t.Fatalf("unloaded view missing error message:\n%s", view)
+	}
+
+	// Model without path
+	mNoPath := newPresentationModel(service, "")
+	mNoPath.width, mNoPath.height = 80, 20
+	if viewNoPath := mNoPath.View(); !strings.HasPrefix(viewNoPath, "Presentation\n") {
+		t.Fatalf("unloaded model without path view wrong:\n%s", viewNoPath)
+	}
+}
+
+func TestPresentationViewEditMode(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+	drivePresentation(t, m, sheetKey("e"))
+	if !m.editing {
+		t.Fatal("expected model to be in editing mode")
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "— editing source") {
+		t.Fatalf("edit mode header missing '— editing source':\n%s", view)
+	}
+	if !strings.Contains(view, "ctrl+s save • esc cancel • ctrl+c quit") {
+		t.Fatalf("edit mode help text missing:\n%s", view)
+	}
+}
+
+func TestPresentationViewBrowseModeAndScrolling(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+	m.width, m.height = 80, 10 // small height so visibleLines is small
+
+	// Title page (page 0)
+	view := m.View()
+	slideCount := len(m.deck.Slides)
+	wantTitleCounter := fmt.Sprintf("0/%d", slideCount)
+	wantTitleStatus := fmt.Sprintf("Title page • %d slides", slideCount)
+	if !strings.Contains(view, wantTitleCounter) || !strings.Contains(view, wantTitleStatus) {
+		t.Fatalf("title page status missing expected strings:\n%s", view)
+	}
+
+	// Go to Slide 1
+	drivePresentation(t, m, sheetKey("right"))
+	view = m.View()
+	wantSlideCounter := fmt.Sprintf("1/%d", slideCount)
+	wantSlideStatus := fmt.Sprintf("Slide 1 of %d", slideCount)
+	if !strings.Contains(view, wantSlideCounter) || !strings.Contains(view, wantSlideStatus) {
+		t.Fatalf("slide 1 status missing expected strings:\n%s", view)
+	}
+
+	// Scroll down
+	drivePresentation(t, m, sheetKey("down"))
+	viewScrolled := m.View()
+	if viewScrolled == view {
+		t.Fatalf("scrolling down did not alter View() output")
+	}
+
+	// Custom status overrides default slide status
+	m.status = "Saved"
+	if view := m.View(); !strings.Contains(view, "Saved") || strings.Contains(view, "Slide 1 of 2") {
+		t.Fatalf("custom status 'Saved' not displayed properly:\n%s", view)
+	}
+
+	// Error message overrides status
+	m.errMessage = "Something went wrong"
+	if view := m.View(); !strings.Contains(view, "Error: Something went wrong") {
+		t.Fatalf("error message not displayed properly in view:\n%s", view)
 	}
 }
