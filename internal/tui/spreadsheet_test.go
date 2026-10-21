@@ -581,3 +581,65 @@ func TestSpreadsheetUpdateNavigationAndSheetSwitch(t *testing.T) {
 	}
 	driveSheet(t, m, sheetKey("esc"))
 }
+
+func TestSpreadsheetViewEditingAndHelp(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "test"}}})
+	driveSheet(t, m, sheetKey("enter"))
+	if !m.editing {
+		t.Fatal("expected model to be in editing mode")
+	}
+	view := m.View()
+	if !strings.Contains(view, "A1 >") {
+		t.Fatalf("editing formula bar missing prompt:\n%s", view)
+	}
+	if !strings.Contains(view, "enter save • esc cancel • =formula • 'literal") {
+		t.Fatalf("editing help string missing:\n%s", view)
+	}
+}
+
+func TestSpreadsheetViewUnloadedAndError(t *testing.T) {
+	repository := newTestRepository(t)
+	m := newSpreadsheetModel(spreadsheet.NewService(repository, 10), "")
+	m.width, m.height = 80, 20
+	view := m.View()
+	if !strings.Contains(view, "Spreadsheet") {
+		t.Fatalf("unloaded title missing 'Spreadsheet':\n%s", view)
+	}
+	if !strings.Contains(view, "r retry • esc/q quit") {
+		t.Fatalf("unloaded help string missing:\n%s", view)
+	}
+
+	m.errMessage = "custom failure"
+	viewWithError := m.View()
+	if !strings.Contains(viewWithError, "Error: custom failure") {
+		t.Fatalf("error message missing from status line:\n%s", viewWithError)
+	}
+}
+
+func TestSpreadsheetViewMultipleSheetsTitle(t *testing.T) {
+	m, service, _, id := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "sheet1"}}})
+	if _, err := service.AddSheet(context.Background(), id, "CustomSheet"); err != nil {
+		t.Fatal(err)
+	}
+	driveSheet(t, m, sheetKey("r"))
+	view := m.View()
+	if !strings.Contains(view, "— Sheet1") {
+		t.Fatalf("multi-sheet title missing sheet suffix:\n%s", view)
+	}
+
+	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	view2 := m.View()
+	if !strings.Contains(view2, "— CustomSheet") {
+		t.Fatalf("switched sheet title missing '— CustomSheet':\n%s", view2)
+	}
+}
+
+func TestSpreadsheetViewMaxRowsEdge(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "cell"}}})
+	m.rowOffset = spreadsheet.MaxRows - 2
+	m.height = 30 // visible rows extends past MaxRows
+	view := m.View()
+	if view == "" {
+		t.Fatal("empty view returned for MaxRows edge case")
+	}
+}
