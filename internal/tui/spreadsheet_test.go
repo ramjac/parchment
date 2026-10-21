@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -352,4 +353,231 @@ func TestSpreadsheetOpenedBeforeFirstResizeUsesTerminalSize(t *testing.T) {
 			t.Fatalf("%s opened before the first resize stayed too small:\n%s", kind, view)
 		}
 	}
+}
+
+func TestSpreadsheetUpdateAsyncMessages(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "cell1"}}})
+
+	// 1. spreadsheetLoadedMsg seq mismatch
+	m.seq = 10
+	model, cmd := m.Update(spreadsheetLoadedMsg{seq: 5, book: spreadsheet.Spreadsheet{Artifact: artifact.Artifact{Title: "Wrong"}}})
+	if cmd != nil || m.book.Title == "Wrong" {
+		t.Fatalf("expected spreadsheetLoadedMsg with mismatched seq to be ignored, got model=%v, cmd=%v", model, cmd)
+	}
+
+	// 2. spreadsheetCellSavedMsg seq mismatch
+	model, cmd = m.Update(spreadsheetCellSavedMsg{seq: 5, draft: "test"})
+	if cmd != nil {
+		t.Fatalf("expected spreadsheetCellSavedMsg with mismatched seq to be ignored, got cmd=%v", cmd)
+	}
+
+	// 3. spreadsheetCellSavedMsg with error
+	m.seq = 11
+	m.editing = false
+	saveErrMsg := spreadsheetCellSavedMsg{
+		seq:    11,
+		row:    2,
+		column: 3,
+		draft:  "invalid draft",
+		err:    errors.New("disk write failure"),
+	}
+	model, cmd = m.Update(saveErrMsg)
+	if cmd == nil || !m.editing || m.row != 2 || m.column != 3 || !strings.Contains(m.errMessage, "disk write failure") {
+		t.Fatalf("spreadsheetCellSavedMsg error handled incorrectly: editing=%t, row=%d, col=%d, errMessage=%q",
+			m.editing, m.row, m.column, m.errMessage)
+	}
+	m.editing = false
+
+	// 4. spreadsheetHistoryMsg seq mismatch
+	m.seq = 12
+	model, cmd = m.Update(spreadsheetHistoryMsg{seq: 5, description: "Undid edit"})
+	if cmd != nil {
+		t.Fatalf("expected spreadsheetHistoryMsg with mismatched seq to be ignored, got cmd=%v", cmd)
+	}
+
+	// 5. spreadsheetHistoryMsg with error
+	m.seq = 13
+	model, cmd = m.Update(spreadsheetHistoryMsg{seq: 13, err: errors.New("nothing to undo")})
+	if cmd != nil || !strings.Contains(m.errMessage, "History failed: nothing to undo") {
+		t.Fatalf("spreadsheetHistoryMsg error handled incorrectly: cmd=%v, errMessage=%q", cmd, m.errMessage)
+	}
+
+	// 6. spreadsheetHistoryMsg success
+	m.seq = 14
+	m.errMessage = ""
+	model, cmd = m.Update(spreadsheetHistoryMsg{seq: 14, description: "Undid cell change"})
+	if cmd == nil || m.loadedStatus != "Undid cell change" {
+		t.Fatalf("spreadsheetHistoryMsg success handled incorrectly: cmd=%v, loadedStatus=%q", cmd, m.loadedStatus)
+	}
+}
+
+func TestSpreadsheetUpdateMouseMsg(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{
+		{{Value: "A1"}, {Value: "B1"}},
+		{{Value: "A2"}, {Value: "B2"}},
+	})
+
+	// 1. Left mouse click on cell grid while browsing
+	m.row, m.column = 0, 0
+	// Grid starts at Y=4. Row offset 0 means Y=4 is row 0, Y=5 is row 1.
+	// X: rowHeaderWidth is len(" 1")+1 = 2+1 = 3. gridX = X - 2.
+	// Header end is X = 2 + rowHeaderWidth() + 1 = 6. Column 0 is at X=6..17, Column 1 starts at X=19.
+	mouseGridMsg := tea.MouseMsg{
+		X:      20,
+		Y:      5,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}
+	m.Update(mouseGridMsg)
+	if m.row != 1 || m.column != 1 {
+		t.Fatalf("mouse click grid selection failed: got row=%d, col=%d, expected row=1, col=1", m.row, m.column)
+	}
+
+	// 2. Mouse click ignored if pending
+	m.pending = true
+	m.Update(tea.MouseMsg{X: 20, Y: 4, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if m.row != 1 || m.column != 1 {
+		t.Fatalf("mouse click should be ignored when pending")
+	}
+	m.pending = false
+
+	// 3. Mouse click while editing on formula bar (Y=1)
+	driveSheet(t, m, sheetKey("enter"))
+	if !m.editing {
+		t.Fatal("expected editing mode")
+	}
+	mouseFormulaMsg := tea.MouseMsg{
+		X:      15,
+		Y:      1,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}
+	m.Update(mouseFormulaMsg)
+	// input cursor position should have been updated
+	if m.input.Position() < 0 {
+		t.Fatalf("expected cursor position >= 0, got %d", m.input.Position())
+	}
+	driveSheet(t, m, sheetKey("esc"))
+}
+
+func TestSpreadsheetUpdateFallbackAndEditShortcuts(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "test"}}})
+
+	// 1. Non-key / non-mouse message while editing=false returns (m, nil)
+	type customMsg struct{}
+	model, cmd := m.Update(customMsg{})
+	if model != m || cmd != nil {
+		t.Fatalf("expected non-editing custom message to return (m, nil)")
+	}
+
+	// 2. Custom message while editing=true forwards to input
+	m.editing = true
+	model, cmd = m.Update(customMsg{})
+	if model != m {
+		t.Fatalf("expected editing custom message to return m")
+	}
+	m.editing = false
+
+	// 3. ctrl+c while editing cancels pending and returns Quit
+	m.editing = true
+	m.pending = true
+	model, cmd = m.Update(sheetKey("ctrl+c"))
+	if m.pending {
+		t.Fatalf("expected pending to be cancelled on ctrl+c while editing")
+	}
+	if cmd == nil {
+		t.Fatalf("expected quit cmd on ctrl+c while editing")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg on ctrl+c while editing")
+	}
+	m.editing = false
+
+	// 4. Formula error cases and #ERR evaluation
+	// Empty formula
+	m.editing = true
+	m.input.SetValue("=")
+	cmd = m.save()
+	if cmd != nil || m.errMessage != "formula is empty" {
+		t.Fatalf("expected 'formula is empty' error, got cmd=%v, errMessage=%q", cmd, m.errMessage)
+	}
+
+	// Oversized formula
+	m.editing = true
+	longFormula := "=" + strings.Repeat("A1+", 1400)
+	m.input.SetValue(longFormula)
+	cmd = m.save()
+	if cmd != nil || !strings.Contains(m.errMessage, "formula is longer than") {
+		t.Fatalf("expected formula length error, got errMessage=%q", m.errMessage)
+	}
+	m.editing = false
+
+	// Invalid formula evaluation leading to #ERR in displayValue
+	m.book.Sheets[0].Rows[0][0] = spreadsheet.Cell{Formula: "=INVALID_FUNC()"}
+	m.computeValues()
+	if val := m.displayValue(0, 0); val != "#ERR" {
+		t.Fatalf("expected #ERR for invalid formula evaluation, got %q", val)
+	}
+}
+
+func TestSpreadsheetUpdateNavigationAndSheetSwitch(t *testing.T) {
+	m, service, _, id := newSheetModel(t, [][]spreadsheet.Cell{
+		{{Value: "A1"}, {Value: "B1"}},
+		{{Value: "A2"}, {Value: "B2"}},
+	})
+	if _, err := service.AddSheet(context.Background(), id, "Sheet2"); err != nil {
+		t.Fatal(err)
+	}
+	driveSheet(t, m, sheetKey("r"))
+
+	// Navigation keys: h, j, k, l, pgup, pgdown, home, end
+	driveSheet(t, m, sheetKey("j")) // down
+	if m.row != 1 {
+		t.Fatalf("j key expected row 1, got %d", m.row)
+	}
+	driveSheet(t, m, sheetKey("l")) // right
+	if m.column != 1 {
+		t.Fatalf("l key expected col 1, got %d", m.column)
+	}
+	driveSheet(t, m, sheetKey("k")) // up
+	if m.row != 0 {
+		t.Fatalf("k key expected row 0, got %d", m.row)
+	}
+	driveSheet(t, m, sheetKey("h")) // left
+	if m.column != 0 {
+		t.Fatalf("h key expected col 0, got %d", m.column)
+	}
+
+	driveSheet(t, m, sheetKey("pgdown"))
+	if m.row <= 0 {
+		t.Fatalf("pgdown expected row > 0, got %d", m.row)
+	}
+	driveSheet(t, m, sheetKey("home"))
+	if m.column != 0 {
+		t.Fatalf("home expected col 0, got %d", m.column)
+	}
+	driveSheet(t, m, sheetKey("pgup"))
+	if m.row != 0 {
+		t.Fatalf("pgup expected row 0, got %d", m.row)
+	}
+	driveSheet(t, m, sheetKey("end"))
+	if m.column != 1 {
+		t.Fatalf("end expected col 1, got %d", m.column)
+	}
+
+	// shift+tab switches sheet backwards
+	if m.sheet != 0 {
+		t.Fatalf("expected sheet 0 initially")
+	}
+	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyShiftTab})
+	if m.sheet != 1 {
+		t.Fatalf("shift+tab expected sheet 1 (cycling backwards), got %d", m.sheet)
+	}
+
+	// 'e' key begins edit mode
+	driveSheet(t, m, sheetKey("e"))
+	if !m.editing {
+		t.Fatalf("'e' key expected to start editing mode")
+	}
+	driveSheet(t, m, sheetKey("esc"))
 }
