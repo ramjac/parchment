@@ -731,6 +731,36 @@ func TestEditorUndoDetailed(t *testing.T) {
 			t.Fatalf("Undo count = %d, want 200", undoCount)
 		}
 	})
+
+	t.Run("undo viewport scrolling and lastEditType reset", func(t *testing.T) {
+		ed := New()
+		ed.SetWidth(10)
+		ed.SetHeight(5)
+		ed.SetValue("Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7")
+
+		// Move cursor down and make an edit deep in the viewport
+		ed.Cursor = Point{Line: 6, Col: 6}
+		ed.ensureCursorVisible()
+		if ed.TopLine != 2 {
+			t.Fatalf("TopLine before edit = %d, want 2", ed.TopLine)
+		}
+
+		ed.InsertString(" extra text long line")
+		if ed.TopLine == 0 {
+			t.Fatalf("TopLine should be > 0 while viewing line 6")
+		}
+
+		// Undo should restore cursor at (6, 6) and adjust viewport scroll
+		if !ed.Undo() {
+			t.Fatal("Undo failed")
+		}
+		if ed.Cursor != (Point{Line: 6, Col: 6}) {
+			t.Fatalf("Cursor after Undo = %+v, want Point{Line: 6, Col: 6}", ed.Cursor)
+		}
+		if ed.lastEditType != editNone {
+			t.Fatalf("lastEditType after Undo = %v, want editNone", ed.lastEditType)
+		}
+	})
 }
 
 func TestSetValueResetState(t *testing.T) {
