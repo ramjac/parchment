@@ -276,6 +276,7 @@ func TestEditorUndoAndRedo(t *testing.T) {
 		t.Fatalf("Ctrl+R failed: Value = %q, want %q", ed.Value(), "Hello World")
 	}
 }
+
 func TestEditorCanRedo(t *testing.T) {
 	ed := New()
 	ed.SetValue("Initial")
@@ -352,6 +353,88 @@ func TestEditorCanUndo(t *testing.T) {
 	ed.DeleteSelection()
 	if !ed.CanUndo() {
 		t.Fatal("CanUndo() should be true after DeleteSelection()")
+	}
+}
+
+func TestEditorRedoDirectAndEdgeCases(t *testing.T) {
+	// 1. Redo on empty stack returns false
+	ed := New()
+	ed.SetValue("Initial")
+	if ed.Redo() {
+		t.Fatal("Redo() should return false when redo stack is empty")
+	}
+
+	// 2. Multi-step Undo/Redo & State Verification
+	ed.Cursor = Point{Line: 0, Col: len("Initial")}
+	ed.InsertString(" Second")
+	ed.InsertString(" Third")
+	if ed.Value() != "Initial Second Third" {
+		t.Fatalf("Value = %q, want %q", ed.Value(), "Initial Second Third")
+	}
+
+	// Undo " Third"
+	if !ed.Undo() || ed.Value() != "Initial Second" {
+		t.Fatalf("First Undo failed, Value = %q", ed.Value())
+	}
+
+	// Undo " Second"
+	if !ed.Undo() || ed.Value() != "Initial" {
+		t.Fatalf("Second Undo failed, Value = %q", ed.Value())
+	}
+
+	// Redo " Second"
+	if !ed.Redo() || ed.Value() != "Initial Second" {
+		t.Fatalf("First Redo failed, Value = %q", ed.Value())
+	}
+	if ed.StickyCol != len("Initial Second") {
+		t.Fatalf("StickyCol after Redo = %d, want %d", ed.StickyCol, len("Initial Second"))
+	}
+	if ed.Selection.Active {
+		t.Fatal("Selection.Active should be false after Redo")
+	}
+
+	// Redo " Third"
+	if !ed.Redo() || ed.Value() != "Initial Second Third" {
+		t.Fatalf("Second Redo failed, Value = %q", ed.Value())
+	}
+
+	// No more redos available
+	if ed.CanRedo() || ed.Redo() {
+		t.Fatal("CanRedo should be false when redo stack is exhausted")
+	}
+
+	// 3. New edit after Undo clears redo stack
+	ed.Undo() // back to "Initial Second"
+	if !ed.CanRedo() {
+		t.Fatal("CanRedo should be true after Undo")
+	}
+	ed.InsertString(" Branch") // new edit
+	if ed.CanRedo() || ed.Redo() {
+		t.Fatal("New edit after Undo should clear redo stack")
+	}
+
+	// 4. Test Key Bindings for Redo (ctrl+y, ctrl+shift+z)
+	ed = New()
+	ed.SetValue("Start")
+	ed.Cursor = Point{Line: 0, Col: len("Start")}
+	ed.Focus()
+	ed.InsertString(" End")
+	ed.Undo()
+	if ed.Value() != "Start" {
+		t.Fatalf("Value after Undo = %q, want %q", ed.Value(), "Start")
+	}
+
+	// Test ctrl+y key
+	ed.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	if ed.Value() != "Start End" {
+		t.Fatalf("Ctrl+Y Redo failed: Value = %q, want %q", ed.Value(), "Start End")
+	}
+
+	ed.Undo()
+	// Test ctrl+shift+z key
+	ed.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ctrl+shift+z")})
+	if ed.Value() != "Start End" {
+		t.Fatalf("Ctrl+Shift+Z Redo failed: Value = %q, want %q", ed.Value(), "Start End")
 	}
 }
 func TestEditorMouseWheelAndPageUpDown(t *testing.T) {
