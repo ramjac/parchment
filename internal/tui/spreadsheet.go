@@ -520,11 +520,13 @@ func (m *spreadsheetModel) renderGrid() string {
 
 	rowWidth := m.rowHeaderWidth()
 	columns := m.visibleColumns()
-	line := strings.Repeat(" ", rowWidth)
+	var lineBuf strings.Builder
+	lineBuf.WriteString(strings.Repeat(" ", rowWidth))
 	for c := m.columnOffset; c < m.columnOffset+columns && c < spreadsheet.MaxColumns; c++ {
-		line += " " + fitCell(columnName(c), spreadsheetColumnWidth)
+		lineBuf.WriteByte(' ')
+		lineBuf.WriteString(fitCell(columnName(c), spreadsheetColumnWidth))
 	}
-	gridBuf.WriteString(muted.Render(line) + "\n")
+	gridBuf.WriteString(muted.Render(lineBuf.String()) + "\n")
 
 	for r := m.rowOffset; r < m.rowOffset+m.visibleRows(); r++ {
 		if r >= spreadsheet.MaxRows {
