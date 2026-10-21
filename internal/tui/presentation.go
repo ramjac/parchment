@@ -298,29 +298,39 @@ func (m *presentationModel) moveEditorToLine(line int) {
 // slideSourceLine finds the source line of a page's heading for cursor
 // placement. Page 0 is the title page; it skips headings inside fences.
 func slideSourceLine(source string, page int) int {
-	lines := strings.Split(source, "\n")
 	slide, fence := 0, ""
-	for index, line := range lines {
+	index := 0
+	for {
+		var line string
+		idx := strings.IndexByte(source, '\n')
+		if idx >= 0 {
+			line = source[:idx]
+			source = source[idx+1:]
+		} else {
+			line = source
+			source = ""
+		}
+
 		trimmed := strings.TrimSpace(line)
 		if fence != "" {
 			if strings.HasPrefix(trimmed, fence) {
 				fence = ""
 			}
-			continue
-		}
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+		} else if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			fence = trimmed[:3]
-			continue
-		}
-		if page == 0 && strings.HasPrefix(trimmed, "# ") {
+		} else if page == 0 && strings.HasPrefix(trimmed, "# ") {
 			return index
-		}
-		if strings.HasPrefix(trimmed, "## ") {
+		} else if strings.HasPrefix(trimmed, "## ") {
 			slide++
 			if slide == page {
 				return index
 			}
 		}
+
+		if idx < 0 {
+			break
+		}
+		index++
 	}
 	return 0
 }
@@ -330,24 +340,33 @@ func slideSourceLine(source string, page int) int {
 // the title page.
 func pageForSourceLine(source string, line int) int {
 	slide, fence := 0, ""
-	for index, text := range strings.Split(source, "\n") {
-		if index > line {
-			break
+	index := 0
+	for index <= line {
+		var text string
+		idx := strings.IndexByte(source, '\n')
+		if idx >= 0 {
+			text = source[:idx]
+			source = source[idx+1:]
+		} else {
+			text = source
+			source = ""
 		}
+
 		trimmed := strings.TrimSpace(text)
 		if fence != "" {
 			if strings.HasPrefix(trimmed, fence) {
 				fence = ""
 			}
-			continue
-		}
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+		} else if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			fence = trimmed[:3]
-			continue
-		}
-		if strings.HasPrefix(trimmed, "## ") {
+		} else if strings.HasPrefix(trimmed, "## ") {
 			slide++
 		}
+
+		if idx < 0 {
+			break
+		}
+		index++
 	}
 	return slide
 }
@@ -504,6 +523,14 @@ func (m *presentationModel) View() string {
 	muted := lipgloss.NewStyle().Foreground(borderColor)
 	var b strings.Builder
 
+	b.WriteString(m.renderHeader(accent) + "\n")
+	b.WriteString(m.renderContentPane() + "\n")
+	b.WriteString(m.renderStatus() + "\n")
+	b.WriteString(m.renderHelp(muted))
+	return b.String()
+}
+
+func (m *presentationModel) renderHeader(accent lipgloss.Style) string {
 	header := "Presentation"
 	if m.loaded {
 		header = sanitizeTerminalLine(m.deck.Title)
@@ -516,8 +543,10 @@ func (m *presentationModel) View() string {
 	if m.path != "" {
 		header += "  " + sanitizeTerminalLine(m.path)
 	}
-	b.WriteString(accent.Render(runewidth.Truncate(header, m.width, "…")) + "\n")
+	return accent.Render(runewidth.Truncate(header, m.width, "…"))
+}
 
+func (m *presentationModel) renderContentPane() string {
 	var content string
 	if m.editing {
 		content = m.editor.View()
@@ -536,11 +565,11 @@ func (m *presentationModel) View() string {
 	}
 
 	paneHeight := max(1, m.height-3)
-	pane := lipgloss.NewStyle().Width(max(1, m.width)).Height(paneHeight).
+	return lipgloss.NewStyle().Width(max(1, m.width)).Height(paneHeight).
 		Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1).Render(content)
+}
 
-	b.WriteString(pane + "\n")
-
+func (m *presentationModel) renderStatus() string {
 	status := m.status
 	if m.errMessage != "" {
 		status = "Error: " + m.errMessage
@@ -551,13 +580,15 @@ func (m *presentationModel) View() string {
 			status = fmt.Sprintf("Slide %d of %d", m.page, len(m.deck.Slides))
 		}
 	}
-	b.WriteString(runewidth.Truncate(sanitizeTerminalLine(status), m.width, "…") + "\n")
+	return runewidth.Truncate(sanitizeTerminalLine(status), m.width, "…")
+}
+
+func (m *presentationModel) renderHelp(muted lipgloss.Style) string {
 	help := "←/→ slide • ↑/↓ scroll • e edit • s notes • u undo • ctrl+r redo • r reload • esc/q quit"
 	if m.editing {
 		help = "ctrl+s save • esc cancel • ctrl+c quit"
 	} else if !m.loaded {
 		help = "r retry • esc/q quit"
 	}
-	b.WriteString(muted.Render(runewidth.Truncate(help, m.width, "…")))
-	return b.String()
+	return muted.Render(runewidth.Truncate(help, m.width, "…"))
 }

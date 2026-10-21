@@ -8,6 +8,38 @@ import (
 	"testing"
 )
 
+func TestDirectory(t *testing.T) {
+	t.Run("valid home directory", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+
+		dir, err := Directory()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := filepath.Join(home, ".parchment")
+		if dir != expected {
+			t.Fatalf("got %q, want %q", dir, expected)
+		}
+	})
+
+	t.Run("error finding home directory", func(t *testing.T) {
+		t.Setenv("HOME", "")
+		t.Setenv("USERPROFILE", "")
+		t.Setenv("HOMEDRIVE", "")
+		t.Setenv("HOMEPATH", "")
+
+		dir, err := Directory()
+		if err == nil {
+			t.Fatalf("expected error when home dir cannot be found, got dir: %q", dir)
+		}
+		if dir != "" {
+			t.Fatalf("expected empty directory string on error, got %q", dir)
+		}
+	})
+}
+
 func clearEnv(t *testing.T) {
 	t.Helper()
 	keys := []string{
