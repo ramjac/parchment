@@ -785,6 +785,185 @@ func TestSetValueResetState(t *testing.T) {
 	}
 }
 
+func TestEditorUndo(t *testing.T) {
+	t.Run("returns false when undo stack is empty", func(t *testing.T) {
+		ed := New()
+		if ed.Undo() {
+			t.Error("Undo() on new editor = true, want false")
+		}
+
+		ed.SetValue("Hello World")
+		if ed.Undo() {
+			t.Error("Undo() after SetValue = true, want false")
+		}
+	})
+
+	t.Run("restores content, cursor, sticky column, and resets selection and lastEditType", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Line 1\nLine 2")
+		ed.Cursor = Point{Line: 1, Col: 6}
+		ed.StickyCol = 6
+
+		// Select text and delete
+		ed.Selection = Selection{Anchor: Point{Line: 1, Col: 0}, Active: true}
+		ed.DeleteSelection() // creates snapshot
+
+		if ed.Value() != "Line 1\n" {
+			t.Fatalf("Value after DeleteSelection = %q, want %q", ed.Value(), "Line 1\n")
+		}
+
+		// Activate selection before undo to check it gets cleared
+		ed.Selection = Selection{Anchor: Point{Line: 0, Col: 0}, Active: true}
+
+		if !ed.Undo() {
+			t.Fatal("Undo() returned false, want true")
+		}
+
+		if ed.Value() != "Line 1\nLine 2" {
+			t.Errorf("Value after Undo = %q, want %q", ed.Value(), "Line 1\nLine 2")
+		}
+		if ed.Cursor != (Point{Line: 1, Col: 6}) {
+			t.Errorf("Cursor after Undo = %+v, want Point{Line: 1, Col: 6}", ed.Cursor)
+		}
+		if ed.StickyCol != 6 {
+			t.Errorf("StickyCol after Undo = %d, want 6", ed.StickyCol)
+		}
+		if ed.Selection.Active {
+			t.Error("Selection.Active after Undo = true, want false")
+		}
+		if ed.Selection.Anchor != ed.Cursor {
+			t.Errorf("Selection.Anchor = %+v, want %+v", ed.Selection.Anchor, ed.Cursor)
+		}
+		if ed.lastEditType != editNone {
+			t.Errorf("lastEditType after Undo = %v, want editNone", ed.lastEditType)
+		}
+	})
+
+	t.Run("populates redo stack and allows Redo", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Initial")
+		ed.Cursor = Point{Line: 0, Col: 7}
+
+		ed.InsertString(" Text")
+		if ed.CanRedo() {
+			t.Error("CanRedo before Undo = true, want false")
+		}
+
+		if !ed.Undo() {
+			t.Fatal("Undo returned false")
+		}
+
+		if !ed.CanRedo() {
+			t.Error("CanRedo after Undo = false, want true")
+		}
+		if ed.Value() != "Initial" {
+			t.Errorf("Value after Undo = %q, want %q", ed.Value(), "Initial")
+		}
+
+		if !ed.Redo() {
+			t.Fatal("Redo returned false")
+		}
+		if ed.Value() != "Initial Text" {
+			t.Errorf("Value after Redo = %q, want %q", ed.Value(), "Initial Text")
+		}
+	})
+
+	t.Run("adjusts viewport via ensureCursorVisible", func(t *testing.T) {
+		ed := New()
+		ed.SetWidth(10)
+		ed.SetHeight(5)
+		ed.SetValue("Short")
+
+		// Insert many lines to scroll viewport down
+		for range 10 {
+			ed.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			ed.InsertString("line")
+		}
+
+		if ed.TopLine == 0 {
+			t.Errorf("TopLine before undo = %d, want > 0", ed.TopLine)
+		}
+
+		// Undo operations back to top
+		for ed.CanUndo() {
+			ed.Undo()
+		}
+
+		if ed.TopLine != 0 {
+			t.Errorf("TopLine after undoing all edits = %d, want 0", ed.TopLine)
+		}
+		if ed.LeftCol != 0 {
+			t.Errorf("LeftCol after undoing all edits = %d, want 0", ed.LeftCol)
+		}
+	})
+
+	t.Run("typing word batching and punctuation boundary undo", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("")
+		ed.Focus()
+
+		// Type "hello" -> single edit typing session
+		for _, r := range "hello" {
+			ed.InsertRune(r)
+		}
+
+		if ed.Value() != "hello" {
+			t.Fatalf("Value = %q, want %q", ed.Value(), "hello")
+		}
+
+		// Typing space creates new snapshot boundary
+		ed.InsertRune(' ')
+		for _, r := range "world" {
+			ed.InsertRune(r)
+		}
+
+		if ed.Value() != "hello world" {
+			t.Fatalf("Value = %q, want %q", ed.Value(), "hello world")
+		}
+
+		// Undo should undo "world"
+		if !ed.Undo() {
+			t.Fatal("First Undo failed")
+		}
+		if ed.Value() != "hello " {
+			t.Errorf("Value after 1st Undo = %q, want %q", ed.Value(), "hello ")
+		}
+
+		// Undo should undo " "
+		if !ed.Undo() {
+			t.Fatal("Second Undo failed")
+		}
+		if ed.Value() != "hello" {
+			t.Errorf("Value after 2nd Undo = %q, want %q", ed.Value(), "hello")
+		}
+
+		// Undo should undo "hello"
+		if !ed.Undo() {
+			t.Fatal("Third Undo failed")
+		}
+		if ed.Value() != "" {
+			t.Errorf("Value after 3rd Undo = %q, want %q", ed.Value(), "")
+		}
+	})
+
+	t.Run("ctrl+z key binding triggers undo", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Hello")
+		ed.Cursor = Point{Line: 0, Col: 5}
+		ed.Focus()
+
+		ed.InsertString(" World")
+		if ed.Value() != "Hello World" {
+			t.Fatalf("Value = %q, want %q", ed.Value(), "Hello World")
+		}
+
+		ed.Update(tea.KeyMsg{Type: tea.KeyCtrlZ})
+		if ed.Value() != "Hello" {
+			t.Errorf("Value after ctrl+z = %q, want %q", ed.Value(), "Hello")
+		}
+	})
+}
+
 func TestSetValueEdgeCases(t *testing.T) {
 	tests := []struct {
 		name          string
