@@ -622,6 +622,65 @@ func TestEditorLineCountAndLine(t *testing.T) {
 	}
 }
 
+func TestEditorLine(t *testing.T) {
+	t.Run("initial state", func(t *testing.T) {
+		ed := New()
+		if got := ed.Line(); got != 0 {
+			t.Errorf("Line() = %d, want 0", got)
+		}
+	})
+
+	t.Run("navigation and state changes", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Line 0\nLine 1\nLine 2\nLine 3")
+
+		if got := ed.Line(); got != 0 {
+			t.Errorf("Line() initial after SetValue = %d, want 0", got)
+		}
+
+		ed.CursorDown()
+		if got := ed.Line(); got != 1 {
+			t.Errorf("Line() after CursorDown = %d, want 1", got)
+		}
+
+		ed.CursorDown()
+		if got := ed.Line(); got != 2 {
+			t.Errorf("Line() after CursorDown = %d, want 2", got)
+		}
+
+		ed.CursorUp()
+		if got := ed.Line(); got != 1 {
+			t.Errorf("Line() after CursorUp = %d, want 1", got)
+		}
+
+		ed.SetValue("Single Line")
+		if got := ed.Line(); got != 0 {
+			t.Errorf("Line() after SetValue reset = %d, want 0", got)
+		}
+	})
+
+	t.Run("line changes via edits and undo redo", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("First Line")
+
+		ed.Cursor = Point{Line: 0, Col: 10}
+		ed.InsertString("\nSecond Line")
+		if got := ed.Line(); got != 1 {
+			t.Errorf("Line() after newline InsertString = %d, want 1", got)
+		}
+
+		ed.Undo()
+		if got := ed.Line(); got != 0 {
+			t.Errorf("Line() after Undo = %d, want 0", got)
+		}
+
+		ed.Redo()
+		if got := ed.Line(); got != 1 {
+			t.Errorf("Line() after Redo = %d, want 1", got)
+		}
+	})
+}
+
 func TestEditorUndoDetailed(t *testing.T) {
 	t.Run("empty undo stack", func(t *testing.T) {
 		ed := New()
