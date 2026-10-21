@@ -51,10 +51,22 @@ func TestEditorSetValueAndValue(t *testing.T) {
 }
 
 func TestEditorValue(t *testing.T) {
-	t.Run("default initialized editor", func(t *testing.T) {
+	t.Run("zero value or empty buffer model", func(t *testing.T) {
 		ed := New()
 		if got := ed.Value(); got != "" {
 			t.Errorf("New().Value() = %q, want %q", got, "")
+		}
+
+		// Explicit nil Lines
+		nilEd := Model{Lines: nil}
+		if got := nilEd.Value(); got != "" {
+			t.Errorf("Model{Lines: nil}.Value() = %q, want %q", got, "")
+		}
+
+		// Explicit empty Lines slice
+		emptySliceEd := Model{Lines: [][]rune{}}
+		if got := emptySliceEd.Value(); got != "" {
+			t.Errorf("Model{Lines: [][]rune{}}.Value() = %q, want %q", got, "")
 		}
 	})
 
@@ -130,6 +142,26 @@ func TestEditorValue(t *testing.T) {
 		ed.Redo()
 		if got, want := ed.Value(), "Hello\nWorld"; got != want {
 			t.Errorf("Value() after Redo = %q, want %q", got, want)
+		}
+
+		// Test InsertRune, Backspace, and DeleteSelection
+		ed.InsertRune('!')
+		if got, want := ed.Value(), "Hello\nWorld!"; got != want {
+			t.Errorf("Value() after InsertRune = %q, want %q", got, want)
+		}
+
+		// Delete '!' using backspace
+		ed.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		if got, want := ed.Value(), "Hello\nWorld"; got != want {
+			t.Errorf("Value() after Backspace = %q, want %q", got, want)
+		}
+
+		// Delete selection across lines ("o\nWor")
+		ed.Selection = Selection{Anchor: Point{Line: 0, Col: 4}, Active: true}
+		ed.Cursor = Point{Line: 1, Col: 3}
+		ed.DeleteSelection()
+		if got, want := ed.Value(), "Hellld"; got != want {
+			t.Errorf("Value() after DeleteSelection = %q, want %q", got, want)
 		}
 	})
 }
