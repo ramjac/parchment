@@ -306,3 +306,45 @@ func TestEditorViewRendering(t *testing.T) {
 		t.Fatalf("View() with selection returned empty")
 	}
 }
+
+func TestEditorLineAndLineCount(t *testing.T) {
+	ed := New()
+	if ed.Line() != 0 {
+		t.Fatalf("Line() on new editor = %d, want 0", ed.Line())
+	}
+	if ed.LineCount() != 1 {
+		t.Fatalf("LineCount() on new editor = %d, want 1", ed.LineCount())
+	}
+
+	ed.SetValue("Line 0\nLine 1\nLine 2\nLine 3")
+	if ed.Line() != 0 {
+		t.Fatalf("Line() after SetValue = %d, want 0", ed.Line())
+	}
+	if ed.LineCount() != 4 {
+		t.Fatalf("LineCount() after SetValue = %d, want 4", ed.LineCount())
+	}
+
+	ed.CursorDown()
+	if ed.Line() != 1 {
+		t.Fatalf("Line() after CursorDown = %d, want 1", ed.Line())
+	}
+
+	ed.CursorDown()
+	if ed.Line() != 2 {
+		t.Fatalf("Line() after CursorDown = %d, want 2", ed.Line())
+	}
+
+	ed.CursorUp()
+	if ed.Line() != 1 {
+		t.Fatalf("Line() after CursorUp = %d, want 1", ed.Line())
+	}
+
+	// Insert newline at cursor position
+	ed.InsertString("\n")
+	if ed.Line() != 2 {
+		t.Fatalf("Line() after inserting newline = %d, want 2", ed.Line())
+	}
+	if ed.LineCount() != 5 {
+		t.Fatalf("LineCount() after inserting newline = %d, want 5", ed.LineCount())
+	}
+}
