@@ -8,6 +8,35 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+func TestEditorNew(t *testing.T) {
+	ed := New()
+
+	if len(ed.Lines) != 1 || len(ed.Lines[0]) != 0 {
+		t.Fatalf("New().Lines = %v, want [][]rune{{}}", ed.Lines)
+	}
+	if ed.Width != 80 {
+		t.Fatalf("New().Width = %d, want 80", ed.Width)
+	}
+	if ed.Height != 20 {
+		t.Fatalf("New().Height = %d, want 20", ed.Height)
+	}
+	if !ed.Focused {
+		t.Fatalf("New().Focused = false, want true")
+	}
+	if ed.Cursor.Line != 0 || ed.Cursor.Col != 0 {
+		t.Fatalf("New().Cursor = %+v, want Point{Line: 0, Col: 0}", ed.Cursor)
+	}
+	if ed.Selection.Active {
+		t.Fatalf("New().Selection.Active = true, want false")
+	}
+	if ed.Value() != "" {
+		t.Fatalf("New().Value() = %q, want %q", ed.Value(), "")
+	}
+	if ed.LineCount() != 1 {
+		t.Fatalf("New().LineCount() = %d, want 1", ed.LineCount())
+	}
+}
+
 func TestEditorSetValueAndValue(t *testing.T) {
 	ed := New()
 	content := "Hello\nWorld\n"
