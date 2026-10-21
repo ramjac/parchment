@@ -407,37 +407,74 @@ func TestEditorCanRedo(t *testing.T) {
 }
 
 func TestEditorCanUndo(t *testing.T) {
-	ed := New()
-	if ed.CanUndo() {
-		t.Fatal("CanUndo() should be false for a newly created editor")
-	}
+	t.Run("initial state and SetValue", func(t *testing.T) {
+		ed := New()
+		if ed.CanUndo() {
+			t.Errorf("CanUndo() = true, want false for newly created editor")
+		}
 
-	ed.SetValue("Initial Content")
-	if ed.CanUndo() {
-		t.Fatal("CanUndo() should be false after SetValue()")
-	}
+		ed.SetValue("Initial Content")
+		if ed.CanUndo() {
+			t.Errorf("CanUndo() = true, want false after SetValue")
+		}
+	})
 
-	ed.InsertString(" Additional Content")
-	if !ed.CanUndo() {
-		t.Fatal("CanUndo() should be true after InsertString()")
-	}
+	t.Run("editing operations push snapshot and make CanUndo true", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Initial")
 
-	ed.Undo()
-	if ed.CanUndo() {
-		t.Fatal("CanUndo() should be false after undoing back to initial state")
-	}
+		// InsertString
+		ed.InsertString(" World")
+		if !ed.CanUndo() {
+			t.Errorf("CanUndo() = false, want true after InsertString")
+		}
 
-	ed.InsertRune('X')
-	if !ed.CanUndo() {
-		t.Fatal("CanUndo() should be true after InsertRune()")
-	}
+		// Undo back to initial
+		ed.Undo()
+		if ed.CanUndo() {
+			t.Errorf("CanUndo() = true, want false after Undo back to empty undo stack")
+		}
 
-	ed.Selection = Selection{Anchor: Point{Line: 0, Col: 0}, Active: true}
-	ed.Cursor = Point{Line: 0, Col: 1}
-	ed.DeleteSelection()
-	if !ed.CanUndo() {
-		t.Fatal("CanUndo() should be true after DeleteSelection()")
-	}
+		// Redo restores edit history
+		ed.Redo()
+		if !ed.CanUndo() {
+			t.Errorf("CanUndo() = false, want true after Redo")
+		}
+
+		// InsertRune
+		ed.InsertRune('!')
+		if !ed.CanUndo() {
+			t.Errorf("CanUndo() = false, want true after InsertRune")
+		}
+
+		// Enter key
+		ed.Focus()
+		ed.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if !ed.CanUndo() {
+			t.Errorf("CanUndo() = false, want true after Enter key")
+		}
+
+		// DeleteSelection
+		ed.Selection = Selection{Anchor: Point{Line: 0, Col: 0}, Active: true}
+		ed.Cursor = Point{Line: 0, Col: 3}
+		ed.DeleteSelection()
+		if !ed.CanUndo() {
+			t.Errorf("CanUndo() = false, want true after DeleteSelection")
+		}
+	})
+
+	t.Run("SetValue resets undo stack and CanUndo becomes false", func(t *testing.T) {
+		ed := New()
+		ed.InsertString("Some edits")
+		if !ed.CanUndo() {
+			t.Fatalf("CanUndo() = false, want true after InsertString")
+		}
+
+		ed.SetValue("Reset Text")
+		if ed.CanUndo() {
+			t.Errorf("CanUndo() = true, want false after SetValue reset")
+		}
+	})
 }
 
 func TestEditorRedoDirectAndEdgeCases(t *testing.T) {
