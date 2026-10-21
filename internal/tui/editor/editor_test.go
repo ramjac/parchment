@@ -341,4 +341,9 @@ func TestEditorLineCountAndLine(t *testing.T) {
 	if line := ed.Line(); line != 3 {
 		t.Fatalf("InsertString() Line() = %d, want 3", line)
 	}
+
+	ed.CursorUp()
+	if line := ed.Line(); line != 2 {
+		t.Fatalf("CursorUp() Line() = %d, want 2", line)
+	}
 }
