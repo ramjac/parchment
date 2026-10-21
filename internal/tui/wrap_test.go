@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"github.com/mattn/go-runewidth"
 )
 
 func TestWrapReviewTextExactMatch(t *testing.T) {
@@ -46,6 +48,21 @@ func TestWrapReviewTextExactMatch(t *testing.T) {
 			content: "1234567890\nabcdefghij",
 			width:   5,
 		},
+		{
+			name:    "wide CJK characters wrapping",
+			content: "你好世界学习编程", // each CJK char has runewidth 2 (total width 16)
+			width:   6,
+		},
+		{
+			name:    "wide emoji characters wrapping",
+			content: "😀😁😂😃😄😅",
+			width:   5,
+		},
+		{
+			name:    "mixed ASCII and wide CJK characters",
+			content: "Hi你好World世界",
+			width:   5,
+		},
 	}
 
 	for _, tt := range tests {
@@ -58,7 +75,7 @@ func TestWrapReviewTextExactMatch(t *testing.T) {
 				}
 				lineWidth := 0
 				for _, r := range line {
-					runeWidth := max(runeWidth(r), 0)
+					runeWidth := max(runewidth.RuneWidth(r), 0)
 					if lineWidth > 0 && lineWidth+runeWidth > tt.width {
 						expectedWrapped.WriteByte('\n')
 						lineWidth = 0
@@ -75,9 +92,4 @@ func TestWrapReviewTextExactMatch(t *testing.T) {
 			}
 		})
 	}
-}
-
-func runeWidth(r rune) int {
-	// Simple helper matching runewidth logic for test reference
-	return 1
 }
