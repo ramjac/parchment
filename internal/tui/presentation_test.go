@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"example.com/parchment/internal/presentation"
+	"example.com/parchment/internal/tui/editor"
 )
 
 // drivePresentation sends a message and feeds presentation results back in.
@@ -682,4 +683,147 @@ func TestPresentationFencedCodeBlocksAndEmptyNotes(t *testing.T) {
 	if !strings.Contains(view, "(none)") {
 		t.Fatalf("empty speaker notes did not render '(none)':\n%s", view)
 	}
+}
+
+func TestPresentationUpdateMessageHandling(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+
+	t.Run("WindowSizeMsg", func(t *testing.T) {
+		msg := tea.WindowSizeMsg{Width: 120, Height: 40}
+		model, cmd := m.Update(msg)
+		if model != m || cmd != nil {
+			t.Fatalf("Update(WindowSizeMsg) = (%v, %v), want (%v, nil)", model, cmd, m)
+		}
+		if m.width != 120 || m.height != 40 {
+			t.Fatalf("width = %d, height = %d; want 120, 40", m.width, m.height)
+		}
+	})
+
+	t.Run("presentationLoadedMsg matching seq and valid item", func(t *testing.T) {
+		m.pending = true
+		m.seq = 10
+		m.loadedStatus = "Loaded custom"
+		validItem := presentation.Presentation{Source: "# Loaded Deck\n\n## Slide 1\nContent"}
+
+		model, cmd := m.Update(presentationLoadedMsg{seq: 10, item: validItem, err: nil})
+		if model != m || cmd != nil {
+			t.Fatalf("Update(presentationLoadedMsg) = (%v, %v), want (%v, nil)", model, cmd, m)
+		}
+		if m.pending {
+			t.Fatal("expected pending to be false after finishOperation")
+		}
+		if m.status != "Loaded custom" || m.loadedStatus != "" {
+			t.Fatalf("status = %q, loadedStatus = %q; want 'Loaded custom', ''", m.status, m.loadedStatus)
+		}
+		if m.deck.Title != "Loaded Deck" {
+			t.Fatalf("loaded deck title = %q, want 'Loaded Deck'", m.deck.Title)
+		}
+	})
+
+	t.Run("presentationLoadedMsg matching seq and invalid item", func(t *testing.T) {
+		m.pending = true
+		m.seq = 11
+		invalidItem := presentation.Presentation{Source: "invalid source"}
+
+		model, cmd := m.Update(presentationLoadedMsg{seq: 11, item: invalidItem, err: nil})
+		if model != m || cmd != nil {
+			t.Fatalf("Update(presentationLoadedMsg) = (%v, %v), want (%v, nil)", model, cmd, m)
+		}
+		if m.pending {
+			t.Fatal("expected pending to be false")
+		}
+		if !strings.Contains(m.errMessage, "Invalid presentation") {
+			t.Fatalf("errMessage = %q, want containing 'Invalid presentation'", m.errMessage)
+		}
+	})
+
+	t.Run("presentationSavedMsg success", func(t *testing.T) {
+		m.editing = true
+		m.pending = true
+		m.seq = 20
+		savedItem := presentation.Presentation{Source: "# Saved Deck\n\n## Slide 1\nNew text"}
+
+		model, cmd := m.Update(presentationSavedMsg{seq: 20, item: savedItem, err: nil})
+		if model != m || cmd != nil {
+			t.Fatalf("Update(presentationSavedMsg) = (%v, %v), want (%v, nil)", model, cmd, m)
+		}
+		if m.editing {
+			t.Fatal("expected leaveEditor to set editing to false")
+		}
+		if m.pending {
+			t.Fatal("expected pending to be false")
+		}
+		if m.status != "Saved" {
+			t.Fatalf("status = %q, want 'Saved'", m.status)
+		}
+		if m.deck.Title != "Saved Deck" {
+			t.Fatalf("deck title = %q, want 'Saved Deck'", m.deck.Title)
+		}
+	})
+
+	t.Run("presentationSavedMsg error keeps editor open", func(t *testing.T) {
+		m.editing = true
+		m.pending = true
+		m.seq = 21
+
+		model, cmd := m.Update(presentationSavedMsg{seq: 21, err: errors.New("save failed error")})
+		if model != m || cmd != nil {
+			t.Fatalf("Update(presentationSavedMsg) = (%v, %v), want (%v, nil)", model, cmd, m)
+		}
+		if !m.editing {
+			t.Fatal("expected editing to remain true on save error to keep draft")
+		}
+		if m.pending {
+			t.Fatal("expected pending to be false")
+		}
+		if !strings.Contains(m.errMessage, "Save failed: save failed error") {
+			t.Fatalf("errMessage = %q, want 'Save failed: save failed error'", m.errMessage)
+		}
+	})
+
+	t.Run("presentationHistoryMsg success", func(t *testing.T) {
+		m.pending = true
+		m.seq = 30
+
+		model, cmd := m.Update(presentationHistoryMsg{seq: 30, description: "Undid edit", err: nil})
+		if model != m || cmd == nil {
+			t.Fatalf("Update(presentationHistoryMsg) = (%v, %v), want (%v, cmd)", model, cmd, m)
+		}
+		// m.load() starts a new operation, so m.pending is true for the subsequent load
+		if !m.pending {
+			t.Fatal("expected pending to be true after triggering load()")
+		}
+		if m.loadedStatus != "Undid edit" {
+			t.Fatalf("loadedStatus = %q, want 'Undid edit'", m.loadedStatus)
+		}
+	})
+
+	t.Run("presentationHistoryMsg error", func(t *testing.T) {
+		m.pending = true
+		m.seq = 31
+
+		model, cmd := m.Update(presentationHistoryMsg{seq: 31, err: errors.New("history error")})
+		if model != m || cmd != nil {
+			t.Fatalf("Update(presentationHistoryMsg) = (%v, %v), want (%v, nil)", model, cmd, m)
+		}
+		if m.pending {
+			t.Fatal("expected pending to be false")
+		}
+		if !strings.Contains(m.errMessage, "History failed: history error") {
+			t.Fatalf("errMessage = %q, want 'History failed: history error'", m.errMessage)
+		}
+	})
+
+	t.Run("tea.MouseMsg coordinate transformation during editing", func(t *testing.T) {
+		m.editing = true
+		m.pending = false
+		m.editor.Cursor = editor.Point{Line: 0, Col: 0}
+
+		// Mouse press at (10, 5) -> inner coordinates (8, 3)
+		mouseMsg := tea.MouseMsg{X: 10, Y: 5, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
+		model, _ := m.Update(mouseMsg)
+		if model != m {
+			t.Fatalf("Update(MouseMsg) = %v, want %v", model, m)
+		}
+	})
 }
