@@ -351,3 +351,32 @@ func TestPageForSourceLineAndSlideSourceLine(t *testing.T) {
 		t.Errorf("pageForSourceLine(\"\", 5) = %d, want 0", got)
 	}
 }
+
+func TestPageForSourceLineAndSlideSourceLineTrailingNewlines(t *testing.T) {
+	source := "line 1\n## Slide 1\n"
+	if got := slideSourceLine(source, 1); got != 1 {
+		t.Errorf("slideSourceLine = %d, want 1", got)
+	}
+
+	if got := pageForSourceLine(source, 0); got != 0 {
+		t.Errorf("pageForSourceLine(line 0) = %d, want 0", got)
+	}
+	if got := pageForSourceLine(source, 1); got != 1 {
+		t.Errorf("pageForSourceLine(line 1) = %d, want 1", got)
+	}
+	if got := pageForSourceLine(source, 2); got != 1 {
+		t.Errorf("pageForSourceLine(line 2) = %d, want 1", got)
+	}
+
+	multiline := "line 1\nline 2\n## Slide 1\n"
+	splitLines := strings.Split(multiline, "\n")
+	for i := range splitLines {
+		want := 0
+		if i >= 2 {
+			want = 1
+		}
+		if got := pageForSourceLine(multiline, i); got != want {
+			t.Errorf("pageForSourceLine(multiline, line %d) = %d, want %d", i, got, want)
+		}
+	}
+}

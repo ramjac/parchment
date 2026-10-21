@@ -300,9 +300,10 @@ func (m *presentationModel) moveEditorToLine(line int) {
 func slideSourceLine(source string, page int) int {
 	slide, fence := 0, ""
 	index := 0
-	for len(source) > 0 || index == 0 {
+	for {
 		var line string
-		if idx := strings.IndexByte(source, '\n'); idx >= 0 {
+		idx := strings.IndexByte(source, '\n')
+		if idx >= 0 {
 			line = source[:idx]
 			source = source[idx+1:]
 		} else {
@@ -315,22 +316,19 @@ func slideSourceLine(source string, page int) int {
 			if strings.HasPrefix(trimmed, fence) {
 				fence = ""
 			}
-			index++
-			continue
-		}
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+		} else if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			fence = trimmed[:3]
-			index++
-			continue
-		}
-		if page == 0 && strings.HasPrefix(trimmed, "# ") {
+		} else if page == 0 && strings.HasPrefix(trimmed, "# ") {
 			return index
-		}
-		if strings.HasPrefix(trimmed, "## ") {
+		} else if strings.HasPrefix(trimmed, "## ") {
 			slide++
 			if slide == page {
 				return index
 			}
+		}
+
+		if idx < 0 {
+			break
 		}
 		index++
 	}
@@ -343,9 +341,10 @@ func slideSourceLine(source string, page int) int {
 func pageForSourceLine(source string, line int) int {
 	slide, fence := 0, ""
 	index := 0
-	for index <= line && (len(source) > 0 || index == 0) {
+	for index <= line {
 		var text string
-		if idx := strings.IndexByte(source, '\n'); idx >= 0 {
+		idx := strings.IndexByte(source, '\n')
+		if idx >= 0 {
 			text = source[:idx]
 			source = source[idx+1:]
 		} else {
@@ -358,16 +357,14 @@ func pageForSourceLine(source string, line int) int {
 			if strings.HasPrefix(trimmed, fence) {
 				fence = ""
 			}
-			index++
-			continue
-		}
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+		} else if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			fence = trimmed[:3]
-			index++
-			continue
-		}
-		if strings.HasPrefix(trimmed, "## ") {
+		} else if strings.HasPrefix(trimmed, "## ") {
 			slide++
+		}
+
+		if idx < 0 {
+			break
 		}
 		index++
 	}
