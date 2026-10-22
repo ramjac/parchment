@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestEditorNew(t *testing.T) {
@@ -29,11 +30,33 @@ func TestEditorNew(t *testing.T) {
 	if ed.Selection.Active {
 		t.Fatalf("New().Selection.Active = true, want false")
 	}
+	if ed.Selection.Anchor != (Point{Line: 0, Col: 0}) {
+		t.Fatalf("New().Selection.Anchor = %+v, want Point{Line: 0, Col: 0}", ed.Selection.Anchor)
+	}
+	if ed.TopLine != 0 {
+		t.Fatalf("New().TopLine = %d, want 0", ed.TopLine)
+	}
+	if ed.LeftCol != 0 {
+		t.Fatalf("New().LeftCol = %d, want 0", ed.LeftCol)
+	}
+	if ed.StickyCol != 0 {
+		t.Fatalf("New().StickyCol = %d, want 0", ed.StickyCol)
+	}
 	if ed.Value() != "" {
 		t.Fatalf("New().Value() = %q, want %q", ed.Value(), "")
 	}
 	if ed.LineCount() != 1 {
 		t.Fatalf("New().LineCount() = %d, want 1", ed.LineCount())
+	}
+	if ed.CanUndo() {
+		t.Fatalf("New().CanUndo() = true, want false")
+	}
+	if ed.CanRedo() {
+		t.Fatalf("New().CanRedo() = true, want false")
+	}
+	expectedStyle := lipgloss.NewStyle().Reverse(true)
+	if ed.SelectStyle.Render("test") != expectedStyle.Render("test") {
+		t.Fatalf("New().SelectStyle mismatch")
 	}
 }
 
@@ -51,10 +74,22 @@ func TestEditorSetValueAndValue(t *testing.T) {
 }
 
 func TestEditorValue(t *testing.T) {
-	t.Run("default initialized editor", func(t *testing.T) {
+	t.Run("zero value or empty buffer model", func(t *testing.T) {
 		ed := New()
 		if got := ed.Value(); got != "" {
 			t.Errorf("New().Value() = %q, want %q", got, "")
+		}
+
+		// Explicit nil Lines
+		nilEd := Model{Lines: nil}
+		if got := nilEd.Value(); got != "" {
+			t.Errorf("Model{Lines: nil}.Value() = %q, want %q", got, "")
+		}
+
+		// Explicit empty Lines slice
+		emptySliceEd := Model{Lines: [][]rune{}}
+		if got := emptySliceEd.Value(); got != "" {
+			t.Errorf("Model{Lines: [][]rune{}}.Value() = %q, want %q", got, "")
 		}
 	})
 
@@ -130,6 +165,26 @@ func TestEditorValue(t *testing.T) {
 		ed.Redo()
 		if got, want := ed.Value(), "Hello\nWorld"; got != want {
 			t.Errorf("Value() after Redo = %q, want %q", got, want)
+		}
+
+		// Test InsertRune, Backspace, and DeleteSelection
+		ed.InsertRune('!')
+		if got, want := ed.Value(), "Hello\nWorld!"; got != want {
+			t.Errorf("Value() after InsertRune = %q, want %q", got, want)
+		}
+
+		// Delete '!' using backspace
+		ed.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		if got, want := ed.Value(), "Hello\nWorld"; got != want {
+			t.Errorf("Value() after Backspace = %q, want %q", got, want)
+		}
+
+		// Delete selection across lines ("o\nWor")
+		ed.Selection = Selection{Anchor: Point{Line: 0, Col: 4}, Active: true}
+		ed.Cursor = Point{Line: 1, Col: 3}
+		ed.DeleteSelection()
+		if got, want := ed.Value(), "Hellld"; got != want {
+			t.Errorf("Value() after DeleteSelection = %q, want %q", got, want)
 		}
 	})
 }
