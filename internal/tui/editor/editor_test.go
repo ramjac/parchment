@@ -417,48 +417,173 @@ func TestEditorUndoAndRedo(t *testing.T) {
 }
 
 func TestEditorCanRedo(t *testing.T) {
-	ed := New()
-	ed.SetValue("Initial")
+	t.Run("zero value model and New", func(t *testing.T) {
+		var zero Model
+		if zero.CanRedo() {
+			t.Errorf("zero value Model.CanRedo() = true, want false")
+		}
 
-	if ed.CanRedo() {
-		t.Fatal("CanRedo should return false initially")
-	}
+		newModel := New()
+		if newModel.CanRedo() {
+			t.Errorf("New().CanRedo() = true, want false")
+		}
+	})
 
-	ed.InsertString(" edit")
-	if ed.CanRedo() {
-		t.Fatal("CanRedo should return false after edit without undo")
-	}
+	t.Run("initial state and edits without undo", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Initial content")
+		if ed.CanRedo() {
+			t.Errorf("CanRedo() after SetValue = true, want false")
+		}
 
-	ed.Undo()
-	if !ed.CanRedo() {
-		t.Fatal("CanRedo should return true after undo")
-	}
+		ed.InsertString(" edit")
+		if ed.CanRedo() {
+			t.Errorf("CanRedo() after edit without undo = true, want false")
+		}
 
-	ed.Redo()
-	if ed.CanRedo() {
-		t.Fatal("CanRedo should return false after redo")
-	}
+		ed.InsertRune('!')
+		if ed.CanRedo() {
+			t.Errorf("CanRedo() after InsertRune without undo = true, want false")
+		}
+	})
 
-	// Undo again, then make a new edit; redo stack should be cleared
-	ed.Undo()
-	if !ed.CanRedo() {
-		t.Fatal("CanRedo should return true after second undo")
-	}
+	t.Run("undo and redo state transitions", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Initial")
+		ed.InsertString(" First Edit")
 
-	ed.InsertString(" another edit")
-	if ed.CanRedo() {
-		t.Fatal("CanRedo should return false after new edit clears redo stack")
-	}
+		if ed.CanRedo() {
+			t.Fatalf("CanRedo() before undo = true, want false")
+		}
 
-	// Undo and SetValue reset
-	ed.Undo()
-	if !ed.CanRedo() {
-		t.Fatal("CanRedo should return true after undo")
-	}
-	ed.SetValue("Reset")
-	if ed.CanRedo() {
-		t.Fatal("CanRedo should return false after SetValue clears redo stack")
-	}
+		ed.Undo()
+		if !ed.CanRedo() {
+			t.Fatalf("CanRedo() after Undo = false, want true")
+		}
+
+		ed.Redo()
+		if ed.CanRedo() {
+			t.Fatalf("CanRedo() after Redo = true, want false")
+		}
+	})
+
+	t.Run("multi-step undo and redo transitions", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Base")
+		ed.InsertString(" 1")
+		ed.InsertString(" 2")
+
+		ed.Undo() // Undoes " 2"
+		if !ed.CanRedo() {
+			t.Errorf("CanRedo() after 1st Undo = false, want true")
+		}
+
+		ed.Undo() // Undoes " 1"
+		if !ed.CanRedo() {
+			t.Errorf("CanRedo() after 2nd Undo = false, want true")
+		}
+
+		ed.Redo() // Redoes " 1"
+		if !ed.CanRedo() {
+			t.Errorf("CanRedo() after 1st Redo (1 redo remaining) = false, want true")
+		}
+
+		ed.Redo() // Redoes " 2"
+		if ed.CanRedo() {
+			t.Errorf("CanRedo() after all Redos = true, want false")
+		}
+	})
+
+	t.Run("new edit clears redo stack", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Base")
+		ed.InsertString(" First")
+
+		ed.Undo()
+		if !ed.CanRedo() {
+			t.Fatalf("CanRedo() after Undo = false, want true")
+		}
+
+		ed.InsertRune('X')
+		if ed.CanRedo() {
+			t.Errorf("CanRedo() after new InsertRune = true, want false")
+		}
+
+		ed.Undo() // Undoes 'X'
+		if !ed.CanRedo() {
+			t.Fatalf("CanRedo() after Undo 'X' = false, want true")
+		}
+
+		ed.Selection = Selection{Anchor: Point{Line: 0, Col: 0}, Active: true}
+		ed.Cursor = Point{Line: 0, Col: 1}
+		ed.DeleteSelection()
+		if ed.CanRedo() {
+			t.Errorf("CanRedo() after DeleteSelection = true, want false")
+		}
+	})
+
+	t.Run("SetValue clears redo stack", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Base")
+		ed.InsertString(" First")
+		ed.Undo()
+		if !ed.CanRedo() {
+			t.Fatalf("CanRedo() after Undo = false, want true")
+		}
+
+		ed.SetValue("Brand New")
+		if ed.CanRedo() {
+			t.Errorf("CanRedo() after SetValue = true, want false")
+		}
+	})
+
+	t.Run("value receiver immutability", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Base")
+		ed.InsertString(" First")
+		ed.Undo()
+
+		beforeVal := ed.Value()
+		beforeUndoLen := len(ed.undoStack)
+		beforeRedoLen := len(ed.redoStack)
+
+		res1 := ed.CanRedo()
+		res2 := ed.CanRedo()
+
+		if res1 != res2 || !res1 {
+			t.Errorf("CanRedo() calls returned %v then %v, want true", res1, res2)
+		}
+		if ed.Value() != beforeVal || len(ed.undoStack) != beforeUndoLen || len(ed.redoStack) != beforeRedoLen {
+			t.Errorf("CanRedo() mutated model state")
+		}
+	})
+
+	t.Run("key bindings update redo state", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Base")
+		ed.Focus()
+		ed.InsertString(" Added")
+
+		ed.Update(tea.KeyMsg{Type: tea.KeyCtrlZ})
+		if !ed.CanRedo() {
+			t.Errorf("CanRedo() after Ctrl+Z = false, want true")
+		}
+
+		ed.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+		if ed.CanRedo() {
+			t.Errorf("CanRedo() after Ctrl+R = true, want false")
+		}
+
+		ed.Update(tea.KeyMsg{Type: tea.KeyCtrlZ})
+		if !ed.CanRedo() {
+			t.Errorf("CanRedo() after Ctrl+Z = false, want true")
+		}
+
+		ed.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+		if ed.CanRedo() {
+			t.Errorf("CanRedo() after Ctrl+Y = true, want false")
+		}
+	})
 }
 
 func TestEditorCanUndo(t *testing.T) {
