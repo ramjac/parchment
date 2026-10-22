@@ -462,37 +462,141 @@ func TestEditorCanRedo(t *testing.T) {
 }
 
 func TestEditorCanUndo(t *testing.T) {
-	ed := New()
-	if ed.CanUndo() {
-		t.Fatal("CanUndo() should be false for a newly created editor")
-	}
+	t.Run("initial state and SetValue", func(t *testing.T) {
+		ed := New()
+		if ed.CanUndo() {
+			t.Errorf("CanUndo() = true, want false for newly created editor")
+		}
 
-	ed.SetValue("Initial Content")
-	if ed.CanUndo() {
-		t.Fatal("CanUndo() should be false after SetValue()")
-	}
+		ed.SetValue("Initial Content")
+		if ed.CanUndo() {
+			t.Errorf("CanUndo() = true, want false after SetValue()")
+		}
+	})
 
-	ed.InsertString(" Additional Content")
-	if !ed.CanUndo() {
-		t.Fatal("CanUndo() should be true after InsertString()")
-	}
+	t.Run("various editing mutations", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Hello")
 
-	ed.Undo()
-	if ed.CanUndo() {
-		t.Fatal("CanUndo() should be false after undoing back to initial state")
-	}
+		if ed.CanUndo() {
+			t.Errorf("CanUndo() = true, want false before edits")
+		}
 
-	ed.InsertRune('X')
-	if !ed.CanUndo() {
-		t.Fatal("CanUndo() should be true after InsertRune()")
-	}
+		ed.InsertString(" World")
+		if !ed.CanUndo() {
+			t.Errorf("CanUndo() = false, want true after InsertString()")
+		}
 
-	ed.Selection = Selection{Anchor: Point{Line: 0, Col: 0}, Active: true}
-	ed.Cursor = Point{Line: 0, Col: 1}
-	ed.DeleteSelection()
-	if !ed.CanUndo() {
-		t.Fatal("CanUndo() should be true after DeleteSelection()")
-	}
+		ed.SetValue("Fresh")
+		ed.InsertRune('X')
+		if !ed.CanUndo() {
+			t.Errorf("CanUndo() = false, want true after InsertRune()")
+		}
+
+		ed.SetValue("Select Me")
+		ed.Selection = Selection{Anchor: Point{Line: 0, Col: 0}, Active: true}
+		ed.Cursor = Point{Line: 0, Col: 6}
+		ed.DeleteSelection()
+		if !ed.CanUndo() {
+			t.Errorf("CanUndo() = false, want true after DeleteSelection()")
+		}
+
+		ed.SetValue("Line1")
+		ed.Cursor = Point{Line: 0, Col: 5}
+		ed.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if !ed.CanUndo() {
+			t.Errorf("CanUndo() = false, want true after Enter key")
+		}
+
+		ed.SetValue("Line1\nLine2")
+		ed.Cursor = Point{Line: 1, Col: 0}
+		ed.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		if !ed.CanUndo() {
+			t.Errorf("CanUndo() = false, want true after Backspace key")
+		}
+
+		ed.SetValue("Line1\nLine2")
+		ed.Cursor = Point{Line: 0, Col: 5}
+		ed.Update(tea.KeyMsg{Type: tea.KeyDelete})
+		if !ed.CanUndo() {
+			t.Errorf("CanUndo() = false, want true after Delete key")
+		}
+	})
+
+	t.Run("undoing until history exhausted", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Base")
+
+		ed.InsertString(" 1")
+		ed.InsertString(" 2")
+		ed.InsertString(" 3")
+
+		if !ed.CanUndo() {
+			t.Fatalf("CanUndo() = false, want true with 3 undo states")
+		}
+
+		// First undo
+		if !ed.Undo() || !ed.CanUndo() {
+			t.Errorf("CanUndo() should be true after 1st undo out of 3")
+		}
+
+		// Second undo
+		if !ed.Undo() || !ed.CanUndo() {
+			t.Errorf("CanUndo() should be true after 2nd undo out of 3")
+		}
+
+		// Third undo
+		if !ed.Undo() {
+			t.Fatalf("3rd Undo failed")
+		}
+		if ed.CanUndo() {
+			t.Errorf("CanUndo() = true, want false after all undo history is exhausted")
+		}
+	})
+
+	t.Run("redo restores undo history", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Start")
+		ed.InsertString(" Edit")
+
+		ed.Undo()
+		if ed.CanUndo() {
+			t.Fatalf("CanUndo() = true, want false after undoing single edit")
+		}
+
+		ed.Redo()
+		if !ed.CanUndo() {
+			t.Errorf("CanUndo() = false, want true after Redo()")
+		}
+	})
+
+	t.Run("stack limit truncation retains undo capability", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Root")
+
+		for range 250 {
+			ed.InsertString("a")
+		}
+
+		if !ed.CanUndo() {
+			t.Fatalf("CanUndo() = false, want true when history exceeds max capacity")
+		}
+
+		undoCount := 0
+		for ed.CanUndo() {
+			if !ed.Undo() {
+				t.Fatalf("Undo() returned false while CanUndo() reported true at count %d", undoCount)
+			}
+			undoCount++
+		}
+
+		if undoCount != 200 {
+			t.Errorf("exhausted undo count = %d, want 200 due to max stack size limit", undoCount)
+		}
+		if ed.CanUndo() {
+			t.Errorf("CanUndo() = true, want false after undoing maximum history length")
+		}
+	})
 }
 
 func TestEditorRedoDirectAndEdgeCases(t *testing.T) {
