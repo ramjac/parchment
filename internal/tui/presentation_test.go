@@ -844,3 +844,25 @@ func TestPresentationFencedCodeBlocksAndEmptyNotes(t *testing.T) {
 		t.Fatalf("empty speaker notes did not render '(none)':\n%s", view)
 	}
 }
+
+func TestPresentationUpdateInvalidItemSource(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+
+	// Test presentationLoadedMsg with invalid presentation item source
+	invalidItem := presentation.Presentation{Source: "Not a valid presentation"}
+	m.seq++
+	currSeq := m.seq
+	m.Update(presentationLoadedMsg{seq: currSeq, item: invalidItem})
+	if !strings.Contains(m.errMessage, "Invalid presentation:") {
+		t.Fatalf("presentationLoadedMsg with invalid source errMessage = %q, want containing 'Invalid presentation:'", m.errMessage)
+	}
+
+	// Test presentationSavedMsg with invalid presentation item source
+	m.editing = true
+	m.seq++
+	currSeq = m.seq
+	m.Update(presentationSavedMsg{seq: currSeq, item: invalidItem})
+	if !strings.Contains(m.errMessage, "Invalid presentation:") {
+		t.Fatalf("presentationSavedMsg with invalid source errMessage = %q, want containing 'Invalid presentation:'", m.errMessage)
+	}
+}
