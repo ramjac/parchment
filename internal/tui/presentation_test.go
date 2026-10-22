@@ -698,6 +698,15 @@ func TestPresentationUpdateMessageHandlers(t *testing.T) {
 			t.Fatalf("errMessage = %q, want containing 'Load failed: load error'", m.errMessage)
 		}
 
+		// Valid sequence with invalid presentation item source
+		invalidItem := presentation.Presentation{Source: "invalid source"}
+		m.seq++
+		currSeq = m.seq
+		m.Update(presentationLoadedMsg{seq: currSeq, item: invalidItem})
+		if !strings.Contains(m.errMessage, "Invalid presentation") {
+			t.Fatalf("errMessage = %q, want containing 'Invalid presentation'", m.errMessage)
+		}
+
 		// Valid sequence without error
 		validItem := presentation.Presentation{Source: "# Loaded Title\n\n## Slide 1\nContent"}
 		m.seq++
