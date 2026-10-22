@@ -591,6 +591,49 @@ func TestRevertingNoteEditsRemovesAutosavedDraft(t *testing.T) {
 	}
 }
 
+func TestSanitizeTerminalText(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "empty string",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "normal text",
+			input:    "Hello, world!",
+			expected: "Hello, world!",
+		},
+		{
+			name:     "text with newlines preserved",
+			input:    "line 1\nline 2\n",
+			expected: "line 1\nline 2\n",
+		},
+		{
+			name:     "text with control characters replaced",
+			input:    "hello\x00\x07world\x1b[31m",
+			expected: "hello\uFFFD\uFFFDworld\uFFFD[31m",
+		},
+		{
+			name:     "text with tabs replaced as control character",
+			input:    "tab\tseparated",
+			expected: "tab\uFFFDseparated",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeTerminalText(tt.input)
+			if got != tt.expected {
+				t.Errorf("sanitizeTerminalText(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestRun(t *testing.T) {
 	repo, err := filerepo.New(t.TempDir())
 	if err != nil {
@@ -625,7 +668,7 @@ func TestRun(t *testing.T) {
 		cancel()
 
 		cfg := Config{
-			Path:      path,
+			Path:      filepath.Join(t.TempDir(), "doc.md"),
 			Kind:      artifact.DocumentKind,
 			Documents: document.NewService(repo, 10),
 			Recovery:  repo,
@@ -634,6 +677,56 @@ func TestRun(t *testing.T) {
 		err := Run(ctx, cfg, headlessOpts...)
 		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatalf("unexpected error running program with documents config: %v", err)
+		}
+	})
+
+	t.Run("canceled context with spreadsheet config", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		cfg := Config{
+			Path:         filepath.Join(t.TempDir(), "sheet.csv"),
+			Kind:         artifact.SpreadsheetKind,
+			Spreadsheets: spreadsheet.NewService(repo, 10),
+			Recovery:     repo,
+		}
+
+		err := Run(ctx, cfg, headlessOpts...)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("unexpected error running program with spreadsheet config: %v", err)
+		}
+	})
+
+	t.Run("canceled context with presentation config", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		cfg := Config{
+			Path:          filepath.Join(t.TempDir(), "deck.md"),
+			Kind:          artifact.PresentationKind,
+			Presentations: presentation.NewService(repo, 10),
+			Recovery:      repo,
+		}
+
+		err := Run(ctx, cfg, headlessOpts...)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("unexpected error running program with presentation config: %v", err)
+		}
+	})
+
+	t.Run("canceled context with choose kind config", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		cfg := Config{
+			Path:     filepath.Join(t.TempDir(), "unknown.md"),
+			Kind:     "",
+			Recovery: repo,
+		}
+
+		err := Run(ctx, cfg, headlessOpts...)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("unexpected error running program with choose kind config: %v", err)
 		}
 	})
 }
