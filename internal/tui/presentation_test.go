@@ -844,3 +844,182 @@ func TestPresentationFencedCodeBlocksAndEmptyNotes(t *testing.T) {
 		t.Fatalf("empty speaker notes did not render '(none)':\n%s", view)
 	}
 }
+
+func TestPresentationUpdateUnit(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+
+	t.Run("WindowSizeMsg updates dimensions and editor bounds", func(t *testing.T) {
+		retModel, cmd := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+		if retModel != m || cmd != nil {
+			t.Fatalf("expected model returned with nil cmd, got model %v, cmd %v", retModel, cmd)
+		}
+		if m.width != 120 || m.height != 40 {
+			t.Fatalf("width/height = %d/%d, want 120/40", m.width, m.height)
+		}
+		if m.editor.Width != 116 || m.editor.Height != 35 {
+			t.Fatalf("editor dimensions = %d/%d, want 116/35", m.editor.Width, m.editor.Height)
+		}
+	})
+
+	t.Run("presentationLoadedMsg sequence matching and errors", func(t *testing.T) {
+		// Mismatched sequence
+		m.seq = 10
+		retModel, cmd := m.Update(presentationLoadedMsg{seq: 9, item: presentation.Presentation{Source: "# Mismatch"}})
+		if retModel != m || cmd != nil {
+			t.Fatalf("mismatched seq returned %v, %v", retModel, cmd)
+		}
+		if m.item.Source == "# Mismatch" {
+			t.Fatal("mismatched sequence updated presentation item")
+		}
+
+		// Matching sequence with error
+		retModel, cmd = m.Update(presentationLoadedMsg{seq: 10, err: errors.New("network failure")})
+		if retModel != m || cmd != nil {
+			t.Fatalf("loaded with error returned %v, %v", retModel, cmd)
+		}
+		if !strings.Contains(m.errMessage, "Load failed: network failure") {
+			t.Fatalf("errMessage = %q, want 'Load failed: network failure'", m.errMessage)
+		}
+
+		// Matching sequence success
+		m.seq = 11
+		m.loadedStatus = "Custom status"
+		validSource := "# Title\n\n## Slide 1\nBody"
+		retModel, cmd = m.Update(presentationLoadedMsg{seq: 11, item: presentation.Presentation{Source: validSource}})
+		if retModel != m || cmd != nil {
+			t.Fatalf("loaded success returned %v, %v", retModel, cmd)
+		}
+		if m.item.Source != validSource || m.status != "Custom status" {
+			t.Fatalf("item source = %q, status = %q", m.item.Source, m.status)
+		}
+	})
+
+	t.Run("presentationSavedMsg sequence matching and errors", func(t *testing.T) {
+		// Mismatched sequence
+		m.editing = true
+		m.seq = 20
+		retModel, cmd := m.Update(presentationSavedMsg{seq: 19})
+		if retModel != m || cmd != nil || !m.editing {
+			t.Fatalf("mismatched seq save returned %v, %v, editing = %t", retModel, cmd, m.editing)
+		}
+
+		// Matching sequence with error
+		retModel, cmd = m.Update(presentationSavedMsg{seq: 20, err: errors.New("save denied")})
+		if retModel != m || cmd != nil || !m.editing {
+			t.Fatalf("save error returned %v, %v, editing = %t", retModel, cmd, m.editing)
+		}
+		if !strings.Contains(m.errMessage, "Save failed: save denied") {
+			t.Fatalf("errMessage = %q, want 'Save failed: save denied'", m.errMessage)
+		}
+
+		// Matching sequence success
+		validSource := "# Title\n\n## Slide 1\nUpdated Body"
+		m.seq = 21
+		retModel, cmd = m.Update(presentationSavedMsg{seq: 21, item: presentation.Presentation{Source: validSource}})
+		if retModel != m || cmd != nil || m.editing {
+			t.Fatalf("save success returned %v, %v, editing = %t", retModel, cmd, m.editing)
+		}
+		if m.status != "Saved" || m.item.Source != validSource {
+			t.Fatalf("status = %q, item source = %q", m.status, m.item.Source)
+		}
+	})
+
+	t.Run("presentationHistoryMsg sequence matching and errors", func(t *testing.T) {
+		// Mismatched sequence
+		m.seq = 30
+		retModel, cmd := m.Update(presentationHistoryMsg{seq: 29, description: "Stale history"})
+		if retModel != m || cmd != nil || m.loadedStatus == "Stale history" {
+			t.Fatalf("mismatched history msg returned %v, %v", retModel, cmd)
+		}
+
+		// Matching sequence with error
+		retModel, cmd = m.Update(presentationHistoryMsg{seq: 30, err: errors.New("history error")})
+		if retModel != m || cmd != nil {
+			t.Fatalf("history error returned %v, %v", retModel, cmd)
+		}
+		if !strings.Contains(m.errMessage, "History failed: history error") {
+			t.Fatalf("errMessage = %q, want 'History failed: history error'", m.errMessage)
+		}
+
+		// Matching sequence success triggers load command
+		m.seq = 31
+		retModel, cmd = m.Update(presentationHistoryMsg{seq: 31, description: "Undid action"})
+		if retModel != m || cmd == nil {
+			t.Fatalf("history success returned model %v, cmd %v", retModel, cmd)
+		}
+		if m.loadedStatus != "Undid action" {
+			t.Fatalf("loadedStatus = %q, want 'Undid action'", m.loadedStatus)
+		}
+		m.cancelPending()
+	})
+
+	t.Run("tea.KeyMsg browse and edit mode routing", func(t *testing.T) {
+		m.editing = false
+
+		// Key in browse mode
+		retModel, cmd := m.Update(sheetKey("s"))
+		if retModel != m || cmd != nil {
+			t.Fatalf("browse mode key returned model %v, cmd %v", retModel, cmd)
+		}
+		if !m.showNotes {
+			t.Fatal("browse key 's' did not toggle showNotes")
+		}
+
+		// Key in edit mode
+		m.beginEdit()
+		retModel, cmd = m.Update(sheetKey("a"))
+		if retModel != m {
+			t.Fatalf("edit mode key returned model %v", retModel)
+		}
+		if !strings.Contains(m.editor.Value(), "a") {
+			t.Fatalf("edit mode key 'a' was not forwarded to editor: value = %q", m.editor.Value())
+		}
+		m.leaveEditor()
+	})
+
+	t.Run("tea.MouseMsg browse and edit mode routing", func(t *testing.T) {
+		mouseMsg := tea.MouseMsg{X: 10, Y: 10, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
+
+		// Browse mode mouse message is ignored
+		m.editing = false
+		retModel, cmd := m.Update(mouseMsg)
+		if retModel != m || cmd != nil {
+			t.Fatalf("browse mode mouse msg returned %v, %v", retModel, cmd)
+		}
+
+		// Edit mode mouse message with pending operation is ignored
+		m.editing = true
+		m.pending = true
+		retModel, cmd = m.Update(mouseMsg)
+		if retModel != m || cmd != nil {
+			t.Fatalf("pending edit mouse msg returned %v, %v", retModel, cmd)
+		}
+
+		// Edit mode mouse message without pending operation adjusts X, Y and updates editor
+		m.pending = false
+		retModel, _ = m.Update(mouseMsg)
+		if retModel != m {
+			t.Fatalf("edit mode mouse msg returned %v", retModel)
+		}
+		m.editing = false
+	})
+
+	t.Run("Fallback generic message routing", func(t *testing.T) {
+		type customMsg struct{}
+
+		// Browse mode fallback
+		m.editing = false
+		retModel, cmd := m.Update(customMsg{})
+		if retModel != m || cmd != nil {
+			t.Fatalf("browse mode fallback msg returned %v, %v", retModel, cmd)
+		}
+
+		// Edit mode fallback
+		m.editing = true
+		retModel, _ = m.Update(customMsg{})
+		if retModel != m {
+			t.Fatalf("edit mode fallback msg returned %v", retModel)
+		}
+		m.editing = false
+	})
+}
