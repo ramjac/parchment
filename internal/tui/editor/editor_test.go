@@ -60,17 +60,119 @@ func TestEditorNew(t *testing.T) {
 	}
 }
 
-func TestEditorSetValueAndValue(t *testing.T) {
-	ed := New()
-	content := "Hello\nWorld\n"
-	ed.SetValue(content)
+func TestSetValue(t *testing.T) {
+	t.Run("text parsing and rune conversion", func(t *testing.T) {
+		tests := []struct {
+			name          string
+			input         string
+			expectedLines [][]rune
+			expectedVal   string
+		}{
+			{
+				name:          "empty string",
+				input:         "",
+				expectedLines: [][]rune{{}},
+				expectedVal:   "",
+			},
+			{
+				name:          "single line without newline",
+				input:         "Hello World",
+				expectedLines: [][]rune{[]rune("Hello World")},
+				expectedVal:   "Hello World",
+			},
+			{
+				name:          "single line with trailing newline",
+				input:         "Hello World\n",
+				expectedLines: [][]rune{[]rune("Hello World"), {}},
+				expectedVal:   "Hello World\n",
+			},
+			{
+				name:          "multiple lines with empty lines",
+				input:         "Line 1\n\nLine 3\n",
+				expectedLines: [][]rune{[]rune("Line 1"), {}, []rune("Line 3"), {}},
+				expectedVal:   "Line 1\n\nLine 3\n",
+			},
+			{
+				name:          "unicode and emoji text",
+				input:         "⌘ Hello 世界 🎉\n🚀 Parchment",
+				expectedLines: [][]rune{[]rune("⌘ Hello 世界 🎉"), []rune("🚀 Parchment")},
+				expectedVal:   "⌘ Hello 世界 🎉\n🚀 Parchment",
+			},
+		}
 
-	if ed.Value() != content {
-		t.Fatalf("Value() = %q, want %q", ed.Value(), content)
-	}
-	if len(ed.Lines) != 3 {
-		t.Fatalf("len(Lines) = %d, want 3", len(ed.Lines))
-	}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				ed := New()
+				ed.SetValue(tc.input)
+
+				if len(ed.Lines) != len(tc.expectedLines) {
+					t.Fatalf("len(Lines) = %d, want %d", len(ed.Lines), len(tc.expectedLines))
+				}
+				for i, l := range ed.Lines {
+					if string(l) != string(tc.expectedLines[i]) {
+						t.Errorf("Line[%d] = %q, want %q", i, string(l), string(tc.expectedLines[i]))
+					}
+				}
+				if got := ed.Value(); got != tc.expectedVal {
+					t.Errorf("Value() = %q, want %q", got, tc.expectedVal)
+				}
+			})
+		}
+	})
+
+	t.Run("resets state when model is dirty", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Initial line 1\nInitial line 2\nInitial line 3")
+
+		// Mutate model state
+		ed.Cursor = Point{Line: 2, Col: 5}
+		ed.StickyCol = 5
+		ed.Selection = Selection{Anchor: Point{Line: 1, Col: 2}, Active: true}
+		ed.TopLine = 1
+		ed.LeftCol = 3
+
+		// Push history onto undo and redo stacks
+		ed.InsertString(" edit")
+		ed.Undo()
+		if !ed.CanUndo() && !ed.CanRedo() {
+			t.Fatalf("expected undo/redo stack to contain history before SetValue")
+		}
+
+		// Call SetValue with new text
+		ed.SetValue("New Content\nSecond Line")
+
+		// Verify state reset
+		if ed.Cursor != (Point{Line: 0, Col: 0}) {
+			t.Errorf("Cursor = %+v, want Point{Line: 0, Col: 0}", ed.Cursor)
+		}
+		if ed.StickyCol != 0 {
+			t.Errorf("StickyCol = %d, want 0", ed.StickyCol)
+		}
+		if ed.Selection != (Selection{}) {
+			t.Errorf("Selection = %+v, want Selection{}", ed.Selection)
+		}
+		if ed.TopLine != 0 {
+			t.Errorf("TopLine = %d, want 0", ed.TopLine)
+		}
+		if ed.LeftCol != 0 {
+			t.Errorf("LeftCol = %d, want 0", ed.LeftCol)
+		}
+		if ed.CanUndo() {
+			t.Errorf("CanUndo() = true, want false")
+		}
+		if ed.CanRedo() {
+			t.Errorf("CanRedo() = true, want false")
+		}
+		if ed.undoStack != nil {
+			t.Errorf("undoStack = %v, want nil", ed.undoStack)
+		}
+		if ed.redoStack != nil {
+			t.Errorf("redoStack = %v, want nil", ed.redoStack)
+		}
+		if ed.lastEditType != editNone {
+			t.Errorf("lastEditType = %v, want editNone", ed.lastEditType)
+		}
+	})
 }
 
 func TestEditorValue(t *testing.T) {
