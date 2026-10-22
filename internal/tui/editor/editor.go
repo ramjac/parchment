@@ -118,7 +118,7 @@ func (m *Model) Undo() bool {
 	snap := m.undoStack[len(m.undoStack)-1]
 	m.undoStack = m.undoStack[:len(m.undoStack)-1]
 
-	m.Lines = snap.Lines
+	m.Lines = cloneLines(snap.Lines)
 	m.Cursor = snap.Cursor
 	m.StickyCol = snap.Cursor.Col
 	m.Selection = Selection{Anchor: m.Cursor, Active: false}
@@ -140,7 +140,7 @@ func (m *Model) Redo() bool {
 	snap := m.redoStack[len(m.redoStack)-1]
 	m.redoStack = m.redoStack[:len(m.redoStack)-1]
 
-	m.Lines = snap.Lines
+	m.Lines = cloneLines(snap.Lines)
 	m.Cursor = snap.Cursor
 	m.StickyCol = snap.Cursor.Col
 	m.Selection = Selection{Anchor: m.Cursor, Active: false}
