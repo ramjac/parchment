@@ -516,21 +516,27 @@ func (m *spreadsheetModel) renderFormulaBar() string {
 func (m *spreadsheetModel) renderGrid() string {
 	muted := lipgloss.NewStyle().Foreground(borderColor)
 	selected := lipgloss.NewStyle().Reverse(true)
-	var gridBuf strings.Builder
 
 	rowWidth := m.rowHeaderWidth()
 	columns := m.visibleColumns()
+	visibleRows := m.visibleRows()
+
 	var lineBuf strings.Builder
+	lineBuf.Grow(rowWidth + columns*(spreadsheetColumnWidth+1))
 	lineBuf.WriteString(strings.Repeat(" ", rowWidth))
 	for c := m.columnOffset; c < m.columnOffset+columns && c < spreadsheet.MaxColumns; c++ {
 		lineBuf.WriteByte(' ')
 		lineBuf.WriteString(fitCell(columnName(c), spreadsheetColumnWidth))
 	}
-	gridBuf.WriteString(muted.Render(lineBuf.String()) + "\n")
 
-	for r := m.rowOffset; r < m.rowOffset+m.visibleRows(); r++ {
+	var gridBuf strings.Builder
+	gridBuf.Grow((visibleRows + 1) * (rowWidth + columns*(spreadsheetColumnWidth+1) + 1))
+	gridBuf.WriteString(muted.Render(lineBuf.String()))
+	gridBuf.WriteByte('\n')
+
+	for r := m.rowOffset; r < m.rowOffset+visibleRows; r++ {
 		if r >= spreadsheet.MaxRows {
-			gridBuf.WriteString("\n")
+			gridBuf.WriteByte('\n')
 			continue
 		}
 		gridBuf.WriteString(muted.Render(fmt.Sprintf("%*d", rowWidth, r+1)))
@@ -539,10 +545,11 @@ func (m *spreadsheetModel) renderGrid() string {
 			if r == m.row && c == m.column {
 				text = selected.Render(text)
 			}
-			gridBuf.WriteString(" " + text)
+			gridBuf.WriteByte(' ')
+			gridBuf.WriteString(text)
 		}
-		if r < m.rowOffset+m.visibleRows()-1 {
-			gridBuf.WriteString("\n")
+		if r < m.rowOffset+visibleRows-1 {
+			gridBuf.WriteByte('\n')
 		}
 	}
 
@@ -577,10 +584,14 @@ func (m *spreadsheetModel) View() string {
 		return "Terminal too small. Press q to quit."
 	}
 	var b strings.Builder
-	b.WriteString(m.renderHeader() + "\n")
-	b.WriteString(m.renderFormulaBar() + "\n")
-	b.WriteString(m.renderGrid() + "\n")
-	b.WriteString(m.renderStatus() + "\n")
+	b.WriteString(m.renderHeader())
+	b.WriteByte('\n')
+	b.WriteString(m.renderFormulaBar())
+	b.WriteByte('\n')
+	b.WriteString(m.renderGrid())
+	b.WriteByte('\n')
+	b.WriteString(m.renderStatus())
+	b.WriteByte('\n')
 	b.WriteString(m.renderHelp())
 	return b.String()
 }
