@@ -643,3 +643,198 @@ func TestSpreadsheetViewMaxRowsEdge(t *testing.T) {
 		t.Fatal("empty view returned for MaxRows edge case")
 	}
 }
+
+func TestSpreadsheetUpdateWindowSizeMsg(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "A1"}}})
+
+	model, cmd := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	if model != m || cmd != nil {
+		t.Fatalf("expected (m, nil) from WindowSizeMsg, got model=%v, cmd=%v", model, cmd)
+	}
+	if m.width != 80 || m.height != 24 {
+		t.Fatalf("expected width 80, height 24, got %d, %d", m.width, m.height)
+	}
+	if m.input.Width != 68 {
+		t.Fatalf("expected input width 68, got %d", m.input.Width)
+	}
+}
+
+func TestSpreadsheetUpdateLoadedMsg(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "A1"}}})
+
+	// 1. Success case with loadedStatus transition
+	m.seq = 5
+	m.pending = true
+	m.loadedStatus = "Reloaded"
+	book := spreadsheet.Spreadsheet{
+		Artifact: artifact.Artifact{Title: "LoadedBook"},
+		Sheets:   []spreadsheet.Sheet{{Name: "Sheet1", Rows: [][]spreadsheet.Cell{{{Value: "New"}}}}},
+	}
+	model, cmd := m.Update(spreadsheetLoadedMsg{seq: 5, book: book})
+	if model != m || cmd != nil {
+		t.Fatalf("expected (m, nil), got model=%v, cmd=%v", model, cmd)
+	}
+	if m.status != "Reloaded" || m.loadedStatus != "" {
+		t.Fatalf("expected status 'Reloaded', got status=%q, loadedStatus=%q", m.status, m.loadedStatus)
+	}
+	if m.pending {
+		t.Fatalf("expected pending false")
+	}
+
+	// 2. Error case with spreadsheet.ErrNotFound
+	m.seq = 6
+	m.pending = true
+	model, cmd = m.Update(spreadsheetLoadedMsg{seq: 6, err: spreadsheet.ErrNotFound})
+	if model != m || cmd != nil {
+		t.Fatalf("expected (m, nil), got model=%v, cmd=%v", model, cmd)
+	}
+	if !strings.Contains(m.errMessage, "Load failed: spreadsheet not found") {
+		t.Fatalf("expected not found error message, got %q", m.errMessage)
+	}
+}
+
+func TestSpreadsheetUpdateCellSavedMsgSuccess(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "A1"}}})
+
+	m.seq = 7
+	m.pending = true
+	m.row, m.column = 0, 1
+	book := m.book
+	model, cmd := m.Update(spreadsheetCellSavedMsg{seq: 7, book: book, row: 0, column: 1})
+	if model != m || cmd != nil {
+		t.Fatalf("expected (m, nil), got model=%v, cmd=%v", model, cmd)
+	}
+	if m.status != "Saved B1" {
+		t.Fatalf("expected status 'Saved B1', got %q", m.status)
+	}
+	if m.pending {
+		t.Fatalf("expected pending false")
+	}
+}
+
+func TestSpreadsheetUpdateMouseMsgEdgeCases(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{
+		{{Value: "A1"}, {Value: "B1"}},
+	})
+	m.width, m.height = 80, 20
+	m.row, m.column = 0, 0
+
+	// Mouse release (not press) should be ignored
+	m.Update(tea.MouseMsg{X: 10, Y: 5, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
+	if m.row != 0 || m.column != 0 {
+		t.Fatalf("expected row 0, col 0 on release")
+	}
+
+	// Mouse right click should be ignored
+	m.Update(tea.MouseMsg{X: 10, Y: 5, Action: tea.MouseActionPress, Button: tea.MouseButtonRight})
+	if m.row != 0 || m.column != 0 {
+		t.Fatalf("expected row 0, col 0 on right click")
+	}
+
+	// Mouse click on header row (Y = 1) while browsing (not editing)
+	m.Update(tea.MouseMsg{X: 10, Y: 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if m.row != 0 || m.column != 0 {
+		t.Fatalf("expected row 0, col 0 on header click while browsing")
+	}
+
+	// Mouse click below visible grid (Y >= 4 + visibleRows)
+	m.Update(tea.MouseMsg{X: 10, Y: 100, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if m.row != 0 || m.column != 0 {
+		t.Fatalf("expected row 0, col 0 on click below grid")
+	}
+
+	// Mouse click on row header (X <= rowHeaderWidth + 2)
+	m.Update(tea.MouseMsg{X: 2, Y: 5, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if m.row != 0 || m.column != 0 {
+		t.Fatalf("expected row 0, col 0 on row header click")
+	}
+}
+
+func TestSpreadsheetView_TerminalTooSmall(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "data"}}})
+
+	// Width too small
+	m.width, m.height = 19, 20
+	if view := m.View(); view != "Terminal too small. Press q to quit." {
+		t.Fatalf("expected terminal too small message for width < 20, got:\n%s", view)
+	}
+
+	// Height too small (spreadsheetChromeLines = 7, so height < 8)
+	m.width, m.height = 80, 7
+	if view := m.View(); view != "Terminal too small. Press q to quit." {
+		t.Fatalf("expected terminal too small message for height < 8, got:\n%s", view)
+	}
+
+	// Boundary size (width = 20, height = 8) should show normal view
+	m.width, m.height = 20, 8
+	if view := m.View(); strings.Contains(view, "Terminal too small") {
+		t.Fatalf("unexpected terminal too small message at boundary size 20x8:\n%s", view)
+	}
+}
+
+func TestSpreadsheetView_HeaderAndStatus(t *testing.T) {
+	m, service, _, id := newSheetModel(t, [][]spreadsheet.Cell{
+		{{Value: "A1"}, {Value: "B1"}},
+		{{Value: "A2"}, {Value: "B2"}},
+	})
+
+	// Default status line when status is empty and spreadsheet is loaded should display sheet dimensions "2×2"
+	m.status = ""
+	view := m.View()
+	if !strings.Contains(view, "2×2") {
+		t.Fatalf("expected status line to show dimensions '2×2', view:\n%s", view)
+	}
+
+	// Header shows path when m.path is set
+	if !strings.Contains(view, m.path) {
+		t.Fatalf("expected header to contain file path %q, view:\n%s", m.path, view)
+	}
+
+	// Single sheet titled "Sheet1" does not append "— Sheet1"
+	if strings.Contains(view, "— Sheet1") {
+		t.Fatalf("single Sheet1 workbook should not append sheet suffix, view:\n%s", view)
+	}
+
+	// Add second sheet and verify suffix appears
+	if _, err := service.AddSheet(context.Background(), id, "Sheet2"); err != nil {
+		t.Fatal(err)
+	}
+	driveSheet(t, m, sheetKey("r"))
+	viewMulti := m.View()
+	if !strings.Contains(viewMulti, "— Sheet1") {
+		t.Fatalf("multi-sheet workbook should append sheet suffix '— Sheet1', view:\n%s", viewMulti)
+	}
+}
+
+func TestSpreadsheetView_EditingAndHelp(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "Value1"}}})
+
+	// Browsing help message
+	viewBrowsing := m.View()
+	if !strings.Contains(viewBrowsing, "arrows move • enter edit • del clear • f formulas") {
+		t.Fatalf("expected browsing help text, got:\n%s", viewBrowsing)
+	}
+
+	// Editing formula bar and help message
+	driveSheet(t, m, sheetKey("enter"))
+	if !m.editing {
+		t.Fatal("expected model to enter editing state")
+	}
+	viewEditing := m.View()
+	if !strings.Contains(viewEditing, "A1 >") {
+		t.Fatalf("expected editing formula bar prompt 'A1 >', got:\n%s", viewEditing)
+	}
+	if !strings.Contains(viewEditing, "enter save • esc cancel • =formula • 'literal") {
+		t.Fatalf("expected editing help text, got:\n%s", viewEditing)
+	}
+	driveSheet(t, m, sheetKey("esc"))
+
+	// Unloaded help message
+	repo := newTestRepository(t)
+	mUnloaded := newSpreadsheetModel(spreadsheet.NewService(repo, 10), "missing.md")
+	mUnloaded.width, mUnloaded.height = 80, 20
+	viewUnloaded := mUnloaded.View()
+	if !strings.Contains(viewUnloaded, "r retry • esc/q quit") {
+		t.Fatalf("expected unloaded help text, got:\n%s", viewUnloaded)
+	}
+}
