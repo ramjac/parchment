@@ -145,14 +145,46 @@ func TestCreateIsExclusive(t *testing.T) {
 }
 
 func TestKindError(t *testing.T) {
-	err := &filerepo.KindError{
-		Path: "doc.md",
-		Kind: artifact.DocumentKind,
-		Want: artifact.NoteKind,
+	tests := []struct {
+		name string
+		err  filerepo.KindError
+		want string
+	}{
+		{
+			name: "document expected note",
+			err: filerepo.KindError{
+				Path: "doc.md",
+				Kind: artifact.DocumentKind,
+				Want: artifact.NoteKind,
+			},
+			want: "doc.md is a document, not a note",
+		},
+		{
+			name: "spreadsheet expected presentation",
+			err: filerepo.KindError{
+				Path: "/tmp/sheet.md",
+				Kind: artifact.SpreadsheetKind,
+				Want: artifact.PresentationKind,
+			},
+			want: "/tmp/sheet.md is a spreadsheet, not a presentation",
+		},
+		{
+			name: "empty kinds and path",
+			err: filerepo.KindError{
+				Path: "",
+				Kind: "",
+				Want: "",
+			},
+			want: " is a , not a ",
+		},
 	}
-	wantMsg := "doc.md is a document, not a note"
-	if got := err.Error(); got != wantMsg {
-		t.Fatalf("KindError.Error() = %q, want %q", got, wantMsg)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.Error(); got != tt.want {
+				t.Errorf("KindError.Error() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
