@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestEditorNew(t *testing.T) {
@@ -29,11 +30,33 @@ func TestEditorNew(t *testing.T) {
 	if ed.Selection.Active {
 		t.Fatalf("New().Selection.Active = true, want false")
 	}
+	if ed.Selection.Anchor != (Point{Line: 0, Col: 0}) {
+		t.Fatalf("New().Selection.Anchor = %+v, want Point{Line: 0, Col: 0}", ed.Selection.Anchor)
+	}
+	if ed.TopLine != 0 {
+		t.Fatalf("New().TopLine = %d, want 0", ed.TopLine)
+	}
+	if ed.LeftCol != 0 {
+		t.Fatalf("New().LeftCol = %d, want 0", ed.LeftCol)
+	}
+	if ed.StickyCol != 0 {
+		t.Fatalf("New().StickyCol = %d, want 0", ed.StickyCol)
+	}
 	if ed.Value() != "" {
 		t.Fatalf("New().Value() = %q, want %q", ed.Value(), "")
 	}
 	if ed.LineCount() != 1 {
 		t.Fatalf("New().LineCount() = %d, want 1", ed.LineCount())
+	}
+	if ed.CanUndo() {
+		t.Fatalf("New().CanUndo() = true, want false")
+	}
+	if ed.CanRedo() {
+		t.Fatalf("New().CanRedo() = true, want false")
+	}
+	expectedStyle := lipgloss.NewStyle().Reverse(true)
+	if ed.SelectStyle.Render("test") != expectedStyle.Render("test") {
+		t.Fatalf("New().SelectStyle mismatch")
 	}
 }
 
