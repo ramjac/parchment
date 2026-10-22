@@ -38,3 +38,12 @@ func TestCreateAtomicNeverReplacesAnExistingFile(t *testing.T) {
 		t.Fatalf("temporary files left behind: %v", entries)
 	}
 }
+
+func TestChangedError(t *testing.T) {
+	path := "/path/to/doc.md"
+	err := changedError(path)
+	wantMsg := "/path/to/doc.md changed since it was loaded; reload it and try again"
+	if got := err.Error(); got != wantMsg {
+		t.Fatalf("changedError.Error() = %q, want %q", got, wantMsg)
+	}
+}

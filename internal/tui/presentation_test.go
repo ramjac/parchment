@@ -654,6 +654,167 @@ func TestPresentationUpdateBrowseKeysAndNavigation(t *testing.T) {
 	}
 }
 
+func TestPresentationUpdateMessageHandlers(t *testing.T) {
+	m, service, _ := newPresentationTestModel(t)
+
+	t.Run("WindowSizeMsg", func(t *testing.T) {
+		m.Update(tea.WindowSizeMsg{Width: 80, Height: 25})
+		if m.width != 80 || m.height != 25 {
+			t.Fatalf("width = %d, height = %d, want 80, 25", m.width, m.height)
+		}
+		if gotW := m.editor.Width; gotW != 76 {
+			t.Fatalf("editor width = %d, want 76", gotW)
+		}
+		if gotH := m.editor.Height; gotH != 20 {
+			t.Fatalf("editor height = %d, want 20", gotH)
+		}
+
+		// Small window dimensions to test max(1, ...)
+		m.Update(tea.WindowSizeMsg{Width: 2, Height: 2})
+		if gotW := m.editor.Width; gotW != 1 {
+			t.Fatalf("small window editor width = %d, want 1", gotW)
+		}
+		if gotH := m.editor.Height; gotH != 1 {
+			t.Fatalf("small window editor height = %d, want 1", gotH)
+		}
+		m.Update(tea.WindowSizeMsg{Width: 80, Height: 25})
+	})
+
+	t.Run("presentationLoadedMsg", func(t *testing.T) {
+		// Stale sequence
+		seq := m.seq
+		staleSeq := seq - 1
+		m.loadedStatus = ""
+		m.Update(presentationLoadedMsg{seq: staleSeq, item: presentation.Presentation{Source: "# Stale"}})
+		if m.item.Source == "# Stale" {
+			t.Fatal("stale presentationLoadedMsg updated item source")
+		}
+
+		// Valid sequence with error
+		m.seq++
+		currSeq := m.seq
+		m.Update(presentationLoadedMsg{seq: currSeq, err: errors.New("load error")})
+		if !strings.Contains(m.errMessage, "Load failed: load error") {
+			t.Fatalf("errMessage = %q, want containing 'Load failed: load error'", m.errMessage)
+		}
+
+		// Valid sequence without error
+		validItem := presentation.Presentation{Source: "# Loaded Title\n\n## Slide 1\nContent"}
+		m.seq++
+		currSeq = m.seq
+		m.loadedStatus = "Loaded status test"
+		m.Update(presentationLoadedMsg{seq: currSeq, item: validItem})
+		if m.item.Source != validItem.Source || m.status != "Loaded status test" {
+			t.Fatalf("item.Source = %q, status = %q", m.item.Source, m.status)
+		}
+	})
+
+	t.Run("presentationSavedMsg", func(t *testing.T) {
+		// Stale sequence
+		m.editing = true
+		currSeq := m.seq
+		m.Update(presentationSavedMsg{seq: currSeq - 1, item: presentation.Presentation{Source: "# Stale"}})
+		if !m.editing {
+			t.Fatal("stale presentationSavedMsg exited edit mode")
+		}
+
+		// Valid sequence with error
+		m.Update(presentationSavedMsg{seq: currSeq, err: errors.New("save error")})
+		if !m.editing {
+			t.Fatal("presentationSavedMsg with error exited edit mode")
+		}
+		if !strings.Contains(m.errMessage, "Save failed: save error") {
+			t.Fatalf("errMessage = %q, want containing 'Save failed: save error'", m.errMessage)
+		}
+
+		// Valid sequence without error
+		validItem := presentation.Presentation{Source: "# Saved Title\n\n## Slide 1\nContent"}
+		m.seq++
+		currSeq = m.seq
+		m.Update(presentationSavedMsg{seq: currSeq, item: validItem})
+		if m.editing {
+			t.Fatal("presentationSavedMsg without error did not exit edit mode")
+		}
+		if m.status != "Saved" || m.item.Source != validItem.Source {
+			t.Fatalf("status = %q, item.Source = %q", m.status, m.item.Source)
+		}
+	})
+
+	t.Run("presentationHistoryMsg", func(t *testing.T) {
+		// Stale sequence
+		currSeq := m.seq
+		m.Update(presentationHistoryMsg{seq: currSeq - 1, description: "Stale history"})
+		if m.loadedStatus == "Stale history" {
+			t.Fatal("stale presentationHistoryMsg updated loadedStatus")
+		}
+
+		// Valid sequence with error
+		m.Update(presentationHistoryMsg{seq: currSeq, err: errors.New("history error")})
+		if !strings.Contains(m.errMessage, "History failed: history error") {
+			t.Fatalf("errMessage = %q, want containing 'History failed: history error'", m.errMessage)
+		}
+
+		// Valid sequence without error
+		m.seq++
+		currSeq = m.seq
+		_, cmd := m.Update(presentationHistoryMsg{seq: currSeq, description: "Undid action"})
+		if cmd == nil {
+			t.Fatal("presentationHistoryMsg without error returned nil cmd")
+		}
+		if m.loadedStatus != "Undid action" {
+			t.Fatalf("loadedStatus = %q, want 'Undid action'", m.loadedStatus)
+		}
+		m.cancelPending()
+	})
+
+	t.Run("MouseMsg edge cases", func(t *testing.T) {
+		// Browse mode mouse message is no-op
+		m.editing = false
+		mouseMsg := tea.MouseMsg{X: 10, Y: 10, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
+		retModel, cmd := m.Update(mouseMsg)
+		if retModel != m || cmd != nil {
+			t.Fatalf("browse mode MouseMsg returned model %v, cmd %v", retModel, cmd)
+		}
+
+		// Edit mode while pending is no-op
+		m.editing = true
+		m.pending = true
+		retModel, cmd = m.Update(mouseMsg)
+		if retModel != m || cmd != nil {
+			t.Fatalf("pending edit mode MouseMsg returned model %v, cmd %v", retModel, cmd)
+		}
+
+		// Edit mode while not pending adjusts coordinates (X-2, Y-2) and updates editor
+		m.pending = false
+		retModel, _ = m.Update(mouseMsg)
+		if retModel != m {
+			t.Fatalf("edit mode MouseMsg returned model %v", retModel)
+		}
+		m.editing = false
+	})
+
+	t.Run("Fallback generic message", func(t *testing.T) {
+		type customMsg struct{}
+
+		// Browse mode fallback
+		m.editing = false
+		retModel, cmd := m.Update(customMsg{})
+		if retModel != m || cmd != nil {
+			t.Fatalf("browse mode customMsg returned model %v, cmd %v", retModel, cmd)
+		}
+
+		// Edit mode fallback
+		m.editing = true
+		retModel, _ = m.Update(customMsg{})
+		if retModel != m {
+			t.Fatalf("edit mode customMsg returned model %v", retModel)
+		}
+		m.editing = false
+	})
+
+	_ = service
+}
+
 func TestPresentationFencedCodeBlocksAndEmptyNotes(t *testing.T) {
 	m, _, _ := newPresentationTestModel(t)
 
