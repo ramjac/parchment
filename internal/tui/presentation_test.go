@@ -844,3 +844,57 @@ func TestPresentationFencedCodeBlocksAndEmptyNotes(t *testing.T) {
 		t.Fatalf("empty speaker notes did not render '(none)':\n%s", view)
 	}
 }
+
+func TestPresentationUpdateQuitKeys(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+
+	// Ctrl+C in browse mode returns tea.Quit
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil || cmd() != tea.Quit() {
+		t.Fatal("ctrl+c in browse mode did not return tea.Quit")
+	}
+
+	// 'q' key in browse mode returns tea.Quit
+	_, cmd = m.Update(sheetKey("q"))
+	if cmd == nil || cmd() != tea.Quit() {
+		t.Fatal("'q' in browse mode did not return tea.Quit")
+	}
+
+	// Ctrl+C in edit mode without active selection returns tea.Quit
+	drivePresentation(t, m, sheetKey("e"))
+	if !m.editing {
+		t.Fatal("expected edit mode")
+	}
+	m.editor.Selection.Active = false
+	_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil || cmd() != tea.Quit() {
+		t.Fatal("ctrl+c in edit mode without selection did not return tea.Quit")
+	}
+}
+
+func TestPresentationUpdateInvalidItemSource(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+
+	invalidItem := presentation.Presentation{Source: "Not a valid presentation syntax"}
+	m.seq++
+	m.Update(presentationLoadedMsg{seq: m.seq, item: invalidItem})
+	if !strings.Contains(m.errMessage, "Invalid presentation:") {
+		t.Fatalf("expected 'Invalid presentation:' in errMessage, got %q", m.errMessage)
+	}
+
+	m.editing = true
+	m.seq++
+	m.Update(presentationSavedMsg{seq: m.seq, item: invalidItem})
+	if !strings.Contains(m.errMessage, "Invalid presentation:") {
+		t.Fatalf("expected 'Invalid presentation:' in errMessage on save, got %q", m.errMessage)
+	}
+}
+
+func TestPresentationUpdateMoveEditorToLineEmpty(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+	m.editor.Lines = nil
+	m.moveEditorToLine(5)
+	if m.editor.Cursor.Line != 0 || m.editor.Cursor.Col != 0 {
+		t.Fatalf("moveEditorToLine on empty lines set cursor line=%d, col=%d, want 0, 0", m.editor.Cursor.Line, m.editor.Cursor.Col)
+	}
+}
