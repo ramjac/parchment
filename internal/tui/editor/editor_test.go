@@ -1069,6 +1069,183 @@ func TestSetValueResetState(t *testing.T) {
 	}
 }
 
+func TestUndo(t *testing.T) {
+	t.Run("returns false when undo stack is empty", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Sample text")
+		if ed.Undo() {
+			t.Errorf("Undo() = true, want false on empty stack")
+		}
+		if ed.Value() != "Sample text" {
+			t.Errorf("Value() changed to %q, want %q", ed.Value(), "Sample text")
+		}
+	})
+
+	t.Run("restores buffer, cursor, sticky column, and resets selection", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Hello World")
+		ed.Cursor = Point{Line: 0, Col: 11}
+		ed.StickyCol = 11
+
+		// Insert string creates a snapshot of ("Hello World", Cursor{0, 11})
+		ed.InsertString("!!!")
+		if ed.Value() != "Hello World!!!" {
+			t.Fatalf("Value after InsertString = %q, want %q", ed.Value(), "Hello World!!!")
+		}
+
+		// Set an active selection
+		ed.Selection = Selection{
+			Anchor: Point{Line: 0, Col: 0},
+			Active: true,
+		}
+
+		ok := ed.Undo()
+		if !ok {
+			t.Fatalf("Undo() returned false, want true")
+		}
+
+		if ed.Value() != "Hello World" {
+			t.Errorf("Value() after Undo = %q, want %q", ed.Value(), "Hello World")
+		}
+		if ed.Cursor != (Point{Line: 0, Col: 11}) {
+			t.Errorf("Cursor after Undo = %+v, want Point{0, 11}", ed.Cursor)
+		}
+		if ed.StickyCol != 11 {
+			t.Errorf("StickyCol after Undo = %d, want 11", ed.StickyCol)
+		}
+		if ed.Selection.Active {
+			t.Errorf("Selection.Active = true, want false")
+		}
+		if ed.Selection.Anchor != ed.Cursor {
+			t.Errorf("Selection.Anchor = %+v, want %+v", ed.Selection.Anchor, ed.Cursor)
+		}
+	})
+
+	t.Run("pushes state to redo stack and pops undo stack", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Alpha")
+		ed.Cursor = Point{Line: 0, Col: 5}
+
+		if ed.CanRedo() {
+			t.Fatalf("CanRedo() = true initially, want false")
+		}
+
+		ed.InsertString(" Beta")
+		if len(ed.undoStack) != 1 {
+			t.Fatalf("len(undoStack) = %d, want 1", len(ed.undoStack))
+		}
+
+		ed.Undo()
+
+		if len(ed.undoStack) != 0 {
+			t.Errorf("len(undoStack) after Undo = %d, want 0", len(ed.undoStack))
+		}
+		if !ed.CanRedo() {
+			t.Errorf("CanRedo() after Undo = false, want true")
+		}
+		if len(ed.redoStack) != 1 {
+			t.Fatalf("len(redoStack) after Undo = %d, want 1", len(ed.redoStack))
+		}
+
+		// Verify redo stack stored the state prior to undo
+		redoSnap := ed.redoStack[0]
+		if string(redoSnap.Lines[0]) != "Alpha Beta" {
+			t.Errorf("redoStack snapshot lines = %q, want %q", string(redoSnap.Lines[0]), "Alpha Beta")
+		}
+	})
+
+	t.Run("resets lastEditType to editNone", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Hello")
+		ed.Cursor = Point{Line: 0, Col: 5}
+
+		// Typing runes consecutively batches without extra snapshots while lastEditType == editTyping
+		ed.InsertRune('a') // snapshot saved, lastEditType becomes editTyping
+		ed.InsertRune('b') // no new snapshot saved because lastEditType == editTyping
+		if len(ed.undoStack) != 1 {
+			t.Fatalf("len(undoStack) = %d, want 1", len(ed.undoStack))
+		}
+
+		ed.Undo() // resets lastEditType to editNone
+		if ed.lastEditType != editNone {
+			t.Errorf("lastEditType after Undo = %v, want editNone", ed.lastEditType)
+		}
+
+		// Subsequent rune insertion must save a new snapshot because lastEditType was editNone
+		ed.InsertRune('c')
+		if len(ed.undoStack) != 1 {
+			t.Fatalf("len(undoStack) after InsertRune = %d, want 1", len(ed.undoStack))
+		}
+	})
+
+	t.Run("adjusts viewport when restored cursor is out of view", func(t *testing.T) {
+		ed := New()
+		ed.SetHeight(5)
+		ed.SetWidth(10)
+
+		// Create multiline document
+		var lines []string
+		for i := 0; i < 20; i++ {
+			lines = append(lines, "line")
+		}
+		ed.SetValue(strings.Join(lines, "\n"))
+
+		// Move cursor to top (Line 0, Col 0)
+		ed.Cursor = Point{Line: 0, Col: 0}
+
+		// Perform operation that moves cursor far down and creates snapshot
+		ed.InsertString("\n") // snapshot saved with Cursor{Line: 0, Col: 0}
+		ed.Cursor = Point{Line: 18, Col: 0}
+		ed.TopLine = 15 // Scrolled down
+
+		// Undo should restore cursor to Line 0, Col 0 and adjust TopLine
+		ed.Undo()
+		if ed.Cursor.Line != 0 {
+			t.Errorf("Cursor.Line after Undo = %d, want 0", ed.Cursor.Line)
+		}
+		if ed.TopLine != 0 {
+			t.Errorf("TopLine after Undo = %d, want 0", ed.TopLine)
+		}
+	})
+
+	t.Run("clones lines to prevent mutation of snapshot history", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Original")
+		ed.Cursor = Point{Line: 0, Col: 8}
+
+		ed.InsertString(" Step1") // snapshot 0: "Original"
+		ed.InsertString(" Step2") // snapshot 1: "Original Step1"
+
+		// Perform Undo to restore to "Original Step1"
+		ed.Undo()
+
+		// Mutate active buffer line directly
+		ed.Lines[0][0] = 'X'
+
+		// Verify that remaining snapshot in undoStack ("Original") is unaffected
+		if string(ed.undoStack[0].Lines[0]) != "Original" {
+			t.Errorf("undoStack snapshot line = %q, want %q", string(ed.undoStack[0].Lines[0]), "Original")
+		}
+	})
+
+	t.Run("ctrl+z triggers Undo via Update", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Text")
+		ed.Cursor = Point{Line: 0, Col: 4}
+		ed.Focus()
+
+		ed.InsertString(" Extra")
+		if ed.Value() != "Text Extra" {
+			t.Fatalf("Value = %q, want %q", ed.Value(), "Text Extra")
+		}
+
+		ed.Update(tea.KeyMsg{Type: tea.KeyCtrlZ})
+		if ed.Value() != "Text" {
+			t.Errorf("Value() after ctrl+z = %q, want %q", ed.Value(), "Text")
+		}
+	})
+}
+
 func TestSetValueEdgeCases(t *testing.T) {
 	tests := []struct {
 		name          string
