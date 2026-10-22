@@ -815,6 +815,28 @@ func TestPresentationUpdateMessageHandlers(t *testing.T) {
 	_ = service
 }
 
+func TestPresentationUpdateInvalidItemContent(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+
+	// presentationLoadedMsg with invalid presentation source content (e.g. invalid frontmatter/syntax)
+	invalidItem := presentation.Presentation{Source: "```parchment-meta\ninvalid json\n```"}
+	m.seq++
+	currSeq := m.seq
+	m.Update(presentationLoadedMsg{seq: currSeq, item: invalidItem})
+	if !strings.Contains(m.errMessage, "Invalid presentation:") {
+		t.Fatalf("errMessage = %q, want containing 'Invalid presentation:'", m.errMessage)
+	}
+
+	// presentationSavedMsg with invalid presentation source content
+	m.editing = true
+	m.seq++
+	currSeq = m.seq
+	m.Update(presentationSavedMsg{seq: currSeq, item: invalidItem})
+	if !strings.Contains(m.errMessage, "Invalid presentation:") {
+		t.Fatalf("errMessage = %q, want containing 'Invalid presentation:'", m.errMessage)
+	}
+}
+
 func TestPresentationFencedCodeBlocksAndEmptyNotes(t *testing.T) {
 	m, _, _ := newPresentationTestModel(t)
 
