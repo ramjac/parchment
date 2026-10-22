@@ -174,6 +174,16 @@ func (p *parser) parseLine(rawLine string) error {
 		(isIndentedCode(line) || !strings.HasPrefix(trimmed, "# ")) {
 		return fmt.Errorf("line %d: presentation must begin with a '# Title' heading", p.lineNumber)
 	}
+
+	handled, listContinuation := p.handleFenceAndCode(line, trimmed)
+	if handled {
+		return nil
+	}
+
+	return p.parseStructureLine(line, trimmed, listContinuation)
+}
+
+func (p *parser) handleFenceAndCode(line, trimmed string) (handled bool, listContinuation bool) {
 	listIndent := currentListIndent(p.listIndents)
 	listContent, itemIndent, isListItem := listItemContent(line, listIndent)
 	marker := markdownFence(trimmed)
@@ -193,7 +203,7 @@ func (p *parser) parseLine(rawLine string) error {
 		marker, markerIndent = evalOutsideFenceMarker(line, trimmed, listContent, listIndent, itemIndent, isListItem, marker)
 	}
 
-	listContinuation := !isListItem && listIndent > 0 && leadingSpaces(line) >= listIndent
+	listContinuation = !isListItem && listIndent > 0 && leadingSpaces(line) >= listIndent
 	if marker != "" && (!isIndentedCode(line) || markerIndent > 0) {
 		if !p.inFence {
 			p.inFence, p.fenceMarker, p.fenceListIndent = true, marker, markerIndent
@@ -202,12 +212,17 @@ func (p *parser) parseLine(rawLine string) error {
 			p.inFence, p.fenceMarker, p.fenceListIndent = false, "", 0
 		}
 		p.writeContent(line)
-		return nil
+		return true, listContinuation
 	}
 	if p.inFence || isIndentedCode(line) {
 		p.writeContent(line)
-		return nil
+		return true, listContinuation
 	}
+
+	return false, listContinuation
+}
+
+func (p *parser) parseStructureLine(line, trimmed string, listContinuation bool) error {
 	if strings.HasPrefix(trimmed, "# ") && !listContinuation {
 		if p.deck.Title != "" || p.current != nil {
 			return fmt.Errorf("line %d: only one top-level presentation title is allowed", p.lineNumber)
