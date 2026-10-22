@@ -749,3 +749,92 @@ func TestSpreadsheetUpdateMouseMsgEdgeCases(t *testing.T) {
 		t.Fatalf("expected row 0, col 0 on row header click")
 	}
 }
+
+func TestSpreadsheetView_TerminalTooSmall(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "data"}}})
+
+	// Width too small
+	m.width, m.height = 19, 20
+	if view := m.View(); view != "Terminal too small. Press q to quit." {
+		t.Fatalf("expected terminal too small message for width < 20, got:\n%s", view)
+	}
+
+	// Height too small (spreadsheetChromeLines = 7, so height < 8)
+	m.width, m.height = 80, 7
+	if view := m.View(); view != "Terminal too small. Press q to quit." {
+		t.Fatalf("expected terminal too small message for height < 8, got:\n%s", view)
+	}
+
+	// Boundary size (width = 20, height = 8) should show normal view
+	m.width, m.height = 20, 8
+	if view := m.View(); strings.Contains(view, "Terminal too small") {
+		t.Fatalf("unexpected terminal too small message at boundary size 20x8:\n%s", view)
+	}
+}
+
+func TestSpreadsheetView_HeaderAndStatus(t *testing.T) {
+	m, service, _, id := newSheetModel(t, [][]spreadsheet.Cell{
+		{{Value: "A1"}, {Value: "B1"}},
+		{{Value: "A2"}, {Value: "B2"}},
+	})
+
+	// Default status line when status is empty and spreadsheet is loaded should display sheet dimensions "2×2"
+	m.status = ""
+	view := m.View()
+	if !strings.Contains(view, "2×2") {
+		t.Fatalf("expected status line to show dimensions '2×2', view:\n%s", view)
+	}
+
+	// Header shows path when m.path is set
+	if !strings.Contains(view, m.path) {
+		t.Fatalf("expected header to contain file path %q, view:\n%s", m.path, view)
+	}
+
+	// Single sheet titled "Sheet1" does not append "— Sheet1"
+	if strings.Contains(view, "— Sheet1") {
+		t.Fatalf("single Sheet1 workbook should not append sheet suffix, view:\n%s", view)
+	}
+
+	// Add second sheet and verify suffix appears
+	if _, err := service.AddSheet(context.Background(), id, "Sheet2"); err != nil {
+		t.Fatal(err)
+	}
+	driveSheet(t, m, sheetKey("r"))
+	viewMulti := m.View()
+	if !strings.Contains(viewMulti, "— Sheet1") {
+		t.Fatalf("multi-sheet workbook should append sheet suffix '— Sheet1', view:\n%s", viewMulti)
+	}
+}
+
+func TestSpreadsheetView_EditingAndHelp(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "Value1"}}})
+
+	// Browsing help message
+	viewBrowsing := m.View()
+	if !strings.Contains(viewBrowsing, "arrows move • enter edit • del clear • f formulas") {
+		t.Fatalf("expected browsing help text, got:\n%s", viewBrowsing)
+	}
+
+	// Editing formula bar and help message
+	driveSheet(t, m, sheetKey("enter"))
+	if !m.editing {
+		t.Fatal("expected model to enter editing state")
+	}
+	viewEditing := m.View()
+	if !strings.Contains(viewEditing, "A1 >") {
+		t.Fatalf("expected editing formula bar prompt 'A1 >', got:\n%s", viewEditing)
+	}
+	if !strings.Contains(viewEditing, "enter save • esc cancel • =formula • 'literal") {
+		t.Fatalf("expected editing help text, got:\n%s", viewEditing)
+	}
+	driveSheet(t, m, sheetKey("esc"))
+
+	// Unloaded help message
+	repo := newTestRepository(t)
+	mUnloaded := newSpreadsheetModel(spreadsheet.NewService(repo, 10), "missing.md")
+	mUnloaded.width, mUnloaded.height = 80, 20
+	viewUnloaded := mUnloaded.View()
+	if !strings.Contains(viewUnloaded, "r retry • esc/q quit") {
+		t.Fatalf("expected unloaded help text, got:\n%s", viewUnloaded)
+	}
+}
