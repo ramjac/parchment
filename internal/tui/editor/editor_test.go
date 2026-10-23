@@ -1654,6 +1654,28 @@ func TestRedo(t *testing.T) {
 }
 
 func TestSetValue(t *testing.T) {
+	t.Run("zero value model initialization", func(t *testing.T) {
+		var ed Model
+		input := "Zero\nValue"
+		ed.SetValue(input)
+
+		if ed.Value() != input {
+			t.Errorf("Value() = %q, want %q", ed.Value(), input)
+		}
+		if len(ed.Lines) != 2 {
+			t.Fatalf("len(Lines) = %d, want 2", len(ed.Lines))
+		}
+		if ed.Cursor != (Point{Line: 0, Col: 0}) {
+			t.Errorf("Cursor = %+v, want Point{0,0}", ed.Cursor)
+		}
+		if ed.Selection != (Selection{}) {
+			t.Errorf("Selection = %+v, want Selection{}", ed.Selection)
+		}
+		if ed.CanUndo() || ed.CanRedo() {
+			t.Errorf("CanUndo/CanRedo should be false on zero value SetValue")
+		}
+	})
+
 	t.Run("basic string loading and rune conversion", func(t *testing.T) {
 		ed := New()
 		input := "Hello\nWorld"
