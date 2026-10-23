@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -36,6 +37,9 @@ func TestDirectory(t *testing.T) {
 		}
 		if dir != "" {
 			t.Fatalf("expected empty directory string on error, got %q", dir)
+		}
+		if !strings.Contains(err.Error(), "find home directory") {
+			t.Fatalf("unexpected error message: %v", err)
 		}
 	})
 }
@@ -291,6 +295,22 @@ func TestPathAndEnsureDefault(t *testing.T) {
 	if path, err := Path(); err != nil || path != override {
 		t.Fatalf("override path = %q, %v", path, err)
 	}
+
+	t.Run("error finding home directory", func(t *testing.T) {
+		t.Setenv("PARCHMENT_CONFIG", "")
+		t.Setenv("HOME", "")
+		t.Setenv("USERPROFILE", "")
+		t.Setenv("HOMEDRIVE", "")
+		t.Setenv("HOMEPATH", "")
+
+		path, err := Path()
+		if err == nil {
+			t.Fatalf("expected error from Path when home dir cannot be found, got path: %q", path)
+		}
+		if path != "" {
+			t.Fatalf("expected empty path on error, got %q", path)
+		}
+	})
 }
 
 func TestEnsureDefaultRestrictsExistingDirectory(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"example.com/parchment/internal/tui/editor"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -574,7 +575,7 @@ func (s *documentsScreen) setChangeReviewContent() {
 
 func wrapReviewText(content string, width int) string {
 	var wrapped strings.Builder
-	wrapped.Grow(len(content))
+	wrapped.Grow(len(content) + len(content)/16)
 	remaining := content
 	lineIndex := 0
 	for {
@@ -593,7 +594,20 @@ func wrapReviewText(content string, width int) string {
 		lineIndex++
 
 		lineWidth := 0
-		for _, r := range line {
+		for i := 0; i < len(line); {
+			b := line[i]
+			if b >= ' ' && b <= '~' {
+				if lineWidth > 0 && lineWidth+1 > width {
+					wrapped.WriteByte('\n')
+					lineWidth = 0
+				}
+				wrapped.WriteByte(b)
+				lineWidth++
+				i++
+				continue
+			}
+
+			r, size := utf8.DecodeRuneInString(line[i:])
 			runeWidth := max(runewidth.RuneWidth(r), 0)
 			if lineWidth > 0 && lineWidth+runeWidth > width {
 				wrapped.WriteByte('\n')
@@ -601,6 +615,7 @@ func wrapReviewText(content string, width int) string {
 			}
 			wrapped.WriteRune(r)
 			lineWidth += runeWidth
+			i += size
 		}
 
 		if idx < 0 {
