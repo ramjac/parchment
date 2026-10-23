@@ -12,52 +12,72 @@ import (
 func TestEditorNew(t *testing.T) {
 	ed := New()
 
-	if len(ed.Lines) != 1 || len(ed.Lines[0]) != 0 {
-		t.Fatalf("New().Lines = %v, want [][]rune{{}}", ed.Lines)
-	}
-	if ed.Width != 80 {
-		t.Fatalf("New().Width = %d, want 80", ed.Width)
-	}
-	if ed.Height != 20 {
-		t.Fatalf("New().Height = %d, want 20", ed.Height)
-	}
-	if !ed.Focused {
-		t.Fatalf("New().Focused = false, want true")
-	}
-	if ed.Cursor.Line != 0 || ed.Cursor.Col != 0 {
-		t.Fatalf("New().Cursor = %+v, want Point{Line: 0, Col: 0}", ed.Cursor)
-	}
-	if ed.Selection.Active {
-		t.Fatalf("New().Selection.Active = true, want false")
-	}
-	if ed.Selection.Anchor != (Point{Line: 0, Col: 0}) {
-		t.Fatalf("New().Selection.Anchor = %+v, want Point{Line: 0, Col: 0}", ed.Selection.Anchor)
-	}
-	if ed.TopLine != 0 {
-		t.Fatalf("New().TopLine = %d, want 0", ed.TopLine)
-	}
-	if ed.LeftCol != 0 {
-		t.Fatalf("New().LeftCol = %d, want 0", ed.LeftCol)
-	}
-	if ed.StickyCol != 0 {
-		t.Fatalf("New().StickyCol = %d, want 0", ed.StickyCol)
-	}
-	if ed.Value() != "" {
-		t.Fatalf("New().Value() = %q, want %q", ed.Value(), "")
-	}
-	if ed.LineCount() != 1 {
-		t.Fatalf("New().LineCount() = %d, want 1", ed.LineCount())
-	}
-	if ed.CanUndo() {
-		t.Fatalf("New().CanUndo() = true, want false")
-	}
-	if ed.CanRedo() {
-		t.Fatalf("New().CanRedo() = true, want false")
-	}
-	expectedStyle := lipgloss.NewStyle().Reverse(true)
-	if ed.SelectStyle.Render("test") != expectedStyle.Render("test") {
-		t.Fatalf("New().SelectStyle mismatch")
-	}
+	t.Run("default buffer initialization", func(t *testing.T) {
+		if len(ed.Lines) != 1 || len(ed.Lines[0]) != 0 {
+			t.Errorf("New().Lines = %v, want [][]rune{{}}", ed.Lines)
+		}
+		if ed.Value() != "" {
+			t.Errorf("New().Value() = %q, want %q", ed.Value(), "")
+		}
+		if ed.LineCount() != 1 {
+			t.Errorf("New().LineCount() = %d, want 1", ed.LineCount())
+		}
+	})
+
+	t.Run("default dimensions", func(t *testing.T) {
+		if ed.Width != 80 {
+			t.Errorf("New().Width = %d, want 80", ed.Width)
+		}
+		if ed.Height != 20 {
+			t.Errorf("New().Height = %d, want 20", ed.Height)
+		}
+	})
+
+	t.Run("focus state", func(t *testing.T) {
+		if !ed.Focused {
+			t.Errorf("New().Focused = false, want true")
+		}
+	})
+
+	t.Run("cursor and selection state", func(t *testing.T) {
+		if ed.Cursor.Line != 0 || ed.Cursor.Col != 0 {
+			t.Errorf("New().Cursor = %+v, want Point{Line: 0, Col: 0}", ed.Cursor)
+		}
+		if ed.Selection.Active {
+			t.Errorf("New().Selection.Active = true, want false")
+		}
+		if ed.Selection.Anchor != (Point{Line: 0, Col: 0}) {
+			t.Errorf("New().Selection.Anchor = %+v, want Point{Line: 0, Col: 0}", ed.Selection.Anchor)
+		}
+		if ed.StickyCol != 0 {
+			t.Errorf("New().StickyCol = %d, want 0", ed.StickyCol)
+		}
+	})
+
+	t.Run("viewport scroll position", func(t *testing.T) {
+		if ed.TopLine != 0 {
+			t.Errorf("New().TopLine = %d, want 0", ed.TopLine)
+		}
+		if ed.LeftCol != 0 {
+			t.Errorf("LeftCol = %d, want 0", ed.LeftCol)
+		}
+	})
+
+	t.Run("undo and redo state", func(t *testing.T) {
+		if ed.CanUndo() {
+			t.Errorf("New().CanUndo() = true, want false")
+		}
+		if ed.CanRedo() {
+			t.Errorf("New().CanRedo() = true, want false")
+		}
+	})
+
+	t.Run("select style initialization", func(t *testing.T) {
+		expectedStyle := lipgloss.NewStyle().Reverse(true)
+		if ed.SelectStyle.Render("test") != expectedStyle.Render("test") {
+			t.Errorf("New().SelectStyle mismatch")
+		}
+	})
 }
 
 func TestEditorSetValueAndValue(t *testing.T) {
