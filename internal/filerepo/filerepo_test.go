@@ -22,9 +22,12 @@ import (
 
 func TestNew(t *testing.T) {
 	t.Run("empty state directory returns error", func(t *testing.T) {
-		_, err := filerepo.New("")
+		repo, err := filerepo.New("")
 		if err == nil {
 			t.Fatal("expected error for empty stateDir, got nil")
+		}
+		if repo != nil {
+			t.Fatalf("expected nil repository, got %v", repo)
 		}
 		if !strings.Contains(err.Error(), "state directory is required") {
 			t.Fatalf("unexpected error message: %v", err)
@@ -39,6 +42,13 @@ func TestNew(t *testing.T) {
 		}
 		if repo == nil {
 			t.Fatal("expected non-nil Repository")
+		}
+
+		// Verify repo functionality with the initialized state directory
+		ctx := context.Background()
+		_, ok, err := repo.LoadRecovery(ctx, filepath.Join(tempDir, "dummy.md"))
+		if err != nil || ok {
+			t.Fatalf("unexpected recovery check result: ok=%v, err=%v", ok, err)
 		}
 	})
 
@@ -64,6 +74,35 @@ func TestNew(t *testing.T) {
 		_, ok, err := repo.LoadRecovery(ctx, filepath.Join(absPath, "dummy.md"))
 		if err != nil || ok {
 			t.Fatalf("unexpected recovery check result: ok=%v, err=%v", ok, err)
+		}
+	})
+
+	t.Run("non-existent state directory path is accepted and resolved", func(t *testing.T) {
+		tempDir := t.TempDir()
+		nonExistentPath := filepath.Join(tempDir, "sub", "dir")
+		repo, err := filerepo.New(nonExistentPath)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if repo == nil {
+			t.Fatal("expected non-nil Repository")
+		}
+
+		// Verify state directory is created on demand when an operation requires it
+		ctx := context.Background()
+		draft := recovery.Draft{
+			Path:      filepath.Join(tempDir, "note.md"),
+			Kind:      "note",
+			Data:      json.RawMessage(`{"text":"hello"}`),
+			UpdatedAt: time.Now().UTC(),
+		}
+		if err := repo.SaveRecovery(ctx, draft); err != nil {
+			t.Fatalf("failed to save recovery in newly created state directory: %v", err)
+		}
+
+		loaded, ok, err := repo.LoadRecovery(ctx, filepath.Join(tempDir, "note.md"))
+		if err != nil || !ok || string(loaded.Data) != `{"text":"hello"}` {
+			t.Fatalf("failed to load recovery from state directory: loaded=%+v, ok=%v, err=%v", loaded, ok, err)
 		}
 	})
 }
