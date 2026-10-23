@@ -278,6 +278,18 @@ func (p *parser) parseLine(rawLine string) error {
 	return nil
 }
 
+func (p *parser) scan(scanner *bufio.Scanner) error {
+	for scanner.Scan() {
+		if err := p.parseLine(scanner.Text()); err != nil {
+			return err
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("read presentation Markdown: %w", err)
+	}
+	return nil
+}
+
 func (p *parser) finish() (Deck, error) {
 	if p.inFence {
 		return Deck{}, errors.New("presentation contains an unclosed fenced code block")
@@ -301,13 +313,8 @@ func Parse(source string) (Deck, error) {
 	var p parser
 	scanner := bufio.NewScanner(strings.NewReader(source))
 	scanner.Buffer(make([]byte, 4096), 4<<20)
-	for scanner.Scan() {
-		if err := p.parseLine(scanner.Text()); err != nil {
-			return Deck{}, err
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return Deck{}, fmt.Errorf("read presentation Markdown: %w", err)
+	if err := p.scan(scanner); err != nil {
+		return Deck{}, err
 	}
 	return p.finish()
 }
