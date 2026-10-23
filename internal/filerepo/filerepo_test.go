@@ -66,6 +66,18 @@ func TestNew(t *testing.T) {
 			t.Fatalf("unexpected recovery check result: ok=%v, err=%v", ok, err)
 		}
 	})
+
+	t.Run("non-existent directory path succeeds", func(t *testing.T) {
+		tempDir := t.TempDir()
+		nonExistentPath := filepath.Join(tempDir, "sub", "dir")
+		repo, err := filerepo.New(nonExistentPath)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if repo == nil {
+			t.Fatal("expected non-nil Repository")
+		}
+	})
 }
 
 func newRepo(t *testing.T) (*filerepo.Repository, string, string) {
