@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
@@ -19,7 +20,9 @@ import (
 	"example.com/parchment/internal/filerepo"
 	"example.com/parchment/internal/note"
 	"example.com/parchment/internal/presentation"
+	"example.com/parchment/internal/recovery"
 	"example.com/parchment/internal/spreadsheet"
+	"example.com/parchment/internal/tui/editor"
 )
 
 // harness wires the editor to real services over files in temporary
@@ -731,6 +734,303 @@ func TestRun(t *testing.T) {
 	})
 }
 
+func TestModelUpdateFileOpenedMsg(t *testing.T) {
+	t.Run("error setting stageFailed", func(t *testing.T) {
+		h := newHarness(t, artifact.NoteKind)
+		h.m.pending = true
+		testErr := errors.New("open file error")
+		h.m.Update(fileOpenedMsg{err: testErr})
+
+		if h.m.pending {
+			t.Error("expected pending=false after fileOpenedMsg")
+		}
+		if h.m.stage != stageFailed {
+			t.Errorf("stage = %v, want stageFailed", h.m.stage)
+		}
+		if h.m.errMessage != "open file error" {
+			t.Errorf("errMessage = %q, want 'open file error'", h.m.errMessage)
+		}
+	})
+
+	t.Run("created file status", func(t *testing.T) {
+		h := newHarness(t, artifact.NoteKind)
+		h.m.pending = true
+		h.m.Update(fileOpenedMsg{
+			kind:    artifact.NoteKind,
+			created: true,
+			note:    note.Note{Artifact: artifact.Artifact{Title: "report"}, Body: "hello"},
+		})
+
+		if h.m.pending {
+			t.Error("expected pending=false")
+		}
+		if !strings.Contains(h.m.status, "Created "+h.m.path) {
+			t.Errorf("status = %q, want containing 'Created %s'", h.m.status, h.m.path)
+		}
+		if h.m.stage != stageNote {
+			t.Errorf("stage = %v, want stageNote", h.m.stage)
+		}
+	})
+
+	t.Run("hasDraft transitions to stageRecovery", func(t *testing.T) {
+		h := newHarness(t, artifact.NoteKind)
+		h.m.pending = true
+		h.m.Update(fileOpenedMsg{
+			kind:     artifact.NoteKind,
+			hasDraft: true,
+		})
+
+		if h.m.pending {
+			t.Error("expected pending=false")
+		}
+		if h.m.stage != stageRecovery {
+			t.Errorf("stage = %v, want stageRecovery", h.m.stage)
+		}
+	})
+}
+
+func TestModelUpdateNoteSavedMsg(t *testing.T) {
+	t.Run("successful save with cleanup error", func(t *testing.T) {
+		h := newHarness(t, artifact.NoteKind)
+		h.m.pending = true
+		cleanupErr := errors.New("cannot delete draft")
+
+		h.m.Update(noteSavedMsg{
+			note:       note.Note{Artifact: artifact.Artifact{Title: "My Note"}, Body: "Content"},
+			err:        nil,
+			cleanupErr: cleanupErr,
+		})
+
+		if h.m.pending {
+			t.Error("expected pending=false")
+		}
+		if h.m.errMessage != "" {
+			t.Errorf("expected empty errMessage, got %q", h.m.errMessage)
+		}
+		if !strings.Contains(h.m.status, "Saved “My Note”") || !strings.Contains(h.m.status, "could not remove recovery draft: cannot delete draft") {
+			t.Errorf("unexpected status: %q", h.m.status)
+		}
+	})
+
+	t.Run("save with general error", func(t *testing.T) {
+		h := newHarness(t, artifact.NoteKind)
+		h.m.pending = true
+		saveErr := errors.New("permission denied")
+
+		h.m.Update(noteSavedMsg{
+			err: saveErr,
+		})
+
+		if h.m.pending {
+			t.Error("expected pending=false")
+		}
+		if h.m.errMessage != "permission denied" {
+			t.Errorf("errMessage = %q, want 'permission denied'", h.m.errMessage)
+		}
+	})
+}
+
+func TestModelUpdateHistoryChangedMsg(t *testing.T) {
+	t.Run("history error", func(t *testing.T) {
+		h := newHarness(t, artifact.NoteKind)
+		h.m.pending = true
+		histErr := errors.New("history error")
+
+		h.m.Update(historyChangedMsg{
+			err: histErr,
+		})
+
+		if h.m.pending {
+			t.Error("expected pending=false")
+		}
+		if h.m.errMessage != "history error" {
+			t.Errorf("errMessage = %q, want 'history error'", h.m.errMessage)
+		}
+	})
+
+	t.Run("history success", func(t *testing.T) {
+		h := newHarness(t, artifact.NoteKind)
+		h.m.pending = true
+
+		h.m.Update(historyChangedMsg{
+			description: "Undid edit",
+			note:        note.Note{Artifact: artifact.Artifact{Title: "Title"}, Body: "Restored"},
+			err:         nil,
+		})
+
+		if h.m.pending {
+			t.Error("expected pending=false")
+		}
+		if h.m.errMessage != "" {
+			t.Errorf("errMessage = %q, want empty", h.m.errMessage)
+		}
+		if h.m.status != "Undid edit" {
+			t.Errorf("status = %q, want 'Undid edit'", h.m.status)
+		}
+		if h.m.bodyInput.Value() != "Restored" {
+			t.Errorf("bodyInput = %q, want 'Restored'", h.m.bodyInput.Value())
+		}
+	})
+}
+
+func TestModelUpdateKeyHandlingByStage(t *testing.T) {
+	t.Run("stageChooseKind key options", func(t *testing.T) {
+		for _, key := range []string{"n", "d", "s", "p"} {
+			h := newHarness(t, "")
+			if h.m.stage != stageChooseKind {
+				t.Fatalf("stage = %v, want stageChooseKind", h.m.stage)
+			}
+			_, cmd := h.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+			if cmd == nil {
+				t.Errorf("expected non-nil cmd for key %q in stageChooseKind", key)
+			}
+		}
+
+		h := newHarness(t, "")
+		_, cmdQ := h.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+		if cmdQ == nil || cmdQ() != tea.Quit() {
+			t.Errorf("expected tea.Quit for 'q', got %v", cmdQ)
+		}
+	})
+
+	t.Run("stageOpening / stageFailed quit keys", func(t *testing.T) {
+		for _, key := range []string{"q", "esc", "ctrl+c"} {
+			h := newHarness(t, "")
+			h.m.stage = stageFailed
+			var kMsg tea.KeyMsg
+			switch key {
+			case "q":
+				kMsg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")}
+			case "esc":
+				kMsg = tea.KeyMsg{Type: tea.KeyEsc}
+			case "ctrl+c":
+				kMsg = tea.KeyMsg{Type: tea.KeyCtrlC}
+			}
+			_, cmd := h.m.Update(kMsg)
+			if cmd == nil || cmd() != tea.Quit() {
+				t.Errorf("key %s in stageFailed did not return tea.Quit", key)
+			}
+		}
+	})
+
+	t.Run("stageRecovery key options", func(t *testing.T) {
+		// 'r' recovers draft
+		hR := newHarness(t, artifact.NoteKind)
+		draftData, _ := json.Marshal(noteRecoveryData{Body: "Draft body"})
+		hR.m.opened = fileOpenedMsg{
+			kind:  artifact.NoteKind,
+			draft: recovery.Draft{Kind: string(artifact.NoteKind), Data: draftData},
+		}
+		hR.m.autosaveScheduler = func(session uint64) tea.Cmd {
+			return func() tea.Msg { return nil }
+		}
+		hR.m.stage = stageRecovery
+		_, cmdR := hR.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+		if cmdR == nil {
+			t.Error("expected cmd for 'r'")
+		}
+
+		// 'd' discards draft
+		hD := newHarness(t, artifact.NoteKind)
+		hD.m.stage = stageRecovery
+		_, cmdD := hD.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+		if cmdD == nil {
+			t.Error("expected cmd for 'd'")
+		}
+
+		// 'esc' quits
+		hEsc := newHarness(t, artifact.NoteKind)
+		hEsc.m.stage = stageRecovery
+		_, cmdEsc := hEsc.m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		if cmdEsc == nil || cmdEsc() != tea.Quit() {
+			t.Error("expected tea.Quit for 'esc' in stageRecovery")
+		}
+	})
+
+	t.Run("pending state non-cancel key shows message", func(t *testing.T) {
+		h := newHarness(t, artifact.NoteKind)
+		h.m.pending = true
+		h.m.status = ""
+
+		h.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+		if h.m.status != "Please wait for the current operation to finish" {
+			t.Errorf("status = %q, want 'Please wait for the current operation to finish'", h.m.status)
+		}
+	})
+}
+
+func TestModelUpdateNoteKeyHandling(t *testing.T) {
+	t.Run("preview mode toggle and navigation", func(t *testing.T) {
+		h := newHarness(t, artifact.NoteKind)
+		h.m.bodyInput.SetValue("Sample Note Text")
+
+		// F5 enters preview
+		h.m.Update(tea.KeyMsg{Type: tea.KeyF5})
+		if !h.m.previewing {
+			t.Fatal("F5 did not set previewing=true")
+		}
+
+		// Non-closing key in preview delegates to preview model
+		h.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		if !h.m.previewing {
+			t.Error("previewing set to false on non-exit key")
+		}
+
+		// F5 exits preview mode
+		h.m.Update(tea.KeyMsg{Type: tea.KeyF5})
+		if h.m.previewing {
+			t.Fatal("F5 in preview did not set previewing=false")
+		}
+
+		// Re-enter preview, Ctrl+C requests close
+		h.m.Update(tea.KeyMsg{Type: tea.KeyF5})
+		h.m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+		if h.quit {
+			t.Error("Ctrl+C in preview on clean note quit immediately without closing")
+		}
+	})
+
+	t.Run("Ctrl+C with active selection delegates to bodyInput", func(t *testing.T) {
+		h := newHarness(t, artifact.NoteKind)
+		h.m.bodyInput.SetValue("Selected Text")
+		h.m.bodyInput.Selection = editor.Selection{Active: true}
+
+		// Ctrl+C with selection active should NOT quit or trigger requestClose
+		h.m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+		if h.m.discardWarning {
+			t.Error("Ctrl+C with active selection triggered discardWarning")
+		}
+	})
+
+	t.Run("Ctrl+S triggers saveNote", func(t *testing.T) {
+		h := newHarness(t, artifact.NoteKind)
+		h.m.bodyInput.SetValue("New content to save")
+
+		_, cmd := h.m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+		if cmd == nil {
+			t.Fatal("Ctrl+S did not return save cmd")
+		}
+		if !h.m.pending {
+			t.Error("Ctrl+S did not set pending=true")
+		}
+	})
+
+	t.Run("Redo shortcut ctrl+y / ctrl+shift+z", func(t *testing.T) {
+		h := newHarness(t, artifact.NoteKind)
+		h.typeText("Hello")
+		h.m.bodyInput.Undo()
+		if h.m.bodyInput.Value() != "" {
+			t.Fatalf("expected empty value after Undo, got %q", h.m.bodyInput.Value())
+		}
+
+		// Ctrl+Y redoes input directly
+		h.m.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+		if h.m.bodyInput.Value() != "Hello" {
+			t.Errorf("Ctrl+Y did not redo input, value=%q", h.m.bodyInput.Value())
+		}
+	})
+}
+
 func TestModelInit(t *testing.T) {
 	t.Run("returns nil when stage is stageChooseKind", func(t *testing.T) {
 		model := NewModel(Config{
@@ -814,6 +1114,187 @@ func TestModelInit(t *testing.T) {
 		}
 		if openedMsg.err == nil || !strings.Contains(openedMsg.err.Error(), "cannot open") {
 			t.Fatalf("expected error containing 'cannot open', got %v", openedMsg.err)
+		}
+	})
+
+	t.Run("loads existing files without creating", func(t *testing.T) {
+		repo, err := filerepo.New(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		notes := note.NewService(repo, 10)
+		docs := document.NewService(repo, 10)
+		sheets := spreadsheet.NewService(repo, 10)
+		decks := presentation.NewService(repo, 10)
+
+		ctx := context.Background()
+
+		// Pre-create files
+		notePath := filepath.Join(t.TempDir(), "note.md")
+		if _, err := notes.Create(ctx, notePath, "existing note body"); err != nil {
+			t.Fatal(err)
+		}
+
+		docPath := filepath.Join(t.TempDir(), "doc.md")
+		if _, err := docs.Create(ctx, docPath, document.Draft{Layout: document.DefaultLayout()}); err != nil {
+			t.Fatal(err)
+		}
+
+		sheetPath := filepath.Join(t.TempDir(), "sheet.csv")
+		if _, err := sheets.Create(ctx, sheetPath, nil); err != nil {
+			t.Fatal(err)
+		}
+
+		deckPath := filepath.Join(t.TempDir(), "deck.md")
+		if _, err := decks.Create(ctx, deckPath, "# Title\n\n## Slide 1\nContent"); err != nil {
+			t.Fatal(err)
+		}
+
+		testCases := []struct {
+			name string
+			kind artifact.Kind
+			path string
+		}{
+			{"note", artifact.NoteKind, notePath},
+			{"document", artifact.DocumentKind, docPath},
+			{"spreadsheet", artifact.SpreadsheetKind, sheetPath},
+			{"presentation", artifact.PresentationKind, deckPath},
+		}
+
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				m := NewModel(Config{
+					Path:          tc.path,
+					Kind:          tc.kind,
+					Notes:         notes,
+					Documents:     docs,
+					Spreadsheets:  sheets,
+					Presentations: decks,
+					Recovery:      repo,
+				})
+				cmd := m.Init()
+				if cmd == nil {
+					t.Fatalf("expected non-nil cmd for %s", tc.name)
+				}
+				msg := cmd()
+				openedMsg, ok := msg.(fileOpenedMsg)
+				if !ok {
+					t.Fatalf("expected fileOpenedMsg, got %T", msg)
+				}
+				if openedMsg.err != nil {
+					t.Fatalf("unexpected error loading existing %s: %v", tc.name, openedMsg.err)
+				}
+				if openedMsg.created {
+					t.Fatalf("expected existing %s file not to be marked as created", tc.name)
+				}
+			})
+		}
+	})
+
+	t.Run("detects recovery draft for note and document", func(t *testing.T) {
+		repo, err := filerepo.New(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		notes := note.NewService(repo, 10)
+		ctx := context.Background()
+
+		notePath := filepath.Join(t.TempDir(), "note_with_draft.md")
+		if _, err := notes.Create(ctx, notePath, "original body"); err != nil {
+			t.Fatal(err)
+		}
+
+		// Save a recovery draft
+		draft := recovery.Draft{
+			Path:      notePath,
+			Kind:      string(artifact.NoteKind),
+			Data:      json.RawMessage(`{"body":"unsaved body draft"}`),
+			UpdatedAt: time.Now(),
+		}
+		if err := repo.SaveRecovery(ctx, draft); err != nil {
+			t.Fatal(err)
+		}
+
+		m := NewModel(Config{
+			Path:     notePath,
+			Kind:     artifact.NoteKind,
+			Notes:    notes,
+			Recovery: repo,
+		})
+		cmd := m.Init()
+		if cmd == nil {
+			t.Fatal("expected non-nil cmd from Init")
+		}
+		msg := cmd()
+		openedMsg, ok := msg.(fileOpenedMsg)
+		if !ok {
+			t.Fatalf("expected fileOpenedMsg, got %T", msg)
+		}
+		if openedMsg.err != nil {
+			t.Fatalf("unexpected error: %v", openedMsg.err)
+		}
+		if !openedMsg.hasDraft {
+			t.Fatal("expected hasDraft = true when recovery draft exists")
+		}
+		if openedMsg.draft.Path != notePath {
+			t.Fatalf("expected draft path %q, got %q", notePath, openedMsg.draft.Path)
+		}
+	})
+
+	t.Run("returns error when service is nil for requested kind", func(t *testing.T) {
+		repo, err := filerepo.New(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "note.md")
+
+		// Configured with NoteKind but Notes service is nil
+		m := NewModel(Config{
+			Path:     path,
+			Kind:     artifact.NoteKind,
+			Recovery: repo,
+		})
+		cmd := m.Init()
+		if cmd == nil {
+			t.Fatal("expected non-nil cmd")
+		}
+		msg := cmd()
+		openedMsg, ok := msg.(fileOpenedMsg)
+		if !ok {
+			t.Fatalf("expected fileOpenedMsg, got %T", msg)
+		}
+		if openedMsg.err == nil || !strings.Contains(openedMsg.err.Error(), "cannot open") {
+			t.Fatalf("expected 'cannot open' error when service is nil, got %v", openedMsg.err)
+		}
+	})
+
+	t.Run("returns error when file load fails with filesystem error", func(t *testing.T) {
+		repo, err := filerepo.New(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		notes := note.NewService(repo, 10)
+
+		// Pointing path to an existing directory causes create/open to fail
+		dirPath := t.TempDir()
+
+		m := NewModel(Config{
+			Path:     dirPath,
+			Kind:     artifact.NoteKind,
+			Notes:    notes,
+			Recovery: repo,
+		})
+		cmd := m.Init()
+		if cmd == nil {
+			t.Fatal("expected non-nil cmd")
+		}
+		msg := cmd()
+		openedMsg, ok := msg.(fileOpenedMsg)
+		if !ok {
+			t.Fatalf("expected fileOpenedMsg, got %T", msg)
+		}
+		if openedMsg.err == nil {
+			t.Fatal("expected error when opening directory as note file, got nil")
 		}
 	})
 }
