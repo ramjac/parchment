@@ -990,3 +990,97 @@ func TestPresentationFencedCodeBlocksAndEmptyNotes(t *testing.T) {
 		t.Fatalf("empty speaker notes did not render '(none)':\n%s", view)
 	}
 }
+
+func TestPresentationUpdateEscWhilePendingInBrowseMode(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+	m.editing = false
+	m.pending = true
+	m.seq = 10
+
+	_, cmd := m.Update(sheetKey("esc"))
+	if cmd != nil {
+		t.Fatalf("expected nil cmd when esc pressed while pending in browse mode, got %v", cmd)
+	}
+	if m.pending {
+		t.Fatal("expected pending to be false after esc in browse mode")
+	}
+	if m.status != "Cancelled" {
+		t.Fatalf("status = %q, want 'Cancelled'", m.status)
+	}
+
+	// 'q' in browse mode quits
+	m.pending = true
+	_, cmd = m.Update(sheetKey("q"))
+	if cmd == nil {
+		t.Fatal("expected quit cmd for 'q' in browse mode")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("expected tea.QuitMsg for 'q' in browse mode")
+	}
+	if m.pending {
+		t.Fatal("expected pending to be false after quit in browse mode")
+	}
+
+	// 'ctrl+c' in browse mode quits
+	m.pending = true
+	_, cmd = m.Update(sheetKey("ctrl+c"))
+	if cmd == nil {
+		t.Fatal("expected quit cmd for 'ctrl+c' in browse mode")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("expected tea.QuitMsg for 'ctrl+c' in browse mode")
+	}
+
+	// 'ctrl+c' in edit mode without active selection quits
+	m.editing = true
+	m.pending = true
+	_, cmd = m.Update(sheetKey("ctrl+c"))
+	if cmd == nil {
+		t.Fatal("expected quit cmd for 'ctrl+c' in edit mode without selection")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("expected tea.QuitMsg for 'ctrl+c' in edit mode")
+	}
+}
+
+func TestPresentationSetItemInvalidSource(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+	invalidItem := presentation.Presentation{Source: "invalid source without title"}
+	m.setItem(invalidItem)
+
+	if !strings.Contains(m.errMessage, "Invalid presentation:") {
+		t.Fatalf("errMessage = %q, want containing 'Invalid presentation:'", m.errMessage)
+	}
+}
+
+func TestPresentationMoveEditorToLineEmptyEditor(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+	m.editor.Lines = nil
+	m.moveEditorToLine(5)
+
+	if m.editor.Cursor.Line != 0 {
+		t.Fatalf("cursor line = %d, want 0 when editor lines are empty", m.editor.Cursor.Line)
+	}
+}
+
+func TestPresentationSetErrorVariants(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+
+	// ErrNotFound
+	m.setError("Load failed", presentation.ErrNotFound)
+	if m.errMessage != "Load failed: presentation not found" || m.status != "" {
+		t.Fatalf("ErrNotFound state: status=%q, errMessage=%q", m.status, m.errMessage)
+	}
+
+	// context.Canceled
+	m.setError("Save failed", context.Canceled)
+	if m.status != "Cancelled" || m.errMessage != "" {
+		t.Fatalf("Canceled state: status=%q, errMessage=%q", m.status, m.errMessage)
+	}
+
+	// Generic error
+	m.setError("Action failed", errors.New("network failure"))
+	if m.errMessage != "Action failed: network failure" || m.status != "" {
+		t.Fatalf("Generic error state: status=%q, errMessage=%q", m.status, m.errMessage)
+	}
+}
