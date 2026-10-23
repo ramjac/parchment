@@ -734,6 +734,44 @@ func TestRun(t *testing.T) {
 	})
 }
 
+func TestModelUpdateDocumentMessageWhenDocumentsNil(t *testing.T) {
+	m := NewModel(Config{
+		Path: "test.md",
+		Kind: artifact.DocumentKind,
+	})
+	if m.documents != nil {
+		t.Fatal("expected nil m.documents")
+	}
+
+	var msg documentMessage = documentAutosaveFinishedMsg{session: 1, err: nil}
+	model, cmd := m.Update(msg)
+	if model != &m || cmd != nil {
+		t.Fatalf("expected m and nil cmd when documents is nil, got model=%v cmd=%v", model, cmd)
+	}
+}
+
+func TestModelUpdateFileOpenedMsgUnpreservableNote(t *testing.T) {
+	m := NewModel(Config{
+		Path: "test.md",
+		Kind: artifact.NoteKind,
+	})
+
+	msg := fileOpenedMsg{
+		kind: artifact.NoteKind,
+		note: note.Note{
+			Body: "invalid \x00 body",
+		},
+	}
+
+	m.Update(msg)
+	if m.stage != stageFailed {
+		t.Errorf("expected stageFailed, got stage %v", m.stage)
+	}
+	if !strings.Contains(m.errMessage, "editor limits") {
+		t.Errorf("expected errMessage to mention 'editor limits', got %q", m.errMessage)
+	}
+}
+
 func TestModelUpdateFileOpenedMsg(t *testing.T) {
 	t.Run("error setting stageFailed", func(t *testing.T) {
 		h := newHarness(t, artifact.NoteKind)
