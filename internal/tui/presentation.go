@@ -551,22 +551,26 @@ func (m *presentationModel) renderContentPane() string {
 	if m.editing {
 		content = m.editor.View()
 	} else {
-		lines := m.pageLines()
-		var slideBuf strings.Builder
-		for i := 0; i < m.visibleLines(); i++ {
-			if i > 0 {
-				slideBuf.WriteByte('\n')
-			}
-			if index := m.scroll + i; index < len(lines) {
-				slideBuf.WriteString(lines[index])
-			}
-		}
-		content = slideBuf.String()
+		content = m.renderSlideContent()
 	}
 
 	paneHeight := max(1, m.height-3)
 	return lipgloss.NewStyle().Width(max(1, m.width)).Height(paneHeight).
 		Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1).Render(content)
+}
+
+func (m *presentationModel) renderSlideContent() string {
+	lines := m.pageLines()
+	var slideBuf strings.Builder
+	for i := 0; i < m.visibleLines(); i++ {
+		if i > 0 {
+			slideBuf.WriteByte('\n')
+		}
+		if index := m.scroll + i; index < len(lines) {
+			slideBuf.WriteString(lines[index])
+		}
+	}
+	return slideBuf.String()
 }
 
 func (m *presentationModel) renderStatus() string {
