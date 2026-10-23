@@ -1653,53 +1653,141 @@ func TestRedo(t *testing.T) {
 	})
 }
 
-func TestSetValueEdgeCases(t *testing.T) {
-	tests := []struct {
-		name          string
-		input         string
-		expectedLines int
-		expectedValue string
-	}{
-		{
-			name:          "empty string",
-			input:         "",
-			expectedLines: 1,
-			expectedValue: "",
-		},
-		{
-			name:          "single line without trailing newline",
-			input:         "Hello world",
-			expectedLines: 1,
-			expectedValue: "Hello world",
-		},
-		{
-			name:          "multiline with empty lines",
-			input:         "line1\n\nline3\n",
-			expectedLines: 4,
-			expectedValue: "line1\n\nline3\n",
-		},
-		{
-			name:          "unicode and emoji content",
-			input:         "⌘ Hello 世界 🎉\n🚀 Go Parchment",
-			expectedLines: 2,
-			expectedValue: "⌘ Hello 世界 🎉\n🚀 Go Parchment",
-		},
-	}
+func TestSetValue(t *testing.T) {
+	t.Run("basic string loading and rune conversion", func(t *testing.T) {
+		ed := New()
+		input := "Hello\nWorld"
+		ed.SetValue(input)
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			ed := New()
-			ed.SetValue(tc.input)
+		if ed.Value() != input {
+			t.Errorf("Value() = %q, want %q", ed.Value(), input)
+		}
+		if len(ed.Lines) != 2 {
+			t.Fatalf("len(Lines) = %d, want 2", len(ed.Lines))
+		}
+		if string(ed.Lines[0]) != "Hello" {
+			t.Errorf("Lines[0] = %q, want %q", string(ed.Lines[0]), "Hello")
+		}
+		if string(ed.Lines[1]) != "World" {
+			t.Errorf("Lines[1] = %q, want %q", string(ed.Lines[1]), "World")
+		}
+	})
 
-			if ed.LineCount() != tc.expectedLines {
-				t.Errorf("LineCount() = %d, want %d", ed.LineCount(), tc.expectedLines)
-			}
-			if got := ed.Value(); got != tc.expectedValue {
-				t.Errorf("Value() = %q, want %q", got, tc.expectedValue)
-			}
-			if ed.Cursor != (Point{Line: 0, Col: 0}) {
-				t.Errorf("Cursor = %+v, want Point{0,0}", ed.Cursor)
-			}
-		})
-	}
+	t.Run("full state reset on populated model", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Initial line 1\nInitial line 2")
+
+		// Modify various internal state properties
+		ed.Cursor = Point{Line: 1, Col: 5}
+		ed.StickyCol = 5
+		ed.Selection = Selection{Anchor: Point{Line: 0, Col: 2}, Active: true}
+		ed.TopLine = 1
+		ed.LeftCol = 3
+
+		// Push undo and redo stack entries
+		ed.InsertString(" edit")
+		if !ed.CanUndo() {
+			t.Fatalf("CanUndo() = false, want true after edit")
+		}
+		ed.Undo()
+		if !ed.CanRedo() {
+			t.Fatalf("CanRedo() = false, want true after undo")
+		}
+
+		// Execute SetValue
+		newText := "New content line 1\nNew content line 2"
+		ed.SetValue(newText)
+
+		// Assert that all state properties are reset
+		if got := ed.Value(); got != newText {
+			t.Errorf("Value() = %q, want %q", got, newText)
+		}
+		if ed.Cursor != (Point{Line: 0, Col: 0}) {
+			t.Errorf("Cursor = %+v, want Point{0,0}", ed.Cursor)
+		}
+		if ed.StickyCol != 0 {
+			t.Errorf("StickyCol = %d, want 0", ed.StickyCol)
+		}
+		if ed.Selection != (Selection{}) {
+			t.Errorf("Selection = %+v, want Selection{}", ed.Selection)
+		}
+		if ed.TopLine != 0 {
+			t.Errorf("TopLine = %d, want 0", ed.TopLine)
+		}
+		if ed.LeftCol != 0 {
+			t.Errorf("LeftCol = %d, want 0", ed.LeftCol)
+		}
+		if ed.CanUndo() {
+			t.Errorf("CanUndo() = true, want false")
+		}
+		if ed.CanRedo() {
+			t.Errorf("CanRedo() = true, want false")
+		}
+		if len(ed.undoStack) != 0 {
+			t.Errorf("len(undoStack) = %d, want 0", len(ed.undoStack))
+		}
+		if len(ed.redoStack) != 0 {
+			t.Errorf("len(redoStack) = %d, want 0", len(ed.redoStack))
+		}
+		if ed.lastEditType != editNone {
+			t.Errorf("lastEditType = %v, want editNone", ed.lastEditType)
+		}
+	})
+
+	t.Run("table-driven edge cases", func(t *testing.T) {
+		tests := []struct {
+			name          string
+			input         string
+			expectedLines int
+			expectedValue string
+		}{
+			{
+				name:          "empty string",
+				input:         "",
+				expectedLines: 1,
+				expectedValue: "",
+			},
+			{
+				name:          "single line without trailing newline",
+				input:         "Hello world",
+				expectedLines: 1,
+				expectedValue: "Hello world",
+			},
+			{
+				name:          "single line with trailing newline",
+				input:         "Hello world\n",
+				expectedLines: 2,
+				expectedValue: "Hello world\n",
+			},
+			{
+				name:          "multiline with consecutive empty lines",
+				input:         "line1\n\n\nline4\n",
+				expectedLines: 5,
+				expectedValue: "line1\n\n\nline4\n",
+			},
+			{
+				name:          "unicode and emoji content",
+				input:         "⌘ Hello 世界 🎉\n🚀 Go Parchment",
+				expectedLines: 2,
+				expectedValue: "⌘ Hello 世界 🎉\n🚀 Go Parchment",
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				ed := New()
+				ed.SetValue(tc.input)
+
+				if ed.LineCount() != tc.expectedLines {
+					t.Errorf("LineCount() = %d, want %d", ed.LineCount(), tc.expectedLines)
+				}
+				if got := ed.Value(); got != tc.expectedValue {
+					t.Errorf("Value() = %q, want %q", got, tc.expectedValue)
+				}
+				if ed.Cursor != (Point{Line: 0, Col: 0}) {
+					t.Errorf("Cursor = %+v, want Point{0,0}", ed.Cursor)
+				}
+			})
+		}
+	})
 }
