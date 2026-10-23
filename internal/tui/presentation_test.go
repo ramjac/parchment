@@ -382,6 +382,152 @@ func TestPageForSourceLineAndSlideSourceLineTrailingNewlines(t *testing.T) {
 	}
 }
 
+func TestPresentationView(t *testing.T) {
+	t.Run("Terminal small size boundary", func(t *testing.T) {
+		service := presentation.NewService(newTestRepository(t), 10)
+		m := newPresentationModel(service, "deck.md")
+
+		m.width, m.height = 19, 30
+		if got := m.View(); got != "Terminal too small. Press q to quit." {
+			t.Fatalf("small width view = %q, want 'Terminal too small. Press q to quit.'", got)
+		}
+
+		m.width, m.height = 80, 4
+		if got := m.View(); got != "Terminal too small. Press q to quit." {
+			t.Fatalf("small height view = %q, want 'Terminal too small. Press q to quit.'", got)
+		}
+
+		// Minimum required dimensions: width 20, height 5
+		m.width, m.height = 20, 5
+		if got := m.View(); got == "Terminal too small. Press q to quit." {
+			t.Fatalf("min size (20x5) view gave terminal too small message")
+		}
+	})
+
+	t.Run("Unloaded model states", func(t *testing.T) {
+		service := presentation.NewService(newTestRepository(t), 10)
+		m := newPresentationModel(service, "deck.md")
+		m.width, m.height = 80, 20
+
+		view := m.View()
+		if !strings.Contains(view, "Presentation") || !strings.Contains(view, "deck.md") || !strings.Contains(view, "r retry • esc/q quit") {
+			t.Fatalf("unloaded view missing expected strings:\n%s", view)
+		}
+
+		m.errMessage = "Failed to load"
+		view = m.View()
+		if !strings.Contains(view, "Error: Failed to load") {
+			t.Fatalf("unloaded view missing error message:\n%s", view)
+		}
+
+		mNoPath := newPresentationModel(service, "")
+		mNoPath.width, mNoPath.height = 80, 20
+		if viewNoPath := mNoPath.View(); !strings.HasPrefix(viewNoPath, "Presentation\n") {
+			t.Fatalf("unloaded model without path view wrong:\n%s", viewNoPath)
+		}
+	})
+
+	t.Run("Loaded browse mode title and slide pages", func(t *testing.T) {
+		m, _, _ := newPresentationTestModel(t)
+		m.width, m.height = 80, 20
+
+		// Title page (page 0)
+		view := m.View()
+		slideCount := len(m.deck.Slides)
+		wantTitleHeader := fmt.Sprintf("0/%d", slideCount)
+		wantTitleStatus := fmt.Sprintf("Title page • %d slides", slideCount)
+		if !strings.Contains(view, wantTitleHeader) || !strings.Contains(view, wantTitleStatus) {
+			t.Fatalf("title page status missing expected strings:\n%s", view)
+		}
+		if !strings.Contains(view, m.deck.Title) {
+			t.Fatalf("title page missing presentation title:\n%s", view)
+		}
+
+		// Navigate to Slide 1
+		drivePresentation(t, m, sheetKey("right"))
+		view = m.View()
+		wantSlideHeader := fmt.Sprintf("1/%d", slideCount)
+		wantSlideStatus := fmt.Sprintf("Slide 1 of %d", slideCount)
+		if !strings.Contains(view, wantSlideHeader) || !strings.Contains(view, wantSlideStatus) {
+			t.Fatalf("slide 1 status missing expected strings:\n%s", view)
+		}
+		if !strings.Contains(view, m.deck.Slides[0].Title) {
+			t.Fatalf("slide 1 missing slide title:\n%s", view)
+		}
+	})
+
+	t.Run("Speaker notes rendering", func(t *testing.T) {
+		m, _, _ := newPresentationTestModel(t)
+		m.width, m.height = 80, 20
+
+		// Set slide source with one slide having notes and another with empty notes
+		src := "# Title\n\n## Slide With Notes\nBody 1\n\n<!-- parchment-notes\nSome speaker notes\n-->\n\n## Slide Empty Notes\nBody 2\n\n<!-- parchment-notes\n-->\n"
+		m.setItem(presentation.Presentation{Source: src})
+
+		// Slide 1 with notes
+		m.goToPage(1)
+		m.showNotes = true
+		view := m.View()
+		if !strings.Contains(view, "── Speaker notes ──") || !strings.Contains(view, "Some speaker notes") {
+			t.Fatalf("slide 1 notes not rendered:\n%s", view)
+		}
+
+		// Slide 2 with empty notes
+		m.goToPage(2)
+		view = m.View()
+		if !strings.Contains(view, "── Speaker notes ──") || !strings.Contains(view, "(none)") {
+			t.Fatalf("slide 2 empty notes not rendered as '(none)':\n%s", view)
+		}
+	})
+
+	t.Run("Status bar precedence and scroll windowing", func(t *testing.T) {
+		m, _, _ := newPresentationTestModel(t)
+		m.width, m.height = 80, 10 // small height to test scrolling
+
+		m.goToPage(1)
+		viewInitial := m.View()
+
+		// Scrolling down alters content pane view
+		drivePresentation(t, m, sheetKey("down"))
+		viewScrolled := m.View()
+		if viewScrolled == viewInitial {
+			t.Fatalf("scrolling down did not change view output")
+		}
+
+		// Custom status overrides default status
+		m.status = "Saved successfully"
+		viewStatus := m.View()
+		if !strings.Contains(viewStatus, "Saved successfully") || strings.Contains(viewStatus, "Slide 1 of") {
+			t.Fatalf("custom status did not override default status:\n%s", viewStatus)
+		}
+
+		// Error message overrides custom status
+		m.errMessage = "Critical operation error"
+		viewErr := m.View()
+		if !strings.Contains(viewErr, "Error: Critical operation error") {
+			t.Fatalf("error message did not override custom status:\n%s", viewErr)
+		}
+	})
+
+	t.Run("Edit mode rendering", func(t *testing.T) {
+		m, _, _ := newPresentationTestModel(t)
+		m.width, m.height = 80, 20
+
+		drivePresentation(t, m, sheetKey("e"))
+		if !m.editing {
+			t.Fatal("failed to enter edit mode")
+		}
+
+		view := m.View()
+		if !strings.Contains(view, "— editing source") {
+			t.Fatalf("edit mode header missing '— editing source':\n%s", view)
+		}
+		if !strings.Contains(view, "ctrl+s save • esc cancel • ctrl+c quit") {
+			t.Fatalf("edit mode help text missing:\n%s", view)
+		}
+	})
+}
+
 func TestPresentationViewSmallTerminal(t *testing.T) {
 	service := presentation.NewService(newTestRepository(t), 10)
 	m := newPresentationModel(service, "deck.md")

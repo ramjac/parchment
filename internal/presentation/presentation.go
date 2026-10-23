@@ -162,18 +162,21 @@ func (p *parser) writeContent(line string) {
 	}
 }
 
-func (p *parser) parseLine(rawLine string) error {
+func (p *parser) prepareLine(rawLine string) (line, trimmed string, err error) {
 	p.lineNumber++
-	line := strings.TrimSuffix(rawLine, "\r")
-	trimmed := strings.TrimSpace(line)
+	line = strings.TrimSuffix(rawLine, "\r")
 	if p.lineNumber == 1 {
 		line = strings.TrimPrefix(line, "\uFEFF")
-		trimmed = strings.TrimSpace(line)
 	}
+	trimmed = strings.TrimSpace(line)
 	if p.deck.Title == "" && trimmed != "" &&
 		(isIndentedCode(line) || !strings.HasPrefix(trimmed, "# ")) {
-		return fmt.Errorf("line %d: presentation must begin with a '# Title' heading", p.lineNumber)
+		return "", "", fmt.Errorf("line %d: presentation must begin with a '# Title' heading", p.lineNumber)
 	}
+	return line, trimmed, nil
+}
+
+func (p *parser) evalFenceState(line, trimmed string) (handled bool, listContinuation bool) {
 	listIndent := currentListIndent(p.listIndents)
 	listContent, itemIndent, isListItem := listItemContent(line, listIndent)
 	marker := markdownFence(trimmed)
@@ -193,7 +196,8 @@ func (p *parser) parseLine(rawLine string) error {
 		marker, markerIndent = evalOutsideFenceMarker(line, trimmed, listContent, listIndent, itemIndent, isListItem, marker)
 	}
 
-	listContinuation := !isListItem && listIndent > 0 && leadingSpaces(line) >= listIndent
+	listContinuation = !isListItem && listIndent > 0 && leadingSpaces(line) >= listIndent
+
 	if marker != "" && (!isIndentedCode(line) || markerIndent > 0) {
 		if !p.inFence {
 			p.inFence, p.fenceMarker, p.fenceListIndent = true, marker, markerIndent
@@ -202,29 +206,60 @@ func (p *parser) parseLine(rawLine string) error {
 			p.inFence, p.fenceMarker, p.fenceListIndent = false, "", 0
 		}
 		p.writeContent(line)
-		return nil
+		return true, listContinuation
 	}
+
 	if p.inFence || isIndentedCode(line) {
 		p.writeContent(line)
+		return true, listContinuation
+	}
+
+	return false, listContinuation
+}
+
+func (p *parser) parseTitleHeading(trimmed string) error {
+	if p.deck.Title != "" || p.current != nil {
+		return fmt.Errorf("line %d: only one top-level presentation title is allowed", p.lineNumber)
+	}
+	p.deck.Title = strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))
+	return nil
+}
+
+func (p *parser) parseSlideHeading(trimmed string) error {
+	p.flush()
+	title := strings.TrimSpace(strings.TrimPrefix(trimmed, "## "))
+	title = stripAnchor(title)
+	if title == "" {
+		return fmt.Errorf("line %d: slide title is required", p.lineNumber)
+	}
+	p.current = &Slide{Title: title}
+	return nil
+}
+
+func (p *parser) parseSpeakerNote(line string) error {
+	if p.current == nil {
+		return fmt.Errorf("line %d: speaker notes must follow a slide heading", p.lineNumber)
+	}
+	p.notes.WriteString(strings.TrimPrefix(line, ": ") + "\n")
+	return nil
+}
+
+func (p *parser) parseLine(rawLine string) error {
+	line, trimmed, err := p.prepareLine(rawLine)
+	if err != nil {
+		return err
+	}
+
+	handled, listContinuation := p.evalFenceState(line, trimmed)
+	if handled {
 		return nil
 	}
+
 	if strings.HasPrefix(trimmed, "# ") && !listContinuation {
-		if p.deck.Title != "" || p.current != nil {
-			return fmt.Errorf("line %d: only one top-level presentation title is allowed", p.lineNumber)
-		}
-		p.deck.Title = strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))
-		return nil
+		return p.parseTitleHeading(trimmed)
 	}
-	if strings.HasPrefix(trimmed, "## ") && !strings.HasPrefix(trimmed, "### ") &&
-		!listContinuation {
-		p.flush()
-		title := strings.TrimSpace(strings.TrimPrefix(trimmed, "## "))
-		title = stripAnchor(title)
-		if title == "" {
-			return fmt.Errorf("line %d: slide title is required", p.lineNumber)
-		}
-		p.current = &Slide{Title: title}
-		return nil
+	if strings.HasPrefix(trimmed, "## ") && !strings.HasPrefix(trimmed, "### ") && !listContinuation {
+		return p.parseSlideHeading(trimmed)
 	}
 	if p.deck.Title == "" {
 		if trimmed != "" {
@@ -236,12 +271,9 @@ func (p *parser) parseLine(rawLine string) error {
 		return nil
 	}
 	if strings.HasPrefix(line, ": ") {
-		if p.current == nil {
-			return fmt.Errorf("line %d: speaker notes must follow a slide heading", p.lineNumber)
-		}
-		p.notes.WriteString(strings.TrimPrefix(line, ": ") + "\n")
-		return nil
+		return p.parseSpeakerNote(line)
 	}
+
 	p.writeContent(line)
 	return nil
 }
