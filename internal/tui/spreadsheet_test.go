@@ -838,3 +838,32 @@ func TestSpreadsheetView_EditingAndHelp(t *testing.T) {
 		t.Fatalf("expected unloaded help text, got:\n%s", viewUnloaded)
 	}
 }
+
+func TestSpreadsheetView_CustomSheetNameAndEmptyPath(t *testing.T) {
+	m, service, _, id := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "Value1"}}})
+
+	// Case 1: Single sheet with custom name (not "Sheet1")
+	m.book.Sheets[0].Name = "CustomName"
+	viewCustomSheet := m.View()
+	if !strings.Contains(viewCustomSheet, "— CustomName") {
+		t.Fatalf("expected title to contain '— CustomName', got:\n%s", viewCustomSheet)
+	}
+
+	// Case 2: Empty path
+	m.path = ""
+	viewEmptyPath := m.View()
+	if strings.Contains(viewEmptyPath, id) {
+		t.Fatalf("expected view with empty path to not contain file path, got:\n%s", viewEmptyPath)
+	}
+
+	// Case 3: Explicit m.status shown in renderStatus
+	m.status = "Saved cell successfully"
+	m.errMessage = ""
+	viewStatus := m.View()
+	if !strings.Contains(viewStatus, "Saved cell successfully") {
+		t.Fatalf("expected status 'Saved cell successfully', got:\n%s", viewStatus)
+	}
+
+	// Silence unused variable warning if service/id are used
+	_ = service
+}

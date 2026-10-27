@@ -1714,6 +1714,28 @@ func TestRedo(t *testing.T) {
 }
 
 func TestSetValue(t *testing.T) {
+	t.Run("zero value model initialization", func(t *testing.T) {
+		var ed Model
+		input := "Zero\nValue"
+		ed.SetValue(input)
+
+		if ed.Value() != input {
+			t.Errorf("Value() = %q, want %q", ed.Value(), input)
+		}
+		if len(ed.Lines) != 2 {
+			t.Fatalf("len(Lines) = %d, want 2", len(ed.Lines))
+		}
+		if ed.Cursor != (Point{Line: 0, Col: 0}) {
+			t.Errorf("Cursor = %+v, want Point{0,0}", ed.Cursor)
+		}
+		if ed.Selection != (Selection{}) {
+			t.Errorf("Selection = %+v, want Selection{}", ed.Selection)
+		}
+		if ed.CanUndo() || ed.CanRedo() {
+			t.Errorf("CanUndo/CanRedo should be false on zero value SetValue")
+		}
+	})
+
 	t.Run("basic string loading and rune conversion", func(t *testing.T) {
 		ed := New()
 		input := "Hello\nWorld"
@@ -1848,6 +1870,56 @@ func TestSetValue(t *testing.T) {
 					t.Errorf("Cursor = %+v, want Point{0,0}", ed.Cursor)
 				}
 			})
+		}
+	})
+
+	t.Run("preserves model configuration properties", func(t *testing.T) {
+		ed := New()
+		ed.SetWidth(120)
+		ed.SetHeight(40)
+		ed.Focused = false
+
+		ed.SetValue("Sample text")
+
+		if ed.Width != 120 {
+			t.Errorf("Width = %d, want 120", ed.Width)
+		}
+		if ed.Height != 40 {
+			t.Errorf("Height = %d, want 40", ed.Height)
+		}
+		if ed.Focused != false {
+			t.Errorf("Focused = true, want false")
+		}
+	})
+
+	t.Run("sequential SetValue invocations", func(t *testing.T) {
+		ed := New()
+
+		ed.SetValue("First text")
+		ed.Cursor = Point{Line: 0, Col: 5}
+		ed.StickyCol = 5
+		ed.Selection = Selection{Anchor: Point{Line: 0, Col: 0}, Active: true}
+
+		ed.SetValue("Second text\nLine 2")
+		if got := ed.Value(); got != "Second text\nLine 2" {
+			t.Errorf("Value() after 2nd SetValue = %q, want %q", got, "Second text\nLine 2")
+		}
+		if ed.Cursor != (Point{Line: 0, Col: 0}) {
+			t.Errorf("Cursor = %+v, want Point{0,0}", ed.Cursor)
+		}
+		if ed.StickyCol != 0 {
+			t.Errorf("StickyCol = %d, want 0", ed.StickyCol)
+		}
+		if ed.Selection.Active {
+			t.Errorf("Selection.Active = true, want false")
+		}
+
+		ed.SetValue("")
+		if got := ed.Value(); got != "" {
+			t.Errorf("Value() after 3rd SetValue (empty) = %q, want %q", got, "")
+		}
+		if ed.LineCount() != 1 {
+			t.Errorf("LineCount() = %d, want 1", ed.LineCount())
 		}
 	})
 }

@@ -6,36 +6,61 @@ import (
 	"testing"
 )
 
-func makeLargePresentationSource() string {
-	var sb strings.Builder
-	sb.WriteString("# Large Presentation Title\n\nAuthor Name\n\n")
-	for i := 1; i <= 100; i++ {
-		fmt.Fprintf(&sb, "## Slide %d\n\n", i)
-		sb.WriteString("Some introductory text for slide.\n\n")
-		sb.WriteString("```go\nfunc main() {\n    fmt.Println(\"Hello\")\n}\n```\n\n")
-		fmt.Fprintf(&sb, ": Speaker notes for slide %d\n\n", i)
+func generateBenchmarkPresentationSource(slidesCount int, linesPerSlide int) string {
+	var b strings.Builder
+	b.WriteString("# Presentation Title\n\nIntro line 1\nIntro line 2\n\n")
+	for i := 1; i <= slidesCount; i++ {
+		fmt.Fprintf(&b, "## Slide %d\n", i)
+		b.WriteString("Some text before code block\n```go\nfunc hello() {\n  fmt.Println(\"## fake slide header in fence\")\n}\n```\n")
+		for j := 0; j < linesPerSlide; j++ {
+			fmt.Fprintf(&b, "Line %d of content in slide %d\n", j, i)
+		}
+		b.WriteString("\n")
 	}
-	return sb.String()
+	return b.String()
 }
 
 func BenchmarkPageForSourceLine(b *testing.B) {
-	source := makeLargePresentationSource()
-	targetLine := 400
+	smallSource := generateBenchmarkPresentationSource(5, 10)   // ~100 lines
+	mediumSource := generateBenchmarkPresentationSource(20, 30) // ~800 lines
+	largeSource := generateBenchmarkPresentationSource(100, 50) // ~6000 lines
 
-	b.ResetTimer()
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		_ = pageForSourceLine(source, targetLine)
-	}
+	b.Run("Small-Line10", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = pageForSourceLine(smallSource, 10)
+		}
+	})
+
+	b.Run("Small-Line80", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = pageForSourceLine(smallSource, 80)
+		}
+	})
+
+	b.Run("Medium-Line400", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = pageForSourceLine(mediumSource, 400)
+		}
+	})
+
+	b.Run("Large-Line3000", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = pageForSourceLine(largeSource, 3000)
+		}
+	})
 }
 
 func BenchmarkSlideSourceLine(b *testing.B) {
-	source := makeLargePresentationSource()
-	targetPage := 50
+	mediumSource := generateBenchmarkPresentationSource(20, 30)
 
-	b.ResetTimer()
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		_ = slideSourceLine(source, targetPage)
-	}
+	b.Run("Medium-Page10", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = slideSourceLine(mediumSource, 10)
+		}
+	})
 }

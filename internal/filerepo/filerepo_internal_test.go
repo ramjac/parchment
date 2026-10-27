@@ -1,6 +1,7 @@
 package filerepo
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -70,6 +71,23 @@ func TestNewInternal(t *testing.T) {
 		}
 		if repo.stateDir != expectedAbs {
 			t.Fatalf("expected stateDir=%q, got %q", expectedAbs, repo.stateDir)
+		}
+	})
+
+	t.Run("filepath.Abs error returns wrapped error", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Chdir(dir)
+		_ = os.RemoveAll(dir)
+
+		repo, err := New("relative_path")
+		if err == nil {
+			t.Fatal("expected error when working directory is deleted, got nil")
+		}
+		if repo != nil {
+			t.Fatalf("expected nil repo, got %v", repo)
+		}
+		if !strings.Contains(err.Error(), "resolve state directory:") {
+			t.Fatalf("unexpected error message: %v", err)
 		}
 	})
 }
