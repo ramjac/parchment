@@ -1592,6 +1592,66 @@ func TestRedo(t *testing.T) {
 		}
 	})
 
+	t.Run("adjusts horizontal viewport LeftCol when restored cursor is out of view", func(t *testing.T) {
+		ed := New()
+		ed.SetWidth(5)
+		ed.SetHeight(5)
+		ed.SetValue("Hello World Very Long Line")
+
+		ed.Cursor = Point{Line: 0, Col: 0}
+		ed.InsertString("Prepend ") // moves cursor to Col 8 ("Prepend Hello World Very Long Line")
+		// LeftCol was adjusted during InsertString
+		ed.Undo() // restores cursor to Col 0, resets LeftCol to 0
+
+		if ed.Cursor.Col != 0 {
+			t.Fatalf("Cursor.Col after Undo = %d, want 0", ed.Cursor.Col)
+		}
+
+		// Reset LeftCol to 0 while restored cursor will be at Col 8
+		ed.LeftCol = 0
+		ed.Cursor = Point{Line: 0, Col: 0}
+
+		ed.Redo() // restores cursor to Col 8
+		if ed.Cursor.Col != 8 {
+			t.Errorf("Cursor.Col after Redo = %d, want 8", ed.Cursor.Col)
+		}
+		if ed.LeftCol != 4 {
+			t.Errorf("LeftCol after Redo = %d, want 4", ed.LeftCol)
+		}
+	})
+
+	t.Run("typing batching behavior after Redo due to editNone reset", func(t *testing.T) {
+		ed := New()
+		ed.SetValue("Start")
+		ed.Cursor = Point{Line: 0, Col: 5}
+
+		ed.InsertRune('a')
+		ed.InsertRune('b')
+		ed.Undo()
+
+		if ed.Value() != "Start" {
+			t.Fatalf("Value after Undo = %q, want %q", ed.Value(), "Start")
+		}
+
+		// Redo restores "Startab" and resets lastEditType to editNone
+		ed.Redo()
+		if ed.Value() != "Startab" {
+			t.Fatalf("Value after Redo = %q, want %q", ed.Value(), "Startab")
+		}
+		if ed.lastEditType != editNone {
+			t.Fatalf("lastEditType after Redo = %v, want editNone", ed.lastEditType)
+		}
+
+		// Inserting rune 'c' after Redo should trigger saveSnapshot because lastEditType == editNone
+		undoCountBefore := len(ed.undoStack)
+		ed.InsertRune('c')
+		undoCountAfter := len(ed.undoStack)
+
+		if undoCountAfter != undoCountBefore+1 {
+			t.Errorf("undoStack length after InsertRune = %d, want %d", undoCountAfter, undoCountBefore+1)
+		}
+	})
+
 	t.Run("clones lines to prevent mutation of snapshot history", func(t *testing.T) {
 		ed := New()
 		ed.SetValue("Original")
