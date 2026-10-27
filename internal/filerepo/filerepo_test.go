@@ -22,9 +22,12 @@ import (
 
 func TestNew(t *testing.T) {
 	t.Run("empty state directory returns error", func(t *testing.T) {
-		_, err := filerepo.New("")
+		repo, err := filerepo.New("")
 		if err == nil {
 			t.Fatal("expected error for empty stateDir, got nil")
+		}
+		if repo != nil {
+			t.Fatalf("expected nil repository on error, got %v", repo)
 		}
 		if !strings.Contains(err.Error(), "state directory is required") {
 			t.Fatalf("unexpected error message: %v", err)
@@ -64,6 +67,33 @@ func TestNew(t *testing.T) {
 		_, ok, err := repo.LoadRecovery(ctx, filepath.Join(absPath, "dummy.md"))
 		if err != nil || ok {
 			t.Fatalf("unexpected recovery check result: ok=%v, err=%v", ok, err)
+		}
+	})
+
+	t.Run("non-existent nested directory path created on demand", func(t *testing.T) {
+		tempDir := t.TempDir()
+		nestedDir := filepath.Join(tempDir, "nested", "state")
+		repo, err := filerepo.New(nestedDir)
+		if err != nil {
+			t.Fatalf("unexpected error for non-existent path: %v", err)
+		}
+		if repo == nil {
+			t.Fatal("expected non-nil Repository")
+		}
+
+		// Verify operations can write state to the nested directory on demand
+		ctx := context.Background()
+		draft := recovery.Draft{Path: filepath.Join(tempDir, "note.md"), Kind: "note", Data: json.RawMessage(`{"text":"hello"}`)}
+		if err := repo.SaveRecovery(ctx, draft); err != nil {
+			t.Fatalf("failed to save recovery in nested state dir: %v", err)
+		}
+
+		loaded, ok, err := repo.LoadRecovery(ctx, draft.Path)
+		if err != nil || !ok {
+			t.Fatalf("failed to load recovery draft: ok=%v, err=%v", ok, err)
+		}
+		if string(loaded.Data) != string(draft.Data) {
+			t.Fatalf("loaded recovery data = %s, want %s", loaded.Data, draft.Data)
 		}
 	})
 }

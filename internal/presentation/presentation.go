@@ -293,12 +293,7 @@ func (p *parser) finish() (Deck, error) {
 	return p.deck, nil
 }
 
-// Parse parses the presentation-oriented subset of Go present's Markdown
-// syntax: an H1 title, H2 slide headings, H3 subsections, // comments, and
-// : speaker-note lines. Markdown text is preserved for the view layer.
-func Parse(source string) (Deck, error) {
-	source = artifactfile.StripPrivateBlocks(source)
-	var p parser
+func (p *parser) parseSource(source string) (Deck, error) {
 	scanner := bufio.NewScanner(strings.NewReader(source))
 	scanner.Buffer(make([]byte, 4096), 4<<20)
 	for scanner.Scan() {
@@ -310,6 +305,15 @@ func Parse(source string) (Deck, error) {
 		return Deck{}, fmt.Errorf("read presentation Markdown: %w", err)
 	}
 	return p.finish()
+}
+
+// Parse parses the presentation-oriented subset of Go present's Markdown
+// syntax: an H1 title, H2 slide headings, H3 subsections, // comments, and
+// : speaker-note lines. Markdown text is preserved for the view layer.
+func Parse(source string) (Deck, error) {
+	source = artifactfile.StripPrivateBlocks(source)
+	var p parser
+	return p.parseSource(source)
 }
 
 func currentListIndent(listIndents []int) int {
