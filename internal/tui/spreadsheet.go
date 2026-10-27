@@ -513,6 +513,17 @@ func (m *spreadsheetModel) renderFormulaBar() string {
 	return runewidth.Truncate(reference+" │ "+sanitizeTerminalLine(cellDraft(m.cell(m.row, m.column))), m.width, "…")
 }
 
+func (m *spreadsheetModel) renderColumnHeader(rowWidth, columns int) string {
+	var lineBuf strings.Builder
+	lineBuf.Grow(rowWidth + columns*(spreadsheetColumnWidth+1))
+	lineBuf.WriteString(strings.Repeat(" ", rowWidth))
+	for c := m.columnOffset; c < m.columnOffset+columns && c < spreadsheet.MaxColumns; c++ {
+		lineBuf.WriteByte(' ')
+		lineBuf.WriteString(fitCell(columnName(c), spreadsheetColumnWidth))
+	}
+	return lineBuf.String()
+}
+
 func (m *spreadsheetModel) renderGrid() string {
 	muted := lipgloss.NewStyle().Foreground(borderColor)
 	selected := lipgloss.NewStyle().Reverse(true)
@@ -521,17 +532,11 @@ func (m *spreadsheetModel) renderGrid() string {
 	columns := m.visibleColumns()
 	visibleRows := m.visibleRows()
 
-	var lineBuf strings.Builder
-	lineBuf.Grow(rowWidth + columns*(spreadsheetColumnWidth+1))
-	lineBuf.WriteString(strings.Repeat(" ", rowWidth))
-	for c := m.columnOffset; c < m.columnOffset+columns && c < spreadsheet.MaxColumns; c++ {
-		lineBuf.WriteByte(' ')
-		lineBuf.WriteString(fitCell(columnName(c), spreadsheetColumnWidth))
-	}
+	lineBuf := m.renderColumnHeader(rowWidth, columns)
 
 	var gridBuf strings.Builder
 	gridBuf.Grow((visibleRows + 1) * (rowWidth + columns*(spreadsheetColumnWidth+1) + 1))
-	gridBuf.WriteString(muted.Render(lineBuf.String()))
+	gridBuf.WriteString(muted.Render(lineBuf))
 	gridBuf.WriteByte('\n')
 
 	for r := m.rowOffset; r < m.rowOffset+visibleRows; r++ {
