@@ -734,6 +734,44 @@ func TestRun(t *testing.T) {
 	})
 }
 
+func TestModelUpdateDocumentMessageWhenDocumentsNil(t *testing.T) {
+	m := NewModel(Config{
+		Path: "test.md",
+		Kind: artifact.DocumentKind,
+	})
+	if m.documents != nil {
+		t.Fatal("expected nil m.documents")
+	}
+
+	var msg documentMessage = documentAutosaveFinishedMsg{session: 1, err: nil}
+	model, cmd := m.Update(msg)
+	if model != &m || cmd != nil {
+		t.Fatalf("expected m and nil cmd when documents is nil, got model=%v cmd=%v", model, cmd)
+	}
+}
+
+func TestModelUpdateFileOpenedMsgUnpreservableNote(t *testing.T) {
+	m := NewModel(Config{
+		Path: "test.md",
+		Kind: artifact.NoteKind,
+	})
+
+	msg := fileOpenedMsg{
+		kind: artifact.NoteKind,
+		note: note.Note{
+			Body: "invalid \x00 body",
+		},
+	}
+
+	m.Update(msg)
+	if m.stage != stageFailed {
+		t.Errorf("expected stageFailed, got stage %v", m.stage)
+	}
+	if !strings.Contains(m.errMessage, "editor limits") {
+		t.Errorf("expected errMessage to mention 'editor limits', got %q", m.errMessage)
+	}
+}
+
 func TestModelUpdateFileOpenedMsg(t *testing.T) {
 	t.Run("error setting stageFailed", func(t *testing.T) {
 		h := newHarness(t, artifact.NoteKind)
@@ -1197,47 +1235,89 @@ func TestModelInit(t *testing.T) {
 			t.Fatal(err)
 		}
 		notes := note.NewService(repo, 10)
+		docs := document.NewService(repo, 10)
 		ctx := context.Background()
 
+		// 1. Note draft recovery
 		notePath := filepath.Join(t.TempDir(), "note_with_draft.md")
 		if _, err := notes.Create(ctx, notePath, "original body"); err != nil {
 			t.Fatal(err)
 		}
 
-		// Save a recovery draft
-		draft := recovery.Draft{
+		noteDraft := recovery.Draft{
 			Path:      notePath,
 			Kind:      string(artifact.NoteKind),
 			Data:      json.RawMessage(`{"body":"unsaved body draft"}`),
 			UpdatedAt: time.Now(),
 		}
-		if err := repo.SaveRecovery(ctx, draft); err != nil {
+		if err := repo.SaveRecovery(ctx, noteDraft); err != nil {
 			t.Fatal(err)
 		}
 
-		m := NewModel(Config{
+		mNote := NewModel(Config{
 			Path:     notePath,
 			Kind:     artifact.NoteKind,
 			Notes:    notes,
 			Recovery: repo,
 		})
-		cmd := m.Init()
-		if cmd == nil {
-			t.Fatal("expected non-nil cmd from Init")
+		cmdNote := mNote.Init()
+		if cmdNote == nil {
+			t.Fatal("expected non-nil cmd from Init for note")
 		}
-		msg := cmd()
-		openedMsg, ok := msg.(fileOpenedMsg)
+		msgNote := cmdNote()
+		openedMsgNote, ok := msgNote.(fileOpenedMsg)
 		if !ok {
-			t.Fatalf("expected fileOpenedMsg, got %T", msg)
+			t.Fatalf("expected fileOpenedMsg, got %T", msgNote)
 		}
-		if openedMsg.err != nil {
-			t.Fatalf("unexpected error: %v", openedMsg.err)
+		if openedMsgNote.err != nil {
+			t.Fatalf("unexpected error: %v", openedMsgNote.err)
 		}
-		if !openedMsg.hasDraft {
-			t.Fatal("expected hasDraft = true when recovery draft exists")
+		if !openedMsgNote.hasDraft {
+			t.Fatal("expected hasDraft = true when note recovery draft exists")
 		}
-		if openedMsg.draft.Path != notePath {
-			t.Fatalf("expected draft path %q, got %q", notePath, openedMsg.draft.Path)
+		if openedMsgNote.draft.Path != notePath {
+			t.Fatalf("expected draft path %q, got %q", notePath, openedMsgNote.draft.Path)
+		}
+
+		// 2. Document draft recovery
+		docPath := filepath.Join(t.TempDir(), "doc_with_draft.md")
+		if _, err := docs.Create(ctx, docPath, document.Draft{Layout: document.DefaultLayout()}); err != nil {
+			t.Fatal(err)
+		}
+
+		docDraft := recovery.Draft{
+			Path:      docPath,
+			Kind:      string(artifact.DocumentKind),
+			Data:      json.RawMessage(`{"body":"unsaved doc draft"}`),
+			UpdatedAt: time.Now(),
+		}
+		if err := repo.SaveRecovery(ctx, docDraft); err != nil {
+			t.Fatal(err)
+		}
+
+		mDoc := NewModel(Config{
+			Path:      docPath,
+			Kind:      artifact.DocumentKind,
+			Documents: docs,
+			Recovery:  repo,
+		})
+		cmdDoc := mDoc.Init()
+		if cmdDoc == nil {
+			t.Fatal("expected non-nil cmd from Init for document")
+		}
+		msgDoc := cmdDoc()
+		openedMsgDoc, ok := msgDoc.(fileOpenedMsg)
+		if !ok {
+			t.Fatalf("expected fileOpenedMsg, got %T", msgDoc)
+		}
+		if openedMsgDoc.err != nil {
+			t.Fatalf("unexpected error: %v", openedMsgDoc.err)
+		}
+		if !openedMsgDoc.hasDraft {
+			t.Fatal("expected hasDraft = true when document recovery draft exists")
+		}
+		if openedMsgDoc.draft.Path != docPath {
+			t.Fatalf("expected draft path %q, got %q", docPath, openedMsgDoc.draft.Path)
 		}
 	})
 
