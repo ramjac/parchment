@@ -384,3 +384,41 @@ func TestReferencedImagesRecognizesMarkdownForms(t *testing.T) {
 		}
 	}
 }
+
+func TestPrint(t *testing.T) {
+	t.Run("HappyPath", func(t *testing.T) {
+		body := "Page One\n\n" + PageBreakMarkup + "\n\nPage Two"
+		d := testDocument(body, nil)
+
+		printed, err := Print(d)
+		if err != nil {
+			t.Fatalf("Print failed: %v", err)
+		}
+
+		pages := strings.Split(printed, "\f")
+		if len(pages) != 2 {
+			t.Fatalf("expected 2 pages, got %d", len(pages))
+		}
+
+		if !strings.Contains(pages[0], "Page One") {
+			t.Errorf("expected page 1 to contain 'Page One'")
+		}
+		if !strings.Contains(pages[1], "Page Two") {
+			t.Errorf("expected page 2 to contain 'Page Two'")
+		}
+	})
+
+	t.Run("ErrorCase", func(t *testing.T) {
+		d := testDocument("Some text", func(l *Layout) {
+			l.Version = 999 // Invalid version
+		})
+
+		_, err := Print(d)
+		if err == nil {
+			t.Fatal("expected Print to return an error for invalid layout, got nil")
+		}
+		if !strings.Contains(err.Error(), "unsupported layout version 999") {
+			t.Errorf("unexpected error message: %v", err)
+		}
+	})
+}
