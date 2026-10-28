@@ -100,48 +100,53 @@ func sameImages(left, right []document.Image) bool {
 	return true
 }
 
+func poolDocumentImage(images []document.Image, image document.Image) ([]document.Image, int) {
+	for i, pooled := range images {
+		if pooled.Name == image.Name && bytes.Equal(pooled.Data, image.Data) {
+			return images, i
+		}
+	}
+	images = append(images, image)
+	return images, len(images) - 1
+}
+
 func newDocumentRecoveryData(state documentAutosaveState) documentRecoveryData {
 	data := documentRecoveryData{
 		Snapshot: state.snapshot, SnapshotBlocks: cloneRawMessages(state.snapshot.Blocks),
 		Draft: state.draft,
 	}
 	data.Snapshot.Images, data.Draft.Images = nil, nil
-	index := func(image document.Image) int {
-		for i, pooled := range data.Images {
-			if pooled.Name == image.Name && bytes.Equal(pooled.Data, image.Data) {
-				return i
-			}
-		}
-		data.Images = append(data.Images, image)
-		return len(data.Images) - 1
-	}
+	var ref int
 	for _, image := range state.snapshot.Images {
-		data.SnapshotImages = append(data.SnapshotImages, index(image))
+		data.Images, ref = poolDocumentImage(data.Images, image)
+		data.SnapshotImages = append(data.SnapshotImages, ref)
 	}
 	for _, image := range state.draft.Images {
-		data.DraftImages = append(data.DraftImages, index(image))
+		data.Images, ref = poolDocumentImage(data.Images, image)
+		data.DraftImages = append(data.DraftImages, ref)
 	}
 	return data
 }
 
+func expandDocumentImages(images []document.Image, refs []int) ([]document.Image, error) {
+	var out []document.Image
+	for _, ref := range refs {
+		if ref < 0 || ref >= len(images) {
+			return nil, fmt.Errorf("invalid image reference %d", ref)
+		}
+		out = append(out, images[ref])
+	}
+	return out, nil
+}
+
 // expand returns the snapshot and draft with their images restored.
 func (d documentRecoveryData) expand() (document.Document, document.Draft, error) {
-	images := func(refs []int) ([]document.Image, error) {
-		var out []document.Image
-		for _, ref := range refs {
-			if ref < 0 || ref >= len(d.Images) {
-				return nil, fmt.Errorf("invalid image reference %d", ref)
-			}
-			out = append(out, d.Images[ref])
-		}
-		return out, nil
-	}
 	snapshot, draft := d.Snapshot, d.Draft
 	var err error
-	if snapshot.Images, err = images(d.SnapshotImages); err != nil {
+	if snapshot.Images, err = expandDocumentImages(d.Images, d.SnapshotImages); err != nil {
 		return document.Document{}, document.Draft{}, err
 	}
-	if draft.Images, err = images(d.DraftImages); err != nil {
+	if draft.Images, err = expandDocumentImages(d.Images, d.DraftImages); err != nil {
 		return document.Document{}, document.Draft{}, err
 	}
 	snapshot.Blocks = cloneRawMessages(d.SnapshotBlocks)
