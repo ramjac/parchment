@@ -412,13 +412,13 @@ func (s *Service) CanRedo() bool { return s.history.CanRedo() }
 // WithImage returns the document with img added, replacing any image of the
 // same name.
 func WithImage(d Document, img Image) Document {
-	images := make([]Image, 0, len(d.Images)+1)
-	for _, existing := range d.Images {
-		if existing.Name != img.Name {
-			images = append(images, existing)
+	for i, existing := range d.Images {
+		if existing.Name == img.Name {
+			d.Images[i] = img
+			return d
 		}
 	}
-	d.Images = append(images, img)
+	d.Images = append(d.Images, img)
 	return d
 }
 
