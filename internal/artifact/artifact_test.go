@@ -92,3 +92,38 @@ func TestValidIDRejectsSignedPayloads(t *testing.T) {
 		}
 	}
 }
+
+func TestValidIDForKind(t *testing.T) {
+	for _, test := range []struct {
+		id   string
+		kind Kind
+		ok   bool
+	}{
+		// Valid cases
+		{"n1", NoteKind, true},
+		{"d1", DocumentKind, true},
+		{"s1", SpreadsheetKind, true},
+		{"p1", PresentationKind, true},
+		{"i1", ImageKind, true},
+
+		// Invalid kinds
+		{"n1", Kind("unknown"), false},
+		{"d1", NoteKind, false},
+		{"n1", DocumentKind, false},
+
+		// Invalid IDs
+		{"", NoteKind, false},
+		{"x1", NoteKind, false},
+		{"N1", NoteKind, false},
+		{"n", NoteKind, false},
+		{"n01", NoteKind, false},
+		{"0123456789abcdef0123456789abcdef", NoteKind, false},
+		{"n-1", NoteKind, false},
+	} {
+		t.Run(string(test.kind)+"/"+test.id, func(t *testing.T) {
+			if got := ValidIDForKind(test.id, test.kind); got != test.ok {
+				t.Errorf("ValidIDForKind(%q, %q) = %v, want %v", test.id, test.kind, got, test.ok)
+			}
+		})
+	}
+}
