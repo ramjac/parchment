@@ -13,25 +13,12 @@ import (
 	"example.com/parchment/internal/artifact"
 )
 
-func testArtifactTime() time.Time {
-	return time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
-}
-
-func testArtifactBaseMetadata() artifact.Artifact {
-	return artifact.Artifact{
-		ID:            "n12345",
-		Kind:          artifact.NoteKind,
-		Title:         "Example",
-		FormatVersion: artifact.FormatVersion,
-	}
-}
-
 func testArtifact() artifact.Artifact {
-	now := testArtifactTime()
-	art := testArtifactBaseMetadata()
-	art.CreatedAt = now
-	art.ModifiedAt = now
-	return art
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	return artifact.Artifact{
+		ID: "n12345", Kind: artifact.NoteKind, Title: "Example",
+		CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
+	}
 }
 
 func TestEncodeDecodePreservesMarkdownAndStructuredBlocks(t *testing.T) {
