@@ -360,9 +360,17 @@ func readMetadata(source string) (artifact.Artifact, int, error) {
 	if err != nil {
 		return artifact.Artifact{}, 0, fmt.Errorf("read Parchment metadata: %w", err)
 	}
+	item, err := decodeMetadata(metadataBytes)
+	if err != nil {
+		return artifact.Artifact{}, 0, err
+	}
+	return item, offset, nil
+}
+
+func decodeMetadata(metadataBytes []byte) (artifact.Artifact, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(metadataBytes, &fields); err != nil {
-		return artifact.Artifact{}, 0, fmt.Errorf("decode Parchment metadata: %w", err)
+		return artifact.Artifact{}, fmt.Errorf("decode Parchment metadata: %w", err)
 	}
 	allowedFields := map[string]bool{
 		"parchment_format": true, "kind": true, "format_version": true,
@@ -370,15 +378,15 @@ func readMetadata(source string) (artifact.Artifact, int, error) {
 	}
 	for name := range fields {
 		if !allowedFields[name] {
-			return artifact.Artifact{}, 0, fmt.Errorf("unexpected Parchment metadata field %q", name)
+			return artifact.Artifact{}, fmt.Errorf("unexpected Parchment metadata field %q", name)
 		}
 	}
 	var envelope metadataEnvelope
 	if err := json.Unmarshal(metadataBytes, &envelope); err != nil {
-		return artifact.Artifact{}, 0, fmt.Errorf("decode Parchment metadata: %w", err)
+		return artifact.Artifact{}, fmt.Errorf("decode Parchment metadata: %w", err)
 	}
 	if envelope.Format != envelopeFormat {
-		return artifact.Artifact{}, 0, fmt.Errorf("unsupported artifact format %q", envelope.Format)
+		return artifact.Artifact{}, fmt.Errorf("unsupported artifact format %q", envelope.Format)
 	}
 	item := artifact.Artifact{
 		Kind: envelope.Kind, CreatedAt: envelope.CreatedAt.UTC(),
@@ -387,15 +395,15 @@ func readMetadata(source string) (artifact.Artifact, int, error) {
 	if item.Kind != artifact.NoteKind && item.Kind != artifact.DocumentKind &&
 		item.Kind != artifact.SpreadsheetKind && item.Kind != artifact.PresentationKind &&
 		item.Kind != artifact.ImageKind {
-		return artifact.Artifact{}, 0, fmt.Errorf("validate Parchment metadata: unsupported artifact kind %q", item.Kind)
+		return artifact.Artifact{}, fmt.Errorf("validate Parchment metadata: unsupported artifact kind %q", item.Kind)
 	}
 	if item.FormatVersion != artifact.FormatVersion {
-		return artifact.Artifact{}, 0, fmt.Errorf("validate Parchment metadata: unsupported artifact format version %d", item.FormatVersion)
+		return artifact.Artifact{}, fmt.Errorf("validate Parchment metadata: unsupported artifact format version %d", item.FormatVersion)
 	}
 	if item.CreatedAt.IsZero() || item.ModifiedAt.IsZero() {
-		return artifact.Artifact{}, 0, errors.New("validate Parchment metadata: artifact timestamps are required")
+		return artifact.Artifact{}, errors.New("validate Parchment metadata: artifact timestamps are required")
 	}
-	return item, offset, nil
+	return item, nil
 }
 
 func transientID(kind artifact.Kind, data []byte) string {
