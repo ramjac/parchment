@@ -158,63 +158,49 @@ func TestDecodeTrailingBlockErrorPaths(t *testing.T) {
 	}
 }
 
-func TestDecodeMetadataValidationErrors(t *testing.T) {
-	tests := []struct {
-		name    string
-		mutate  func(map[string]any)
-		wantErr string
-	}{
-		{
-			name: "unsupported kind",
-			mutate: func(m map[string]any) {
-				m["kind"] = "invalid_kind"
-			},
-			wantErr: "unsupported artifact kind",
-		},
-		{
-			name: "unsupported format version",
-			mutate: func(m map[string]any) {
-				m["format_version"] = 999
-			},
-			wantErr: "unsupported artifact format version",
-		},
-		{
-			name: "missing created_at",
-			mutate: func(m map[string]any) {
-				delete(m, "created_at")
-			},
-			wantErr: "artifact timestamps are required",
-		},
-		{
-			name: "zero modified_at",
-			mutate: func(m map[string]any) {
-				m["modified_at"] = time.Time{}
-			},
-			wantErr: "artifact timestamps are required",
-		},
+func checkDecodeMetadataError(t *testing.T, mutate func(map[string]any), wantErr string) {
+	t.Helper()
+	m := map[string]any{
+		"parchment_format": envelopeFormat,
+		"kind":             artifact.NoteKind,
+		"format_version":   artifact.FormatVersion,
+		"created_at":       time.Now().UTC(),
+		"modified_at":      time.Now().UTC(),
 	}
+	mutate(m)
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := "```parchment-meta\n" + string(data) + "\n```\n\n" + bodyBoundary + "\nbody\n"
+	_, err = Decode([]byte(source))
+	if err == nil || !strings.Contains(err.Error(), wantErr) {
+		t.Fatalf("Decode() error = %v, want substring %q", err, wantErr)
+	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			m := map[string]any{
-				"parchment_format": envelopeFormat,
-				"kind":             artifact.NoteKind,
-				"format_version":   artifact.FormatVersion,
-				"created_at":       time.Now().UTC(),
-				"modified_at":      time.Now().UTC(),
-			}
-			tt.mutate(m)
-			data, err := json.MarshalIndent(m, "", "  ")
-			if err != nil {
-				t.Fatal(err)
-			}
-			source := "```parchment-meta\n" + string(data) + "\n```\n\n" + bodyBoundary + "\nbody\n"
-			_, err = Decode([]byte(source))
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("Decode() error = %v, want substring %q", err, tt.wantErr)
-			}
-		})
-	}
+func TestDecodeMetadataValidationUnsupportedKind(t *testing.T) {
+	checkDecodeMetadataError(t, func(m map[string]any) {
+		m["kind"] = "invalid_kind"
+	}, "unsupported artifact kind")
+}
+
+func TestDecodeMetadataValidationUnsupportedFormatVersion(t *testing.T) {
+	checkDecodeMetadataError(t, func(m map[string]any) {
+		m["format_version"] = 999
+	}, "unsupported artifact format version")
+}
+
+func TestDecodeMetadataValidationMissingCreatedAt(t *testing.T) {
+	checkDecodeMetadataError(t, func(m map[string]any) {
+		delete(m, "created_at")
+	}, "artifact timestamps are required")
+}
+
+func TestDecodeMetadataValidationZeroModifiedAt(t *testing.T) {
+	checkDecodeMetadataError(t, func(m map[string]any) {
+		m["modified_at"] = time.Time{}
+	}, "artifact timestamps are required")
 }
 
 func TestMaxFileSizeConstraints(t *testing.T) {
@@ -667,12 +653,26 @@ func assertEnvelopeKeys(t *testing.T, metadata []byte) {
 	}
 }
 
-func TestStripPrivateBlocks(t *testing.T) {
-	tests := []struct {
-		name     string
-		markdown string
-		want     string
-	}{
+type stripPrivateBlocksTest struct {
+	name     string
+	markdown string
+	want     string
+}
+
+func runStripPrivateBlocksTests(t *testing.T, tests []stripPrivateBlocksTest) {
+	t.Helper()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := StripPrivateBlocks(tt.markdown)
+			if got != tt.want {
+				t.Errorf("StripPrivateBlocks(%q) =\n%q\nwant:\n%q", tt.markdown, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStripPrivateBlocks_Basic(t *testing.T) {
+	tests := []stripPrivateBlocksTest{
 		{
 			name:     "empty markdown",
 			markdown: "",
@@ -694,9 +694,25 @@ func TestStripPrivateBlocks(t *testing.T) {
 			want:     "before\nafter\n",
 		},
 		{
+			name:     "CRLF line endings in private block",
+			markdown: "before\r\n```parchment-secret\r\nhidden\r\n```\r\nafter\r\n",
+			want:     "before\r\nafter\r\n",
+		},
+	}
+	runStripPrivateBlocksTests(t, tests)
+}
+
+func TestStripPrivateBlocks_Fences(t *testing.T) {
+	tests := []stripPrivateBlocksTest{
+		{
 			name:     "ordinary code fence preserved",
 			markdown: "before\n```go\nfmt.Println(\"hello\")\n```\nafter\n",
 			want:     "before\n```go\nfmt.Println(\"hello\")\n```\nafter\n",
+		},
+		{
+			name:     "ordinary code fence with inner parchment-like text",
+			markdown: "```go\n// parchment-secret\ncode line\n```\n",
+			want:     "```go\n// parchment-secret\ncode line\n```\n",
 		},
 		{
 			name:     "longer opening fence requires matching closing fence",
@@ -719,10 +735,21 @@ func TestStripPrivateBlocks(t *testing.T) {
 			want:     "after\n",
 		},
 		{
-			name:     "CRLF line endings in private block",
-			markdown: "before\r\n```parchment-secret\r\nhidden\r\n```\r\nafter\r\n",
-			want:     "before\r\nafter\r\n",
+			name:     "tilde private fence not closed by backticks",
+			markdown: "~~~parchment-secret\n```\nstill hidden\n~~~\nafter\n",
+			want:     "after\n",
 		},
+		{
+			name:     "backtick fence with invalid backtick in info string is ignored as fence",
+			markdown: "```parchment`invalid\ncontent\n```\n",
+			want:     "```parchment`invalid\ncontent\n```\n",
+		},
+	}
+	runStripPrivateBlocksTests(t, tests)
+}
+
+func TestStripPrivateBlocks_Indentation(t *testing.T) {
+	tests := []stripPrivateBlocksTest{
 		{
 			name:     "indented private block (1 to 3 spaces)",
 			markdown: "  ```parchment-secret\n  hidden\n  ```\nafter\n",
@@ -733,6 +760,12 @@ func TestStripPrivateBlocks(t *testing.T) {
 			markdown: "    ```parchment-secret\n    visible indented code\n",
 			want:     "    ```parchment-secret\n    visible indented code\n",
 		},
+	}
+	runStripPrivateBlocksTests(t, tests)
+}
+
+func TestStripPrivateBlocks_Blockquotes(t *testing.T) {
+	tests := []stripPrivateBlocksTest{
 		{
 			name:     "quoted private block in blockquote",
 			markdown: "> ```parchment-secret\n> hidden\n> ```\nafter\n",
@@ -749,6 +782,17 @@ func TestStripPrivateBlocks(t *testing.T) {
 			want:     "> ```go\n> ```parchment-example\n> visible\n> ```\n> ```\n",
 		},
 		{
+			name:     "private block exiting blockquote container prematurely",
+			markdown: "> ```parchment-quote\n> quoted-hidden\n\noutside-quote\n",
+			want:     "\noutside-quote\n",
+		},
+	}
+	runStripPrivateBlocksTests(t, tests)
+}
+
+func TestStripPrivateBlocks_Lists(t *testing.T) {
+	tests := []stripPrivateBlocksTest{
+		{
 			name:     "unordered list private block",
 			markdown: "- ```parchment-secret\n  hidden list item\n  ```\nafter\n",
 			want:     "after\n",
@@ -763,46 +807,24 @@ func TestStripPrivateBlocks(t *testing.T) {
 			markdown: "10. Item\n\n    ```parchment-deep-list\n    deeply-hidden\n    ```\nafter\n",
 			want:     "10. Item\n\nafter\n",
 		},
-		{
-			name:     "ordinary code fence with inner parchment-like text",
-			markdown: "```go\n// parchment-secret\ncode line\n```\n",
-			want:     "```go\n// parchment-secret\ncode line\n```\n",
-		},
+	}
+	runStripPrivateBlocksTests(t, tests)
+}
+
+func TestStripPrivateBlocks_EdgeCases(t *testing.T) {
+	tests := []stripPrivateBlocksTest{
 		{
 			name:     "unterminated private block at EOF",
 			markdown: "before\n```parchment-secret\nhidden at eof",
 			want:     "before\n",
 		},
 		{
-			name:     "tilde private fence not closed by backticks",
-			markdown: "~~~parchment-secret\n```\nstill hidden\n~~~\nafter\n",
-			want:     "after\n",
-		},
-		{
-			name:     "backtick fence with invalid backtick in info string is ignored as fence",
-			markdown: "```parchment`invalid\ncontent\n```\n",
-			want:     "```parchment`invalid\ncontent\n```\n",
-		},
-		{
 			name:     "multiple consecutive private blocks",
 			markdown: "```parchment-one\none\n```\n\n```parchment-two\ntwo\n```\nafter\n",
 			want:     "\nafter\n",
 		},
-		{
-			name:     "private block exiting blockquote container prematurely",
-			markdown: "> ```parchment-quote\n> quoted-hidden\n\noutside-quote\n",
-			want:     "\noutside-quote\n",
-		},
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := StripPrivateBlocks(tt.markdown)
-			if got != tt.want {
-				t.Errorf("StripPrivateBlocks(%q) =\n%q\nwant:\n%q", tt.markdown, got, tt.want)
-			}
-		})
-	}
+	runStripPrivateBlocksTests(t, tests)
 }
 
 func TestStripPrivateBlocksPreservesOrdinaryCodeFences(t *testing.T) {
