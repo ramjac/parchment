@@ -407,21 +407,62 @@ func (m *Model) enterEditor() tea.Cmd {
 	return nil
 }
 
+func (m *Model) updateChooseKindKey(key string) tea.Cmd {
+	switch key {
+	case "n":
+		return m.openFile(artifact.NoteKind)
+	case "d":
+		if m.documents != nil {
+			return m.openFile(artifact.DocumentKind)
+		}
+	case "s":
+		if m.spreadsheets != nil {
+			return m.openFile(artifact.SpreadsheetKind)
+		}
+	case "p":
+		if m.presentations != nil {
+			return m.openFile(artifact.PresentationKind)
+		}
+	case "q", "esc", "ctrl+c":
+		return tea.Quit
+	}
+	return nil
+}
+
+func (m *Model) updateRecoveryKey(key string) tea.Cmd {
+	switch key {
+	case "r":
+		return m.recoverDraft()
+	case "d":
+		store, path := m.recoveryStore, m.path
+		return func() tea.Msg {
+			return recoveryDiscardedMsg{err: store.DeleteRecovery(context.Background(), path)}
+		}
+	case "q", "esc", "ctrl+c":
+		return tea.Quit
+	}
+	return nil
+}
+
+func (m *Model) updatePendingKey(key string) tea.Cmd {
+	if key == "ctrl+c" || key == "q" && m.stage != stageNote {
+		if m.cancelOperation != nil {
+			m.cancelOperation()
+		}
+		if m.stage == stageNote {
+			m.status = "Cancelling save…"
+			return nil
+		}
+		return tea.Quit
+	}
+	m.status = "Please wait for the current operation to finish"
+	return nil
+}
+
 func (m *Model) updateKey(msg tea.KeyMsg) tea.Cmd {
 	key := msg.String()
 	if m.pending {
-		if key == "ctrl+c" || key == "q" && m.stage != stageNote {
-			if m.cancelOperation != nil {
-				m.cancelOperation()
-			}
-			if m.stage == stageNote {
-				m.status = "Cancelling save…"
-				return nil
-			}
-			return tea.Quit
-		}
-		m.status = "Please wait for the current operation to finish"
-		return nil
+		return m.updatePendingKey(key)
 	}
 	switch m.stage {
 	case stageOpening, stageFailed:
@@ -429,36 +470,9 @@ func (m *Model) updateKey(msg tea.KeyMsg) tea.Cmd {
 			return tea.Quit
 		}
 	case stageChooseKind:
-		switch key {
-		case "n":
-			return m.openFile(artifact.NoteKind)
-		case "d":
-			if m.documents != nil {
-				return m.openFile(artifact.DocumentKind)
-			}
-		case "s":
-			if m.spreadsheets != nil {
-				return m.openFile(artifact.SpreadsheetKind)
-			}
-		case "p":
-			if m.presentations != nil {
-				return m.openFile(artifact.PresentationKind)
-			}
-		case "q", "esc", "ctrl+c":
-			return tea.Quit
-		}
+		return m.updateChooseKindKey(key)
 	case stageRecovery:
-		switch key {
-		case "r":
-			return m.recoverDraft()
-		case "d":
-			store, path := m.recoveryStore, m.path
-			return func() tea.Msg {
-				return recoveryDiscardedMsg{err: store.DeleteRecovery(context.Background(), path)}
-			}
-		case "q", "esc", "ctrl+c":
-			return tea.Quit
-		}
+		return m.updateRecoveryKey(key)
 	case stageNote:
 		return m.updateNoteKey(msg)
 	}
