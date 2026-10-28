@@ -39,31 +39,31 @@ func (r *Repository) TransitionSpreadsheet(ctx context.Context, path string, exp
 	if err != nil {
 		return err
 	}
-	return r.update(ctx, path, expected == nil, spreadsheet.ErrNotFound, updateSpreadsheet(path, expected, target))
+	return r.update(ctx, path, expected == nil, spreadsheet.ErrNotFound, func(content []byte) ([]byte, error) {
+		return updateSpreadsheet(path, expected, target, content)
+	})
 }
 
-func updateSpreadsheet(path string, expected, target *spreadsheet.Spreadsheet) func(content []byte) ([]byte, error) {
-	return func(content []byte) ([]byte, error) {
-		if expected != nil {
-			if err := checkKind(path, content, artifact.SpreadsheetKind); err != nil {
-				return nil, err
-			}
-			current, err := decodeSpreadsheet(path, content)
-			if err != nil {
-				return nil, err
-			}
-			want := *expected
-			want.Path = path
-			if !spreadsheet.Equal(current, want) || target.ID != current.ID {
-				return nil, changedError(path)
-			}
+func updateSpreadsheet(path string, expected, target *spreadsheet.Spreadsheet, content []byte) ([]byte, error) {
+	if expected != nil {
+		if err := checkKind(path, content, artifact.SpreadsheetKind); err != nil {
+			return nil, err
 		}
-		data, err := spreadsheet.Encode(*target)
+		current, err := decodeSpreadsheet(path, content)
 		if err != nil {
-			return nil, fmt.Errorf("encode spreadsheet: %w", err)
+			return nil, err
 		}
-		return data, nil
+		want := *expected
+		want.Path = path
+		if !spreadsheet.Equal(current, want) || target.ID != current.ID {
+			return nil, changedError(path)
+		}
 	}
+	data, err := spreadsheet.Encode(*target)
+	if err != nil {
+		return nil, fmt.Errorf("encode spreadsheet: %w", err)
+	}
+	return data, nil
 }
 
 func decodeSpreadsheet(path string, content []byte) (spreadsheet.Spreadsheet, error) {
