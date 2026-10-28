@@ -527,7 +527,7 @@ func TestCancelledRecoverySaveWritesNothing(t *testing.T) {
 	}
 }
 
-func TestTransitionSpreadsheet(t *testing.T) {
+func TestTransitionSpreadsheet_Create(t *testing.T) {
 	ctx := context.Background()
 	repo, _, folder := newRepo(t)
 	sheetPath := filepath.Join(folder, "sheet.md")
@@ -587,6 +587,37 @@ func TestTransitionSpreadsheet(t *testing.T) {
 			t.Fatalf("expected ErrExists when creating over existing file, got: %v", err)
 		}
 	})
+}
+
+func TestTransitionSpreadsheet_Update(t *testing.T) {
+	ctx := context.Background()
+	repo, _, folder := newRepo(t)
+	sheetPath := filepath.Join(folder, "sheet.md")
+
+	id, err := artifact.NewID(artifact.SpreadsheetKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	absPath, err := filepath.Abs(sheetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	target := spreadsheet.Spreadsheet{
+		Artifact: artifact.Artifact{
+			ID: id, Kind: artifact.SpreadsheetKind,
+			CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
+			Path: absPath,
+		},
+		Version: spreadsheet.FileVersion,
+		Sheets:  []spreadsheet.Sheet{{Name: "Sheet1", Rows: [][]spreadsheet.Cell{{{Value: "100"}}}}},
+	}
+
+	// Create initial file for update tests
+	if err := repo.TransitionSpreadsheet(ctx, sheetPath, nil, &target); err != nil {
+		t.Fatalf("failed to setup initial spreadsheet: %v", err)
+	}
 
 	loaded, err := repo.GetSpreadsheet(ctx, sheetPath)
 	if err != nil {
