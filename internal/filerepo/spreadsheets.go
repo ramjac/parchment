@@ -39,7 +39,11 @@ func (r *Repository) TransitionSpreadsheet(ctx context.Context, path string, exp
 	if err != nil {
 		return err
 	}
-	return r.update(ctx, path, expected == nil, spreadsheet.ErrNotFound, func(content []byte) ([]byte, error) {
+	return r.update(ctx, path, expected == nil, spreadsheet.ErrNotFound, updateSpreadsheet(path, expected, target))
+}
+
+func updateSpreadsheet(path string, expected, target *spreadsheet.Spreadsheet) func(content []byte) ([]byte, error) {
+	return func(content []byte) ([]byte, error) {
 		if expected != nil {
 			if err := checkKind(path, content, artifact.SpreadsheetKind); err != nil {
 				return nil, err
@@ -59,7 +63,7 @@ func (r *Repository) TransitionSpreadsheet(ctx context.Context, path string, exp
 			return nil, fmt.Errorf("encode spreadsheet: %w", err)
 		}
 		return data, nil
-	})
+	}
 }
 
 func decodeSpreadsheet(path string, content []byte) (spreadsheet.Spreadsheet, error) {
