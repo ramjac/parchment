@@ -101,7 +101,7 @@ func TestEvaluateCircularReference(t *testing.T) {
 }
 
 func TestEvaluateUnknownCharacter(t *testing.T) {
-    // an unexpected character that is not a valid cell reference start
+	// an unexpected character that is not a valid cell reference start
 	book := &Spreadsheet{
 		Sheets: []Sheet{
 			{
