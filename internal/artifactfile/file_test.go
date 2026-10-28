@@ -158,63 +158,49 @@ func TestDecodeTrailingBlockErrorPaths(t *testing.T) {
 	}
 }
 
-func TestDecodeMetadataValidationErrors(t *testing.T) {
-	tests := []struct {
-		name    string
-		mutate  func(map[string]any)
-		wantErr string
-	}{
-		{
-			name: "unsupported kind",
-			mutate: func(m map[string]any) {
-				m["kind"] = "invalid_kind"
-			},
-			wantErr: "unsupported artifact kind",
-		},
-		{
-			name: "unsupported format version",
-			mutate: func(m map[string]any) {
-				m["format_version"] = 999
-			},
-			wantErr: "unsupported artifact format version",
-		},
-		{
-			name: "missing created_at",
-			mutate: func(m map[string]any) {
-				delete(m, "created_at")
-			},
-			wantErr: "artifact timestamps are required",
-		},
-		{
-			name: "zero modified_at",
-			mutate: func(m map[string]any) {
-				m["modified_at"] = time.Time{}
-			},
-			wantErr: "artifact timestamps are required",
-		},
+func checkDecodeMetadataError(t *testing.T, mutate func(map[string]any), wantErr string) {
+	t.Helper()
+	m := map[string]any{
+		"parchment_format": envelopeFormat,
+		"kind":             artifact.NoteKind,
+		"format_version":   artifact.FormatVersion,
+		"created_at":       time.Now().UTC(),
+		"modified_at":      time.Now().UTC(),
 	}
+	mutate(m)
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := "```parchment-meta\n" + string(data) + "\n```\n\n" + bodyBoundary + "\nbody\n"
+	_, err = Decode([]byte(source))
+	if err == nil || !strings.Contains(err.Error(), wantErr) {
+		t.Fatalf("Decode() error = %v, want substring %q", err, wantErr)
+	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			m := map[string]any{
-				"parchment_format": envelopeFormat,
-				"kind":             artifact.NoteKind,
-				"format_version":   artifact.FormatVersion,
-				"created_at":       time.Now().UTC(),
-				"modified_at":      time.Now().UTC(),
-			}
-			tt.mutate(m)
-			data, err := json.MarshalIndent(m, "", "  ")
-			if err != nil {
-				t.Fatal(err)
-			}
-			source := "```parchment-meta\n" + string(data) + "\n```\n\n" + bodyBoundary + "\nbody\n"
-			_, err = Decode([]byte(source))
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("Decode() error = %v, want substring %q", err, tt.wantErr)
-			}
-		})
-	}
+func TestDecodeMetadataValidationUnsupportedKind(t *testing.T) {
+	checkDecodeMetadataError(t, func(m map[string]any) {
+		m["kind"] = "invalid_kind"
+	}, "unsupported artifact kind")
+}
+
+func TestDecodeMetadataValidationUnsupportedFormatVersion(t *testing.T) {
+	checkDecodeMetadataError(t, func(m map[string]any) {
+		m["format_version"] = 999
+	}, "unsupported artifact format version")
+}
+
+func TestDecodeMetadataValidationMissingCreatedAt(t *testing.T) {
+	checkDecodeMetadataError(t, func(m map[string]any) {
+		delete(m, "created_at")
+	}, "artifact timestamps are required")
+}
+
+func TestDecodeMetadataValidationZeroModifiedAt(t *testing.T) {
+	checkDecodeMetadataError(t, func(m map[string]any) {
+		m["modified_at"] = time.Time{}
+	}, "artifact timestamps are required")
 }
 
 func TestMaxFileSizeConstraints(t *testing.T) {
