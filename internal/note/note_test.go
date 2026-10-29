@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/filerepo"
 	"example.com/parchment/internal/note"
 )
@@ -164,5 +165,83 @@ func TestHistorySnapshotsDoNotAliasReturnedNoteBlocks(t *testing.T) {
 	}
 	if restored.Body != "before" || string(restored.Blocks["parchment-extra"]) != `{"a":1}` {
 		t.Fatalf("undo restored mutated history snapshot: %+v", restored)
+	}
+}
+
+func TestEqual(t *testing.T) {
+	cases := []struct {
+		name     string
+		left     note.Note
+		right    note.Note
+		expected bool
+	}{
+		{
+			name: "identical",
+			left: note.Note{
+				Artifact: artifact.Artifact{
+					ID:    "123",
+					Title: "test-note",
+				},
+				Body: "Hello",
+			},
+			right: note.Note{
+				Artifact: artifact.Artifact{
+					ID:    "123",
+					Title: "test-note",
+				},
+				Body: "Hello",
+			},
+			expected: true,
+		},
+		{
+			name:     "empty",
+			left:     note.Note{},
+			right:    note.Note{},
+			expected: true,
+		},
+		{
+			name: "different body",
+			left: note.Note{
+				Artifact: artifact.Artifact{
+					ID:    "123",
+					Title: "test-note",
+				},
+				Body: "Hello",
+			},
+			right: note.Note{
+				Artifact: artifact.Artifact{
+					ID:    "123",
+					Title: "test-note",
+				},
+				Body: "World",
+			},
+			expected: false,
+		},
+		{
+			name: "completely different",
+			left: note.Note{
+				Artifact: artifact.Artifact{
+					ID:    "123",
+					Title: "test-note",
+				},
+				Body: "Hello",
+			},
+			right: note.Note{
+				Artifact: artifact.Artifact{
+					ID:    "456",
+					Title: "different-note",
+				},
+				Body: "World",
+			},
+			expected: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := note.Equal(tc.left, tc.right); got != tc.expected {
+				t.Errorf("Equal() = %v, expected %v", got, tc.expected)
+			}
+		})
 	}
 }
