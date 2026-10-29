@@ -527,7 +527,7 @@ func TestCancelledRecoverySaveWritesNothing(t *testing.T) {
 	}
 }
 
-func TestTransitionSpreadsheet_Create(t *testing.T) {
+func TestTransitionSpreadsheetCreate(t *testing.T) {
 	ctx := context.Background()
 	repo, _, folder := newRepo(t)
 	sheetPath := filepath.Join(folder, "sheet.md")
@@ -589,7 +589,7 @@ func TestTransitionSpreadsheet_Create(t *testing.T) {
 	})
 }
 
-func TestTransitionSpreadsheet_Update(t *testing.T) {
+func TestTransitionSpreadsheetUpdateSuccess(t *testing.T) {
 	ctx := context.Background()
 	repo, _, folder := newRepo(t)
 	sheetPath := filepath.Join(folder, "sheet.md")
@@ -613,10 +613,8 @@ func TestTransitionSpreadsheet_Update(t *testing.T) {
 		Version: spreadsheet.FileVersion,
 		Sheets:  []spreadsheet.Sheet{{Name: "Sheet1", Rows: [][]spreadsheet.Cell{{{Value: "100"}}}}},
 	}
-
-	// Create initial file for update tests
 	if err := repo.TransitionSpreadsheet(ctx, sheetPath, nil, &target); err != nil {
-		t.Fatalf("failed to setup initial spreadsheet: %v", err)
+		t.Fatalf("failed to create spreadsheet: %v", err)
 	}
 
 	loaded, err := repo.GetSpreadsheet(ctx, sheetPath)
@@ -640,6 +638,57 @@ func TestTransitionSpreadsheet_Update(t *testing.T) {
 			t.Fatalf("cell value not updated: %v", got.Sheets[0].Rows[0][0].Value)
 		}
 	})
+}
+
+func TestTransitionSpreadsheetUpdateErrors(t *testing.T) {
+	ctx := context.Background()
+	repo, _, folder := newRepo(t)
+	sheetPath := filepath.Join(folder, "sheet.md")
+
+	id, err := artifact.NewID(artifact.SpreadsheetKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	absPath, err := filepath.Abs(sheetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	target := spreadsheet.Spreadsheet{
+		Artifact: artifact.Artifact{
+			ID: id, Kind: artifact.SpreadsheetKind,
+			CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
+			Path: absPath,
+		},
+		Version: spreadsheet.FileVersion,
+		Sheets:  []spreadsheet.Sheet{{Name: "Sheet1", Rows: [][]spreadsheet.Cell{{{Value: "100"}}}}},
+	}
+	if err := repo.TransitionSpreadsheet(ctx, sheetPath, nil, &target); err != nil {
+		t.Fatalf("failed to create spreadsheet: %v", err)
+	}
+
+	loaded, err := repo.GetSpreadsheet(ctx, sheetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated := loaded
+	updated.Sheets = []spreadsheet.Sheet{{Name: "Sheet1", Rows: [][]spreadsheet.Cell{{{Value: "200"}}}}}
+	updated.ModifiedAt = time.Now().UTC()
+
+	if err := repo.TransitionSpreadsheet(ctx, sheetPath, &loaded, &updated); err != nil {
+		t.Fatalf("failed to setup updated spreadsheet: %v", err)
+	}
+
+	// reload so 'loaded' is up-to-date with the file (which now has "200") for the tests to use as 'current' or base
+	loaded, err = repo.GetSpreadsheet(ctx, sheetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated = loaded
+	updated.Sheets = []spreadsheet.Sheet{{Name: "Sheet1", Rows: [][]spreadsheet.Cell{{{Value: "999"}}}}}
+	updated.ModifiedAt = time.Now().UTC()
 
 	t.Run("update missing file", func(t *testing.T) {
 		missingPath := filepath.Join(folder, "missing.md")
