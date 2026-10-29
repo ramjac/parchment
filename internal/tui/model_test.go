@@ -1069,18 +1069,18 @@ func TestModelUpdateNoteKeyHandling(t *testing.T) {
 	})
 }
 
-func TestModelInit(t *testing.T) {
-	t.Run("returns nil when stage is stageChooseKind", func(t *testing.T) {
-		model := NewModel(Config{
-			Path: "test.md",
-			Kind: "",
-		})
-		cmd := model.Init()
-		if cmd != nil {
-			t.Fatalf("expected nil cmd when stage is stageChooseKind, got %v", cmd)
-		}
+func TestModelInit_returns_nil_when_stage_is_stageChooseKind(t *testing.T) {
+	model := NewModel(Config{
+		Path: "test.md",
+		Kind: "",
 	})
+	cmd := model.Init()
+	if cmd != nil {
+		t.Fatalf("expected nil cmd when stage is stageChooseKind, got %v", cmd)
+	}
+}
 
+func TestModelInit_returns_openFile_cmd_for_kinds(t *testing.T) {
 	kinds := []struct {
 		name string
 		kind artifact.Kind
@@ -1134,249 +1134,249 @@ func TestModelInit(t *testing.T) {
 			}
 		})
 	}
+}
 
-	t.Run("returns error msg when opening unsupported kind", func(t *testing.T) {
-		unsupportedKind := artifact.Kind("unknown")
-		model := NewModel(Config{
-			Path: "test.unknown",
-			Kind: unsupportedKind,
-		})
-		cmd := model.Init()
-		if cmd == nil {
-			t.Fatal("expected non-nil cmd when kind is unsupported, got nil")
-		}
-		msg := cmd()
-		openedMsg, ok := msg.(fileOpenedMsg)
-		if !ok {
-			t.Fatalf("expected fileOpenedMsg, got %T", msg)
-		}
-		if openedMsg.err == nil || !strings.Contains(openedMsg.err.Error(), "cannot open") {
-			t.Fatalf("expected error containing 'cannot open', got %v", openedMsg.err)
-		}
+func TestModelInit_returns_error_msg_when_opening_unsupported_kind(t *testing.T) {
+	unsupportedKind := artifact.Kind("unknown")
+	model := NewModel(Config{
+		Path: "test.unknown",
+		Kind: unsupportedKind,
 	})
+	cmd := model.Init()
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd when kind is unsupported, got nil")
+	}
+	msg := cmd()
+	openedMsg, ok := msg.(fileOpenedMsg)
+	if !ok {
+		t.Fatalf("expected fileOpenedMsg, got %T", msg)
+	}
+	if openedMsg.err == nil || !strings.Contains(openedMsg.err.Error(), "cannot open") {
+		t.Fatalf("expected error containing 'cannot open', got %v", openedMsg.err)
+	}
+}
 
-	t.Run("loads existing files without creating", func(t *testing.T) {
-		repo, err := filerepo.New(t.TempDir())
-		if err != nil {
-			t.Fatal(err)
-		}
-		notes := note.NewService(repo, 10)
-		docs := document.NewService(repo, 10)
-		sheets := spreadsheet.NewService(repo, 10)
-		decks := presentation.NewService(repo, 10)
+func TestModelInit_loads_existing_files_without_creating(t *testing.T) {
+	repo, err := filerepo.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := note.NewService(repo, 10)
+	docs := document.NewService(repo, 10)
+	sheets := spreadsheet.NewService(repo, 10)
+	decks := presentation.NewService(repo, 10)
 
-		ctx := context.Background()
+	ctx := context.Background()
 
-		// Pre-create files
-		notePath := filepath.Join(t.TempDir(), "note.md")
-		if _, err := notes.Create(ctx, notePath, "existing note body"); err != nil {
-			t.Fatal(err)
-		}
+	// Pre-create files
+	notePath := filepath.Join(t.TempDir(), "note.md")
+	if _, err := notes.Create(ctx, notePath, "existing note body"); err != nil {
+		t.Fatal(err)
+	}
 
-		docPath := filepath.Join(t.TempDir(), "doc.md")
-		if _, err := docs.Create(ctx, docPath, document.Draft{Layout: document.DefaultLayout()}); err != nil {
-			t.Fatal(err)
-		}
+	docPath := filepath.Join(t.TempDir(), "doc.md")
+	if _, err := docs.Create(ctx, docPath, document.Draft{Layout: document.DefaultLayout()}); err != nil {
+		t.Fatal(err)
+	}
 
-		sheetPath := filepath.Join(t.TempDir(), "sheet.csv")
-		if _, err := sheets.Create(ctx, sheetPath, nil); err != nil {
-			t.Fatal(err)
-		}
+	sheetPath := filepath.Join(t.TempDir(), "sheet.csv")
+	if _, err := sheets.Create(ctx, sheetPath, nil); err != nil {
+		t.Fatal(err)
+	}
 
-		deckPath := filepath.Join(t.TempDir(), "deck.md")
-		if _, err := decks.Create(ctx, deckPath, "# Title\n\n## Slide 1\nContent"); err != nil {
-			t.Fatal(err)
-		}
+	deckPath := filepath.Join(t.TempDir(), "deck.md")
+	if _, err := decks.Create(ctx, deckPath, "# Title\n\n## Slide 1\nContent"); err != nil {
+		t.Fatal(err)
+	}
 
-		testCases := []struct {
-			name string
-			kind artifact.Kind
-			path string
-		}{
-			{"note", artifact.NoteKind, notePath},
-			{"document", artifact.DocumentKind, docPath},
-			{"spreadsheet", artifact.SpreadsheetKind, sheetPath},
-			{"presentation", artifact.PresentationKind, deckPath},
-		}
+	testCases := []struct {
+		name string
+		kind artifact.Kind
+		path string
+	}{
+		{"note", artifact.NoteKind, notePath},
+		{"document", artifact.DocumentKind, docPath},
+		{"spreadsheet", artifact.SpreadsheetKind, sheetPath},
+		{"presentation", artifact.PresentationKind, deckPath},
+	}
 
-		for _, tc := range testCases {
-			t.Run(tc.name, func(t *testing.T) {
-				m := NewModel(Config{
-					Path:          tc.path,
-					Kind:          tc.kind,
-					Notes:         notes,
-					Documents:     docs,
-					Spreadsheets:  sheets,
-					Presentations: decks,
-					Recovery:      repo,
-				})
-				cmd := m.Init()
-				if cmd == nil {
-					t.Fatalf("expected non-nil cmd for %s", tc.name)
-				}
-				msg := cmd()
-				openedMsg, ok := msg.(fileOpenedMsg)
-				if !ok {
-					t.Fatalf("expected fileOpenedMsg, got %T", msg)
-				}
-				if openedMsg.err != nil {
-					t.Fatalf("unexpected error loading existing %s: %v", tc.name, openedMsg.err)
-				}
-				if openedMsg.created {
-					t.Fatalf("expected existing %s file not to be marked as created", tc.name)
-				}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewModel(Config{
+				Path:          tc.path,
+				Kind:          tc.kind,
+				Notes:         notes,
+				Documents:     docs,
+				Spreadsheets:  sheets,
+				Presentations: decks,
+				Recovery:      repo,
 			})
-		}
-	})
-
-	t.Run("detects recovery draft for note and document", func(t *testing.T) {
-		repo, err := filerepo.New(t.TempDir())
-		if err != nil {
-			t.Fatal(err)
-		}
-		notes := note.NewService(repo, 10)
-		docs := document.NewService(repo, 10)
-		ctx := context.Background()
-
-		// 1. Note draft recovery
-		notePath := filepath.Join(t.TempDir(), "note_with_draft.md")
-		if _, err := notes.Create(ctx, notePath, "original body"); err != nil {
-			t.Fatal(err)
-		}
-
-		noteDraft := recovery.Draft{
-			Path:      notePath,
-			Kind:      string(artifact.NoteKind),
-			Data:      json.RawMessage(`{"body":"unsaved body draft"}`),
-			UpdatedAt: time.Now(),
-		}
-		if err := repo.SaveRecovery(ctx, noteDraft); err != nil {
-			t.Fatal(err)
-		}
-
-		mNote := NewModel(Config{
-			Path:     notePath,
-			Kind:     artifact.NoteKind,
-			Notes:    notes,
-			Recovery: repo,
+			cmd := m.Init()
+			if cmd == nil {
+				t.Fatalf("expected non-nil cmd for %s", tc.name)
+			}
+			msg := cmd()
+			openedMsg, ok := msg.(fileOpenedMsg)
+			if !ok {
+				t.Fatalf("expected fileOpenedMsg, got %T", msg)
+			}
+			if openedMsg.err != nil {
+				t.Fatalf("unexpected error loading existing %s: %v", tc.name, openedMsg.err)
+			}
+			if openedMsg.created {
+				t.Fatalf("expected existing %s file not to be marked as created", tc.name)
+			}
 		})
-		cmdNote := mNote.Init()
-		if cmdNote == nil {
-			t.Fatal("expected non-nil cmd from Init for note")
-		}
-		msgNote := cmdNote()
-		openedMsgNote, ok := msgNote.(fileOpenedMsg)
-		if !ok {
-			t.Fatalf("expected fileOpenedMsg, got %T", msgNote)
-		}
-		if openedMsgNote.err != nil {
-			t.Fatalf("unexpected error: %v", openedMsgNote.err)
-		}
-		if !openedMsgNote.hasDraft {
-			t.Fatal("expected hasDraft = true when note recovery draft exists")
-		}
-		if openedMsgNote.draft.Path != notePath {
-			t.Fatalf("expected draft path %q, got %q", notePath, openedMsgNote.draft.Path)
-		}
+	}
+}
 
-		// 2. Document draft recovery
-		docPath := filepath.Join(t.TempDir(), "doc_with_draft.md")
-		if _, err := docs.Create(ctx, docPath, document.Draft{Layout: document.DefaultLayout()}); err != nil {
-			t.Fatal(err)
-		}
+func TestModelInit_detects_recovery_draft_for_note_and_document(t *testing.T) {
+	repo, err := filerepo.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := note.NewService(repo, 10)
+	docs := document.NewService(repo, 10)
+	ctx := context.Background()
 
-		docDraft := recovery.Draft{
-			Path:      docPath,
-			Kind:      string(artifact.DocumentKind),
-			Data:      json.RawMessage(`{"body":"unsaved doc draft"}`),
-			UpdatedAt: time.Now(),
-		}
-		if err := repo.SaveRecovery(ctx, docDraft); err != nil {
-			t.Fatal(err)
-		}
+	// 1. Note draft recovery
+	notePath := filepath.Join(t.TempDir(), "note_with_draft.md")
+	if _, err := notes.Create(ctx, notePath, "original body"); err != nil {
+		t.Fatal(err)
+	}
 
-		mDoc := NewModel(Config{
-			Path:      docPath,
-			Kind:      artifact.DocumentKind,
-			Documents: docs,
-			Recovery:  repo,
-		})
-		cmdDoc := mDoc.Init()
-		if cmdDoc == nil {
-			t.Fatal("expected non-nil cmd from Init for document")
-		}
-		msgDoc := cmdDoc()
-		openedMsgDoc, ok := msgDoc.(fileOpenedMsg)
-		if !ok {
-			t.Fatalf("expected fileOpenedMsg, got %T", msgDoc)
-		}
-		if openedMsgDoc.err != nil {
-			t.Fatalf("unexpected error: %v", openedMsgDoc.err)
-		}
-		if !openedMsgDoc.hasDraft {
-			t.Fatal("expected hasDraft = true when document recovery draft exists")
-		}
-		if openedMsgDoc.draft.Path != docPath {
-			t.Fatalf("expected draft path %q, got %q", docPath, openedMsgDoc.draft.Path)
-		}
+	noteDraft := recovery.Draft{
+		Path:      notePath,
+		Kind:      string(artifact.NoteKind),
+		Data:      json.RawMessage(`{"body":"unsaved body draft"}`),
+		UpdatedAt: time.Now(),
+	}
+	if err := repo.SaveRecovery(ctx, noteDraft); err != nil {
+		t.Fatal(err)
+	}
+
+	mNote := NewModel(Config{
+		Path:     notePath,
+		Kind:     artifact.NoteKind,
+		Notes:    notes,
+		Recovery: repo,
 	})
+	cmdNote := mNote.Init()
+	if cmdNote == nil {
+		t.Fatal("expected non-nil cmd from Init for note")
+	}
+	msgNote := cmdNote()
+	openedMsgNote, ok := msgNote.(fileOpenedMsg)
+	if !ok {
+		t.Fatalf("expected fileOpenedMsg, got %T", msgNote)
+	}
+	if openedMsgNote.err != nil {
+		t.Fatalf("unexpected error: %v", openedMsgNote.err)
+	}
+	if !openedMsgNote.hasDraft {
+		t.Fatal("expected hasDraft = true when note recovery draft exists")
+	}
+	if openedMsgNote.draft.Path != notePath {
+		t.Fatalf("expected draft path %q, got %q", notePath, openedMsgNote.draft.Path)
+	}
 
-	t.Run("returns error when service is nil for requested kind", func(t *testing.T) {
-		repo, err := filerepo.New(t.TempDir())
-		if err != nil {
-			t.Fatal(err)
-		}
-		path := filepath.Join(t.TempDir(), "note.md")
+	// 2. Document draft recovery
+	docPath := filepath.Join(t.TempDir(), "doc_with_draft.md")
+	if _, err := docs.Create(ctx, docPath, document.Draft{Layout: document.DefaultLayout()}); err != nil {
+		t.Fatal(err)
+	}
 
-		// Configured with NoteKind but Notes service is nil
-		m := NewModel(Config{
-			Path:     path,
-			Kind:     artifact.NoteKind,
-			Recovery: repo,
-		})
-		cmd := m.Init()
-		if cmd == nil {
-			t.Fatal("expected non-nil cmd")
-		}
-		msg := cmd()
-		openedMsg, ok := msg.(fileOpenedMsg)
-		if !ok {
-			t.Fatalf("expected fileOpenedMsg, got %T", msg)
-		}
-		if openedMsg.err == nil || !strings.Contains(openedMsg.err.Error(), "cannot open") {
-			t.Fatalf("expected 'cannot open' error when service is nil, got %v", openedMsg.err)
-		}
+	docDraft := recovery.Draft{
+		Path:      docPath,
+		Kind:      string(artifact.DocumentKind),
+		Data:      json.RawMessage(`{"body":"unsaved doc draft"}`),
+		UpdatedAt: time.Now(),
+	}
+	if err := repo.SaveRecovery(ctx, docDraft); err != nil {
+		t.Fatal(err)
+	}
+
+	mDoc := NewModel(Config{
+		Path:      docPath,
+		Kind:      artifact.DocumentKind,
+		Documents: docs,
+		Recovery:  repo,
 	})
+	cmdDoc := mDoc.Init()
+	if cmdDoc == nil {
+		t.Fatal("expected non-nil cmd from Init for document")
+	}
+	msgDoc := cmdDoc()
+	openedMsgDoc, ok := msgDoc.(fileOpenedMsg)
+	if !ok {
+		t.Fatalf("expected fileOpenedMsg, got %T", msgDoc)
+	}
+	if openedMsgDoc.err != nil {
+		t.Fatalf("unexpected error: %v", openedMsgDoc.err)
+	}
+	if !openedMsgDoc.hasDraft {
+		t.Fatal("expected hasDraft = true when document recovery draft exists")
+	}
+	if openedMsgDoc.draft.Path != docPath {
+		t.Fatalf("expected draft path %q, got %q", docPath, openedMsgDoc.draft.Path)
+	}
+}
 
-	t.Run("returns error when file load fails with filesystem error", func(t *testing.T) {
-		repo, err := filerepo.New(t.TempDir())
-		if err != nil {
-			t.Fatal(err)
-		}
-		notes := note.NewService(repo, 10)
+func TestModelInit_returns_error_when_service_is_nil_for_requested_kind(t *testing.T) {
+	repo, err := filerepo.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "note.md")
 
-		// Pointing path to an existing directory causes create/open to fail
-		dirPath := t.TempDir()
-
-		m := NewModel(Config{
-			Path:     dirPath,
-			Kind:     artifact.NoteKind,
-			Notes:    notes,
-			Recovery: repo,
-		})
-		cmd := m.Init()
-		if cmd == nil {
-			t.Fatal("expected non-nil cmd")
-		}
-		msg := cmd()
-		openedMsg, ok := msg.(fileOpenedMsg)
-		if !ok {
-			t.Fatalf("expected fileOpenedMsg, got %T", msg)
-		}
-		if openedMsg.err == nil {
-			t.Fatal("expected error when opening directory as note file, got nil")
-		}
+	// Configured with NoteKind but Notes service is nil
+	m := NewModel(Config{
+		Path:     path,
+		Kind:     artifact.NoteKind,
+		Recovery: repo,
 	})
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd")
+	}
+	msg := cmd()
+	openedMsg, ok := msg.(fileOpenedMsg)
+	if !ok {
+		t.Fatalf("expected fileOpenedMsg, got %T", msg)
+	}
+	if openedMsg.err == nil || !strings.Contains(openedMsg.err.Error(), "cannot open") {
+		t.Fatalf("expected 'cannot open' error when service is nil, got %v", openedMsg.err)
+	}
+}
+
+func TestModelInit_returns_error_when_file_load_fails_with_filesystem_error(t *testing.T) {
+	repo, err := filerepo.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := note.NewService(repo, 10)
+
+	// Pointing path to an existing directory causes create/open to fail
+	dirPath := t.TempDir()
+
+	m := NewModel(Config{
+		Path:     dirPath,
+		Kind:     artifact.NoteKind,
+		Notes:    notes,
+		Recovery: repo,
+	})
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd")
+	}
+	msg := cmd()
+	openedMsg, ok := msg.(fileOpenedMsg)
+	if !ok {
+		t.Fatalf("expected fileOpenedMsg, got %T", msg)
+	}
+	if openedMsg.err == nil {
+		t.Fatal("expected error when opening directory as note file, got nil")
+	}
 }
 
 func TestModelUpdateWindowSizeMsgAndDelegation(t *testing.T) {
@@ -1534,7 +1534,26 @@ func TestModelUpdateAutosaveAndRecoveryMessages(t *testing.T) {
 	}
 }
 
-func TestNewModel(t *testing.T) {
+func TestNewModel_ZeroConfigDefaults(t *testing.T) {
+	m := NewModel(Config{})
+	if m.path != "" || m.kind != "" || m.edit != false {
+		t.Errorf("expected empty path/kind/edit, got path=%q kind=%q edit=%t", m.path, m.kind, m.edit)
+	}
+	if m.service != nil || m.spreadsheets != nil || m.presentations != nil || m.recoveryStore != nil {
+		t.Errorf("expected nil services/store for zero config")
+	}
+	if m.documents != nil {
+		t.Errorf("expected nil documents screen")
+	}
+	if m.stage != stageChooseKind {
+		t.Errorf("stage = %v, want stageChooseKind", m.stage)
+	}
+	if m.canUndo || m.canRedo {
+		t.Errorf("canUndo/canRedo should be false when notes service is nil")
+	}
+}
+
+func TestNewModel_EmptyKindSetsChooseKindStage(t *testing.T) {
 	repo, err := filerepo.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1543,112 +1562,102 @@ func TestNewModel(t *testing.T) {
 	docs := document.NewService(repo, 10)
 	sheets := spreadsheet.NewService(repo, 10)
 	decks := presentation.NewService(repo, 10)
+	_ = docs
 
-	t.Run("ZeroConfigDefaults", func(t *testing.T) {
-		m := NewModel(Config{})
-		if m.path != "" || m.kind != "" || m.edit != false {
-			t.Errorf("expected empty path/kind/edit, got path=%q kind=%q edit=%t", m.path, m.kind, m.edit)
-		}
-		if m.service != nil || m.spreadsheets != nil || m.presentations != nil || m.recoveryStore != nil {
-			t.Errorf("expected nil services/store for zero config")
-		}
-		if m.documents != nil {
-			t.Errorf("expected nil documents screen")
-		}
-		if m.stage != stageChooseKind {
-			t.Errorf("stage = %v, want stageChooseKind", m.stage)
-		}
-		if m.canUndo || m.canRedo {
-			t.Errorf("canUndo/canRedo should be false when notes service is nil")
-		}
-	})
+	cfg := Config{
+		Path:          "/path/to/file.md",
+		Kind:          "",
+		Edit:          true,
+		Notes:         notes,
+		Spreadsheets:  sheets,
+		Presentations: decks,
+		Recovery:      repo,
+	}
+	m := NewModel(cfg)
+	if m.path != cfg.Path || m.kind != cfg.Kind || m.edit != cfg.Edit {
+		t.Errorf("fields not matched: path=%q kind=%q edit=%t", m.path, m.kind, m.edit)
+	}
+	if m.service != cfg.Notes || m.spreadsheets != cfg.Spreadsheets || m.presentations != cfg.Presentations || m.recoveryStore != cfg.Recovery {
+		t.Errorf("services/store not assigned correctly")
+	}
+	if m.stage != stageChooseKind {
+		t.Errorf("stage = %v, want stageChooseKind (%v)", m.stage, stageChooseKind)
+	}
+	if m.documents != nil {
+		t.Errorf("documents screen should be nil when config.Documents is nil")
+	}
+}
 
-	t.Run("EmptyKindSetsChooseKindStage", func(t *testing.T) {
-		cfg := Config{
-			Path:          "/path/to/file.md",
-			Kind:          "",
-			Edit:          true,
-			Notes:         notes,
-			Spreadsheets:  sheets,
-			Presentations: decks,
-			Recovery:      repo,
-		}
-		m := NewModel(cfg)
-		if m.path != cfg.Path || m.kind != cfg.Kind || m.edit != cfg.Edit {
-			t.Errorf("fields not matched: path=%q kind=%q edit=%t", m.path, m.kind, m.edit)
-		}
-		if m.service != cfg.Notes || m.spreadsheets != cfg.Spreadsheets || m.presentations != cfg.Presentations || m.recoveryStore != cfg.Recovery {
-			t.Errorf("services/store not assigned correctly")
-		}
-		if m.stage != stageChooseKind {
-			t.Errorf("stage = %v, want stageChooseKind (%v)", m.stage, stageChooseKind)
-		}
-		if m.documents != nil {
-			t.Errorf("documents screen should be nil when config.Documents is nil")
-		}
-	})
+func TestNewModel_SpecifiedKindKeepsDefaultStage(t *testing.T) {
+	cfg := Config{
+		Path: "/path/to/file.md",
+		Kind: artifact.NoteKind,
+	}
+	m := NewModel(cfg)
+	if m.stage != stageOpening {
+		t.Errorf("stage = %v, want stageOpening (%v)", m.stage, stageOpening)
+	}
+}
 
-	t.Run("SpecifiedKindKeepsDefaultStage", func(t *testing.T) {
-		cfg := Config{
-			Path: "/path/to/file.md",
-			Kind: artifact.NoteKind,
-		}
-		m := NewModel(cfg)
-		if m.stage != stageOpening {
-			t.Errorf("stage = %v, want stageOpening (%v)", m.stage, stageOpening)
-		}
-	})
+func TestNewModel_NotesServiceUndoRedoState(t *testing.T) {
+	repo, err := filerepo.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := note.NewService(repo, 10)
+	cfg := Config{
+		Notes: notes,
+	}
+	m := NewModel(cfg)
+	if m.canUndo != notes.CanUndo() || m.canRedo != notes.CanRedo() {
+		t.Errorf("canUndo=%t canRedo=%t, want notes service state (%t, %t)", m.canUndo, m.canRedo, notes.CanUndo(), notes.CanRedo())
+	}
+}
 
-	t.Run("NotesServiceUndoRedoState", func(t *testing.T) {
-		cfg := Config{
-			Notes: notes,
-		}
-		m := NewModel(cfg)
-		if m.canUndo != notes.CanUndo() || m.canRedo != notes.CanRedo() {
-			t.Errorf("canUndo=%t canRedo=%t, want notes service state (%t, %t)", m.canUndo, m.canRedo, notes.CanUndo(), notes.CanRedo())
-		}
-	})
+func TestNewModel_DocumentsServiceInitializationAndAutosaveScheduler(t *testing.T) {
+	repo, err := filerepo.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs := document.NewService(repo, 10)
+	cfg := Config{
+		Path:      "/path/to/file.md",
+		Documents: docs,
+		Recovery:  repo,
+	}
+	m := NewModel(cfg)
+	if m.documents == nil {
+		t.Fatal("documents screen is nil")
+	}
+	if m.documents.service != docs {
+		t.Errorf("documents service = %v, want %v", m.documents.service, docs)
+	}
+	if m.documents.recoveryStore != repo {
+		t.Errorf("documents recoveryStore = %v, want %v", m.documents.recoveryStore, repo)
+	}
+	if m.documents.autosaveScheduler == nil {
+		t.Fatal("documents autosaveScheduler is nil")
+	}
 
-	t.Run("DocumentsServiceInitializationAndAutosaveScheduler", func(t *testing.T) {
-		cfg := Config{
-			Path:      "/path/to/file.md",
-			Documents: docs,
-			Recovery:  repo,
-		}
-		m := NewModel(cfg)
-		if m.documents == nil {
-			t.Fatal("documents screen is nil")
-		}
-		if m.documents.service != docs {
-			t.Errorf("documents service = %v, want %v", m.documents.service, docs)
-		}
-		if m.documents.recoveryStore != repo {
-			t.Errorf("documents recoveryStore = %v, want %v", m.documents.recoveryStore, repo)
-		}
-		if m.documents.autosaveScheduler == nil {
-			t.Fatal("documents autosaveScheduler is nil")
-		}
+	// Exercise the documents autosaveScheduler callback and its returned command
+	cmd := m.documents.autosaveScheduler(42)
+	if cmd == nil {
+		t.Fatal("autosaveScheduler returned nil tea.Cmd")
+	}
+}
 
-		// Exercise the documents autosaveScheduler callback and its returned command
-		cmd := m.documents.autosaveScheduler(42)
-		if cmd == nil {
-			t.Fatal("autosaveScheduler returned nil tea.Cmd")
-		}
-	})
-
-	t.Run("OperationContextFunction", func(t *testing.T) {
-		cfg := Config{Path: "/path/to/file.md"}
-		m := NewModel(cfg)
-		if m.newOperationContext == nil {
-			t.Fatal("newOperationContext is nil")
-		}
-		ctx, cancel := m.newOperationContext()
-		if ctx == nil || cancel == nil {
-			t.Fatal("newOperationContext returned nil context or cancel func")
-		}
-		cancel()
-		if ctx.Err() == nil {
-			t.Errorf("expected cancelled context, got nil error")
-		}
-	})
+func TestNewModel_OperationContextFunction(t *testing.T) {
+	cfg := Config{Path: "/path/to/file.md"}
+	m := NewModel(cfg)
+	if m.newOperationContext == nil {
+		t.Fatal("newOperationContext is nil")
+	}
+	ctx, cancel := m.newOperationContext()
+	if ctx == nil || cancel == nil {
+		t.Fatal("newOperationContext returned nil context or cancel func")
+	}
+	cancel()
+	if ctx.Err() == nil {
+		t.Errorf("expected cancelled context, got nil error")
+	}
 }
