@@ -21,81 +21,86 @@ import (
 )
 
 func TestNew(t *testing.T) {
-	t.Run("empty state directory returns error", func(t *testing.T) {
-		repo, err := filerepo.New("")
-		if err == nil {
-			t.Fatal("expected error for empty stateDir, got nil")
-		}
-		if repo != nil {
-			t.Fatalf("expected nil repository on error, got %v", repo)
-		}
-		if !strings.Contains(err.Error(), "state directory is required") {
-			t.Fatalf("unexpected error message: %v", err)
-		}
-	})
+	t.Run("empty state directory returns error", testNewEmptyStateDirectory)
+	t.Run("valid directory resolves to absolute path", testNewValidDirectoryResolvesToAbsolutePath)
+	t.Run("relative path converted to absolute path", testNewRelativePathConvertedToAbsolutePath)
+	t.Run("non-existent nested directory path created on demand", testNewNonExistentNestedDirectoryPathCreatedOnDemand)
+}
 
-	t.Run("valid directory resolves to absolute path", func(t *testing.T) {
-		tempDir := t.TempDir()
-		repo, err := filerepo.New(tempDir)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if repo == nil {
-			t.Fatal("expected non-nil Repository")
-		}
-	})
+func testNewEmptyStateDirectory(t *testing.T) {
+	repo, err := filerepo.New("")
+	if err == nil {
+		t.Fatal("expected error for empty stateDir, got nil")
+	}
+	if repo != nil {
+		t.Fatalf("expected nil repository on error, got %v", repo)
+	}
+	if !strings.Contains(err.Error(), "state directory is required") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
 
-	t.Run("relative path converted to absolute path", func(t *testing.T) {
-		t.Chdir(t.TempDir())
-		relPath := filepath.Join(".", "test_state_dir")
-		absPath, err := filepath.Abs(relPath)
-		if err != nil {
-			t.Fatal(err)
-		}
+func testNewValidDirectoryResolvesToAbsolutePath(t *testing.T) {
+	tempDir := t.TempDir()
+	repo, err := filerepo.New(tempDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if repo == nil {
+		t.Fatal("expected non-nil Repository")
+	}
+}
 
-		repo, err := filerepo.New(relPath)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if repo == nil {
-			t.Fatal("expected non-nil Repository")
-		}
+func testNewRelativePathConvertedToAbsolutePath(t *testing.T) {
+	t.Chdir(t.TempDir())
+	relPath := filepath.Join(".", "test_state_dir")
+	absPath, err := filepath.Abs(relPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-		// Verify state directory is converted to absolute path by using LoadRecovery
-		// which attempts to access stateDir/recovery
-		ctx := context.Background()
-		_, ok, err := repo.LoadRecovery(ctx, filepath.Join(absPath, "dummy.md"))
-		if err != nil || ok {
-			t.Fatalf("unexpected recovery check result: ok=%v, err=%v", ok, err)
-		}
-	})
+	repo, err := filerepo.New(relPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if repo == nil {
+		t.Fatal("expected non-nil Repository")
+	}
 
-	t.Run("non-existent nested directory path created on demand", func(t *testing.T) {
-		tempDir := t.TempDir()
-		nestedDir := filepath.Join(tempDir, "nested", "state")
-		repo, err := filerepo.New(nestedDir)
-		if err != nil {
-			t.Fatalf("unexpected error for non-existent path: %v", err)
-		}
-		if repo == nil {
-			t.Fatal("expected non-nil Repository")
-		}
+	// Verify state directory is converted to absolute path by using LoadRecovery
+	// which attempts to access stateDir/recovery
+	ctx := context.Background()
+	_, ok, err := repo.LoadRecovery(ctx, filepath.Join(absPath, "dummy.md"))
+	if err != nil || ok {
+		t.Fatalf("unexpected recovery check result: ok=%v, err=%v", ok, err)
+	}
+}
 
-		// Verify operations can write state to the nested directory on demand
-		ctx := context.Background()
-		draft := recovery.Draft{Path: filepath.Join(tempDir, "note.md"), Kind: "note", Data: json.RawMessage(`{"text":"hello"}`)}
-		if err := repo.SaveRecovery(ctx, draft); err != nil {
-			t.Fatalf("failed to save recovery in nested state dir: %v", err)
-		}
+func testNewNonExistentNestedDirectoryPathCreatedOnDemand(t *testing.T) {
+	tempDir := t.TempDir()
+	nestedDir := filepath.Join(tempDir, "nested", "state")
+	repo, err := filerepo.New(nestedDir)
+	if err != nil {
+		t.Fatalf("unexpected error for non-existent path: %v", err)
+	}
+	if repo == nil {
+		t.Fatal("expected non-nil Repository")
+	}
 
-		loaded, ok, err := repo.LoadRecovery(ctx, draft.Path)
-		if err != nil || !ok {
-			t.Fatalf("failed to load recovery draft: ok=%v, err=%v", ok, err)
-		}
-		if string(loaded.Data) != string(draft.Data) {
-			t.Fatalf("loaded recovery data = %s, want %s", loaded.Data, draft.Data)
-		}
-	})
+	// Verify operations can write state to the nested directory on demand
+	ctx := context.Background()
+	draft := recovery.Draft{Path: filepath.Join(tempDir, "note.md"), Kind: "note", Data: json.RawMessage(`{"text":"hello"}`)}
+	if err := repo.SaveRecovery(ctx, draft); err != nil {
+		t.Fatalf("failed to save recovery in nested state dir: %v", err)
+	}
+
+	loaded, ok, err := repo.LoadRecovery(ctx, draft.Path)
+	if err != nil || !ok {
+		t.Fatalf("failed to load recovery draft: ok=%v, err=%v", ok, err)
+	}
+	if string(loaded.Data) != string(draft.Data) {
+		t.Fatalf("loaded recovery data = %s, want %s", loaded.Data, draft.Data)
+	}
 }
 
 func newRepo(t *testing.T) (*filerepo.Repository, string, string) {

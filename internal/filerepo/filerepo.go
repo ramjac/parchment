@@ -164,45 +164,59 @@ func (r *Repository) update(ctx context.Context, path string, create bool, notFo
 		if err != nil {
 			return err
 		}
-		mode := os.FileMode(0o600)
-		var current []byte
-		info, statErr := os.Lstat(resolved)
-		switch {
-		case create && statErr == nil:
-			return fmt.Errorf("%s: %w", path, ErrExists)
-		case create && !errors.Is(statErr, fs.ErrNotExist):
-			return fmt.Errorf("inspect %s: %w", path, statErr)
-		case !create && errors.Is(statErr, fs.ErrNotExist):
-			return fmt.Errorf("%s: %w", path, notFound)
-		case !create && statErr != nil:
-			return fmt.Errorf("inspect %s: %w", path, statErr)
-		case !create:
-			if !info.Mode().IsRegular() {
-				return fmt.Errorf("%s is not a regular file", path)
-			}
-			mode = info.Mode().Perm()
-			current, err = readRegularFile(resolved, artifactfile.MaxFileSize)
-			if err != nil {
-				return fmt.Errorf("read %s: %w", path, err)
-			}
+		current, mode, err := loadForUpdate(resolved, path, create, notFound)
+		if err != nil {
+			return err
 		}
 		data, err := write(current)
 		if err != nil {
 			return err
 		}
-		if create {
-			err = createAtomic(ctx, resolved, data, mode)
-		} else {
-			err = writeAtomic(ctx, resolved, data, mode)
-		}
-		if errors.Is(err, fs.ErrExist) {
-			return fmt.Errorf("%s: %w", path, ErrExists)
-		}
-		if err != nil {
-			return fmt.Errorf("write %s: %w", path, err)
-		}
-		return nil
+		return writeUpdate(ctx, resolved, path, create, data, mode)
 	})
+}
+
+func loadForUpdate(resolved, path string, create bool, notFound error) ([]byte, os.FileMode, error) {
+	mode := os.FileMode(0o600)
+	var current []byte
+	info, statErr := os.Lstat(resolved)
+	switch {
+	case create && statErr == nil:
+		return nil, 0, fmt.Errorf("%s: %w", path, ErrExists)
+	case create && !errors.Is(statErr, fs.ErrNotExist):
+		return nil, 0, fmt.Errorf("inspect %s: %w", path, statErr)
+	case !create && errors.Is(statErr, fs.ErrNotExist):
+		return nil, 0, fmt.Errorf("%s: %w", path, notFound)
+	case !create && statErr != nil:
+		return nil, 0, fmt.Errorf("inspect %s: %w", path, statErr)
+	case !create:
+		if !info.Mode().IsRegular() {
+			return nil, 0, fmt.Errorf("%s is not a regular file", path)
+		}
+		mode = info.Mode().Perm()
+		var err error
+		current, err = readRegularFile(resolved, artifactfile.MaxFileSize)
+		if err != nil {
+			return nil, 0, fmt.Errorf("read %s: %w", path, err)
+		}
+	}
+	return current, mode, nil
+}
+
+func writeUpdate(ctx context.Context, resolved, path string, create bool, data []byte, mode os.FileMode) error {
+	var err error
+	if create {
+		err = createAtomic(ctx, resolved, data, mode)
+	} else {
+		err = writeAtomic(ctx, resolved, data, mode)
+	}
+	if errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("%s: %w", path, ErrExists)
+	}
+	if err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
 }
 
 func (r *Repository) withLock(ctx context.Context, operation func() error) error {
