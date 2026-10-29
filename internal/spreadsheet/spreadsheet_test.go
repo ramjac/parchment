@@ -258,3 +258,93 @@ func (r *memoryRepository) TransitionSpreadsheet(_ context.Context, id string, e
 	r.books[id] = cloneSpreadsheet(*target)
 	return nil
 }
+
+func TestDecodeErrorPaths(t *testing.T) {
+	tests := []struct {
+		name   string
+		data   []byte
+		errStr string
+		errVal error
+	}{
+		{
+			name:   "invalid artifact file",
+			data:   []byte("not an artifact"),
+			errStr: "decode spreadsheet file:",
+		},
+		{
+			name:   "wrong artifact kind",
+			data:   []byte("```parchment-meta\n{\n  \"parchment_format\": \"parchment-single-file-v2\",\n  \"kind\": \"note\",\n  \"format_version\": 2,\n  \"created_at\": \"2026-10-28T14:10:36Z\",\n  \"modified_at\": \"2026-10-28T14:10:36Z\"\n}\n```\n\n<!-- parchment-body -->\n\n<!-- parchment-blocks -->\n"),
+			errVal: ErrNotFound,
+		},
+		{
+			name:   "missing payload block",
+			data:   []byte("```parchment-meta\n{\n  \"parchment_format\": \"parchment-single-file-v2\",\n  \"kind\": \"spreadsheet\",\n  \"format_version\": 2,\n  \"created_at\": \"2026-10-28T14:10:36Z\",\n  \"modified_at\": \"2026-10-28T14:10:36Z\"\n}\n```\n\n<!-- parchment-body -->\n\n<!-- parchment-blocks -->\n"),
+			errStr: "spreadsheet payload block is missing",
+		},
+		{
+			name:   "type mismatch JSON payload",
+			data:   []byte("```parchment-meta\n{\n  \"parchment_format\": \"parchment-single-file-v2\",\n  \"kind\": \"spreadsheet\",\n  \"format_version\": 2,\n  \"created_at\": \"2026-10-28T14:10:36Z\",\n  \"modified_at\": \"2026-10-28T14:10:36Z\"\n}\n```\n\n<!-- parchment-body -->\n\n<!-- parchment-blocks -->\n\n```parchment-spreadsheet\n{\n  \"version\": \"not-a-number\",\n  \"sheets\": [\n    {\n      \"name\": \"Sheet1\",\n      \"rows\": [\n        [\n          {\n            \"value\": \"1\"\n          }\n        ]\n      ]\n    }\n  ]\n}\n```\n"),
+			errStr: "decode spreadsheet payload:",
+		},
+		{
+			name:   "normalize error (unsupported version)",
+			data:   []byte("```parchment-meta\n{\n  \"parchment_format\": \"parchment-single-file-v2\",\n  \"kind\": \"spreadsheet\",\n  \"format_version\": 2,\n  \"created_at\": \"2026-10-28T14:10:36Z\",\n  \"modified_at\": \"2026-10-28T14:10:36Z\"\n}\n```\n\n<!-- parchment-body -->\n\n<!-- parchment-blocks -->\n\n```parchment-spreadsheet\n{\n  \"version\": 999,\n  \"sheets\": [\n    {\n      \"name\": \"Sheet1\",\n      \"rows\": [\n        [\n          {\n            \"value\": \"1\"\n          }\n        ]\n      ]\n    }\n  ]\n}\n```\n"),
+			errStr: "validate spreadsheet:",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Decode(tt.data)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if tt.errVal != nil && err != tt.errVal {
+				t.Fatalf("expected error %v, got %v", tt.errVal, err)
+			}
+			if tt.errStr != "" && !strings.Contains(err.Error(), tt.errStr) {
+				t.Fatalf("expected error containing %q, got: %v", tt.errStr, err)
+			}
+		})
+	}
+}
+
+func TestDecodePredefinedJSON(t *testing.T) {
+	data := []byte("```parchment-meta\n{\n  \"parchment_format\": \"parchment-single-file-v2\",\n  \"kind\": \"spreadsheet\",\n  \"format_version\": 2,\n  \"created_at\": \"2026-10-28T14:10:36Z\",\n  \"modified_at\": \"2026-10-28T14:10:36Z\"\n}\n```\n\n<!-- parchment-body -->\n\n<!-- parchment-blocks -->\n\n```parchment-spreadsheet\n{\n  \"version\": 1,\n  \"sheets\": [\n    {\n      \"name\": \"Sheet1\",\n      \"rows\": [\n        [\n          {\n            \"value\": \"125\"\n          }\n        ]\n      ]\n    }\n  ]\n}\n```\n")
+
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	createdAt, _ := time.Parse(time.RFC3339, "2026-10-28T14:10:36Z")
+	modifiedAt, _ := time.Parse(time.RFC3339, "2026-10-28T14:10:36Z")
+
+	expected := Spreadsheet{
+		Artifact: artifact.Artifact{
+			Kind:          artifact.SpreadsheetKind,
+			FormatVersion: 2,
+			CreatedAt:     createdAt.UTC(),
+			ModifiedAt:    modifiedAt.UTC(),
+		},
+		Version: 1,
+		Sheets: []Sheet{
+			{
+				Name: "Sheet1",
+				Rows: [][]Cell{
+					{
+						{Value: "125"},
+					},
+				},
+			},
+		},
+	}
+
+	if decoded.Artifact.Kind != expected.Artifact.Kind ||
+		decoded.Version != expected.Version ||
+		!decoded.CreatedAt.Equal(expected.CreatedAt) ||
+		!decoded.ModifiedAt.Equal(expected.ModifiedAt) ||
+		!reflect.DeepEqual(decoded.Sheets, expected.Sheets) {
+		t.Fatalf("decoded does not match expected.\ngot: %+v\nwant: %+v", decoded, expected)
+	}
+}

@@ -102,15 +102,14 @@ func (s *Service) Get(ctx context.Context, path string) (Document, error) {
 // changing the live document. Proposals may retain or remove embedded images,
 // but cannot add or replace their data.
 func (s *Service) Propose(ctx context.Context, before Document, description string, draft Draft) (Change, error) {
+	existingImages := make(map[string][]byte, len(before.Images))
+	for _, img := range before.Images {
+		existingImages[img.Name] = img.Data
+	}
+
 	for _, proposedImage := range draft.Images {
-		found := false
-		for _, existingImage := range before.Images {
-			if proposedImage.Name == existingImage.Name && bytes.Equal(proposedImage.Data, existingImage.Data) {
-				found = true
-				break
-			}
-		}
-		if !found {
+		existingData, ok := existingImages[proposedImage.Name]
+		if !ok || !bytes.Equal(proposedImage.Data, existingData) {
 			return Change{}, errors.New("proposals cannot add or replace embedded images")
 		}
 	}
@@ -412,13 +411,13 @@ func (s *Service) CanRedo() bool { return s.history.CanRedo() }
 // WithImage returns the document with img added, replacing any image of the
 // same name.
 func WithImage(d Document, img Image) Document {
-	images := make([]Image, 0, len(d.Images)+1)
-	for _, existing := range d.Images {
-		if existing.Name != img.Name {
-			images = append(images, existing)
+	for i, existing := range d.Images {
+		if existing.Name == img.Name {
+			d.Images[i] = img
+			return d
 		}
 	}
-	d.Images = append(images, img)
+	d.Images = append(d.Images, img)
 	return d
 }
 

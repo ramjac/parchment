@@ -260,73 +260,94 @@ func ReadMetadataFrom(input io.Reader) (artifact.Artifact, error) {
 	return readMetadataFrom(input)
 }
 
-func readMetadataFrom(input io.Reader) (artifact.Artifact, error) {
-	reader := bufio.NewReader(io.LimitReader(input, MaxFileSize+1))
-	var prefix strings.Builder
-	var lineBuffer strings.Builder
-	var block opening
-	var consumed int64
-	haveBlock := false
-	openingLineIncomplete := false
+type metadataStreamParser struct {
+	reader                *bufio.Reader
+	prefix                strings.Builder
+	lineBuffer            strings.Builder
+	block                 opening
+	haveBlock             bool
+	openingLineIncomplete bool
+	consumed              int64
+}
+
+func (p *metadataStreamParser) parse() (artifact.Artifact, error) {
 	for {
-		lineBytes, err := reader.ReadSlice('\n')
-		consumed += int64(len(lineBytes))
-		if consumed > MaxFileSize {
+		lineBytes, err := p.reader.ReadSlice('\n')
+		p.consumed += int64(len(lineBytes))
+		if p.consumed > MaxFileSize {
 			return artifact.Artifact{}, fmt.Errorf("artifact metadata is larger than %d MiB", MaxFileSize>>20)
 		}
-		lineBuffer.Write(lineBytes)
-		if !haveBlock {
-			if errors.Is(err, bufio.ErrBufferFull) {
-				line := lineBuffer.String()
-				if isBlankLine(line) {
-					lineBuffer.Reset()
-					prefix.Reset()
-					prefix.WriteByte('\n')
-					continue
-				}
-				block, haveBlock = parseOpening(line)
-				if !haveBlock || block.name != metadataBlock {
-					prefix.WriteString(line)
-					return readMetadataBytes(prefix.String())
-				}
-				openingLineIncomplete = true
-				continue
-			}
-			line := lineBuffer.String()
-			lineBuffer.Reset()
-			if isBlankLine(line) {
-				prefix.Reset()
-				prefix.WriteByte('\n')
-			} else {
-				var ok bool
-				block, ok = parseOpening(line)
-				if !ok || block.name != metadataBlock {
-					prefix.WriteString(line)
-					return readMetadataBytes(prefix.String())
-				}
-				haveBlock = true
-				prefix.WriteString(line)
+		p.lineBuffer.Write(lineBytes)
+
+		isFull := errors.Is(err, bufio.ErrBufferFull)
+
+		if !p.haveBlock {
+			if done, art, parseErr := p.processBeforeBlock(isFull); done {
+				return art, parseErr
 			}
 		} else {
-			if errors.Is(err, bufio.ErrBufferFull) {
-				continue
-			}
-			line := lineBuffer.String()
-			lineBuffer.Reset()
-			prefix.WriteString(line)
-			if openingLineIncomplete {
-				openingLineIncomplete = false
-			} else if isFenceClose(line, block.marker[:1], len(block.marker)) {
-				return readMetadataBytes(prefix.String())
+			if done, art, parseErr := p.processInsideBlock(isFull); done {
+				return art, parseErr
 			}
 		}
-		if err != nil {
+
+		if err != nil && !isFull {
 			if errors.Is(err, io.EOF) {
-				return readMetadataBytes(prefix.String())
+				return readMetadataBytes(p.prefix.String())
 			}
 			return artifact.Artifact{}, fmt.Errorf("read Parchment metadata: %w", err)
 		}
 	}
+}
+
+func (p *metadataStreamParser) processBeforeBlock(isFull bool) (bool, artifact.Artifact, error) {
+	line := p.lineBuffer.String()
+
+	if isBlankLine(line) {
+		p.lineBuffer.Reset()
+		p.prefix.Reset()
+		p.prefix.WriteByte('\n')
+		return false, artifact.Artifact{}, nil
+	}
+
+	p.block, p.haveBlock = parseOpening(line)
+	if !p.haveBlock || p.block.name != metadataBlock {
+		p.prefix.WriteString(line)
+		art, err := readMetadataBytes(p.prefix.String())
+		return true, art, err
+	}
+
+	if isFull {
+		p.openingLineIncomplete = true
+	} else {
+		p.lineBuffer.Reset()
+		p.prefix.WriteString(line)
+	}
+
+	return false, artifact.Artifact{}, nil
+}
+
+func (p *metadataStreamParser) processInsideBlock(isFull bool) (bool, artifact.Artifact, error) {
+	if isFull {
+		return false, artifact.Artifact{}, nil
+	}
+	line := p.lineBuffer.String()
+	p.lineBuffer.Reset()
+	p.prefix.WriteString(line)
+	if p.openingLineIncomplete {
+		p.openingLineIncomplete = false
+	} else if isFenceClose(line, p.block.marker[:1], len(p.block.marker)) {
+		art, err := readMetadataBytes(p.prefix.String())
+		return true, art, err
+	}
+	return false, artifact.Artifact{}, nil
+}
+
+func readMetadataFrom(input io.Reader) (artifact.Artifact, error) {
+	parser := metadataStreamParser{
+		reader: bufio.NewReader(io.LimitReader(input, MaxFileSize+1)),
+	}
+	return parser.parse()
 }
 
 func readMetadataBytes(source string) (artifact.Artifact, error) {
