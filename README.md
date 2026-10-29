@@ -281,13 +281,10 @@ presentations. Planned work is organized into five implementation phases:
 - In-editor search and find across all artifact viewers and editors (notes, documents, spreadsheets, presentations)
 - Document and presentation printer font selection for printer-oriented rendering
 
-### Phase 4: Extended Domain Engines
-- Dedicated spreadsheet formula AST and evaluation engine supporting rectangular ranges (`A1:B10`), aggregate functions (`SUM`, `AVERAGE`, `COUNT`, `MIN`, `MAX`), nested function calls, cross-sheet references (`Sheet2!A1`), and standard error propagation (`#REF!`, `#DIV/0!`, `#NAME?`, `#VALUE!`, `#CIRCULAR!`)
-- Presentation media, directives, and export
-  - Support embedded images in slide decks
-  - Support Go present command directives (e.g. `.image`, `.code`)
-  - Export presentations to standalone slide formats (HTML slides, PDF)
-- Basic image-editing features for files opened directly by Parchment (crop, resize)
+### Phase 4: Extended Domain Engines (Research)
+- Research and design the dedicated spreadsheet formula AST and evaluation engine, evaluating whether to build a custom AST or use an external library.
+- Research the toolchain and approach for presentation media, directives, and exporting to standalone slide formats (HTML slides, PDF).
+- Research basic image-editing features (crop, resize) and evaluate Go standard library limitations versus third-party libraries.
 
 ### Phase 5: External Interop & Persistence
 - Make a plan for importing and exporting to/from common document file formats (ODF, DOCX; lossy conversion reporting unsupported features)
