@@ -517,3 +517,91 @@ func (f *failingRepository) GetPresentation(_ context.Context, _ string) (Presen
 func (f *failingRepository) TransitionPresentation(_ context.Context, _ string, _, _ *Presentation) error {
 	return f.err
 }
+
+func TestDecode(t *testing.T) {
+	validItem := testPresentation()
+	validData, err := Encode(validItem)
+	if err != nil {
+		t.Fatalf("failed to encode valid item: %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		dataFn       func() []byte
+		wantErr      string
+		wantNotFound bool
+	}{
+		{
+			name:   "valid",
+			dataFn: func() []byte { return validData },
+		},
+		{
+			name:    "malformed artifactfile",
+			dataFn:  func() []byte { return []byte("invalid data") },
+			wantErr: "decode presentation file",
+		},
+		{
+			name: "wrong kind",
+			dataFn: func() []byte {
+				return []byte(strings.Replace(string(validData), `"kind": "presentation"`, `"kind": "document"`, 1))
+			},
+			wantNotFound: true,
+		},
+		{
+			name: "missing data block",
+			dataFn: func() []byte {
+				data, _ := artifactfile.Encode(validItem.Artifact, validItem.Source, map[string]any{})
+				return data
+			},
+			wantErr: "presentation data block is missing",
+		},
+		{
+			name: "malformed data block",
+			dataFn: func() []byte {
+				return []byte(strings.Replace(string(validData), `"version": 1`, `"version": "abc"`, 1))
+			},
+			wantErr: "decode presentation data",
+		},
+		{
+			name: "unsupported version",
+			dataFn: func() []byte {
+				return []byte(strings.Replace(string(validData), `"version": 1`, `"version": 999`, 1))
+			},
+			wantErr: "unsupported presentation file version 999",
+		},
+		{
+			name: "validate fails",
+			dataFn: func() []byte {
+				return []byte(strings.Replace(string(validData), "# Demo", string([]byte{0xff, 0xff}), 1))
+			},
+			wantErr: "validate presentation: presentation source must be valid UTF-8",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := tt.dataFn()
+			decoded, err := Decode(data)
+			if tt.wantNotFound {
+				if !errors.Is(err, ErrNotFound) {
+					t.Errorf("Decode() error = %v, wantNotFound %v", err, ErrNotFound)
+				}
+				return
+			}
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("Decode() error = %v, wantErr containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("Decode() unexpected error: %v", err)
+			} else {
+				if validItem.Source != decoded.Source || validItem.Version != decoded.Version ||
+					!validItem.CreatedAt.Equal(decoded.CreatedAt) || !validItem.ModifiedAt.Equal(decoded.ModifiedAt) {
+					t.Errorf("round trip changed persisted presentation content:\noriginal: %+v\ndecoded: %+v", validItem, decoded)
+				}
+			}
+		})
+	}
+}
