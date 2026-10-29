@@ -289,9 +289,11 @@ presentations. Planned work is organized into five implementation phases:
   - Export presentations to standalone slide formats (HTML slides, PDF)
 - Basic image-editing features for files opened directly by Parchment (crop, resize)
 
-### Phase 5: External Interop & Persistence
-- Make a plan for importing and exporting to/from common document file formats (ODF, DOCX; lossy conversion reporting unsupported features)
-- Make a plan for persistent undo/redo storage format under `~/.parchment/`, with explicit storage and recovery semantics (planning only)
+## Architecture & Planning
+
+The planning documents for persistent undo/redo storage format and external interop formats (ODF, DOCX) can be found in the `docs/` directory:
+- [ODF / DOCX Import & Export Plan](docs/ODF_DOCX_Interop_Plan.md)
+- [Persistent Undo/Redo Storage Plan](docs/Persistent_Undo_Redo_Plan.md)
 
 ## Development
 
