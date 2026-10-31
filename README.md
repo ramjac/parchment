@@ -259,11 +259,16 @@ presentations. Planned work is organized into five implementation phases:
 
 ### Phase 1: Foundations & Bug Fixes
 - Notes editor terminal height and width allocation (leaves an unused bottom row and 8-column right margin; fix resize calculation)
+  - **Research/Decisions needed:** Should we leave a 1-column margin for visual breathing room, or strictly use 100% width? Should the bottom row be reserved for a future status bar?
 - Connect configuration settings to runtime behavior
   - Respect configured theme (`theme` / `PARCHMENT_THEME`) across all TUI screens instead of hardcoding colors
+    - **Research/Decisions needed:** What theme structure should we use? (e.g., predefined named themes like "light" and "dark", or custom user-defined Lip Gloss style maps?) Should we support 256 colors, true color, or dynamically adapt?
   - Implement file logging for `logging.level` and `logging.format` (`PARCHMENT_LOG_LEVEL`, `PARCHMENT_LOG_FORMAT`) under `~/.parchment/`
+    - **Research/Decisions needed:** Should we use the standard `slog` package or a third-party library? What is the log rotation policy (size-based, time-based, or keep all)?
   - Implement local backup destination (`backup.local.destination`) for automatic artifact snapshots on save
+    - **Research/Decisions needed:** What is the retention policy for these snapshots (e.g., keep last 10, keep by date)? Should snapshots be compressed (e.g., gzip) to save space, or kept as plain Markdown?
 - Dedicated text editor widget with micro-style text selection (Shift+arrows, mouse drag, double/triple click, clipboard copy/cut/paste, replacement typing) and standard key combinations (Ctrl+arrows for word navigation, Ctrl+del/Ctrl+backspace for word deletion, Tab for spaces)
+  - **Research/Decisions needed:** Should we build this from scratch, fork `bubbles/textarea`, or write a completely custom rune buffer? For clipboard integration, what library should we use (e.g., `atotto/clipboard`) to ensure cross-platform compatibility? How should wide characters (CJK) and emojis be handled in terms of visual width vs. string length?
 
 ### Phase 2: State Safety & CLI Core
 - Autosave recovery drafts for the spreadsheet and presentation editors
