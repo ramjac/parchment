@@ -2,6 +2,7 @@ package document
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -409,15 +411,16 @@ func (s *Service) CanUndo() bool { return s.history.CanUndo() }
 func (s *Service) CanRedo() bool { return s.history.CanRedo() }
 
 // WithImage returns the document with img added, replacing any image of the
-// same name.
+// same name. It assumes the Document's Images slice is sorted alphabetically by name.
 func WithImage(d Document, img Image) Document {
-	for i, existing := range d.Images {
-		if existing.Name == img.Name {
-			d.Images[i] = img
-			return d
-		}
+	idx, found := slices.BinarySearchFunc(d.Images, img.Name, func(a Image, name string) int {
+		return cmp.Compare(a.Name, name)
+	})
+	if found {
+		d.Images[idx] = img
+	} else {
+		d.Images = slices.Insert(d.Images, idx, img)
 	}
-	d.Images = append(d.Images, img)
 	return d
 }
 
