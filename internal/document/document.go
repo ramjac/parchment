@@ -212,7 +212,14 @@ func (s *Service) Reject(ctx context.Context, path, changeID string) error {
 	return s.repository.TransitionDocumentChange(ctx, path, changeID, change, rejected, nil, nil)
 }
 
+type changeGetter interface {
+	GetDocumentChange(context.Context, string, string) (Change, error)
+}
+
 func (s *Service) getChange(ctx context.Context, path, changeID string) (Change, error) {
+	if cg, ok := s.repository.(changeGetter); ok {
+		return cg.GetDocumentChange(ctx, path, changeID)
+	}
 	changes, err := s.repository.ListDocumentChanges(ctx, path)
 	if err != nil {
 		return Change{}, err
