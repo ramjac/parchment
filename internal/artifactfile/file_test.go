@@ -103,6 +103,16 @@ func TestReadMetadataRequiresCurrentFormatMarker(t *testing.T) {
 	}
 }
 
+func checkTrailingBlockDecodeError(t *testing.T, validHeader []byte, appendContent, wantErr string) {
+	t.Helper()
+	data := append([]byte(nil), validHeader...)
+	data = append(data, []byte(appendContent)...)
+	_, err := Decode(data)
+	if err == nil || !strings.Contains(err.Error(), wantErr) {
+		t.Fatalf("Decode() error = %v, want substring %q", err, wantErr)
+	}
+}
+
 func TestDecodeTrailingBlockErrorPaths(t *testing.T) {
 	validHeader, err := Encode(testArtifact(), "Body content\n", nil)
 	if err != nil {
@@ -148,12 +158,7 @@ func TestDecodeTrailingBlockErrorPaths(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			data := append([]byte(nil), validHeader...)
-			data = append(data, []byte(tt.append)...)
-			_, err := Decode(data)
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("Decode() error = %v, want substring %q", err, tt.wantErr)
-			}
+			checkTrailingBlockDecodeError(t, validHeader, tt.append, tt.wantErr)
 		})
 	}
 }
