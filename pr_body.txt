@@ -1,0 +1,4 @@
+🎯 **What:** Extracted `checkDecodeTrailingBlockError` helper function in `internal/artifactfile/file_test.go`.
+💡 **Why:** Refactors the `TestDecodeTrailingBlockErrorPaths` test function to bring its length under 60 lines, following project guidelines and improving readability and maintainability.
+✅ **Verification:** Verified by running the entire test suite `go test -race ./...` which passes successfully, ensuring no existing functionality is broken.
+✨ **Result:** Test function is now shorter, more focused, and adheres to the project's code health rules for table-driven tests.
