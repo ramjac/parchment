@@ -259,35 +259,63 @@ presentations. Planned work is organized into five implementation phases:
 
 ### Phase 1: Foundations & Bug Fixes
 - Notes editor terminal height and width allocation (leaves an unused bottom row and 8-column right margin; fix resize calculation)
+  - **Research/Decisions needed:** Should we leave a 1-column margin for visual breathing room, or strictly use 100% width? Should the bottom row be reserved for a future status bar?
 - Connect configuration settings to runtime behavior
   - Respect configured theme (`theme` / `PARCHMENT_THEME`) across all TUI screens instead of hardcoding colors
+    - **Research/Decisions needed:** What theme structure should we use? (e.g., predefined named themes like "light" and "dark", or custom user-defined Lip Gloss style maps?) Should we support 256 colors, true color, or dynamically adapt?
   - Implement file logging for `logging.level` and `logging.format` (`PARCHMENT_LOG_LEVEL`, `PARCHMENT_LOG_FORMAT`) under `~/.parchment/`
+    - **Research/Decisions needed:** Should we use the standard `slog` package or a third-party library? What is the log rotation policy (size-based, time-based, or keep all)?
   - Implement local backup destination (`backup.local.destination`) for automatic artifact snapshots on save
+    - **Research/Decisions needed:** What is the retention policy for these snapshots (e.g., keep last 10, keep by date)? Should snapshots be compressed (e.g., gzip) to save space, or kept as plain Markdown?
 - Dedicated text editor widget with micro-style text selection (Shift+arrows, mouse drag, double/triple click, clipboard copy/cut/paste, replacement typing) and standard key combinations (Ctrl+arrows for word navigation, Ctrl+del/Ctrl+backspace for word deletion, Tab for spaces)
+  - **Research/Decisions needed:** Should we build this from scratch, fork `bubbles/textarea`, or write a completely custom rune buffer? For clipboard integration, what library should we use (e.g., `atotto/clipboard`) to ensure cross-platform compatibility? How should wide characters (CJK) and emojis be handled in terms of visual width vs. string length?
 
 ### Phase 2: State Safety & CLI Core
 - Autosave recovery drafts for the spreadsheet and presentation editors
+  - **Research Task**: Should autosave be triggered periodically by a timer or by specific edit events? What format should the recovery draft use for spreadsheets and presentations? How should concurrent modifications by external tools be handled during recovery?
 - Explicit, opt-in conversion of a plain Markdown file into a Parchment artifact (plain Markdown currently opens and saves as a plain note; default to Document conversion)
+  - **Research Task**: What is the ideal UX for conversion (e.g., TUI prompt upon opening, or explicit CLI command)? If plain Markdown currently opens as a Note, how does a user opt-in to Document conversion? Should the system automatically back up the original plain Markdown file before conversion?
 - Spreadsheet deletion & CSV export: row and column deletion (`delete-row`, `delete-column`) and sheet removal with formula reference shifting and `#REF!` error handling; CSV export command (`spreadsheet export --csv`)
+  - **Research Task**: When deleting a sheet, how exactly are cross-sheet formula references invalidated (e.g., cascading `#REF!` errors)? How are `#REF!` errors represented in the `parchment-spreadsheet` JSON block? How should the `spreadsheet export --csv` command handle multi-sheet workbooks (e.g., zip archive, multiple files, or requiring a specific sheet flag)?
 - Document embedded image management: commands to list embedded images, view metadata, extract image files to disk, and remove unused images
+  - **Research Task**: What image metadata should be stored and displayed (e.g., original filename, dimensions, file size)? How is an "unused" image reliably detected (e.g., parsing Markdown links vs. handling commented-out links)? Should unused images be pruned automatically upon saving, or only via an explicit user command?
 
 ### Phase 3: Rendering & TUI Features
-- Overall visual improvements
-  - Document viewer and other previewers render rich Markdown using [Glamour](https://github.com/charmbracelet/glamour). Embedded images appear as links/placeholders in the editor, but render as fully visible graphical images in document previews and readers (using Kitty/Sixel/iTerm2 protocols with ANSI half-block fallback)
-  - Parchment app components at the bottom of the page like the "Ready" status and undo/redo indicators are not visually separated from the content of the artifact being shown. The same is true for the app components at the top of the page
-- Document navigation pane and in-document link navigation (strictly for Documents; does not apply to Notes or Presentations)
-  - Navigation pane to the left of the Document editor displaying headings and anchors; clicking or selecting an entry jumps the editor cursor to that section
-  - In document preview and reader views, inline Markdown links are clickable to jump to the corresponding target heading or page
-- In-editor search and find across all artifact viewers and editors (notes, documents, spreadsheets, presentations)
-- Document and presentation printer font selection for printer-oriented rendering
+- Research and plan overall visual improvements
+  - How will Glamour be integrated for rich Markdown rendering in previewers? What styles/themes will be supported? How do we map Parchment's custom styles to Glamour's stylesheet?
+  - For image rendering, what library will be used to detect and support Kitty/Sixel/iTerm2 protocols? How do we handle terminal window resizing for graphical images, and what is the exact fallback behavior for ANSI half-blocks?
+  - How should app components (like "Ready" status and undo/redo) be visually separated from artifact content? Options include adding borders (using lipgloss borders), distinct background colors, or specific horizontal rule separators.
+- Research and plan document navigation pane and in-document link navigation (strictly for Documents; does not apply to Notes or Presentations)
+  - How will the layout split be managed for the navigation pane (e.g., fixed width vs percentage)?
+  - How do we handle narrow terminals where both the editor and navigation pane cannot fit? Should it be a toggleable overlay or auto-hide?
+  - For clickable inline Markdown links, how do we track screen coordinates to map mouse clicks to link targets in the terminal?
+- Research and plan in-editor search and find across all artifact viewers and editors (notes, documents, spreadsheets, presentations)
+  - Where will the search UI be located (e.g., floating modal, bottom bar, top bar)?
+  - How will matches be highlighted in the text buffer without permanently mutating the underlying text, especially across different editor components?
+  - Do we need support for regex, case-insensitivity, and whole-word matching?
+- Research and plan document and presentation printer font selection for printer-oriented rendering
+  - What format will font selection take (e.g., CSS font-family strings, specific font files)?
+  - How will the fonts be loaded or mapped during the printing/PDF generation process since they cannot be applied to terminal output?
 
 ### Phase 4: Extended Domain Engines
 - Dedicated spreadsheet formula AST and evaluation engine supporting rectangular ranges (`A1:B10`), aggregate functions (`SUM`, `AVERAGE`, `COUNT`, `MIN`, `MAX`), nested function calls, cross-sheet references (`Sheet2!A1`), and standard error propagation (`#REF!`, `#DIV/0!`, `#NAME?`, `#VALUE!`, `#CIRCULAR!`)
+  - *Parser implementation*: Hand-written recursive descent vs. parser generator (e.g., `goyacc` or `participle`)?
+  - *Evaluation strategy*: Dependency graph for targeted recalculation vs. eager evaluation?
+  - *Formula syntax details*: How to handle strings, quoting, and locale-specific argument separators?
 - Presentation media, directives, and export
   - Support embedded images in slide decks
+    - *Storage*: Should images be stored in a hidden `parchment-presentation` JSON block, mirroring the approach used for Documents?
+    - *Syntax*: Use standard Markdown image syntax (`![alt](ref)`) mapped to the embedded data?
   - Support Go present command directives (e.g. `.image`, `.code`)
+    - *Compatibility*: Full emulation of `golang.org/x/tools/present` parser or a targeted subset?
+    - *Security*: How to handle `.code` local file inclusions securely, or should it only reference embedded blocks?
   - Export presentations to standalone slide formats (HTML slides, PDF)
+    - *HTML Export*: Use an existing framework (e.g., `reveal.js`) or a custom, lightweight CSS grid?
+    - *PDF Export*: Native Go PDF library (e.g., `gofpdf`) or headless browser dependency?
 - Basic image-editing features for files opened directly by Parchment (crop, resize)
+  - *Interface*: Interactive TUI (using Kitty/Sixel protocols for preview) vs. CLI flags?
+  - *Backend*: Standard library (`image`, `image/draw`) vs. `golang.org/x/image/` extensions?
+  - *Persistence*: Are edits destructive, or is the original image preserved as a backup?
 
 ### Phase 5: External Interop & Persistence
 - Make a plan for importing and exporting to/from common document file formats (ODF, DOCX; lossy conversion reporting unsupported features)
