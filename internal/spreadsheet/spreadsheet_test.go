@@ -3,6 +3,7 @@ package spreadsheet
 import (
 	"context"
 	"errors"
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -310,7 +311,7 @@ func TestDecodeErrorPaths(t *testing.T) {
 }
 
 func TestDecodePredefinedJSON(t *testing.T) {
-	data := []byte("```parchment-meta\n{\n  \"parchment_format\": \"parchment-single-file-v2\",\n  \"kind\": \"spreadsheet\",\n  \"format_version\": 2,\n  \"created_at\": \"2026-10-28T14:10:36Z\",\n  \"modified_at\": \"2026-10-28T14:10:36Z\"\n}\n```\n\n<!-- parchment-body -->\n\n<!-- parchment-blocks -->\n\n```parchment-spreadsheet\n{\n  \"version\": 1,\n  \"sheets\": [\n    {\n      \"name\": \"Sheet1\",\n      \"rows\": [\n        [\n          {\n            \"value\": \"125\"\n          }\n        ]\n      ]\n    }\n  ]\n}\n```\n")
+	data := []byte("```parchment-meta\n{\n  \"parchment_format\": \"parchment-single-file-v2\",\n  \"kind\": \"spreadsheet\",\n  \"format_version\": 2,\n  \"created_at\": \"2026-10-28T14:10:36Z\",\n  \"modified_at\": \"2026-10-28T14:10:36Z\"\n}\n```\n\n<!-- parchment-body -->\n\nThis is the markdown body.\n\n<!-- parchment-blocks -->\n\n```parchment-custom-block\n{\n  \"custom\": \"data\"\n}\n```\n\n```parchment-spreadsheet\n{\n  \"version\": 1,\n  \"sheets\": [\n    {\n      \"name\": \"Sheet1\",\n      \"rows\": [\n        [\n          {\n            \"value\": \"125\"\n          }\n        ]\n      ]\n    }\n  ]\n}\n```\n")
 
 	decoded, err := Decode(data)
 	if err != nil {
@@ -338,12 +339,18 @@ func TestDecodePredefinedJSON(t *testing.T) {
 				},
 			},
 		},
+		Body: "This is the markdown body.\n",
+		Blocks: map[string]json.RawMessage{
+			"parchment-custom-block": json.RawMessage("{\n  \"custom\": \"data\"\n}"),
+		},
 	}
 
 	if decoded.Artifact.Kind != expected.Artifact.Kind ||
 		decoded.Version != expected.Version ||
 		!decoded.CreatedAt.Equal(expected.CreatedAt) ||
 		!decoded.ModifiedAt.Equal(expected.ModifiedAt) ||
+		strings.TrimSpace(decoded.Body) != strings.TrimSpace(expected.Body) ||
+		!reflect.DeepEqual(decoded.Blocks, expected.Blocks) ||
 		!reflect.DeepEqual(decoded.Sheets, expected.Sheets) {
 		t.Fatalf("decoded does not match expected.\ngot: %+v\nwant: %+v", decoded, expected)
 	}
