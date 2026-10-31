@@ -842,3 +842,38 @@ func writeBlock(output *bytes.Buffer, name string, payload []byte) {
 	output.Write(payload)
 	output.WriteString("\n```\n")
 }
+
+// DecodeBlocks reads an artifact envelope, but skips parsing the body content,
+// extracting only the metadata and trailing structured payload blocks.
+func DecodeBlocks(data []byte) (File, error) {
+	if len(data) > MaxFileSize {
+		return File{}, fmt.Errorf("artifact file is larger than %d MiB", MaxFileSize>>20)
+	}
+	source := string(data)
+	item, offset, err := readMetadata(source)
+	if err != nil {
+		return File{}, err
+	}
+	file := File{Artifact: item, Blocks: make(map[string]json.RawMessage)}
+
+	boundary := -1
+	var afterBoundary int
+	for offset < len(source) {
+		line, next := nextLine(source, offset)
+		if strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r") == trailingBlocksBoundary {
+			boundary, afterBoundary = offset, next
+		}
+		offset = next
+	}
+	if boundary >= 0 {
+		blocks, err := parseTrailingBlocks(source, afterBoundary)
+		if err != nil {
+			return File{}, err
+		}
+		if blocks != nil {
+			file.Blocks = blocks
+		}
+	}
+	file.Artifact.ID = transientID(file.Artifact.Kind, data)
+	return file, nil
+}
