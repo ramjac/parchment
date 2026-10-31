@@ -421,4 +421,59 @@ func TestPrint(t *testing.T) {
 			t.Errorf("unexpected error message: %v", err)
 		}
 	})
+
+	t.Run("PaginateGeometryError", func(t *testing.T) {
+		d := testDocument("Some text", func(l *Layout) {
+			l.PageSize = "unknown_size"
+		})
+
+		_, err := Print(d)
+		if err == nil {
+			t.Fatal("expected Print to return an error for invalid page size, got nil")
+		}
+		if !strings.Contains(err.Error(), "unsupported page size") {
+			t.Errorf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("ComplexDocument", func(t *testing.T) {
+		body := "# Main Title\n\nSome **bold** text and a [link](http://example.com).\n\n" +
+			"- item 1\n- item 2\n\n" +
+			PageBreakMarkup + "\n\n" +
+			"## Section 2\n\nMore text."
+
+		d := testDocument(body, func(l *Layout) {
+			l.Header = "Confidential|Title|{page}"
+			l.Footer = "footer"
+		})
+
+		printed, err := Print(d)
+		if err != nil {
+			t.Fatalf("Print failed: %v", err)
+		}
+
+		pages := strings.Split(printed, "\f")
+		if len(pages) != 2 {
+			t.Fatalf("expected 2 pages, got %d", len(pages))
+		}
+
+		if !strings.Contains(printed, "MAIN TITLE") {
+			t.Errorf("missing formatted heading 'MAIN TITLE'")
+		}
+		if !strings.Contains(printed, "Confidential") {
+			t.Errorf("missing header 'Confidential'")
+		}
+		if !strings.Contains(printed, "footer") {
+			t.Errorf("missing footer 'footer'")
+		}
+		if !strings.Contains(printed, "bold text") {
+			t.Errorf("missing stripped markdown 'bold text'")
+		}
+		if !strings.Contains(printed, "- item 1") {
+			t.Errorf("missing list 'item 1'")
+		}
+		if !strings.Contains(printed, "Section 2") {
+			t.Errorf("missing heading 'Section 2'")
+		}
+	})
 }
