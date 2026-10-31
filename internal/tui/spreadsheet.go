@@ -350,7 +350,7 @@ func (m *spreadsheetModel) cancelPending() {
 
 func (m *spreadsheetModel) setError(prefix string, err error) {
 	switch {
-	case isCancelled(err) || errors.Is(err, context.Canceled):
+	case errors.Is(err, context.Canceled):
 		m.status, m.errMessage = "Cancelled", ""
 	case errors.Is(err, spreadsheet.ErrNotFound):
 		m.status, m.errMessage = "", prefix+": spreadsheet not found"
