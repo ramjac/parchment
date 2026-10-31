@@ -113,6 +113,14 @@ func TestValidIDForKind(t *testing.T) {
 
 		// Invalid IDs
 		{"", NoteKind, false},
+		{"", DocumentKind, false},
+		{"", SpreadsheetKind, false},
+		{"", PresentationKind, false},
+		{"", ImageKind, false},
+		{"d0", DocumentKind, true},
+		{"d1234567890abcdef1234567890", DocumentKind, false},
+		{"S1", SpreadsheetKind, false},
+		{"p!", PresentationKind, false},
 		{"x1", NoteKind, false},
 		{"N1", NoteKind, false},
 		{"n", NoteKind, false},
@@ -123,6 +131,58 @@ func TestValidIDForKind(t *testing.T) {
 		t.Run(string(test.kind)+"/"+test.id, func(t *testing.T) {
 			if got := ValidIDForKind(test.id, test.kind); got != test.ok {
 				t.Errorf("ValidIDForKind(%q, %q) = %v, want %v", test.id, test.kind, got, test.ok)
+			}
+		})
+	}
+}
+
+func TestArtifactValidationErrors(t *testing.T) {
+	now := time.Now().UTC()
+	validID := "n1"
+	validKind := NoteKind
+
+	tests := []struct {
+		name string
+		art  Artifact
+		want string
+	}{
+		{
+			name: "missing CreatedAt",
+			art: Artifact{
+				ID: validID, Kind: validKind, Title: "Example",
+				ModifiedAt:    now,
+				FormatVersion: FormatVersion,
+			},
+			want: "artifact timestamps are required",
+		},
+		{
+			name: "missing ModifiedAt",
+			art: Artifact{
+				ID: validID, Kind: validKind, Title: "Example",
+				CreatedAt:     now,
+				FormatVersion: FormatVersion,
+			},
+			want: "artifact timestamps are required",
+		},
+		{
+			name: "unsupported format version",
+			art: Artifact{
+				ID: validID, Kind: validKind, Title: "Example",
+				CreatedAt: now, ModifiedAt: now,
+				FormatVersion: 1, // Invalid, since FormatVersion is 2
+			},
+			want: "unsupported artifact format version 1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.art.Validate()
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.want)
+			}
+			if err.Error() != tt.want {
+				t.Errorf("got error %q, want %q", err.Error(), tt.want)
 			}
 		})
 	}
