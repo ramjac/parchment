@@ -221,9 +221,9 @@ display as clean links/placeholders in text editors and as fully rendered
 graphics in document previews/readers, editor layout uses available terminal
 space, and app chrome is distinguishable from artifact content across screens.
 
-## 8. Basic image editing
+## 8. Basic image editing (Research)
 
-Add crop and resize operations for image files opened directly by Parchment.
+Research and evaluate approaches to add crop and resize operations for image files opened directly by Parchment (e.g., deciding between Go's standard image libraries or robust third-party alternatives).
 Keep images as ordinary files at user-chosen paths; do not wrap them in
 Markdown artifacts or add per-image sidecars.
 
@@ -294,8 +294,8 @@ artifact in the TUI.
 
 ## 11. Spreadsheet row/column deletion and expanded formula engine
 
-Extend spreadsheet capabilities with deletion operations, a formal formula AST
-parser, standard aggregate functions, and CSV export.
+Extend spreadsheet capabilities with deletion operations, and research the design for a formal formula AST
+parser, standard aggregate functions, and CSV export (deciding on custom AST vs external parsing libraries).
 
 ### Formula Grammar & AST Architecture
 Replace the ad-hoc recursive arithmetic evaluator in `internal/spreadsheet/formula.go`
@@ -400,10 +400,10 @@ within document artifacts.
 **Acceptance:** Users can inspect and extract embedded images from document files
 without manually decoding JSON blocks from the artifact file.
 
-## 13. Presentation media, directives, and export
+## 13. Presentation media, directives, and export (Research)
 
-Enhance Markdown presentations with embedded media support, directive parsing,
-and slide deck exporting.
+Research and design decisions for enhancing Markdown presentations with embedded media support, directive parsing,
+and slide deck exporting (e.g., evaluating external tools vs internal HTML/PDF generation).
 
 - **Embedded media**: Extend presentation storage with a hidden payload block
   for embedded images, matching the document model. Allow referencing embedded
@@ -466,7 +466,7 @@ flowchart TD
         REND --> CHROME["5.3 Separate App Chrome from Content"]
     end
 
-    subgraph Phase4["Phase 4: Extended Domain Engines"]
+    subgraph Phase4["Phase 4: Extended Domain Engines (Research)"]
         S_DEL --> FORMULA["11. Formula AST, Ranges & Functions"]
         IMG_CLI --> PRES_MEDIA["13. Presentation Media & Directives"]
         IMG_CLI --> IMG_EDIT["8. Basic Image Editing (Crop/Resize)"]
@@ -507,14 +507,12 @@ flowchart TD
 12. **Visual Separation of App Chrome (Section 5.3)**: Distinguish headers, footers,
     and status bars from artifact content.
 
-### Phase 4: Extended Domain Engines
-13. **Spreadsheet Formula AST, Ranges & Aggregate Functions (Section 11)**: Implement
-    formal Lexer/AST, rectangular ranges (`A1:B10`), aggregate functions (`SUM`,
-    `AVERAGE`, `COUNT`, `MIN`, `MAX`), and cross-sheet references.
-14. **Presentation Media, Directives & Slide Export (Section 13)**: Support embedded images,
-    Go present command directives (`.image`, `.code`), and HTML/PDF slide deck export.
-15. **Basic Image Editing (Section 8)**: Implement crop and resize operations for
-    directly opened image files.
+### Phase 4: Extended Domain Engines (Research)
+13. **Spreadsheet Formula AST, Ranges & Aggregate Functions (Section 11)**: Research
+    and decide on architecture for formal Lexer/AST, ranges, and functions.
+14. **Presentation Media, Directives & Slide Export (Section 13)**: Research implementation approach for embedded images,
+    Go present command directives, and HTML/PDF export.
+15. **Basic Image Editing (Section 8)**: Research implementation strategies for crop and resize operations.
 
 ### Why This Order is Critical
 1. **Foundational Input Widget before Recovery/Search (Item 4 before Items 3 & 10)**:
