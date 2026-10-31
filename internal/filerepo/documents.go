@@ -34,8 +34,38 @@ func (r *Repository) GetDocument(ctx context.Context, path string) (document.Doc
 
 // ListDocumentChanges returns the proposals recorded in the document at path.
 func (r *Repository) ListDocumentChanges(ctx context.Context, path string) ([]document.Change, error) {
-	_, changes, err := r.readDocument(ctx, path)
-	return changes, err
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	content, err := readContent(path, artifact.DocumentKind, document.ErrNotFound)
+	if err != nil {
+		return nil, err
+	}
+	file, err := decodeArtifactBlocks(path, content)
+	if err != nil {
+		return nil, err
+	}
+	payloadJSON, ok := file.Blocks[documentDataBlock]
+	if !ok {
+		return nil, fmt.Errorf("%s: document data block is missing", path)
+	}
+	var payload struct {
+		Changes []document.Change `json:"changes,omitempty"`
+	}
+	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
+		return nil, fmt.Errorf("decode document changes %s: %w", path, err)
+	}
+	for i := range payload.Changes {
+		payload.Changes[i].DocumentID = file.Artifact.ID
+	}
+	if err := validateDocumentChanges(file.Artifact.ID, payload.Changes); err != nil {
+		return nil, fmt.Errorf("validate document changes %s: %w", path, err)
+	}
+	return payload.Changes, nil
 }
 
 func (r *Repository) readDocument(ctx context.Context, path string) (document.Document, []document.Change, error) {

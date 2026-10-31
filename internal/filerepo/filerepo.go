@@ -434,3 +434,16 @@ func ensureDirectory(path string) error {
 	}
 	return nil
 }
+
+// decodeArtifactBlocks decodes content already checked by checkKind, but skips
+// parsing the full body text and only returns the metadata and payload blocks.
+func decodeArtifactBlocks(path string, content []byte) (artifactfile.File, error) {
+	file, err := artifactfile.DecodeBlocks(content)
+	if err != nil {
+		return artifactfile.File{}, fmt.Errorf("decode %s: %w", path, err)
+	}
+	file.Artifact.CreatedAt = file.Artifact.CreatedAt.UTC()
+	file.Artifact.ModifiedAt = file.Artifact.ModifiedAt.UTC()
+	setRuntimeIdentity(&file.Artifact, path)
+	return file, nil
+}
