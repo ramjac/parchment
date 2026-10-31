@@ -291,7 +291,16 @@ presentations. Planned work is organized into five implementation phases:
 
 ### Phase 5: External Interop & Persistence
 - Make a plan for importing and exporting to/from common document file formats (ODF, DOCX; lossy conversion reporting unsupported features)
+  - **Tooling:** What library or external tool will be used for parsing and generating ODF and DOCX formats (e.g., native Go library, Pandoc integration, or LibreOffice headless)?
+  - **Mapping:** How will we map between Parchment's Markdown + custom metadata structures and the rich text features of ODF/DOCX?
+  - **Lossy Conversion UI:** How should unsupported features or lossy conversions be reported to the user (e.g., summary dialog, inline warnings, side-by-side comparison)?
+  - **Scope:** Do we also plan to export spreadsheets (XLSX, ODS) and presentations (PPTX, ODP), or restrict this to documents?
 - Make a plan for persistent undo/redo storage format under `~/.parchment/`, with explicit storage and recovery semantics (planning only)
+  - **Storage Format:** What format should the undo/redo history take (e.g., JSON patches, append-only log, SQLite database)?
+  - **File Identity:** Since Parchment artifacts are regular files that lack stable UUIDs and can be renamed or moved, how do we reliably link an undo/redo log in `~/.parchment/` to its corresponding file on disk (e.g., file path combined with content hashing)?
+  - **Garbage Collection:** What is the lifecycle policy for these history files to prevent `~/.parchment/` from growing indefinitely?
+  - **Concurrency:** How do we handle multiple Parchment processes attempting to read/write the undo/redo history for the same artifact simultaneously?
+  - **Payload Size:** Should large embedded assets (like images) be duplicated in the history log when they are added or removed, or is there a reference-based approach?
 
 ## Development
 
