@@ -103,17 +103,33 @@ func TestReadMetadataRequiresCurrentFormatMarker(t *testing.T) {
 	}
 }
 
+type decodeTrailingBlockTest struct {
+	name    string
+	append  string
+	wantErr string
+}
+
+func runDecodeTrailingBlockTests(t *testing.T, validHeader []byte, tests []decodeTrailingBlockTest) {
+	t.Helper()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := append([]byte(nil), validHeader...)
+			data = append(data, []byte(tt.append)...)
+			_, err := Decode(data)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Decode() error = %v, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestDecodeTrailingBlockErrorPaths(t *testing.T) {
 	validHeader, err := Encode(testArtifact(), "Body content\n", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	tests := []struct {
-		name    string
-		append  string
-		wantErr string
-	}{
+	tests := []decodeTrailingBlockTest{
 		{
 			name:    "unclosed code fence",
 			append:  "\n" + trailingBlocksBoundary + "\n```parchment-note\n{\"key\":\"value\"}\n",
@@ -146,16 +162,7 @@ func TestDecodeTrailingBlockErrorPaths(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			data := append([]byte(nil), validHeader...)
-			data = append(data, []byte(tt.append)...)
-			_, err := Decode(data)
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("Decode() error = %v, want substring %q", err, tt.wantErr)
-			}
-		})
-	}
+	runDecodeTrailingBlockTests(t, validHeader, tests)
 }
 
 func checkDecodeMetadataError(t *testing.T, mutate func(map[string]any), wantErr string) {
