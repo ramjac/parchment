@@ -299,11 +299,23 @@ presentations. Planned work is organized into five implementation phases:
 
 ### Phase 4: Extended Domain Engines
 - Dedicated spreadsheet formula AST and evaluation engine supporting rectangular ranges (`A1:B10`), aggregate functions (`SUM`, `AVERAGE`, `COUNT`, `MIN`, `MAX`), nested function calls, cross-sheet references (`Sheet2!A1`), and standard error propagation (`#REF!`, `#DIV/0!`, `#NAME?`, `#VALUE!`, `#CIRCULAR!`)
+  - *Parser implementation*: Hand-written recursive descent vs. parser generator (e.g., `goyacc` or `participle`)?
+  - *Evaluation strategy*: Dependency graph for targeted recalculation vs. eager evaluation?
+  - *Formula syntax details*: How to handle strings, quoting, and locale-specific argument separators?
 - Presentation media, directives, and export
   - Support embedded images in slide decks
+    - *Storage*: Should images be stored in a hidden `parchment-presentation` JSON block, mirroring the approach used for Documents?
+    - *Syntax*: Use standard Markdown image syntax (`![alt](ref)`) mapped to the embedded data?
   - Support Go present command directives (e.g. `.image`, `.code`)
+    - *Compatibility*: Full emulation of `golang.org/x/tools/present` parser or a targeted subset?
+    - *Security*: How to handle `.code` local file inclusions securely, or should it only reference embedded blocks?
   - Export presentations to standalone slide formats (HTML slides, PDF)
+    - *HTML Export*: Use an existing framework (e.g., `reveal.js`) or a custom, lightweight CSS grid?
+    - *PDF Export*: Native Go PDF library (e.g., `gofpdf`) or headless browser dependency?
 - Basic image-editing features for files opened directly by Parchment (crop, resize)
+  - *Interface*: Interactive TUI (using Kitty/Sixel protocols for preview) vs. CLI flags?
+  - *Backend*: Standard library (`image`, `image/draw`) vs. `golang.org/x/image/` extensions?
+  - *Persistence*: Are edits destructive, or is the original image preserved as a backup?
 
 ### Phase 5: External Interop & Persistence
 - Make a plan for importing and exporting to/from common document file formats (ODF, DOCX; lossy conversion reporting unsupported features)
