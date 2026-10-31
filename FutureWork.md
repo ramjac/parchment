@@ -221,150 +221,6 @@ display as clean links/placeholders in text editors and as fully rendered
 graphics in document previews/readers, editor layout uses available terminal
 space, and app chrome is distinguishable from artifact content across screens.
 
-## 6. Plan persistent undo/redo storage format
-
-Make a plan for persistent, bounded, per-file undo/redo history stored under
-`~/.parchment/history/`. This work item is **planning only**; the implementation of
-the persistent storage engine will follow this architectural design.
-
-### Storage Strategy: Content-Addressable Blobs vs. Diffs
-- **Evaluation of Text Diffs**: Parchment artifacts blend Markdown text with
-  structured JSON payload fences (`parchment-*` code blocks) and binary data
-  (base64 encoded images, spreadsheet cell models). Forward/backward unified
-  diffs on structured and base64 content are fragile, computationally expensive to
-  apply reliably across schema updates, and prone to corrupting binary blocks.
-- **Evaluation of Monolithic Snapshots**: Storing full file duplicates for every
-  keystroke or undo step rapidly exhausts disk space, especially for documents
-  with embedded high-resolution images.
-- **Recommended Architecture**: A hybrid content-addressable blob store with a
-  per-artifact index manifest:
-  - Snapshots capture the exact canonical artifact file bytes at each saved step.
-  - Large binary payloads and unchanged file contents are hashed (SHA-256) and
-    stored deduplicated in a shared blob pool (`~/.parchment/history/blobs/<sha256>`).
-  - Identical images and unchanged blocks across multiple undo steps share the
-    exact same underlying blob on disk.
-  - Snapshot files and blobs are created with strict owner-only permissions (`0600`)
-    and directories with `0700`.
-
-### Directory Structure & Manifest Schema
-History is organized beside the existing recovery store under `~/.parchment/`:
-```
-~/.parchment/
-├── recovery/                    # Existing autosave recovery drafts
-└── history/
-    ├── blobs/                   # Deduplicated immutable content blobs (0600)
-    │   ├── 4a8b1...
-    │   └── e3b0c...
-    └── <path-sha256>/           # Per-artifact history keyed by absolute path hash
-        ├── index.json           # Stack manifest, pointer, and step metadata
-        └── journal.json         # In-flight transition journal for crash recovery
-```
-
-**Manifest Schema (`index.json`)**:
-- `schema_version`: Format version integer (e.g. `1`).
-- `artifact_path`: Absolute path of the tracked artifact file.
-- `undo_limit`: Maximum number of undo steps retained (default `100`, configured via `undo_limit` / `PARCHMENT_UNDO_LIMIT`).
-- `head_index`: Zero-based index into `entries` pointing to the current state (-1 if empty).
-- `entries`: Ordered array of history snapshots:
-  - `id`: Monotonic step ID or UUID.
-  - `timestamp`: UTC ISO-8601 timestamp.
-  - `description`: Human-readable label (e.g. `"Edit text"`, `"Accept proposal"`, `"Delete column"`).
-  - `file_digest`: SHA-256 hex digest of the artifact on disk at this state.
-  - `blob_hash`: SHA-256 hex digest referencing the snapshot in `blobs/<blob_hash>`.
-  - `byte_size`: File size in bytes.
-
-### Crash Recovery & Transition Journaling
-To prevent corruption if the process is terminated mid-transition (e.g., power loss
-or SIGKILL between disk write and history pointer update), use a two-phase journaled
-commit:
-1. **Prepare**: Write `journal.json` atomically:
-   `{"transition_id": "...", "from_digest": "...", "to_digest": "...", "target_head": N, "status": "pending"}`.
-2. **Apply**: Atomically overwrite the artifact file with the target blob contents
-   using `writeAtomic` and sync directory metadata.
-3. **Commit**: Atomically update `index.json` with `head_index = target_head`.
-4. **Finalize**: Remove `journal.json`.
-
-**Startup / Reopen Resolution**:
-- When opening an artifact, check if `journal.json` exists for its path hash.
-- Compare the current disk file's SHA-256 digest against `from_digest` and `to_digest`:
-  - If current file matches `to_digest`: The file write succeeded before `index.json` was committed. Commit `index.json` to `target_head` and delete `journal.json`.
-  - If current file matches `from_digest`: The process crashed before writing the file. Delete `journal.json` (rollback).
-  - If current file matches neither: An external modification occurred during an interrupted transition. Retain both file and history, display an explicit conflict warning, and refuse automated recovery.
-
-### External Modification & Conflict Handling
-- Before executing any `Undo()` or `Redo()` operation, compute the SHA-256 digest of
-  the artifact file currently on disk and compare it with `entries[head_index].file_digest`.
-- If the digests do not match:
-  - An external edit occurred (e.g. file modified in an external editor or switched by Git).
-  - **Do not overwrite the external edit.** Refuse the undo/redo operation and report:
-    `"File modified externally; persistent history preserved for recovery."`
-  - History remains intact and can be inspected or explicitly recovered if requested.
-
-### Retention, Pruning & Garbage Collection
-- **Branch Truncation**: When a new edit is saved while `head_index < len(entries)-1`,
-  drop all subsequent redo entries (standard linear history model).
-- **History Bounding**: When total entries exceed `undo_limit`, prune the oldest
-  entries from `index.json`.
-- **Blob Garbage Collection**: Unreferenced blobs in `~/.parchment/history/blobs/`
-  are reclaimed via an automated or CLI-invoked garbage collection pass (`parchment history gc`),
-  which builds the set of active `blob_hash` references across all `index.json` files
-  and removes unreferenced blob files.
-- **Purge CLI**: Support `parchment history clean <path>` to remove history for a
-  specific file and `parchment history clean --all` to purge all persistent history.
-
-### Service & Architecture Boundaries
-- Define the history persistence abstraction in `internal/history`:
-  ```go
-  type Store interface {
-      Load(ctx context.Context, path string) (*Stack, error)
-      Save(ctx context.Context, path string, stack *Stack) error
-      Record(ctx context.Context, path string, desc string, data []byte) error
-      Undo(ctx context.Context, path string) ([]byte, string, error)
-      Redo(ctx context.Context, path string) ([]byte, string, error)
-      Purge(ctx context.Context, path string) error
-  }
-  ```
-- Implement the storage engine in `internal/filerepo` beside `recovery.Store`.
-- Keep domain services (`document`, `note`, `spreadsheet`, `presentation`) dealing
-  strictly with high-level undo/redo operations, leaving file hashing, blob storage,
-  and journal recovery inside the repository.
-
-**Acceptance:** A fully documented, verified architectural plan for persistent undo/redo
-is established covering storage schemas, blob deduplication, crash recovery journaling,
-external edit conflict detection, and interface boundaries. Implementation is deferred
-to follow this plan.
-
-## 7. Import and export ODF and DOCX
-
-Plan document conversion around Markdown text, basic document layout, and
-embedded images. Conversion is intentionally lossy: Parchment does not
-represent multiple fonts, exact image/object positioning, or every feature
-available in office formats. Import/export must report unsupported or
-approximated content rather than implying a lossless round trip.
-
-- Define a documented mapping for headings, paragraphs, lists, page size,
-  orientation, margins, columns, headers/footers, and embedded images between
-  Parchment documents and ODF Text (`.odt`) / Word (`.docx`). Leave unsupported
-  features such as precise object placement and multiple per-section fonts
-  out of the Parchment model and include them in conversion warnings.
-- Implement format-specific adapters behind a document import/export
-  boundary, keeping archive/XML details out of the document domain model.
-  Evaluate maintained Go libraries against the required subset before
-  choosing dependencies; limit archive and XML processing to the selected
-  document formats.
-- Add path-based CLI import/export commands. Import creates a user-named
-  Markdown artifact; export creates a user-named ODF or DOCX file. Refuse
-  accidental overwrites, preserve the source file, and embed images in the
-  output document rather than creating asset sidecars.
-- Use small checked-in fixtures for representative ODF and DOCX files,
-  plus generated export fixtures where useful. Test content/layout mappings,
-  embedded images, malformed or unsupported input, warnings, and
-  non-overwrite behavior.
-
-**Acceptance:** The four operations—ODF export, DOCX export, ODF import, and
-DOCX import—work for the documented subset, preserve source files, and
-explain losses and unsupported features.
-
 ## 8. Basic image editing (Research)
 
 Research and evaluate approaches to add crop and resize operations for image files opened directly by Parchment (e.g., deciding between Go's standard image libraries or robust third-party alternatives).
@@ -615,13 +471,6 @@ flowchart TD
         IMG_CLI --> PRES_MEDIA["13. Presentation Media & Directives"]
         IMG_CLI --> IMG_EDIT["8. Basic Image Editing (Crop/Resize)"]
     end
-
-    subgraph Phase5["Phase 5: External Interop & Persistence"]
-        FORMULA --> DOCX["7. ODF / DOCX Import & Export Plan"]
-        LINK --> DOCX
-        DOCX --> HIST["6. Persistent Undo/Redo Storage Plan"]
-        PRES_MEDIA --> HIST
-    end
 ```
 
 ### Phase 1: Foundations & Bug Fixes
@@ -665,12 +514,6 @@ flowchart TD
     Go present command directives, and HTML/PDF export.
 15. **Basic Image Editing (Section 8)**: Research implementation strategies for crop and resize operations.
 
-### Phase 5: External Interop & Persistence
-16. **Import and Export ODF / DOCX (Section 7)**: Plan and build document converters
-    between Parchment Markdown and Word/ODF formats.
-17. **Plan Persistent Undo/Redo Storage Format (Section 6)**: Design content-addressable
-    blob store, journaled crash recovery, and conflict handling under `~/.parchment/history/`.
-
 ### Why This Order is Critical
 1. **Foundational Input Widget before Recovery/Search (Item 4 before Items 3 & 10)**:
    Establishing the dedicated micro-style editor widget first ensures Note, Document,
@@ -683,14 +526,6 @@ flowchart TD
 3. **Rich Rendering before Link Navigation (Item 5.1 before Item 1)**:
    Link hit-testing requires terminal X/Y coordinate mapping. Implementing links
    against monospaced raw text would break as soon as Glamour reflows and styles Markdown.
-4. **Data Model Stability before Office Export (Items 1, 11, 12 before Item 7)**:
-   ODF and DOCX converters must map headings, document links/anchors, and embedded
-   images. If document schemas or image payloads change after DOCX export is written,
-   the converters would require complete rewrites.
-5. **Persistent History near the End (Item 6 last)**:
-   Persistent undo/redo serializes snapshots across all artifact services. Stabilizing
-   deletion, normalization, image payloads, and formula adjustments first ensures the
-   persistent snapshot format does not suffer from schema migrations during development.
 
 Each feature should include focused Go unit/model tests and use temporary
 directories for filesystem behavior. Run `go test ./...` and
