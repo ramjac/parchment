@@ -110,21 +110,24 @@ func poolDocumentImage(images []document.Image, image document.Image) ([]documen
 	return images, len(images) - 1
 }
 
+func poolDocumentImages(images, newImages []document.Image) ([]document.Image, []int) {
+	var refs []int
+	var ref int
+	for _, image := range newImages {
+		images, ref = poolDocumentImage(images, image)
+		refs = append(refs, ref)
+	}
+	return images, refs
+}
+
 func newDocumentRecoveryData(state documentAutosaveState) documentRecoveryData {
 	data := documentRecoveryData{
 		Snapshot: state.snapshot, SnapshotBlocks: cloneRawMessages(state.snapshot.Blocks),
 		Draft: state.draft,
 	}
 	data.Snapshot.Images, data.Draft.Images = nil, nil
-	var ref int
-	for _, image := range state.snapshot.Images {
-		data.Images, ref = poolDocumentImage(data.Images, image)
-		data.SnapshotImages = append(data.SnapshotImages, ref)
-	}
-	for _, image := range state.draft.Images {
-		data.Images, ref = poolDocumentImage(data.Images, image)
-		data.DraftImages = append(data.DraftImages, ref)
-	}
+	data.Images, data.SnapshotImages = poolDocumentImages(data.Images, state.snapshot.Images)
+	data.Images, data.DraftImages = poolDocumentImages(data.Images, state.draft.Images)
 	return data
 }
 
