@@ -386,38 +386,105 @@ func TestReferencedImagesRecognizesMarkdownForms(t *testing.T) {
 }
 
 func TestPrint(t *testing.T) {
-	t.Run("HappyPath", func(t *testing.T) {
-		body := "Page One\n\n" + PageBreakMarkup + "\n\nPage Two"
-		d := testDocument(body, nil)
-
+	t.Run("SinglePage", func(t *testing.T) {
+		d := testDocument("Single page content.", nil)
 		printed, err := Print(d)
 		if err != nil {
 			t.Fatalf("Print failed: %v", err)
 		}
+		if strings.Contains(printed, "\f") {
+			t.Errorf("single page document should not contain form feed")
+		}
+		if !strings.Contains(printed, "Single page content.") {
+			t.Errorf("printed document missing body content")
+		}
+		if !strings.HasSuffix(printed, "\n") {
+			t.Errorf("printed output should end with newline")
+		}
+	})
 
+	t.Run("MultiPageDelimitedByFormFeed", func(t *testing.T) {
+		body := "Page One\n\n" + PageBreakMarkup + "\n\nPage Two\n\n" + PageBreakMarkup + "\n\nPage Three"
+		d := testDocument(body, nil)
+		printed, err := Print(d)
+		if err != nil {
+			t.Fatalf("Print failed: %v", err)
+		}
+		pages := strings.Split(printed, "\f")
+		if len(pages) != 3 {
+			t.Fatalf("expected 3 pages separated by form feeds, got %d", len(pages))
+		}
+		for i, want := range []string{"Page One", "Page Two", "Page Three"} {
+			if !strings.Contains(pages[i], want) {
+				t.Errorf("page %d missing expected content %q", i+1, want)
+			}
+			if !strings.HasSuffix(pages[i], "\n") {
+				t.Errorf("page %d should end with newline", i+1)
+			}
+		}
+	})
+
+	t.Run("ComplexDocumentWithHeadersAndFooters", func(t *testing.T) {
+		body := "# Main Title\n\nSome **bold** and *italic* text with a [link](https://example.com).\n\n" +
+			"- item 1\n- item 2\n\n" +
+			PageBreakMarkup + "\n\n" +
+			"## Section 2\n\nMore text."
+		d := testDocument(body, func(l *Layout) {
+			l.Header = "Confidential|{title}|{page}"
+			l.Footer = "Left Footer|Middle|Right"
+			l.PageNumbers = NumbersRight
+		})
+		printed, err := Print(d)
+		if err != nil {
+			t.Fatalf("Print failed: %v", err)
+		}
 		pages := strings.Split(printed, "\f")
 		if len(pages) != 2 {
 			t.Fatalf("expected 2 pages, got %d", len(pages))
 		}
-
-		if !strings.Contains(pages[0], "Page One") {
-			t.Errorf("expected page 1 to contain 'Page One'")
-		}
-		if !strings.Contains(pages[1], "Page Two") {
-			t.Errorf("expected page 2 to contain 'Page Two'")
+		for _, want := range []string{"MAIN TITLE", "Confidential", "Quarterly Report", "Left Footer", "bold and italic", "- item 1"} {
+			if !strings.Contains(printed, want) {
+				t.Errorf("missing expected text %q in printed output", want)
+			}
 		}
 	})
 
-	t.Run("ErrorCase", func(t *testing.T) {
-		d := testDocument("Some text", func(l *Layout) {
-			l.Version = 999 // Invalid version
-		})
+	t.Run("EmptyDocument", func(t *testing.T) {
+		d := testDocument("", nil)
+		printed, err := Print(d)
+		if err != nil {
+			t.Fatalf("Print failed: %v", err)
+		}
+		if printed == "" {
+			t.Fatal("expected non-empty output for empty document (page layout rows)")
+		}
+		if strings.Contains(printed, "\f") {
+			t.Errorf("empty document should be 1 page without form feed")
+		}
+	})
 
+	t.Run("LayoutValidationError", func(t *testing.T) {
+		d := testDocument("Some text", func(l *Layout) {
+			l.Version = 999
+		})
 		_, err := Print(d)
 		if err == nil {
-			t.Fatal("expected Print to return an error for invalid layout, got nil")
+			t.Fatal("expected Print to return error for invalid layout version, got nil")
 		}
 		if !strings.Contains(err.Error(), "unsupported layout version 999") {
+			t.Errorf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("GeometryError", func(t *testing.T) {
+		d := testDocument("Some text", func(l *Layout) {
+			l.PageSize = "invalid_size"
+		})
+		_, err := Print(d)
+		if err == nil {
+			t.Fatal("expected Print to return error for invalid page size, got nil")
+		}
+		if !strings.Contains(err.Error(), "unsupported page size") {
 			t.Errorf("unexpected error message: %v", err)
 		}
 	})
