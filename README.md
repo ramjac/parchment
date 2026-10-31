@@ -272,19 +272,30 @@ presentations. Planned work is organized into five implementation phases:
 
 ### Phase 2: State Safety & CLI Core
 - Autosave recovery drafts for the spreadsheet and presentation editors
+  - **Research Task**: Should autosave be triggered periodically by a timer or by specific edit events? What format should the recovery draft use for spreadsheets and presentations? How should concurrent modifications by external tools be handled during recovery?
 - Explicit, opt-in conversion of a plain Markdown file into a Parchment artifact (plain Markdown currently opens and saves as a plain note; default to Document conversion)
+  - **Research Task**: What is the ideal UX for conversion (e.g., TUI prompt upon opening, or explicit CLI command)? If plain Markdown currently opens as a Note, how does a user opt-in to Document conversion? Should the system automatically back up the original plain Markdown file before conversion?
 - Spreadsheet deletion & CSV export: row and column deletion (`delete-row`, `delete-column`) and sheet removal with formula reference shifting and `#REF!` error handling; CSV export command (`spreadsheet export --csv`)
+  - **Research Task**: When deleting a sheet, how exactly are cross-sheet formula references invalidated (e.g., cascading `#REF!` errors)? How are `#REF!` errors represented in the `parchment-spreadsheet` JSON block? How should the `spreadsheet export --csv` command handle multi-sheet workbooks (e.g., zip archive, multiple files, or requiring a specific sheet flag)?
 - Document embedded image management: commands to list embedded images, view metadata, extract image files to disk, and remove unused images
+  - **Research Task**: What image metadata should be stored and displayed (e.g., original filename, dimensions, file size)? How is an "unused" image reliably detected (e.g., parsing Markdown links vs. handling commented-out links)? Should unused images be pruned automatically upon saving, or only via an explicit user command?
 
 ### Phase 3: Rendering & TUI Features
-- Overall visual improvements
-  - Document viewer and other previewers render rich Markdown using [Glamour](https://github.com/charmbracelet/glamour). Embedded images appear as links/placeholders in the editor, but render as fully visible graphical images in document previews and readers (using Kitty/Sixel/iTerm2 protocols with ANSI half-block fallback)
-  - Parchment app components at the bottom of the page like the "Ready" status and undo/redo indicators are not visually separated from the content of the artifact being shown. The same is true for the app components at the top of the page
-- Document navigation pane and in-document link navigation (strictly for Documents; does not apply to Notes or Presentations)
-  - Navigation pane to the left of the Document editor displaying headings and anchors; clicking or selecting an entry jumps the editor cursor to that section
-  - In document preview and reader views, inline Markdown links are clickable to jump to the corresponding target heading or page
-- In-editor search and find across all artifact viewers and editors (notes, documents, spreadsheets, presentations)
-- Document and presentation printer font selection for printer-oriented rendering
+- Research and plan overall visual improvements
+  - How will Glamour be integrated for rich Markdown rendering in previewers? What styles/themes will be supported? How do we map Parchment's custom styles to Glamour's stylesheet?
+  - For image rendering, what library will be used to detect and support Kitty/Sixel/iTerm2 protocols? How do we handle terminal window resizing for graphical images, and what is the exact fallback behavior for ANSI half-blocks?
+  - How should app components (like "Ready" status and undo/redo) be visually separated from artifact content? Options include adding borders (using lipgloss borders), distinct background colors, or specific horizontal rule separators.
+- Research and plan document navigation pane and in-document link navigation (strictly for Documents; does not apply to Notes or Presentations)
+  - How will the layout split be managed for the navigation pane (e.g., fixed width vs percentage)?
+  - How do we handle narrow terminals where both the editor and navigation pane cannot fit? Should it be a toggleable overlay or auto-hide?
+  - For clickable inline Markdown links, how do we track screen coordinates to map mouse clicks to link targets in the terminal?
+- Research and plan in-editor search and find across all artifact viewers and editors (notes, documents, spreadsheets, presentations)
+  - Where will the search UI be located (e.g., floating modal, bottom bar, top bar)?
+  - How will matches be highlighted in the text buffer without permanently mutating the underlying text, especially across different editor components?
+  - Do we need support for regex, case-insensitivity, and whole-word matching?
+- Research and plan document and presentation printer font selection for printer-oriented rendering
+  - What format will font selection take (e.g., CSS font-family strings, specific font files)?
+  - How will the fonts be loaded or mapped during the printing/PDF generation process since they cannot be applied to terminal output?
 
 ### Phase 4: Extended Domain Engines
 - Dedicated spreadsheet formula AST and evaluation engine supporting rectangular ranges (`A1:B10`), aggregate functions (`SUM`, `AVERAGE`, `COUNT`, `MIN`, `MAX`), nested function calls, cross-sheet references (`Sheet2!A1`), and standard error propagation (`#REF!`, `#DIV/0!`, `#NAME?`, `#VALUE!`, `#CIRCULAR!`)
