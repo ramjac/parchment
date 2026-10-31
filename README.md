@@ -297,7 +297,10 @@ presentations. Planned work is organized into five implementation phases:
   - What format will font selection take (e.g., CSS font-family strings, specific font files)?
   - How will the fonts be loaded or mapped during the printing/PDF generation process since they cannot be applied to terminal output?
 
-### Phase 4: Extended Domain Engines
+### Phase 4: Extended Domain Engines (Research)
+- Research and design the dedicated spreadsheet formula AST and evaluation engine, evaluating whether to build a custom AST or use an external library.
+- Research the toolchain and approach for presentation media, directives, and exporting to standalone slide formats (HTML slides, PDF).
+- Research basic image-editing features (crop, resize) and evaluate Go standard library limitations versus third-party libraries.
 - Dedicated spreadsheet formula AST and evaluation engine supporting rectangular ranges (`A1:B10`), aggregate functions (`SUM`, `AVERAGE`, `COUNT`, `MIN`, `MAX`), nested function calls, cross-sheet references (`Sheet2!A1`), and standard error propagation (`#REF!`, `#DIV/0!`, `#NAME?`, `#VALUE!`, `#CIRCULAR!`)
   - *Parser implementation*: Hand-written recursive descent vs. parser generator (e.g., `goyacc` or `participle`)?
   - *Evaluation strategy*: Dependency graph for targeted recalculation vs. eager evaluation?
