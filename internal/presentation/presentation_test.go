@@ -3,6 +3,7 @@ package presentation
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -597,9 +598,36 @@ func TestDecode(t *testing.T) {
 			if err != nil {
 				t.Errorf("Decode() unexpected error: %v", err)
 			} else {
-				if validItem.Source != decoded.Source || validItem.Version != decoded.Version ||
-					!validItem.CreatedAt.Equal(decoded.CreatedAt) || !validItem.ModifiedAt.Equal(decoded.ModifiedAt) {
-					t.Errorf("round trip changed persisted presentation content:\noriginal: %+v\ndecoded: %+v", validItem, decoded)
+					// Validate round-trip content explicitly rather than relying on deep equal or partial checks
+					if decoded.ID == "" || decoded.ID == validItem.ID {
+						t.Errorf("Decode() expected a transient ID, got %q", decoded.ID)
+					}
+					if decoded.Kind != validItem.Kind {
+						t.Errorf("Decode() Kind = %v, want %v", decoded.Kind, validItem.Kind)
+					}
+					if decoded.Title != validItem.Title {
+						t.Errorf("Decode() Title = %v, want %v", decoded.Title, validItem.Title)
+					}
+					if !decoded.CreatedAt.Equal(validItem.CreatedAt) {
+						t.Errorf("Decode() CreatedAt = %v, want %v", decoded.CreatedAt, validItem.CreatedAt)
+					}
+					if !decoded.ModifiedAt.Equal(validItem.ModifiedAt) {
+						t.Errorf("Decode() ModifiedAt = %v, want %v", decoded.ModifiedAt, validItem.ModifiedAt)
+					}
+					if decoded.FormatVersion != validItem.FormatVersion {
+						t.Errorf("Decode() FormatVersion = %v, want %v", decoded.FormatVersion, validItem.FormatVersion)
+					}
+					if decoded.Path != "" { // Decoded artifact shouldn't have a path before repository save
+						t.Errorf("Decode() Path = %v, want empty string", decoded.Path)
+					}
+					if decoded.Version != validItem.Version {
+						t.Errorf("Decode() Version = %v, want %v", decoded.Version, validItem.Version)
+					}
+					if decoded.Source != validItem.Source {
+						t.Errorf("Decode() Source = %v, want %v", decoded.Source, validItem.Source)
+					}
+					if !reflect.DeepEqual(decoded.Blocks, validItem.Blocks) {
+						t.Errorf("Decode() Blocks = %v, want %v", decoded.Blocks, validItem.Blocks)
 				}
 			}
 		})
