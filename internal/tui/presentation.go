@@ -468,7 +468,7 @@ func (m *presentationModel) cancelPending() {
 
 func (m *presentationModel) setError(prefix string, err error) {
 	switch {
-	case isCancelled(err) || errors.Is(err, context.Canceled):
+	case errors.Is(err, context.Canceled):
 		m.status, m.errMessage = "Cancelled", ""
 	case errors.Is(err, presentation.ErrNotFound):
 		m.status, m.errMessage = "", prefix+": presentation not found"
