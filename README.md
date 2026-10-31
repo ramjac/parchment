@@ -267,9 +267,13 @@ presentations. Planned work is organized into five implementation phases:
 
 ### Phase 2: State Safety & CLI Core
 - Autosave recovery drafts for the spreadsheet and presentation editors
+  - **Research Task**: Should autosave be triggered periodically by a timer or by specific edit events? What format should the recovery draft use for spreadsheets and presentations? How should concurrent modifications by external tools be handled during recovery?
 - Explicit, opt-in conversion of a plain Markdown file into a Parchment artifact (plain Markdown currently opens and saves as a plain note; default to Document conversion)
+  - **Research Task**: What is the ideal UX for conversion (e.g., TUI prompt upon opening, or explicit CLI command)? If plain Markdown currently opens as a Note, how does a user opt-in to Document conversion? Should the system automatically back up the original plain Markdown file before conversion?
 - Spreadsheet deletion & CSV export: row and column deletion (`delete-row`, `delete-column`) and sheet removal with formula reference shifting and `#REF!` error handling; CSV export command (`spreadsheet export --csv`)
+  - **Research Task**: When deleting a sheet, how exactly are cross-sheet formula references invalidated (e.g., cascading `#REF!` errors)? How are `#REF!` errors represented in the `parchment-spreadsheet` JSON block? How should the `spreadsheet export --csv` command handle multi-sheet workbooks (e.g., zip archive, multiple files, or requiring a specific sheet flag)?
 - Document embedded image management: commands to list embedded images, view metadata, extract image files to disk, and remove unused images
+  - **Research Task**: What image metadata should be stored and displayed (e.g., original filename, dimensions, file size)? How is an "unused" image reliably detected (e.g., parsing Markdown links vs. handling commented-out links)? Should unused images be pruned automatically upon saving, or only via an explicit user command?
 
 ### Phase 3: Rendering & TUI Features
 - Research and plan overall visual improvements
