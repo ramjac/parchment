@@ -38,7 +38,7 @@ func BenchmarkListDocumentChanges(b *testing.B) {
 			ModifiedAt:    now,
 		},
 		Layout: document.DefaultLayout(),
-		Body: "Hello, World!\n",
+		Body:   "Hello, World!\n",
 	}
 
 	var imageNames []string
@@ -124,7 +124,7 @@ func BenchmarkListDocumentChangesHuge(b *testing.B) {
 			ModifiedAt:    now,
 		},
 		Layout: document.DefaultLayout(),
-		Body: "Hello, World!\n",
+		Body:   "Hello, World!\n",
 	}
 
 	var imageNames []string
