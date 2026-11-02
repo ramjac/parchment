@@ -435,7 +435,6 @@ func (s *documentsScreen) imageLoaded(msg imageLoadedMsg) tea.Cmd {
 	return cmd
 }
 
-
 func (s *documentsScreen) updateKey(msg tea.KeyMsg) tea.Cmd {
 	key := msg.String()
 	if s.width < 40 || s.height < 10 {
