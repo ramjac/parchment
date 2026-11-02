@@ -355,6 +355,46 @@ func TestDocumentProposalsAreStoredInTheFile(t *testing.T) {
 	}
 }
 
+func TestListDocumentChangesSkipsLayoutAndImageValidation(t *testing.T) {
+	ctx := context.Background()
+	repo, _, folder := newRepo(t)
+	path := filepath.Join(folder, "invalid_layout_doc.md")
+	docs := document.NewService(repo, 10)
+	created, err := docs.Create(ctx, path, document.Draft{Body: "initial"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	change, err := docs.Propose(ctx, created, "Edit proposal", document.Draft{Body: "proposed", Layout: created.Layout})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Read the file and corrupt the layout field (e.g. columns = 0 which fails layout validation)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Layout validation fails if columns is negative or margins are invalid; replace with invalid columns
+	corrupted := strings.Replace(string(data), `"columns": 1`, `"columns": -5`, 1)
+	if err := os.WriteFile(path, []byte(corrupted), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// GetDocument must fail due to layout validation failure
+	if _, err := repo.GetDocument(ctx, path); err == nil {
+		t.Fatal("expected GetDocument to fail on invalid layout")
+	}
+
+	// ListDocumentChanges intentionally succeeds because it skips layout and image validation
+	changes, err := repo.ListDocumentChanges(ctx, path)
+	if err != nil {
+		t.Fatalf("expected ListDocumentChanges to succeed, got: %v", err)
+	}
+	if len(changes) != 1 || changes[0].ID != change.ID {
+		t.Fatalf("unexpected changes returned: %+v", changes)
+	}
+}
+
 func TestSpreadsheetAndPresentationRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	repo, _, folder := newRepo(t)

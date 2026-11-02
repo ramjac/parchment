@@ -415,6 +415,12 @@ func runPrintTestCase(t *testing.T, tc printTestCase) {
 		t.Errorf("got %d pages, want %d", len(pages), tc.wantPages)
 	}
 
+	for i, p := range pages {
+		if !strings.HasSuffix(p, "\n") {
+			t.Errorf("page %d does not end with newline", i+1)
+		}
+	}
+
 	for _, want := range tc.wantText {
 		if !strings.Contains(got, want) {
 			t.Errorf("expected output to contain %q, but it did not. Output:\n%s", want, got)
@@ -437,6 +443,29 @@ func TestPrint(t *testing.T) {
 			wantText:  []string{"Page One", "Page Two"},
 		},
 		{
+			name:      "Three Pages Delimited By Form Feeds",
+			body:      "Page One\n\n" + PageBreakMarkup + "\n\nPage Two\n\n" + PageBreakMarkup + "\n\nPage Three",
+			wantPages: 3,
+			wantText:  []string{"Page One", "Page Two", "Page Three"},
+		},
+		{
+			name: "Complex Document With Headers Footers And Formatting",
+			body: "# Main Title\n\nSome **bold** and *italic* text with a [link](https://example.com).\n\n" +
+				"- item 1\n- item 2\n\n" +
+				PageBreakMarkup + "\n\n" +
+				"## Section 2\n\nMore text.",
+			editLayout: func(l *Layout) {
+				l.Header = "Confidential|{title}|{page}"
+				l.Footer = "Left Footer|Middle|Right"
+				l.PageNumbers = NumbersRight
+			},
+			wantPages: 2,
+			wantText: []string{
+				"MAIN TITLE", "Confidential", "Quarterly Report",
+				"Left Footer", "bold and italic", "- item 1", "Section 2",
+			},
+		},
+		{
 			name:      "Empty Document",
 			body:      "",
 			wantPages: 1,
@@ -453,21 +482,6 @@ func TestPrint(t *testing.T) {
 			body:       "Some text",
 			editLayout: func(l *Layout) { l.PageSize = "unknown" },
 			wantErr:    "unsupported page size",
-		},
-		{
-			name: "ComplexDocument",
-			body: "# Main Title\n\nSome **bold** text and a [link](http://example.com).\n\n" +
-				"- item 1\n- item 2\n\n" +
-				PageBreakMarkup + "\n\n" +
-				"## Section 2\n\nMore text.",
-			editLayout: func(l *Layout) {
-				l.Header = "Confidential|Title|{page}"
-				l.Footer = "footer"
-			},
-			wantPages: 2,
-			wantText: []string{
-				"MAIN TITLE", "Confidential", "footer", "bold text", "- item 1", "Section 2",
-			},
 		},
 	}
 	for _, tc := range cases {
