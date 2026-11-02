@@ -33,6 +33,9 @@ func (r *Repository) GetDocument(ctx context.Context, path string) (document.Doc
 }
 
 // ListDocumentChanges returns the proposals recorded in the document at path.
+// It parses and validates only the changes payload, intentionally omitting
+// page layout and embedded image validation to optimize performance when
+// inspecting proposal history.
 func (r *Repository) ListDocumentChanges(ctx context.Context, path string) ([]document.Change, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
