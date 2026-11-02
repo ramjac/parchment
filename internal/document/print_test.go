@@ -385,107 +385,108 @@ func TestReferencedImagesRecognizesMarkdownForms(t *testing.T) {
 	}
 }
 
+type printTestCase struct {
+	name       string
+	body       string
+	editLayout func(*Layout)
+	wantPages  int
+	wantText   []string
+	wantErr    string
+}
+
+func runPrintTestCase(t *testing.T, tc printTestCase) {
+	t.Helper()
+	d := testDocument(tc.body, tc.editLayout)
+	got, err := Print(d)
+
+	if tc.wantErr != "" {
+		if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			t.Fatalf("Print() error = %v, want substring %q", err, tc.wantErr)
+		}
+		return
+	}
+
+	if err != nil {
+		t.Fatalf("Print() unexpected error: %v", err)
+	}
+
+	pages := strings.Split(got, "\f")
+	if len(pages) != tc.wantPages {
+		t.Errorf("got %d pages, want %d", len(pages), tc.wantPages)
+	}
+
+	for i, p := range pages {
+		if !strings.HasSuffix(p, "\n") {
+			t.Errorf("page %d does not end with newline", i+1)
+		}
+	}
+
+	for _, want := range tc.wantText {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected output to contain %q, but it did not. Output:\n%s", want, got)
+		}
+	}
+}
+
 func TestPrint(t *testing.T) {
-	t.Run("SinglePage", func(t *testing.T) {
-		d := testDocument("Single page content.", nil)
-		printed, err := Print(d)
-		if err != nil {
-			t.Fatalf("Print failed: %v", err)
-		}
-		if strings.Contains(printed, "\f") {
-			t.Errorf("single page document should not contain form feed")
-		}
-		if !strings.Contains(printed, "Single page content.") {
-			t.Errorf("printed document missing body content")
-		}
-		if !strings.HasSuffix(printed, "\n") {
-			t.Errorf("printed output should end with newline")
-		}
-	})
-
-	t.Run("MultiPageDelimitedByFormFeed", func(t *testing.T) {
-		body := "Page One\n\n" + PageBreakMarkup + "\n\nPage Two\n\n" + PageBreakMarkup + "\n\nPage Three"
-		d := testDocument(body, nil)
-		printed, err := Print(d)
-		if err != nil {
-			t.Fatalf("Print failed: %v", err)
-		}
-		pages := strings.Split(printed, "\f")
-		if len(pages) != 3 {
-			t.Fatalf("expected 3 pages separated by form feeds, got %d", len(pages))
-		}
-		for i, want := range []string{"Page One", "Page Two", "Page Three"} {
-			if !strings.Contains(pages[i], want) {
-				t.Errorf("page %d missing expected content %q", i+1, want)
-			}
-			if !strings.HasSuffix(pages[i], "\n") {
-				t.Errorf("page %d should end with newline", i+1)
-			}
-		}
-	})
-
-	t.Run("ComplexDocumentWithHeadersAndFooters", func(t *testing.T) {
-		body := "# Main Title\n\nSome **bold** and *italic* text with a [link](https://example.com).\n\n" +
-			"- item 1\n- item 2\n\n" +
-			PageBreakMarkup + "\n\n" +
-			"## Section 2\n\nMore text."
-		d := testDocument(body, func(l *Layout) {
-			l.Header = "Confidential|{title}|{page}"
-			l.Footer = "Left Footer|Middle|Right"
-			l.PageNumbers = NumbersRight
+	cases := []printTestCase{
+		{
+			name:      "Single Page",
+			body:      "Only one page here.",
+			wantPages: 1,
+			wantText:  []string{"Only one page here."},
+		},
+		{
+			name:      "Multiple Pages",
+			body:      "Page One\n\n" + PageBreakMarkup + "\n\nPage Two",
+			wantPages: 2,
+			wantText:  []string{"Page One", "Page Two"},
+		},
+		{
+			name:      "Three Pages Delimited By Form Feeds",
+			body:      "Page One\n\n" + PageBreakMarkup + "\n\nPage Two\n\n" + PageBreakMarkup + "\n\nPage Three",
+			wantPages: 3,
+			wantText:  []string{"Page One", "Page Two", "Page Three"},
+		},
+		{
+			name: "Complex Document With Headers Footers And Formatting",
+			body: "# Main Title\n\nSome **bold** and *italic* text with a [link](https://example.com).\n\n" +
+				"- item 1\n- item 2\n\n" +
+				PageBreakMarkup + "\n\n" +
+				"## Section 2\n\nMore text.",
+			editLayout: func(l *Layout) {
+				l.Header = "Confidential|{title}|{page}"
+				l.Footer = "Left Footer|Middle|Right"
+				l.PageNumbers = NumbersRight
+			},
+			wantPages: 2,
+			wantText: []string{
+				"MAIN TITLE", "Confidential", "Quarterly Report",
+				"Left Footer", "bold and italic", "- item 1", "Section 2",
+			},
+		},
+		{
+			name:      "Empty Document",
+			body:      "",
+			wantPages: 1,
+			wantText:  []string{""},
+		},
+		{
+			name:       "Validation Error",
+			body:       "Some text",
+			editLayout: func(l *Layout) { l.Version = 999 },
+			wantErr:    "unsupported layout version 999",
+		},
+		{
+			name:       "Geometry Error",
+			body:       "Some text",
+			editLayout: func(l *Layout) { l.PageSize = "unknown" },
+			wantErr:    "unsupported page size",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runPrintTestCase(t, tc)
 		})
-		printed, err := Print(d)
-		if err != nil {
-			t.Fatalf("Print failed: %v", err)
-		}
-		pages := strings.Split(printed, "\f")
-		if len(pages) != 2 {
-			t.Fatalf("expected 2 pages, got %d", len(pages))
-		}
-		for _, want := range []string{"MAIN TITLE", "Confidential", "Quarterly Report", "Left Footer", "bold and italic", "- item 1"} {
-			if !strings.Contains(printed, want) {
-				t.Errorf("missing expected text %q in printed output", want)
-			}
-		}
-	})
-
-	t.Run("EmptyDocument", func(t *testing.T) {
-		d := testDocument("", nil)
-		printed, err := Print(d)
-		if err != nil {
-			t.Fatalf("Print failed: %v", err)
-		}
-		if printed == "" {
-			t.Fatal("expected non-empty output for empty document (page layout rows)")
-		}
-		if strings.Contains(printed, "\f") {
-			t.Errorf("empty document should be 1 page without form feed")
-		}
-	})
-
-	t.Run("LayoutValidationError", func(t *testing.T) {
-		d := testDocument("Some text", func(l *Layout) {
-			l.Version = 999
-		})
-		_, err := Print(d)
-		if err == nil {
-			t.Fatal("expected Print to return error for invalid layout version, got nil")
-		}
-		if !strings.Contains(err.Error(), "unsupported layout version 999") {
-			t.Errorf("unexpected error message: %v", err)
-		}
-	})
-
-	t.Run("GeometryError", func(t *testing.T) {
-		d := testDocument("Some text", func(l *Layout) {
-			l.PageSize = "invalid_size"
-		})
-		_, err := Print(d)
-		if err == nil {
-			t.Fatal("expected Print to return error for invalid page size, got nil")
-		}
-		if !strings.Contains(err.Error(), "unsupported page size") {
-			t.Errorf("unexpected error message: %v", err)
-		}
-	})
+	}
 }
