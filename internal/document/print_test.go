@@ -386,17 +386,22 @@ func TestReferencedImagesRecognizesMarkdownForms(t *testing.T) {
 }
 
 type printTestCase struct {
-	name       string
-	body       string
-	editLayout func(*Layout)
-	wantPages  int
-	wantText   []string
-	wantErr    string
+	name        string
+	title       string
+	body        string
+	editLayout  func(*Layout)
+	wantPages   int
+	wantText    []string
+	wantNotText []string
+	wantErr     string
 }
 
 func runPrintTestCase(t *testing.T, tc printTestCase) {
 	t.Helper()
 	d := testDocument(tc.body, tc.editLayout)
+	if tc.title != "" {
+		d.Title = tc.title
+	}
 	got, err := Print(d)
 
 	if tc.wantErr != "" {
@@ -419,6 +424,10 @@ func runPrintTestCase(t *testing.T, tc printTestCase) {
 		if !strings.HasSuffix(p, "\n") {
 			t.Errorf("page %d does not end with newline", i+1)
 		}
+		lines := strings.Split(strings.TrimSuffix(p, "\n"), "\n")
+		if len(lines) != 66 {
+			t.Errorf("page %d has %d lines, want 66", i+1, len(lines))
+		}
 	}
 
 	for _, want := range tc.wantText {
@@ -426,10 +435,15 @@ func runPrintTestCase(t *testing.T, tc printTestCase) {
 			t.Errorf("expected output to contain %q, but it did not. Output:\n%s", want, got)
 		}
 	}
+	for _, notWant := range tc.wantNotText {
+		if strings.Contains(got, notWant) {
+			t.Errorf("expected output NOT to contain %q, but it did. Output:\n%s", notWant, got)
+		}
+	}
 }
 
-func TestPrint(t *testing.T) {
-	cases := []printTestCase{
+func printBasicCases() []printTestCase {
+	return []printTestCase{
 		{
 			name:      "Single Page",
 			body:      "Only one page here.",
@@ -449,6 +463,17 @@ func TestPrint(t *testing.T) {
 			wantText:  []string{"Page One", "Page Two", "Page Three"},
 		},
 		{
+			name:      "Empty Document",
+			body:      "",
+			wantPages: 1,
+			wantText:  []string{""},
+		},
+	}
+}
+
+func printFormattingCases() []printTestCase {
+	return []printTestCase{
+		{
 			name: "Complex Document With Headers Footers And Formatting",
 			body: "# Main Title\n\nSome **bold** and *italic* text with a [link](https://example.com).\n\n" +
 				"- item 1\n- item 2\n\n" +
@@ -466,11 +491,38 @@ func TestPrint(t *testing.T) {
 			},
 		},
 		{
-			name:      "Empty Document",
-			body:      "",
-			wantPages: 1,
-			wantText:  []string{""},
+			name:  "Title Sanitizes Control Characters In Header",
+			title: "Report\x07With\tControl\nChars",
+			body:  "Body content.",
+			editLayout: func(l *Layout) {
+				l.Header = "{title}"
+			},
+			wantPages:   1,
+			wantText:    []string{"Report With Control Chars", "Body content."},
+			wantNotText: []string{"\x07", "\nChars"},
 		},
+		{
+			name: "Images And Hidden Fences",
+			body: "![Quarterly Revenue Chart](image-0123456789abcdef.png)\n\n" +
+				"```parchment-meta\n{\"id\":\"secret\"}\n```\n\n" +
+				"```parchment-document\n{\"layout\":{\"columns\":2}}\n```\n\n" +
+				"Summary paragraph.",
+			wantPages:   1,
+			wantText:    []string{"[Image: Quarterly Revenue Chart]", "Summary paragraph."},
+			wantNotText: []string{"parchment-meta", "parchment-document", "secret"},
+		},
+		{
+			name: "Continuous Multi Column Section Break",
+			body: "Intro\n\n" + SectionBreakMarkup(2, true) + "\n\nCol1\n\nCol2\n\n" +
+				SectionBreakMarkup(1, true) + "\n\nOutro",
+			wantPages: 1,
+			wantText:  []string{"Intro", "Col1", "Col2", "Outro"},
+		},
+	}
+}
+
+func printErrorCases() []printTestCase {
+	return []printTestCase{
 		{
 			name:       "Validation Error",
 			body:       "Some text",
@@ -484,6 +536,13 @@ func TestPrint(t *testing.T) {
 			wantErr:    "unsupported page size",
 		},
 	}
+}
+
+func TestPrint(t *testing.T) {
+	var cases []printTestCase
+	cases = append(cases, printBasicCases()...)
+	cases = append(cases, printFormattingCases()...)
+	cases = append(cases, printErrorCases()...)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			runPrintTestCase(t, tc)
