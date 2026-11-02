@@ -33,9 +33,46 @@ func (r *Repository) GetDocument(ctx context.Context, path string) (document.Doc
 }
 
 // ListDocumentChanges returns the proposals recorded in the document at path.
+// It parses and validates only the changes payload, intentionally omitting
+// page layout and embedded image validation to optimize performance when
+// inspecting proposal history.
 func (r *Repository) ListDocumentChanges(ctx context.Context, path string) ([]document.Change, error) {
-	_, changes, err := r.readDocument(ctx, path)
-	return changes, err
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	content, err := readContent(path, artifact.DocumentKind, document.ErrNotFound)
+	if err != nil {
+		return nil, err
+	}
+	return decodeDocumentChanges(path, content)
+}
+
+func decodeDocumentChanges(path string, content []byte) ([]document.Change, error) {
+	file, err := decodeArtifact(path, content)
+	if err != nil {
+		return nil, err
+	}
+	payloadJSON, ok := file.Blocks[documentDataBlock]
+	if !ok {
+		return nil, fmt.Errorf("%s: document data block is missing", path)
+	}
+	var payload struct {
+		Changes []document.Change `json:"changes,omitempty"`
+	}
+	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
+		return nil, fmt.Errorf("decode document data %s: %w", path, err)
+	}
+	for i := range payload.Changes {
+		payload.Changes[i].DocumentID = file.Artifact.ID
+	}
+	if err := validateDocumentChanges(file.Artifact.ID, payload.Changes); err != nil {
+		return nil, fmt.Errorf("validate document changes %s: %w", path, err)
+	}
+	return payload.Changes, nil
 }
 
 // GetDocumentChange returns the proposal by ID for the document at path.
@@ -284,32 +321,14 @@ func validateDocumentChanges(id string, changes []document.Change) error {
 }
 
 func decodeDocumentChange(path string, content []byte, changeID string) (document.Change, error) {
-	file, err := decodeArtifact(path, content)
+	changes, err := decodeDocumentChanges(path, content)
 	if err != nil {
 		return document.Change{}, err
 	}
-	payloadJSON, ok := file.Blocks[documentDataBlock]
-	if !ok {
-		return document.Change{}, fmt.Errorf("%s: document data block is missing", path)
-	}
-
-	// We only need the changes list, so we can decode a partial struct
-	var payload struct {
-		Changes []document.Change `json:"changes,omitempty"`
-	}
-	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
-		return document.Change{}, fmt.Errorf("decode document data %s: %w", path, err)
-	}
-
-	for i := range payload.Changes {
-		payload.Changes[i].DocumentID = file.Artifact.ID
-		if payload.Changes[i].ID == changeID {
-			if err := payload.Changes[i].Validate(); err != nil {
-				return document.Change{}, fmt.Errorf("validate document change %s: %w", path, err)
-			}
-			return payload.Changes[i], nil
+	for _, change := range changes {
+		if change.ID == changeID {
+			return change, nil
 		}
 	}
-
 	return document.Change{}, document.ErrChangeNotFound
 }

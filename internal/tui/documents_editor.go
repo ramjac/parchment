@@ -331,75 +331,86 @@ func (s *documentsScreen) editorDocument() document.Document {
 	return d
 }
 
+func (s *documentsScreen) updatePreviewKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "esc", "f5", "q":
+		s.previewing = false
+	case "right", "pgdown", "n", "]":
+		s.editPage, s.editPageLine = min(s.editPage+1, len(s.editPages)-1), 0
+	case "left", "pgup", "p", "[":
+		s.editPage, s.editPageLine = max(s.editPage-1, 0), 0
+	case "down", "j":
+		s.editPageLine++
+	case "up", "k":
+		s.editPageLine--
+	case "home", "g":
+		s.editPageLine = 0
+	case "end", "G":
+		s.editPageLine = len(s.previewPage().Lines)
+	}
+	s.clampPreviewLine()
+	return nil
+}
+
+func (s *documentsScreen) updateEditorShortcuts(msg tea.KeyMsg, key string) (tea.Cmd, bool) {
+	switch key {
+	case "ctrl+s":
+		return s.save(), true
+	case "f3":
+		return s.propose(), true
+	case "f4":
+		return s.loadChanges(), true
+	case "f5":
+		s.openPreview()
+		return nil, true
+	case "ctrl+z", "ctrl+r", "ctrl+y", "ctrl+shift+z":
+		if key == "ctrl+z" && s.body.CanUndo() {
+			s.body.Undo()
+			return nil, true
+		}
+		if (key == "ctrl+r" || key == "ctrl+y" || key == "ctrl+shift+z") && s.body.CanRedo() {
+			s.body.Redo()
+			return nil, true
+		}
+		return s.history(key == "ctrl+z"), true
+	case "ctrl+c":
+		if s.body.Selection.Active {
+			var cmd tea.Cmd
+			s.body, cmd = s.body.Update(msg)
+			return cmd, true
+		}
+		return s.requestClose("Esc"), true
+	case "esc":
+		if s.focus == focusToolbar {
+			return s.focusBody(), true
+		}
+		return s.requestClose("Esc"), true
+	case "tab":
+		if s.focus == focusBody {
+			s.focusToolbar()
+			return nil, true
+		}
+		return s.focusBody(), true
+	case "f2":
+		s.focusToolbar()
+		return nil, true
+	}
+	return nil, false
+}
+
 func (s *documentsScreen) updateEditorKey(msg tea.KeyMsg) tea.Cmd {
 	key := msg.String()
 	if s.prompt != promptNone {
 		return s.updatePrompt(msg)
 	}
 	if s.previewing {
-		switch key {
-		case "esc", "f5", "q":
-			s.previewing = false
-		case "right", "pgdown", "n", "]":
-			s.editPage, s.editPageLine = min(s.editPage+1, len(s.editPages)-1), 0
-		case "left", "pgup", "p", "[":
-			s.editPage, s.editPageLine = max(s.editPage-1, 0), 0
-		case "down", "j":
-			s.editPageLine++
-		case "up", "k":
-			s.editPageLine--
-		case "home", "g":
-			s.editPageLine = 0
-		case "end", "G":
-			s.editPageLine = len(s.previewPage().Lines)
-		}
-		s.clampPreviewLine()
-		return nil
+		return s.updatePreviewKey(msg)
 	}
 	if key != "esc" && key != "ctrl+c" {
 		s.discardWarning = false
 	}
-	switch key {
-	case "ctrl+s":
-		return s.save()
-	case "f3":
-		return s.propose()
-	case "f4":
-		return s.loadChanges()
-	case "f5":
-		s.openPreview()
-		return nil
-	case "ctrl+z", "ctrl+r", "ctrl+y", "ctrl+shift+z":
-		if key == "ctrl+z" && s.body.CanUndo() {
-			s.body.Undo()
-			return nil
-		}
-		if (key == "ctrl+r" || key == "ctrl+y" || key == "ctrl+shift+z") && s.body.CanRedo() {
-			s.body.Redo()
-			return nil
-		}
-		return s.history(key == "ctrl+z")
-	case "ctrl+c":
-		if s.body.Selection.Active {
-			var cmd tea.Cmd
-			s.body, cmd = s.body.Update(msg)
-			return cmd
-		}
-		return s.requestClose("Esc")
-	case "esc":
-		if s.focus == focusToolbar {
-			return s.focusBody()
-		}
-		return s.requestClose("Esc")
-	case "tab":
-		if s.focus == focusBody {
-			s.focusToolbar()
-			return nil
-		}
-		return s.focusBody()
-	case "f2":
-		s.focusToolbar()
-		return nil
+	if cmd, handled := s.updateEditorShortcuts(msg, key); handled {
+		return cmd
 	}
 	if action, ok := altActions[key]; ok {
 		return s.act(action)
@@ -555,20 +566,10 @@ func (s *documentsScreen) clampPreviewLine() {
 // are persisted with the document when it is saved.
 func (s *documentsScreen) act(action string) tea.Cmd {
 	s.errMessage, s.status = "", ""
+	if cmd, handled := s.actDocument(action); handled {
+		return cmd
+	}
 	switch action {
-	case "save":
-		return s.save()
-	case "propose":
-		return s.propose()
-	case "changes":
-		return s.loadChanges()
-	case "image":
-		return s.openPrompt(promptImage, "Image file path (PNG, JPEG, GIF): ", "")
-	case "preview":
-		s.openPreview()
-		return nil
-	case "close":
-		return s.requestClose("Close")
 	case "columns":
 		s.layout.Columns = s.layout.Columns%document.MaxColumns + 1
 	case "margins":
@@ -601,6 +602,19 @@ func (s *documentsScreen) act(action string) tea.Cmd {
 		s.insertBlock(document.PageBreakMarkup)
 	case "rule":
 		s.insertBlock("---")
+	default:
+		if s.actFormat(action) {
+			break
+		}
+	}
+	if textAction(action) {
+		return s.focusBody()
+	}
+	return nil
+}
+
+func (s *documentsScreen) actFormat(action string) bool {
+	switch action {
 	case "bold":
 		s.wrap("**", "**")
 	case "italic":
@@ -621,11 +635,29 @@ func (s *documentsScreen) act(action string) tea.Cmd {
 		s.linePrefix("1. ")
 	case "quote":
 		s.linePrefix("> ")
+	default:
+		return false
 	}
-	if textAction(action) {
-		return s.focusBody()
+	return true
+}
+
+func (s *documentsScreen) actDocument(action string) (tea.Cmd, bool) {
+	switch action {
+	case "save":
+		return s.save(), true
+	case "propose":
+		return s.propose(), true
+	case "changes":
+		return s.loadChanges(), true
+	case "image":
+		return s.openPrompt(promptImage, "Image file path (PNG, JPEG, GIF): ", ""), true
+	case "preview":
+		s.openPreview()
+		return nil, true
+	case "close":
+		return s.requestClose("Close"), true
 	}
-	return nil
+	return nil, false
 }
 
 func textAction(action string) bool {
