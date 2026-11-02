@@ -33,6 +33,8 @@ func (r *Repository) GetDocument(ctx context.Context, path string) (document.Doc
 }
 
 // ListDocumentChanges returns the proposals recorded in the document at path.
+// This is a lightweight read that skips layout and image validation. If the
+// file is corrupt, this will succeed where GetDocument would fail.
 func (r *Repository) ListDocumentChanges(ctx context.Context, path string) ([]document.Change, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
