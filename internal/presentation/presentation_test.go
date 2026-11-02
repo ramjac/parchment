@@ -2,6 +2,7 @@ package presentation
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -521,6 +522,9 @@ func (f *failingRepository) TransitionPresentation(_ context.Context, _ string, 
 
 func TestDecode(t *testing.T) {
 	validItem := testPresentation()
+	validItem.Blocks = map[string]json.RawMessage{
+		"parchment-custom": json.RawMessage(`{"custom": "data"}`),
+	}
 	validData, err := Encode(validItem)
 	if err != nil {
 		t.Fatalf("failed to encode valid item: %v", err)
