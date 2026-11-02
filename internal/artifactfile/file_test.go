@@ -103,66 +103,46 @@ func TestReadMetadataRequiresCurrentFormatMarker(t *testing.T) {
 	}
 }
 
-type decodeTrailingBlockTest struct {
-	name    string
-	append  string
-	wantErr string
-}
-
-func runDecodeTrailingBlockTests(t *testing.T, validHeader []byte, tests []decodeTrailingBlockTest) {
-	t.Helper()
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			data := append([]byte(nil), validHeader...)
-			data = append(data, []byte(tt.append)...)
-			_, err := Decode(data)
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("Decode() error = %v, want substring %q", err, tt.wantErr)
-			}
-		})
-	}
-}
-
 func TestDecodeTrailingBlockErrorPaths(t *testing.T) {
 	validHeader, err := Encode(testArtifact(), "Body content\n", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	tests := []decodeTrailingBlockTest{
-		{
-			name:    "unclosed code fence",
-			append:  "\n" + trailingBlocksBoundary + "\n```parchment-note\n{\"key\":\"value\"}\n",
-			wantErr: "closing code fence is missing",
-		},
-		{
-			name:    "duplicate metadata block in trailing blocks",
-			append:  "\n" + trailingBlocksBoundary + "\n```parchment-meta\n{}\n```\n",
-			wantErr: "duplicate Parchment metadata block",
-		},
-		{
-			name:    "duplicate trailing block name",
-			append:  "\n" + trailingBlocksBoundary + "\n```parchment-note\n{}\n```\n```parchment-note\n{}\n```\n",
-			wantErr: "duplicate parchment-note block",
-		},
-		{
-			name:    "non-JSON block content",
-			append:  "\n" + trailingBlocksBoundary + "\n```parchment-note\nnot valid json\n```\n",
-			wantErr: "parchment-note block must contain JSON",
-		},
-		{
-			name:    "invalid block opening prefix",
-			append:  "\n" + trailingBlocksBoundary + "\n```parchment-invalid extra\n{}\n```\n",
-			wantErr: "invalid Parchment trailing block opening",
-		},
-		{
-			name:    "invalid block content opening",
-			append:  "\n" + trailingBlocksBoundary + "\n```parchment-note\n{}\n```\n```not-parchment\n{}\n```\n",
-			wantErr: "invalid content in Parchment trailing blocks",
-		},
+	check := func(name, appendStr, wantErr string) {
+		t.Run(name, func(t *testing.T) {
+			data := append([]byte(nil), validHeader...)
+			data = append(data, []byte(appendStr)...)
+			_, err := Decode(data)
+			if err == nil || !strings.Contains(err.Error(), wantErr) {
+				t.Fatalf("Decode() error = %v, want substring %q", err, wantErr)
+			}
+		})
 	}
 
-	runDecodeTrailingBlockTests(t, validHeader, tests)
+	check("unclosed code fence",
+		"\n"+trailingBlocksBoundary+"\n```parchment-note\n{\"key\":\"value\"}\n",
+		"closing code fence is missing")
+
+	check("duplicate metadata block in trailing blocks",
+		"\n"+trailingBlocksBoundary+"\n```parchment-meta\n{}\n```\n",
+		"duplicate Parchment metadata block")
+
+	check("duplicate trailing block name",
+		"\n"+trailingBlocksBoundary+"\n```parchment-note\n{}\n```\n```parchment-note\n{}\n```\n",
+		"duplicate parchment-note block")
+
+	check("non-JSON block content",
+		"\n"+trailingBlocksBoundary+"\n```parchment-note\nnot valid json\n```\n",
+		"parchment-note block must contain JSON")
+
+	check("invalid block opening prefix",
+		"\n"+trailingBlocksBoundary+"\n```parchment-invalid extra\n{}\n```\n",
+		"invalid Parchment trailing block opening")
+
+	check("invalid block content opening",
+		"\n"+trailingBlocksBoundary+"\n```parchment-note\n{}\n```\n```not-parchment\n{}\n```\n",
+		"invalid content in Parchment trailing blocks")
 }
 
 func checkDecodeMetadataError(t *testing.T, mutate func(map[string]any), wantErr string) {
