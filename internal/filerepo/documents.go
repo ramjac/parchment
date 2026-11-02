@@ -38,6 +38,22 @@ func (r *Repository) ListDocumentChanges(ctx context.Context, path string) ([]do
 	return changes, err
 }
 
+// GetDocumentChange returns the proposal by ID for the document at path.
+func (r *Repository) GetDocumentChange(ctx context.Context, path, changeID string) (document.Change, error) {
+	if err := ctx.Err(); err != nil {
+		return document.Change{}, err
+	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return document.Change{}, err
+	}
+	content, err := readContent(path, artifact.DocumentKind, document.ErrNotFound)
+	if err != nil {
+		return document.Change{}, err
+	}
+	return decodeDocumentChange(path, content, changeID)
+}
+
 func (r *Repository) readDocument(ctx context.Context, path string) (document.Document, []document.Change, error) {
 	if err := ctx.Err(); err != nil {
 		return document.Document{}, nil, err
@@ -265,4 +281,35 @@ func validateDocumentChanges(id string, changes []document.Change) error {
 		seen[change.ID] = true
 	}
 	return nil
+}
+
+func decodeDocumentChange(path string, content []byte, changeID string) (document.Change, error) {
+	file, err := decodeArtifact(path, content)
+	if err != nil {
+		return document.Change{}, err
+	}
+	payloadJSON, ok := file.Blocks[documentDataBlock]
+	if !ok {
+		return document.Change{}, fmt.Errorf("%s: document data block is missing", path)
+	}
+
+	// We only need the changes list, so we can decode a partial struct
+	var payload struct {
+		Changes []document.Change `json:"changes,omitempty"`
+	}
+	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
+		return document.Change{}, fmt.Errorf("decode document data %s: %w", path, err)
+	}
+
+	for i := range payload.Changes {
+		payload.Changes[i].DocumentID = file.Artifact.ID
+		if payload.Changes[i].ID == changeID {
+			if err := payload.Changes[i].Validate(); err != nil {
+				return document.Change{}, fmt.Errorf("validate document change %s: %w", path, err)
+			}
+			return payload.Changes[i], nil
+		}
+	}
+
+	return document.Change{}, document.ErrChangeNotFound
 }
