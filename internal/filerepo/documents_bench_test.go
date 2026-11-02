@@ -4,10 +4,10 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
-    "time"
+	"time"
 
+	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
-    "example.com/parchment/internal/artifact"
 )
 
 // A tiny valid 1x1 png image
@@ -31,30 +31,30 @@ func BenchmarkListDocumentChanges(b *testing.B) {
 	docPath := filepath.Join(dir, "benchdoc.md")
 
 	doc := &document.Document{
-        Artifact: artifact.Artifact{
-            Kind: artifact.DocumentKind,
-            ID: pathID(artifact.DocumentKind, docPath),
-            CreatedAt: time.Now(),
-            ModifiedAt: time.Now(),
-            FormatVersion: artifact.FormatVersion,
-        },
+		Artifact: artifact.Artifact{
+			Kind:          artifact.DocumentKind,
+			ID:            pathID(artifact.DocumentKind, docPath),
+			CreatedAt:     time.Now(),
+			ModifiedAt:    time.Now(),
+			FormatVersion: artifact.FormatVersion,
+		},
 		Layout: document.DefaultLayout(),
 	}
 	// Add some images and some large body to simulate real world
 	for i := 0; i < 5; i++ {
-        // Change color to make hash different
-        data := append([]byte(nil), tinyPNG...)
-        data[42] = byte(i)
+		// Change color to make hash different
+		data := append([]byte(nil), tinyPNG...)
+		data[42] = byte(i)
 
-        // Pad data to make it larger (100KB each)
-        for j := 0; j < 100000; j++ {
-           data = append(data, 0)
-        }
+		// Pad data to make it larger (100KB each)
+		for j := 0; j < 100000; j++ {
+			data = append(data, 0)
+		}
 
-        img, err := document.NewImage(data)
-        if err != nil {
-            b.Fatal(err)
-        }
+		img, err := document.NewImage(data)
+		if err != nil {
+			b.Fatal(err)
+		}
 		doc.Images = append(doc.Images, img)
 	}
 
