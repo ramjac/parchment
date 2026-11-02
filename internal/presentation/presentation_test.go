@@ -604,6 +604,12 @@ func assertDecodeResult(t *testing.T, data []byte, wantNotFound bool, wantErr st
 	if err != nil {
 		t.Errorf("Decode() unexpected error: %v", err)
 	} else {
+		if decoded.ID == "" || decoded.ID == validItem.ID {
+			t.Errorf("Decode() expected a transient ID, got %q", decoded.ID)
+		}
+		if decoded.Path != "" {
+			t.Errorf("Decode() Path = %v, want empty string", decoded.Path)
+		}
 		if decoded.Artifact.Kind != validItem.Artifact.Kind ||
 			decoded.Artifact.Title != validItem.Artifact.Title ||
 			decoded.Artifact.FormatVersion != validItem.Artifact.FormatVersion ||
