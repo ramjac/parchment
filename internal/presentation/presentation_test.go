@@ -3,6 +3,7 @@ package presentation
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -580,28 +581,38 @@ func TestDecode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			data := tt.dataFn()
-			decoded, err := Decode(data)
-			if tt.wantNotFound {
-				if !errors.Is(err, ErrNotFound) {
-					t.Errorf("Decode() error = %v, wantNotFound %v", err, ErrNotFound)
-				}
-				return
-			}
-			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Errorf("Decode() error = %v, wantErr containing %q", err, tt.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Errorf("Decode() unexpected error: %v", err)
-			} else {
-				if validItem.Source != decoded.Source || validItem.Version != decoded.Version ||
-					!validItem.CreatedAt.Equal(decoded.CreatedAt) || !validItem.ModifiedAt.Equal(decoded.ModifiedAt) {
-					t.Errorf("round trip changed persisted presentation content:\noriginal: %+v\ndecoded: %+v", validItem, decoded)
-				}
-			}
+			assertDecodeResult(t, tt.dataFn(), tt.wantNotFound, tt.wantErr, validItem)
 		})
+	}
+}
+
+func assertDecodeResult(t *testing.T, data []byte, wantNotFound bool, wantErr string, validItem Presentation) {
+	t.Helper()
+	decoded, err := Decode(data)
+	if wantNotFound {
+		if !errors.Is(err, ErrNotFound) {
+			t.Errorf("Decode() error = %v, wantNotFound %v", err, ErrNotFound)
+		}
+		return
+	}
+	if wantErr != "" {
+		if err == nil || !strings.Contains(err.Error(), wantErr) {
+			t.Errorf("Decode() error = %v, wantErr containing %q", err, wantErr)
+		}
+		return
+	}
+	if err != nil {
+		t.Errorf("Decode() unexpected error: %v", err)
+	} else {
+		if decoded.Artifact.Kind != validItem.Artifact.Kind ||
+			decoded.Artifact.Title != validItem.Artifact.Title ||
+			decoded.Artifact.FormatVersion != validItem.Artifact.FormatVersion ||
+			decoded.Source != validItem.Source ||
+			decoded.Version != validItem.Version ||
+			!decoded.CreatedAt.Equal(validItem.CreatedAt) ||
+			!decoded.ModifiedAt.Equal(validItem.ModifiedAt) ||
+			!reflect.DeepEqual(decoded.Blocks, validItem.Blocks) {
+			t.Errorf("round trip changed persisted presentation content:\noriginal: %+v\ndecoded: %+v", validItem, decoded)
+		}
 	}
 }
