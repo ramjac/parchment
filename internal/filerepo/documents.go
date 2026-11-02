@@ -33,6 +33,8 @@ func (r *Repository) GetDocument(ctx context.Context, path string) (document.Doc
 }
 
 // ListDocumentChanges returns the proposals recorded in the document at path.
+// This is a lightweight read that skips layout and image validation. If the
+// file is corrupt, this will succeed where GetDocument would fail.
 func (r *Repository) ListDocumentChanges(ctx context.Context, path string) ([]document.Change, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -53,14 +55,12 @@ func (r *Repository) ListDocumentChanges(ctx context.Context, path string) ([]do
 	if !ok {
 		return nil, fmt.Errorf("%s: document data block is missing", path)
 	}
-
 	var payload struct {
 		Changes []document.Change `json:"changes,omitempty"`
 	}
 	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
 		return nil, fmt.Errorf("decode document data %s: %w", path, err)
 	}
-
 	for i := range payload.Changes {
 		payload.Changes[i].DocumentID = file.Artifact.ID
 	}

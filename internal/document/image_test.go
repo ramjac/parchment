@@ -204,6 +204,24 @@ func TestImageMarkdown(t *testing.T) {
 			img:  "img.jpg",
 			want: "![alt text](img.jpg)",
 		},
+		{
+			name: "markdown links in alt",
+			alt:  "[link](url)",
+			img:  "img.jpg",
+			want: "![link(url)](img.jpg)",
+		},
+		{
+			name: "just spaces",
+			alt:  "   ",
+			img:  "img.jpg",
+			want: "![](img.jpg)",
+		},
+		{
+			name: "name string that includes URLs",
+			alt:  "alt text",
+			img:  "http://example.com/image.png",
+			want: "![alt text](http://example.com/image.png)",
+		},
 	}
 
 	for _, tt := range tests {
