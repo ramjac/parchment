@@ -354,40 +354,28 @@ func readMetadataBytes(source string) (artifact.Artifact, error) {
 	return ReadMetadata([]byte(source))
 }
 
-func skipBlankLines(source string) (int, string, error) {
+func readMetadata(source string) (artifact.Artifact, int, error) {
 	start := 0
 	for start < len(source) {
 		line, end := nextLine(source, start)
 		if !isBlankLine(line) {
-			return start, line, nil
+			break
 		}
 		start = end
 	}
-	return 0, "", fmt.Errorf("%w: it must be the first Markdown block", ErrMetadataMissing)
-}
-
-func parseMetadataOpening(line string) (opening, error) {
+	if start == len(source) {
+		return artifact.Artifact{}, 0, fmt.Errorf("%w: it must be the first Markdown block", ErrMetadataMissing)
+	}
+	line, _ := nextLine(source, start)
 	opening, ok := parseOpening(line)
 	if !ok || opening.name != metadataBlock {
 		if _, info, isFence := parseFence(line); isFence {
 			fields := strings.Fields(info)
 			if len(fields) > 0 && fields[0] == metadataBlock {
-				return opening, errors.New("Parchment metadata block must be the first Markdown block")
+				return artifact.Artifact{}, 0, errors.New("Parchment metadata block must be the first Markdown block")
 			}
 		}
-		return opening, fmt.Errorf("%w: it must be the first Markdown block", ErrMetadataMissing)
-	}
-	return opening, nil
-}
-
-func readMetadata(source string) (artifact.Artifact, int, error) {
-	start, line, err := skipBlankLines(source)
-	if err != nil {
-		return artifact.Artifact{}, 0, err
-	}
-	opening, err := parseMetadataOpening(line)
-	if err != nil {
-		return artifact.Artifact{}, 0, err
+		return artifact.Artifact{}, 0, fmt.Errorf("%w: it must be the first Markdown block", ErrMetadataMissing)
 	}
 	metadataBytes, offset, err := readBlock(source, start, opening)
 	if err != nil {
