@@ -364,9 +364,6 @@ func testPresentation() Presentation {
 			FormatVersion: artifact.FormatVersion,
 		},
 		Version: FileVersion, Source: "# Demo\n\n## Slide 1\n\nHello.\n",
-		Blocks: map[string]json.RawMessage{
-			"parchment-custom": json.RawMessage(`{"custom": "data"}`),
-		},
 	}
 }
 
@@ -525,6 +522,9 @@ func (f *failingRepository) TransitionPresentation(_ context.Context, _ string, 
 
 func TestDecode(t *testing.T) {
 	validItem := testPresentation()
+	validItem.Blocks = map[string]json.RawMessage{
+		"parchment-custom": json.RawMessage(`{"custom": "data"}`),
+	}
 	validData, err := Encode(validItem)
 	if err != nil {
 		t.Fatalf("failed to encode valid item: %v", err)
@@ -585,44 +585,48 @@ func TestDecode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			data := tt.dataFn()
-			decoded, err := Decode(data)
-			if tt.wantNotFound {
-				if !errors.Is(err, ErrNotFound) {
-					t.Errorf("Decode() error = %v, wantNotFound %v", err, ErrNotFound)
-				}
-				return
-			}
-			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Errorf("Decode() error = %v, wantErr containing %q", err, tt.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Errorf("Decode() unexpected error: %v", err)
-			} else {
-				// The artifactfile decoder doesn't preserve the ID/Title/Path when parsing from byte slice.
-				// For testing Decode functionality, we only care about the persisted state and structure.
-				decoded.ID = validItem.ID
-				decoded.Title = validItem.Title
-				decoded.Path = validItem.Path
-
-				// json round-trip strips the monotonic clock, so we use time.Time.Equal for timestamps before doing DeepEqual
-				if !validItem.CreatedAt.Equal(decoded.CreatedAt) {
-					t.Errorf("CreatedAt changed: original %v, decoded %v", validItem.CreatedAt, decoded.CreatedAt)
-				}
-				if !validItem.ModifiedAt.Equal(decoded.ModifiedAt) {
-					t.Errorf("ModifiedAt changed: original %v, decoded %v", validItem.ModifiedAt, decoded.ModifiedAt)
-				}
-
-				decoded.CreatedAt = validItem.CreatedAt
-				decoded.ModifiedAt = validItem.ModifiedAt
-
-				if !reflect.DeepEqual(validItem, decoded) {
-					t.Errorf("round trip changed persisted presentation content:\noriginal: %+v\ndecoded: %+v", validItem, decoded)
-				}
-			}
+			assertDecodeResult(t, tt.dataFn(), tt.wantNotFound, tt.wantErr, validItem)
 		})
+	}
+}
+
+func assertDecodeResult(t *testing.T, data []byte, wantNotFound bool, wantErr string, validItem Presentation) {
+	t.Helper()
+	decoded, err := Decode(data)
+	if wantNotFound {
+		if !errors.Is(err, ErrNotFound) {
+			t.Errorf("Decode() error = %v, wantNotFound %v", err, ErrNotFound)
+		}
+		return
+	}
+	if wantErr != "" {
+		if err == nil || !strings.Contains(err.Error(), wantErr) {
+			t.Errorf("Decode() error = %v, wantErr containing %q", err, wantErr)
+		}
+		return
+	}
+	if err != nil {
+		t.Errorf("Decode() unexpected error: %v", err)
+	} else {
+		// The artifactfile decoder doesn't preserve the ID/Title/Path when parsing from byte slice.
+		// For testing Decode functionality, we only care about the persisted state and structure.
+		decoded.ID = validItem.ID
+		decoded.Title = validItem.Title
+		decoded.Path = validItem.Path
+
+		// json round-trip strips the monotonic clock, so we use time.Time.Equal for timestamps before doing DeepEqual
+		if !validItem.CreatedAt.Equal(decoded.CreatedAt) {
+			t.Errorf("CreatedAt changed: original %v, decoded %v", validItem.CreatedAt, decoded.CreatedAt)
+		}
+		if !validItem.ModifiedAt.Equal(decoded.ModifiedAt) {
+			t.Errorf("ModifiedAt changed: original %v, decoded %v", validItem.ModifiedAt, decoded.ModifiedAt)
+		}
+
+		decoded.CreatedAt = validItem.CreatedAt
+		decoded.ModifiedAt = validItem.ModifiedAt
+
+		if !reflect.DeepEqual(validItem, decoded) {
+			t.Errorf("round trip changed persisted presentation content:\noriginal: %+v\ndecoded: %+v", validItem, decoded)
+		}
 	}
 }
