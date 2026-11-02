@@ -454,6 +454,21 @@ func TestPrint(t *testing.T) {
 			editLayout: func(l *Layout) { l.PageSize = "unknown" },
 			wantErr:    "unsupported page size",
 		},
+		{
+			name: "ComplexDocument",
+			body: "# Main Title\n\nSome **bold** text and a [link](http://example.com).\n\n" +
+				"- item 1\n- item 2\n\n" +
+				PageBreakMarkup + "\n\n" +
+				"## Section 2\n\nMore text.",
+			editLayout: func(l *Layout) {
+				l.Header = "Confidential|Title|{page}"
+				l.Footer = "footer"
+			},
+			wantPages: 2,
+			wantText: []string{
+				"MAIN TITLE", "Confidential", "footer", "bold text", "- item 1", "Section 2",
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
