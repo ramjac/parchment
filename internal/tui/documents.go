@@ -370,7 +370,7 @@ func (s *documentsScreen) documentSaved(msg documentSavedMsg) tea.Cmd {
 	s.pending = false
 	s.refreshHistory()
 	if msg.err != nil {
-		if isCancelled(msg.err) {
+		if errors.Is(msg.err, context.Canceled) {
 			s.errMessage, s.status = "", "Save cancelled; unsaved changes remain"
 		} else {
 			s.errMessage = msg.err.Error()
@@ -449,10 +449,6 @@ func (s *documentsScreen) imageLoaded(msg imageLoadedMsg) tea.Cmd {
 	cmd := s.focusBody()
 	s.layoutEditor()
 	return cmd
-}
-
-func isCancelled(err error) bool {
-	return err != nil && strings.Contains(err.Error(), context.Canceled.Error())
 }
 
 func (s *documentsScreen) updateKey(msg tea.KeyMsg) tea.Cmd {
