@@ -581,55 +581,44 @@ func TestDecode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			data := tt.dataFn()
-			decoded, err := Decode(data)
-			if tt.wantNotFound {
-				if !errors.Is(err, ErrNotFound) {
-					t.Errorf("Decode() error = %v, wantNotFound %v", err, ErrNotFound)
-				}
-				return
-			}
-			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Errorf("Decode() error = %v, wantErr containing %q", err, tt.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Errorf("Decode() unexpected error: %v", err)
-			} else {
-					// Validate round-trip content explicitly rather than relying on deep equal or partial checks
-					if decoded.ID == "" || decoded.ID == validItem.ID {
-						t.Errorf("Decode() expected a transient ID, got %q", decoded.ID)
-					}
-					if decoded.Kind != validItem.Kind {
-						t.Errorf("Decode() Kind = %v, want %v", decoded.Kind, validItem.Kind)
-					}
-					if decoded.Title != validItem.Title {
-						t.Errorf("Decode() Title = %v, want %v", decoded.Title, validItem.Title)
-					}
-					if !decoded.CreatedAt.Equal(validItem.CreatedAt) {
-						t.Errorf("Decode() CreatedAt = %v, want %v", decoded.CreatedAt, validItem.CreatedAt)
-					}
-					if !decoded.ModifiedAt.Equal(validItem.ModifiedAt) {
-						t.Errorf("Decode() ModifiedAt = %v, want %v", decoded.ModifiedAt, validItem.ModifiedAt)
-					}
-					if decoded.FormatVersion != validItem.FormatVersion {
-						t.Errorf("Decode() FormatVersion = %v, want %v", decoded.FormatVersion, validItem.FormatVersion)
-					}
-					if decoded.Path != "" { // Decoded artifact shouldn't have a path before repository save
-						t.Errorf("Decode() Path = %v, want empty string", decoded.Path)
-					}
-					if decoded.Version != validItem.Version {
-						t.Errorf("Decode() Version = %v, want %v", decoded.Version, validItem.Version)
-					}
-					if decoded.Source != validItem.Source {
-						t.Errorf("Decode() Source = %v, want %v", decoded.Source, validItem.Source)
-					}
-					if !reflect.DeepEqual(decoded.Blocks, validItem.Blocks) {
-						t.Errorf("Decode() Blocks = %v, want %v", decoded.Blocks, validItem.Blocks)
-				}
-			}
+			assertDecodeResult(t, tt.dataFn(), tt.wantNotFound, tt.wantErr, validItem)
 		})
+	}
+}
+
+func assertDecodeResult(t *testing.T, data []byte, wantNotFound bool, wantErr string, validItem Presentation) {
+	t.Helper()
+	decoded, err := Decode(data)
+	if wantNotFound {
+		if !errors.Is(err, ErrNotFound) {
+			t.Errorf("Decode() error = %v, wantNotFound %v", err, ErrNotFound)
+		}
+		return
+	}
+	if wantErr != "" {
+		if err == nil || !strings.Contains(err.Error(), wantErr) {
+			t.Errorf("Decode() error = %v, wantErr containing %q", err, wantErr)
+		}
+		return
+	}
+	if err != nil {
+		t.Errorf("Decode() unexpected error: %v", err)
+	} else {
+		if decoded.ID == "" || decoded.ID == validItem.ID {
+			t.Errorf("Decode() expected a transient ID, got %q", decoded.ID)
+		}
+		if decoded.Path != "" {
+			t.Errorf("Decode() Path = %v, want empty string", decoded.Path)
+		}
+		if decoded.Artifact.Kind != validItem.Artifact.Kind ||
+			decoded.Artifact.Title != validItem.Artifact.Title ||
+			decoded.Artifact.FormatVersion != validItem.Artifact.FormatVersion ||
+			decoded.Source != validItem.Source ||
+			decoded.Version != validItem.Version ||
+			!decoded.CreatedAt.Equal(validItem.CreatedAt) ||
+			!decoded.ModifiedAt.Equal(validItem.ModifiedAt) ||
+			!reflect.DeepEqual(decoded.Blocks, validItem.Blocks) {
+			t.Errorf("round trip changed persisted presentation content:\noriginal: %+v\ndecoded: %+v", validItem, decoded)
+		}
 	}
 }
