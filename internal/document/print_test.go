@@ -385,95 +385,94 @@ func TestReferencedImagesRecognizesMarkdownForms(t *testing.T) {
 	}
 }
 
+type printTestCase struct {
+	name       string
+	body       string
+	editLayout func(*Layout)
+	wantPages  int
+	wantText   []string
+	wantErr    string
+}
+
+func runPrintTestCase(t *testing.T, tc printTestCase) {
+	t.Helper()
+	d := testDocument(tc.body, tc.editLayout)
+	got, err := Print(d)
+
+	if tc.wantErr != "" {
+		if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			t.Fatalf("Print() error = %v, want substring %q", err, tc.wantErr)
+		}
+		return
+	}
+
+	if err != nil {
+		t.Fatalf("Print() unexpected error: %v", err)
+	}
+
+	pages := strings.Split(got, "\f")
+	if len(pages) != tc.wantPages {
+		t.Errorf("got %d pages, want %d", len(pages), tc.wantPages)
+	}
+
+	for _, want := range tc.wantText {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected output to contain %q, but it did not. Output:\n%s", want, got)
+		}
+	}
+}
+
 func TestPrint(t *testing.T) {
-	t.Run("HappyPath", func(t *testing.T) {
-		body := "Page One\n\n" + PageBreakMarkup + "\n\nPage Two"
-		d := testDocument(body, nil)
-
-		printed, err := Print(d)
-		if err != nil {
-			t.Fatalf("Print failed: %v", err)
-		}
-
-		pages := strings.Split(printed, "\f")
-		if len(pages) != 2 {
-			t.Fatalf("expected 2 pages, got %d", len(pages))
-		}
-
-		if !strings.Contains(pages[0], "Page One") {
-			t.Errorf("expected page 1 to contain 'Page One'")
-		}
-		if !strings.Contains(pages[1], "Page Two") {
-			t.Errorf("expected page 2 to contain 'Page Two'")
-		}
-	})
-
-	t.Run("ErrorCase", func(t *testing.T) {
-		d := testDocument("Some text", func(l *Layout) {
-			l.Version = 999 // Invalid version
+	cases := []printTestCase{
+		{
+			name:      "Single Page",
+			body:      "Only one page here.",
+			wantPages: 1,
+			wantText:  []string{"Only one page here."},
+		},
+		{
+			name:      "Multiple Pages",
+			body:      "Page One\n\n" + PageBreakMarkup + "\n\nPage Two",
+			wantPages: 2,
+			wantText:  []string{"Page One", "Page Two"},
+		},
+		{
+			name:      "Empty Document",
+			body:      "",
+			wantPages: 1,
+			wantText:  []string{""},
+		},
+		{
+			name:       "Validation Error",
+			body:       "Some text",
+			editLayout: func(l *Layout) { l.Version = 999 },
+			wantErr:    "unsupported layout version 999",
+		},
+		{
+			name:       "Geometry Error",
+			body:       "Some text",
+			editLayout: func(l *Layout) { l.PageSize = "unknown" },
+			wantErr:    "unsupported page size",
+		},
+		{
+			name: "ComplexDocument",
+			body: "# Main Title\n\nSome **bold** text and a [link](http://example.com).\n\n" +
+				"- item 1\n- item 2\n\n" +
+				PageBreakMarkup + "\n\n" +
+				"## Section 2\n\nMore text.",
+			editLayout: func(l *Layout) {
+				l.Header = "Confidential|Title|{page}"
+				l.Footer = "footer"
+			},
+			wantPages: 2,
+			wantText: []string{
+				"MAIN TITLE", "Confidential", "footer", "bold text", "- item 1", "Section 2",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runPrintTestCase(t, tc)
 		})
-
-		_, err := Print(d)
-		if err == nil {
-			t.Fatal("expected Print to return an error for invalid layout, got nil")
-		}
-		if !strings.Contains(err.Error(), "unsupported layout version 999") {
-			t.Errorf("unexpected error message: %v", err)
-		}
-	})
-
-	t.Run("PaginateGeometryError", func(t *testing.T) {
-		d := testDocument("Some text", func(l *Layout) {
-			l.PageSize = "unknown_size"
-		})
-
-		_, err := Print(d)
-		if err == nil {
-			t.Fatal("expected Print to return an error for invalid page size, got nil")
-		}
-		if !strings.Contains(err.Error(), "unsupported page size") {
-			t.Errorf("unexpected error message: %v", err)
-		}
-	})
-
-	t.Run("ComplexDocument", func(t *testing.T) {
-		body := "# Main Title\n\nSome **bold** text and a [link](http://example.com).\n\n" +
-			"- item 1\n- item 2\n\n" +
-			PageBreakMarkup + "\n\n" +
-			"## Section 2\n\nMore text."
-
-		d := testDocument(body, func(l *Layout) {
-			l.Header = "Confidential|Title|{page}"
-			l.Footer = "footer"
-		})
-
-		printed, err := Print(d)
-		if err != nil {
-			t.Fatalf("Print failed: %v", err)
-		}
-
-		pages := strings.Split(printed, "\f")
-		if len(pages) != 2 {
-			t.Fatalf("expected 2 pages, got %d", len(pages))
-		}
-
-		if !strings.Contains(printed, "MAIN TITLE") {
-			t.Errorf("missing formatted heading 'MAIN TITLE'")
-		}
-		if !strings.Contains(printed, "Confidential") {
-			t.Errorf("missing header 'Confidential'")
-		}
-		if !strings.Contains(printed, "footer") {
-			t.Errorf("missing footer 'footer'")
-		}
-		if !strings.Contains(printed, "bold text") {
-			t.Errorf("missing stripped markdown 'bold text'")
-		}
-		if !strings.Contains(printed, "- item 1") {
-			t.Errorf("missing list 'item 1'")
-		}
-		if !strings.Contains(printed, "Section 2") {
-			t.Errorf("missing heading 'Section 2'")
-		}
-	})
+	}
 }
