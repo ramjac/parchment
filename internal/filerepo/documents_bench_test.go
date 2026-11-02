@@ -1,4 +1,4 @@
-package filerepo_test
+package filerepo
 
 import (
 	"bytes"
@@ -8,72 +8,155 @@ import (
 	"image/png"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/filerepo"
 )
 
-func createBenchmarkPNG(t testing.TB, w, h int) []byte {
-	t.Helper()
-	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			img.Set(x, y, color.RGBA{R: uint8(x % 256), G: uint8(y % 256), B: 100, A: 255})
-		}
-	}
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		t.Fatalf("encode benchmark png: %v", err)
-	}
-	return buf.Bytes()
+// A tiny valid 1x1 png image
+var tinyPNG = []byte{
+	0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+	0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+	0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00,
+	0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0x64, 0x60, 0x60, 0xf8,
+	0xcf, 0xc0, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xdd, 0x8d, 0xb0,
+	0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
 }
 
 func BenchmarkListDocumentChanges(b *testing.B) {
 	ctx := context.Background()
-	stateDir := b.TempDir()
-	repo, err := filerepo.New(stateDir)
+	dir := b.TempDir()
+	repo, err := New(dir)
 	if err != nil {
 		b.Fatal(err)
 	}
 
-	docPath := filepath.Join(b.TempDir(), "bench_doc.md")
-	docs := document.NewService(repo, 10)
+	docPath := filepath.Join(dir, "benchdoc.md")
 
-	doc, err := docs.Create(ctx, docPath, document.Draft{
-		Body: "# Benchmark Document\n\nTesting proposal listing performance.\n",
-	})
-	if err != nil {
-		b.Fatal(err)
+	doc := &document.Document{
+		Artifact: artifact.Artifact{
+			Kind:          artifact.DocumentKind,
+			ID:            pathID(artifact.DocumentKind, docPath),
+			CreatedAt:     time.Now(),
+			ModifiedAt:    time.Now(),
+			FormatVersion: artifact.FormatVersion,
+		},
+		Layout: document.DefaultLayout(),
+	}
+	// Add some images and some large body to simulate real world
+	for i := 0; i < 5; i++ {
+		// Change color to make hash different
+		data := append([]byte(nil), tinyPNG...)
+		data[42] = byte(i)
+
+		// Pad data to make it larger (100KB each)
+		for j := 0; j < 100000; j++ {
+			data = append(data, 0)
+		}
+
+		img, err := document.NewImage(data)
+		if err != nil {
+			b.Fatal(err)
+		}
+		doc.Images = append(doc.Images, img)
 	}
 
-	// Add an embedded image to simulate realistic document payload with images
-	pngBytes := createBenchmarkPNG(b, 200, 200)
-	doc, _, err = docs.AddImage(ctx, docPath, "Sample Image", pngBytes)
-	if err != nil {
-		b.Fatal(err)
-	}
-
-	// Add a proposal
-	draft := document.Draft{
-		Body:   doc.Body + "\n\nProposed new section with edits.\n",
-		Layout: doc.Layout,
-		Images: doc.Images,
-	}
-	_, err = docs.Propose(ctx, doc, "Bench proposal", draft)
+	err = repo.TransitionDocument(ctx, docPath, nil, doc)
 	if err != nil {
 		b.Fatal(err)
 	}
 
 	b.ResetTimer()
-	b.ReportAllocs()
-
 	for i := 0; i < b.N; i++ {
-		changes, err := repo.ListDocumentChanges(ctx, docPath)
+		_, err := repo.ListDocumentChanges(ctx, docPath)
 		if err != nil {
-			b.Fatalf("ListDocumentChanges: %v", err)
+			b.Fatal(err)
 		}
-		if len(changes) != 1 {
-			b.Fatalf("expected 1 change, got %d", len(changes))
+	}
+}
+func BenchmarkListDocumentChangesHuge(b *testing.B) {
+	ctx := context.Background()
+	repo, err := New(b.TempDir())
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	path := filepath.Join(b.TempDir(), "test.md")
+
+	id, err := artifact.NewID(artifact.DocumentKind)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	doc := &document.Document{
+		Artifact: artifact.Artifact{
+			ID:            id,
+			Kind:          artifact.DocumentKind,
+			FormatVersion: artifact.FormatVersion,
+			CreatedAt:     now,
+			ModifiedAt:    now,
+		},
+		Layout: document.DefaultLayout(),
+		Body:   "Hello, World!\n",
+	}
+
+	var imageNames []string
+	for i := 0; i < 50; i++ {
+		img := image.NewRGBA(image.Rect(0, 0, 100, 100))
+		for x := 0; x < 100; x++ {
+			for y := 0; y < 100; y++ {
+				img.Set(x, y, color.RGBA{uint8(x), uint8(y), uint8(i), 255})
+			}
+		}
+		var buf bytes.Buffer
+		png.Encode(&buf, img)
+
+		docImage, err := document.NewImage(buf.Bytes())
+		if err != nil {
+			b.Fatal(err)
+		}
+		doc.Images = append(doc.Images, docImage)
+		imageNames = append(imageNames, docImage.Name)
+		doc.Body += document.ImageMarkdown(docImage.Name, docImage.Name) + "\n"
+	}
+
+	change := document.Change{
+		ID:          "12345678901234567890123456789012",
+		DocumentID:  id,
+		Description: "test change",
+		CreatedAt:   time.Now().UTC(),
+		Status:      document.ChangePending,
+		Before:      document.ChangeSnapshot{Body: "old", Layout: document.DefaultLayout()},
+		After:       document.ChangeSnapshot{Body: "new", Layout: document.DefaultLayout()},
+	}
+
+	err = repo.TransitionDocument(ctx, path, nil, doc)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	d, err := repo.GetDocument(ctx, path)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	change.DocumentID = d.ID
+	change.Before.Body = d.Body
+	change.Before.Layout = d.Layout
+	change.Before.ImageNames = imageNames
+
+	err = repo.ProposeDocumentChange(ctx, path, d, change)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := repo.ListDocumentChanges(ctx, path)
+		if err != nil {
+			b.Fatal(err)
 		}
 	}
 }
