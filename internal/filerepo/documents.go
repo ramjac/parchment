@@ -51,6 +51,62 @@ func (r *Repository) ListDocumentChanges(ctx context.Context, path string) ([]do
 	return decodeDocumentChanges(path, content)
 }
 
+// GetDocumentChange reads and returns a single proposal recorded in the
+// document at path. It parses only the target proposal, omitting other changes,
+// page layout, and embedded image validation to optimize performance.
+func (r *Repository) GetDocumentChange(ctx context.Context, path, changeID string) (document.Change, error) {
+	if err := ctx.Err(); err != nil {
+		return document.Change{}, err
+	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return document.Change{}, err
+	}
+	content, err := readContent(path, artifact.DocumentKind, document.ErrNotFound)
+	if err != nil {
+		return document.Change{}, err
+	}
+	return decodeDocumentChange(path, content, changeID)
+}
+
+func decodeDocumentChange(path string, content []byte, changeID string) (document.Change, error) {
+	file, err := decodeArtifact(path, content)
+	if err != nil {
+		return document.Change{}, err
+	}
+	payloadJSON, ok := file.Blocks[documentDataBlock]
+	if !ok {
+		return document.Change{}, fmt.Errorf("%s: document data block is missing", path)
+	}
+	var payload struct {
+		Changes []json.RawMessage `json:"changes,omitempty"`
+	}
+	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
+		return document.Change{}, fmt.Errorf("decode document data %s: %w", path, err)
+	}
+
+	for _, raw := range payload.Changes {
+		var peek struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &peek); err != nil {
+			return document.Change{}, fmt.Errorf("decode document change peek %s: %w", path, err)
+		}
+		if peek.ID == changeID {
+			var change document.Change
+			if err := json.Unmarshal(raw, &change); err != nil {
+				return document.Change{}, fmt.Errorf("decode document change %s: %w", path, err)
+			}
+			change.DocumentID = file.Artifact.ID
+			if err := change.Validate(); err != nil {
+				return document.Change{}, fmt.Errorf("validate document change %s: %w", path, err)
+			}
+			return change, nil
+		}
+	}
+	return document.Change{}, document.ErrChangeNotFound
+}
+
 func decodeDocumentChanges(path string, content []byte) ([]document.Change, error) {
 	file, err := decodeArtifact(path, content)
 	if err != nil {

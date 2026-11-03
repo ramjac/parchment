@@ -61,6 +61,19 @@ func (r *documentRepositoryStub) GetDocument(context.Context, string) (Document,
 	return r.stored, nil
 }
 
+func (r *documentRepositoryStub) GetDocumentChange(ctx context.Context, path, changeID string) (Change, error) {
+	changes, err := r.ListDocumentChanges(ctx, path)
+	if err != nil {
+		return Change{}, err
+	}
+	for _, c := range changes {
+		if c.ID == changeID {
+			return c, nil
+		}
+	}
+	return Change{}, ErrChangeNotFound
+}
+
 func (r *documentRepositoryStub) TransitionDocument(
 	_ context.Context, _ string, _ *Document, target *Document,
 ) error {

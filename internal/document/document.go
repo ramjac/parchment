@@ -76,6 +76,7 @@ type Repository interface {
 	// creates a new file.
 	TransitionDocument(context.Context, string, *Document, *Document) error
 	ListDocumentChanges(context.Context, string) ([]Change, error)
+	GetDocumentChange(context.Context, string, string) (Change, error)
 	ProposeDocumentChange(context.Context, string, Document, Change) error
 	TransitionDocumentChange(context.Context, string, string, Change, Change, *Document, *Document) error
 }
@@ -213,16 +214,7 @@ func (s *Service) Reject(ctx context.Context, path, changeID string) error {
 }
 
 func (s *Service) getChange(ctx context.Context, path, changeID string) (Change, error) {
-	changes, err := s.repository.ListDocumentChanges(ctx, path)
-	if err != nil {
-		return Change{}, err
-	}
-	for _, change := range changes {
-		if change.ID == changeID {
-			return change, nil
-		}
-	}
-	return Change{}, ErrChangeNotFound
+	return s.repository.GetDocumentChange(ctx, path, changeID)
 }
 
 // ErrChangeNotFound indicates that the requested document proposal does not exist.
