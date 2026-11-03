@@ -355,3 +355,101 @@ func TestDecodePredefinedJSON(t *testing.T) {
 		t.Fatalf("decoded does not match expected.\ngot: %+v\nwant: %+v", decoded, expected)
 	}
 }
+
+func TestDecode(t *testing.T) {
+	validItem := Spreadsheet{
+		Artifact: artifact.Artifact{
+			ID: "s12345", Kind: artifact.SpreadsheetKind,
+			Title: "Budget", FormatVersion: artifact.FormatVersion,
+			CreatedAt: fixedTime, ModifiedAt: fixedTime,
+		},
+		Version: FileVersion,
+		Body:    "# Budget\n\nA visible Markdown description.",
+		Sheets: []Sheet{{Name: "Sheet1", Rows: [][]Cell{
+			{{Value: "Income"}, {Value: "125"}, {Formula: "=B1*2"}},
+			{{Value: "Total"}, {}, {Formula: "=(B1+C1)/3"}},
+		}}},
+	}
+	validItem.Blocks = map[string]json.RawMessage{
+		"parchment-custom": json.RawMessage(`{"custom": "data"}`),
+	}
+	validData, err := Encode(validItem)
+	if err != nil {
+		t.Fatalf("failed to encode valid item: %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		dataFn       func() []byte
+		wantErr      string
+		wantNotFound bool
+	}{
+		{
+			name:   "valid",
+			dataFn: func() []byte { return validData },
+		},
+		{
+			name:    "malformed artifactfile",
+			dataFn:  func() []byte { return []byte("invalid data") },
+			wantErr: "decode spreadsheet file",
+		},
+		{
+			name: "wrong kind",
+			dataFn: func() []byte {
+				return []byte(strings.Replace(string(validData), `"kind": "spreadsheet"`, `"kind": "document"`, 1))
+			},
+			wantNotFound: true,
+		},
+		{
+			name: "missing data block",
+			dataFn: func() []byte {
+				return []byte(strings.Replace(string(validData), "parchment-spreadsheet", "parchment-somethingelse", 1))
+			},
+			wantErr: "spreadsheet payload block is missing",
+		},
+		{
+			name: "malformed data block",
+			dataFn: func() []byte {
+				return []byte(strings.Replace(string(validData), `"version": 1`, `"version": "abc"`, 1))
+			},
+			wantErr: "decode spreadsheet payload",
+		},
+		{
+			name: "unsupported version",
+			dataFn: func() []byte {
+				return []byte(strings.Replace(string(validData), `"version": 1`, `"version": 999`, 1))
+			},
+			wantErr: "validate spreadsheet",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Decode(tt.dataFn())
+			if tt.wantNotFound {
+				if err != ErrNotFound {
+					t.Errorf("got error %v, want ErrNotFound", err)
+				}
+				return
+			}
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("got error %v, want error containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			expected := cloneSpreadsheet(validItem)
+			expected.ID = got.ID
+			expected.Title = ""
+			expected.Path = ""
+
+			if !Equal(got, expected) {
+				t.Errorf("got spreadsheet %+v, want %+v", got, expected)
+			}
+		})
+	}
+}
