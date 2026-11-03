@@ -30,6 +30,16 @@ func TestNewIDUsesCompactKindPrefixedEncoding(t *testing.T) {
 		}
 		seen[id] = true
 	}
+
+	// Test invalid kind
+	_, err := NewID(Kind("unknown"))
+	if err == nil {
+		t.Fatal("expected error for unknown kind, got nil")
+	}
+	want := `unsupported artifact kind "unknown"`
+	if err.Error() != want {
+		t.Errorf("got error %q, want %q", err.Error(), want)
+	}
 }
 
 func TestValidIDRejectsMalformedValues(t *testing.T) {
@@ -127,6 +137,26 @@ func TestValidIDForKind(t *testing.T) {
 		{"n01", NoteKind, false},
 		{"0123456789abcdef0123456789abcdef", NoteKind, false},
 		{"n-1", NoteKind, false},
+
+		// Additional edge cases
+		{"n ", NoteKind, false},
+		{"n\t1", NoteKind, false},
+		{"n\n", NoteKind, false},
+		{"nA", NoteKind, false},
+		{"n1_", NoteKind, false},
+		{"n+1", NoteKind, false},
+		{"n12345", Kind(""), false},
+		{"n1", Kind("invalid"), false},
+
+		// DocumentKind edge cases
+		{"d12345", DocumentKind, true}, // Happy path test case
+		{"d ", DocumentKind, false},
+		{"d\t1", DocumentKind, false},
+		{"d\n", DocumentKind, false},
+		{"dA", DocumentKind, false},
+		{"d1_", DocumentKind, false},
+		{"d+1", DocumentKind, false},
+		{"d-1", DocumentKind, false},
 	} {
 		t.Run(string(test.kind)+"/"+test.id, func(t *testing.T) {
 			if got := ValidIDForKind(test.id, test.kind); got != test.ok {
