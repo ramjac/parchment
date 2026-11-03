@@ -355,3 +355,19 @@ func TestDecodePredefinedJSON(t *testing.T) {
 		t.Fatalf("decoded does not match expected.\ngot: %+v\nwant: %+v", decoded, expected)
 	}
 }
+
+func TestCellName(t *testing.T) {
+	for _, test := range []struct {
+		row, column int
+		want        string
+	}{
+		{1, 1, "A1"},
+		{9, 26, "Z9"},
+		{12, 27, "AA12"},
+		{1000, 256, "IV1000"},
+	} {
+		if got := CellName(test.row, test.column); got != test.want {
+			t.Errorf("CellName(%d, %d) = %q, want %q", test.row, test.column, got, test.want)
+		}
+	}
+}
