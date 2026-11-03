@@ -233,22 +233,24 @@ func BenchmarkGetDocumentChangeHuge(b *testing.B) {
 	change.Before.Layout = d.Layout
 	change.Before.ImageNames = imageNames
 
-    changes := make([]document.Change, 100)
-    for i := 0; i < 100; i++ {
-        c := change
-        c.ID = c.ID[:32-3] + string(rune('0'+(i/100))) + string(rune('0'+((i/10)%10))) + string(rune('0'+(i%10)))
-        if i < 99 {
-            c.Status = document.ChangeAccepted
-            now := time.Now().UTC()
-            c.ResolvedAt = &now
-        }
-        changes[i] = c
-    }
+	changes := make([]document.Change, 100)
+	for i := 0; i < 100; i++ {
+		c := change
+		c.ID = c.ID[:32-3] + string(rune('0'+(i/100))) + string(rune('0'+((i/10)%10))) + string(rune('0'+(i%10)))
+		if i < 99 {
+			c.Status = document.ChangeAccepted
+			now := time.Now().UTC()
+			c.ResolvedAt = &now
+		}
+		changes[i] = c
+	}
 
-    err = repo.updateDocument(ctx, path, false, func(current document.Document, _ []document.Change) (document.Document, []document.Change, error) {
-        return current, changes, nil
-    })
-    if err != nil { b.Fatal(err) }
+	err = repo.updateDocument(ctx, path, false, func(current document.Document, _ []document.Change) (document.Document, []document.Change, error) {
+		return current, changes, nil
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -331,22 +333,24 @@ func BenchmarkListDocumentChangesHugeMany(b *testing.B) {
 	change.Before.Layout = d.Layout
 	change.Before.ImageNames = imageNames
 
-    changes := make([]document.Change, 100)
-    for i := 0; i < 100; i++ {
-        c := change
-        c.ID = c.ID[:32-3] + string(rune('0'+(i/100))) + string(rune('0'+((i/10)%10))) + string(rune('0'+(i%10)))
-        if i < 99 {
-            c.Status = document.ChangeAccepted
-            now := time.Now().UTC()
-            c.ResolvedAt = &now
-        }
-        changes[i] = c
-    }
+	changes := make([]document.Change, 100)
+	for i := 0; i < 100; i++ {
+		c := change
+		c.ID = c.ID[:32-3] + string(rune('0'+(i/100))) + string(rune('0'+((i/10)%10))) + string(rune('0'+(i%10)))
+		if i < 99 {
+			c.Status = document.ChangeAccepted
+			now := time.Now().UTC()
+			c.ResolvedAt = &now
+		}
+		changes[i] = c
+	}
 
-    err = repo.updateDocument(ctx, path, false, func(current document.Document, _ []document.Change) (document.Document, []document.Change, error) {
-        return current, changes, nil
-    })
-    if err != nil { b.Fatal(err) }
+	err = repo.updateDocument(ctx, path, false, func(current document.Document, _ []document.Change) (document.Document, []document.Change, error) {
+		return current, changes, nil
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
