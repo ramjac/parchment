@@ -520,6 +520,37 @@ func (f *failingRepository) TransitionPresentation(_ context.Context, _ string, 
 	return f.err
 }
 
+func TestDecodePredefinedJSON(t *testing.T) {
+	data := []byte("```parchment-meta\n{\n  \"parchment_format\": \"parchment-single-file-v2\",\n  \"kind\": \"presentation\",\n  \"format_version\": 2,\n  \"created_at\": \"2026-11-04T02:34:41Z\",\n  \"modified_at\": \"2026-11-04T02:34:41Z\"\n}\n```\n\n<!-- parchment-body -->\n# Demo\n\n## Slide 1\n\nHello.\n\n<!-- parchment-blocks -->\n\n```parchment-presentation\n{\n  \"version\": 1\n}\n```\n")
+
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	createdAt, _ := time.Parse(time.RFC3339, "2026-11-04T02:34:41Z")
+	modifiedAt, _ := time.Parse(time.RFC3339, "2026-11-04T02:34:41Z")
+
+	expected := Presentation{
+		Artifact: artifact.Artifact{
+			Kind:          artifact.PresentationKind,
+			FormatVersion: 2,
+			CreatedAt:     createdAt.UTC(),
+			ModifiedAt:    modifiedAt.UTC(),
+		},
+		Version: 1,
+		Source:  "# Demo\n\n## Slide 1\n\nHello.\n",
+	}
+
+	if decoded.Artifact.Kind != expected.Artifact.Kind ||
+		decoded.Version != expected.Version ||
+		!decoded.CreatedAt.Equal(expected.CreatedAt) ||
+		!decoded.ModifiedAt.Equal(expected.ModifiedAt) ||
+		strings.TrimSpace(decoded.Source) != strings.TrimSpace(expected.Source) {
+		t.Errorf("Decode() predefined JSON mismatch: got %+v, want %+v", decoded, expected)
+	}
+}
+
 func TestDecode(t *testing.T) {
 	validItem := testPresentation()
 	validItem.Blocks = map[string]json.RawMessage{
