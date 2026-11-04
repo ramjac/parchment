@@ -282,60 +282,6 @@ func TestDecode(t *testing.T) {
 		t.Fatalf("failed to encode valid item: %v", err)
 	}
 
-	check := func(name string, dataFn func() []byte, wantErr string, wantNotFound bool, explicitExpect *Spreadsheet) {
-		t.Run(name, func(t *testing.T) {
-			got, err := Decode(dataFn())
-			if wantNotFound {
-				if err != ErrNotFound {
-					t.Errorf("got error %v, want ErrNotFound", err)
-				}
-				return
-			}
-			if wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), wantErr) {
-					t.Errorf("got error %v, want error containing %q", err, wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if explicitExpect != nil {
-				if got.Artifact.Kind != explicitExpect.Artifact.Kind {
-					t.Errorf("got kind %v, want %v", got.Artifact.Kind, explicitExpect.Artifact.Kind)
-				}
-				if got.Version != explicitExpect.Version {
-					t.Errorf("got version %v, want %v", got.Version, explicitExpect.Version)
-				}
-				if !got.CreatedAt.Equal(explicitExpect.CreatedAt) {
-					t.Errorf("got CreatedAt %v, want %v", got.CreatedAt, explicitExpect.CreatedAt)
-				}
-				if !got.ModifiedAt.Equal(explicitExpect.ModifiedAt) {
-					t.Errorf("got ModifiedAt %v, want %v", got.ModifiedAt, explicitExpect.ModifiedAt)
-				}
-				if strings.TrimSpace(got.Body) != strings.TrimSpace(explicitExpect.Body) {
-					t.Errorf("got body %q, want %q", got.Body, explicitExpect.Body)
-				}
-				if !reflect.DeepEqual(got.Sheets, explicitExpect.Sheets) {
-					t.Errorf("got sheets %+v, want %+v", got.Sheets, explicitExpect.Sheets)
-				}
-				if !reflect.DeepEqual(got.Blocks, explicitExpect.Blocks) {
-					t.Errorf("got blocks %+v, want %+v", got.Blocks, explicitExpect.Blocks)
-				}
-			} else {
-				expected := cloneSpreadsheet(validItem)
-				expected.ID = got.ID
-				expected.Title = ""
-				expected.Path = ""
-
-				if !Equal(got, expected) {
-					t.Errorf("got spreadsheet %+v, want %+v", got, expected)
-				}
-			}
-		})
-	}
-
 	predefinedData := []byte("```parchment-meta\n{\n  \"parchment_format\": \"parchment-single-file-v2\",\n  \"kind\": \"spreadsheet\",\n  \"format_version\": 2,\n  \"created_at\": \"2026-10-28T14:10:36Z\",\n  \"modified_at\": \"2026-10-28T14:10:36Z\"\n}\n```\n\n<!-- parchment-body -->\n\nThis is the markdown body.\n\n<!-- parchment-blocks -->\n\n```parchment-custom-block\n{\n  \"custom\": \"data\"\n}\n```\n\n```parchment-spreadsheet\n{\n  \"version\": 1,\n  \"sheets\": [\n    {\n      \"name\": \"Sheet1\",\n      \"rows\": [\n        [\n          {\n            \"value\": \"125\"\n          }\n        ]\n      ]\n    }\n  ]\n}\n```\n")
 	predefinedCreatedAt, _ := time.Parse(time.RFC3339, "2026-10-28T14:10:36Z")
 	predefinedModifiedAt, _ := time.Parse(time.RFC3339, "2026-10-28T14:10:36Z")
@@ -363,19 +309,110 @@ func TestDecode(t *testing.T) {
 		},
 	}
 
-	check("valid generated", func() []byte { return validData }, "", false, nil)
-	check("valid predefined", func() []byte { return predefinedData }, "", false, &predefinedExpected)
-	check("malformed artifactfile", func() []byte { return []byte("invalid data") }, "decode spreadsheet file", false, nil)
-	check("wrong kind", func() []byte {
-		return []byte(strings.Replace(string(validData), `"kind": "spreadsheet"`, `"kind": "document"`, 1))
-	}, "", true, nil)
-	check("missing data block", func() []byte {
-		return []byte(strings.Replace(string(validData), "parchment-spreadsheet", "parchment-somethingelse", 1))
-	}, "spreadsheet payload block is missing", false, nil)
-	check("malformed data block", func() []byte {
-		return []byte(strings.Replace(string(validData), `"version": 1`, `"version": "abc"`, 1))
-	}, "decode spreadsheet payload", false, nil)
-	check("unsupported version", func() []byte { return []byte(strings.Replace(string(validData), `"version": 1`, `"version": 999`, 1)) }, "validate spreadsheet", false, nil)
+	tests := []struct {
+		name         string
+		dataFn       func() []byte
+		wantErr      string
+		wantNotFound bool
+		expected     *Spreadsheet
+	}{
+		{
+			name:   "valid generated",
+			dataFn: func() []byte { return validData },
+		},
+		{
+			name:     "valid predefined",
+			dataFn:   func() []byte { return predefinedData },
+			expected: &predefinedExpected,
+		},
+		{
+			name:    "malformed artifactfile",
+			dataFn:  func() []byte { return []byte("invalid data") },
+			wantErr: "decode spreadsheet file",
+		},
+		{
+			name: "wrong kind",
+			dataFn: func() []byte {
+				return []byte(strings.Replace(string(validData), `"kind": "spreadsheet"`, `"kind": "document"`, 1))
+			},
+			wantNotFound: true,
+		},
+		{
+			name: "missing data block",
+			dataFn: func() []byte {
+				return []byte(strings.Replace(string(validData), "parchment-spreadsheet", "parchment-somethingelse", 1))
+			},
+			wantErr: "spreadsheet payload block is missing",
+		},
+		{
+			name: "malformed data block",
+			dataFn: func() []byte {
+				return []byte(strings.Replace(string(validData), `"version": 1`, `"version": "abc"`, 1))
+			},
+			wantErr: "decode spreadsheet payload",
+		},
+		{
+			name: "unsupported version",
+			dataFn: func() []byte {
+				return []byte(strings.Replace(string(validData), `"version": 1`, `"version": 999`, 1))
+			},
+			wantErr: "validate spreadsheet",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Decode(tt.dataFn())
+			if tt.wantNotFound {
+				if err != ErrNotFound {
+					t.Errorf("got error %v, want ErrNotFound", err)
+				}
+				return
+			}
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("got error %v, want error containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if tt.expected != nil {
+				if got.Artifact.Kind != tt.expected.Artifact.Kind {
+					t.Errorf("got kind %v, want %v", got.Artifact.Kind, tt.expected.Artifact.Kind)
+				}
+				if got.Version != tt.expected.Version {
+					t.Errorf("got version %v, want %v", got.Version, tt.expected.Version)
+				}
+				if !got.CreatedAt.Equal(tt.expected.CreatedAt) {
+					t.Errorf("got CreatedAt %v, want %v", got.CreatedAt, tt.expected.CreatedAt)
+				}
+				if !got.ModifiedAt.Equal(tt.expected.ModifiedAt) {
+					t.Errorf("got ModifiedAt %v, want %v", got.ModifiedAt, tt.expected.ModifiedAt)
+				}
+				if strings.TrimSpace(got.Body) != strings.TrimSpace(tt.expected.Body) {
+					t.Errorf("got body %q, want %q", got.Body, tt.expected.Body)
+				}
+				if !reflect.DeepEqual(got.Sheets, tt.expected.Sheets) {
+					t.Errorf("got sheets %+v, want %+v", got.Sheets, tt.expected.Sheets)
+				}
+				if !reflect.DeepEqual(got.Blocks, tt.expected.Blocks) {
+					t.Errorf("got blocks %+v, want %+v", got.Blocks, tt.expected.Blocks)
+				}
+			} else {
+				expected := cloneSpreadsheet(validItem)
+				expected.ID = got.ID
+				expected.Title = ""
+				expected.Path = ""
+
+				if !Equal(got, expected) {
+					t.Errorf("got spreadsheet %+v, want %+v", got, expected)
+				}
+			}
+		})
+	}
 }
 
 func TestCellName(t *testing.T) {
