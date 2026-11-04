@@ -204,8 +204,8 @@ destination = ""
 ```
 
 Settings are merged from built-in defaults, the configuration file, then
-environment overrides. `PARCHMENT_UNDO_LIMIT` overrides the configured undo limit. Editor, theme,
-logging, and backup settings are parsed but are not yet connected to runtime
+environment overrides. `PARCHMENT_UNDO_LIMIT` overrides the configured undo limit. Theme,
+logging, and backup settings are not yet connected to runtime
 behavior, and their environment variables currently have no effect.
 
 ## Interactive editor
@@ -255,50 +255,58 @@ does not survive a restart.
 ## Future work
 
 Parchment supports notes, documents, basic spreadsheets, and Markdown
-presentations. Planned work is organized into five implementation phases:
+presentations. Detailed PR-by-PR implementation plans are in
+[`FutureWork.md`](FutureWork.md), [`docs/ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md),
+and [`docs/Persistent_Undo_Redo_Plan.md`](docs/Persistent_Undo_Redo_Plan.md).
+Planned work is organized into five sequential implementation phases broken down
+into **38 reviewable Pull Requests (`PR 1`–`PR 38`)**:
 
-### Phase 1: Foundations & Bug Fixes
-- Notes editor terminal height and width allocation (leaves an unused bottom row and 8-column right margin; fix resize calculation)
-- Connect configuration settings to runtime behavior
-  - Respect configured theme (`theme` / `PARCHMENT_THEME`) across all TUI screens instead of hardcoding colors
-  - Implement file logging for `logging.level` and `logging.format` (`PARCHMENT_LOG_LEVEL`, `PARCHMENT_LOG_FORMAT`) under `~/.parchment/`
-  - Implement local backup destination (`backup.local.destination`) for automatic artifact snapshots on save
-- Dedicated text editor widget with micro-style text selection (Shift+arrows, mouse drag, double/triple click, clipboard copy/cut/paste, replacement typing) and standard key combinations (Ctrl+arrows for word navigation, Ctrl+del/Ctrl+backspace for word deletion, Tab for spaces)
+### Phase 1: Foundations & Bug Fixes (PRs 1–6)
+- **PR 1:** Fix bordered content sizing in the note editor (and Lip Gloss outer border dimensions `width-2` / `height-chrome-2` so borders never overflow terminal bounds)
+- **PRs 2–4:** Connect configuration settings (`version = 1`) to runtime behavior, rejecting invalid configuration values on load
+  - **PR 2:** Implement `log/slog` file logging for `logging.level` (`debug`, `info`, `warn`, `error`, `off`) and `logging.format` (`text`, `json`) via `PARCHMENT_LOG_LEVEL` and `PARCHMENT_LOG_FORMAT` at `~/.parchment/parchment.log` (`0600`, capped at `5 MiB` with single-file rotation to `parchment.log.1`)
+  - **PR 3:** Respect configured `[theme]` (`mode = "auto"|"light"|"dark"` overridden by `PARCHMENT_THEME`, plus optional hex overrides `primary`, `border`, `error`, `selection`, `match`) across all TUI screens instead of hardcoding colors
+  - **PR 4:** Implement local backup snapshots (`backup.local.destination`, defaulting to `""` disabled, overridden by `PARCHMENT_BACKUP_DESTINATION`, rejecting paths inside `~/.parchment/`), naming snapshots `<stem>-<8char-path-hash>-<YYYYMMDDTHHMMSSZ><ext>`, keeping the last 10 per source file, and logging/warning without failing a successful save if backup creation fails
+- **PRs 5–6:** Complete the native text editor widget (`internal/tui/editor`) with literal `\t` preservation (4-space visual tab stops while `Tab` inserts 2 spaces, removing `\t` rejection from `isUnpreservableText`), `UndoLimit`-bounded keystroke history, keystroke-undo reset on `Ctrl+S` save (**PR 5**), and `go-runewidth` soft line wrapping with CJK/emoji-aware visual row navigation and mouse/selection coordinate mapping (**PR 6**)
 
-### Phase 2: State Safety & CLI Core
-- Autosave recovery drafts for the spreadsheet and presentation editors
-- Explicit, opt-in conversion of a plain Markdown file into a Parchment artifact (plain Markdown currently opens and saves as a plain note; default to Document conversion)
-- Spreadsheet deletion & CSV export: row and column deletion (`delete-row`, `delete-column`) and sheet removal with formula reference shifting and `#REF!` error handling; CSV export command (`spreadsheet export --csv`)
-- Document embedded image management: commands to list embedded images, view metadata, extract image files to disk, and remove unused images
+### Phase 2: State Safety & CLI Core (PRs 7–13)
+- **PRs 7–9:** Buffered `Ctrl+S` saving and autosave recovery drafts for spreadsheets (switching the spreadsheet TUI from immediate per-cell disk writes to buffered workbook editing with dirty-close confirmation in **PR 7**, autosaving the dirty workbook + active cell input in **PR 8**) and presentations (opening recovered drafts directly into the Markdown source editor in **PR 9**)
+- **PR 10:** Explicit CLI-only conversion of plain Markdown files (`parchment convert <file> [--kind document|note|presentation] [--yes]`, defaulting `--kind` to `document`, prompting `[y/N]` on a TTY and requiring `--yes` when non-interactive, setting `created_at` from file `mtime` UTC and `modified_at` to current UTC)
+- **PRs 11–12:** Spreadsheet deletion & CSV export: 1-based `delete-row`, `delete-column`, and `delete-sheet` (CLI + TUI shortcuts) with formula reference shifting, `#REF!` token support, and relaxed save-time validation allowing formula error values to persist while rejecting invalid syntax (**PR 11**); `spreadsheet export <file> --csv [--sheet <name>] [-o <output>] [--force]` defaulting to the first sheet and `stdout` when omitted and refusing overwrite without `--force` (**PR 12**)
+- **PR 13:** Document embedded image management: `document images <file>` (`<name>\t<format>\t<WxH>\t<bytes>\t<referenced|unreferenced>`), `document image-extract <file> <image-name> -o <output> [--force]` (`0600`), and `document image-remove <file> <image-name> [--strip-references]` (refusing removal when referenced in `Body` without `--strip-references` or when referenced by a pending proposal)
 
-### Phase 3: Rendering & TUI Features
-- Overall visual improvements
-  - Document viewer and other previewers render rich Markdown using [Glamour](https://github.com/charmbracelet/glamour). Embedded images appear as links/placeholders in the editor, but render as fully visible graphical images in document previews and readers (using Kitty/Sixel/iTerm2 protocols with ANSI half-block fallback)
-  - Parchment app components at the bottom of the page like the "Ready" status and undo/redo indicators are not visually separated from the content of the artifact being shown. The same is true for the app components at the top of the page
-- Document navigation pane and in-document link navigation (strictly for Documents; does not apply to Notes or Presentations)
-  - Navigation pane to the left of the Document editor displaying headings and anchors; clicking or selecting an entry jumps the editor cursor to that section
-  - In document preview and reader views, inline Markdown links are clickable to jump to the corresponding target heading or page
-- In-editor search and find across all artifact viewers and editors (notes, documents, spreadsheets, presentations)
-- Document and presentation printer font selection for printer-oriented rendering
+### Phase 3: Rendering & TUI Features (PRs 14–23)
+- **PRs 14–16:** Overall visual improvements
+  - **PRs 14–15:** Render Note `F5` previews, Document reader/preview pages, and Presentation slides via [Glamour](https://github.com/charmbracelet/glamour) (**PR 14**, keeping CLI `document print` plain text and editor images as literal `![alt](image-...)` Markdown). Render embedded images graphically in TUI previews/readers via env-detected Kitty/Sixel/iTerm2 protocols with automatic 24-bit ANSI half-block fallback in multi-column sections or partially clipped viewports (**PR 15**)
+  - **PR 16:** Unify bordered content panes and visually separated top header/help and bottom status/undo/redo chrome across Note, Document, Spreadsheet, and Presentation screens
+- **PRs 17–19:** Document navigation pane and in-document link navigation (strictly for Documents; does not apply to Notes or Presentations)
+  - **PRs 17–18:** Heading slugging (`-1`/`-2` suffixes) and `#id` anchor parsing (**PR 17**), plus a left-side outline pane in the Document editor and reader (`Ctrl+O` toggles visibility; `F6` focuses the editor outline pane, freeing `Tab` in the body to insert 2 spaces while `F2` focuses the toolbar), displaying H1–H6 headings, untitled section breaks (`── Section (N cols)`), and `#id` anchors (**PR 18**)
+  - **PR 19:** Pre-render rewritten and coordinate-mapped clickable internal links in Document preview and reader views (suppressing raw destination URLs in Glamour and tracking ordered post-render ANSI line spans)
+- **PRs 20–21:** In-editor search and find across all artifact viewers and editors (`Ctrl+F` everywhere plus `/` in read-only/grid browse views; modal bottom find bar + text-editor match highlighting in **PR 20**, extended with `n`/`N`, smart-case matching, ANSI stripping, and full multi-sheet + auto-revealed presentation speaker-note search in **PR 21**)
+- **PRs 22–23:** Document and presentation printer font selection (`"courier"` default, `"helvetica"`, `"times"` in `document.Layout` at `LayoutVersion = 1` and a new `font` field in the existing `parchment-presentation` v1 block in **PR 22**), adding a pure-Go core-font PDF renderer (`internal/pdfrender`) and `document print --format text|pdf` (default `text`) without affecting terminal fonts (**PR 23**)
 
-### Phase 4: Extended Domain Engines (Research)
-- Research and design the dedicated spreadsheet formula AST and evaluation engine, evaluating whether to build a custom AST or use an external library.
-- Research the toolchain and approach for presentation media, directives, and exporting to standalone slide formats (HTML slides, PDF).
-- Research basic image-editing features (crop, resize) and evaluate Go standard library limitations versus third-party libraries.
-- Dedicated spreadsheet formula AST and evaluation engine supporting rectangular ranges (`A1:B10`), aggregate functions (`SUM`, `AVERAGE`, `COUNT`, `MIN`, `MAX`), nested function calls, cross-sheet references (`Sheet2!A1`), and standard error propagation (`#REF!`, `#DIV/0!`, `#NAME?`, `#VALUE!`, `#CIRCULAR!`)
-- Presentation media, directives, and export
-  - Support embedded images in slide decks
-  - Support Go present command directives (e.g. `.image`, `.code`)
-  - Export presentations to standalone slide formats (HTML slides, PDF)
-- Basic image-editing features for files opened directly by Parchment (crop, resize)
+### Phase 4: Extended Domain Engines (PRs 24–30)
+- **PRs 24–25:** Zero-dependency recursive-descent spreadsheet formula Lexer, AST, span rewriter, and cross-sheet references (`Sheet2!A1`) in `internal/spreadsheet/formula` (**PR 24**), followed by rectangular ranges (`A1:B10`), `""`-escaped `StringLiteral`s with Excel/Calc coercion, `SUM`, `AVERAGE`, `COUNT`, `MIN`, `MAX`, nested calls, and persisted runtime error propagation (`#REF!`, `#DIV/0!`, `#NAME?`, `#VALUE!`, `#CIRCULAR!`) (**PR 25**)
+- **PRs 26–28:** Presentation media, directives, and export
+  - **PR 26:** Embedded images in `parchment-presentation` with CLI parity (`presentation image`, `images`, `image-extract`, `image-remove`) and TUI slide rendering
+  - **PR 27:** Go `present` `.image <embedded-name> [height] [width]` and directory-confined `.code <relpath> [bounds]` directives (`<= 1 MiB`, no `..`/symlink escape, line numbers and `/regex/` bounds)
+  - **PR 28:** Pure-Go standalone `presentation export <file> --format html|pdf -o <output> [--notes] [--force]` (single-file HTML with inline CSS/JS and base64 `data:` URIs; shared pure-Go PDF writer; speaker notes omitted unless `--notes`)
+- **PRs 29–30:** Standalone PNG/JPEG image editing (`parchment image crop` and `parchment image resize` with `-o [--force]` or confirmed `--in-place [--yes]`) using `golang.org/x/image/draw` (`CatmullRom`, JPEG quality `90`, `<= 16384px` cap) and removing Markdown-envelope `artifact.ImageKind` (**PR 29**), followed by PNG/JPEG magic-byte detection in `resolveTUITarget` and a basic TUI image viewer with crop/resize prompts (**PR 30**)
+
+### Phase 5: External Interop & Persistent History (PRs 31–38)
+- **PRs 31–35:** Import and export ODF (`.odt`) and DOCX (`.docx`) documents via pure-Go stdlib `archive/zip` + `encoding/xml` adapters (`parchment document import` / `export`) with lossy approximation warnings on `stderr` ([`docs/ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md))
+- **PRs 36–38:** Persistent, chunk-deduplicated undo/redo storage under `~/.parchment/history/` (`history.Store` + `parchment history undo|redo|log|restore|clean|gc`) replacing in-memory service stacks across CLI and TUI ([`docs/Persistent_Undo_Redo_Plan.md`](docs/Persistent_Undo_Redo_Plan.md))
 
 ## Architecture & Planning
 
-The planning documents for persistent undo/redo storage format and external interop formats (ODF, DOCX) can be found in the `docs/` directory:
-- [ODF / DOCX Import & Export Plan](docs/ODF_DOCX_Interop_Plan.md)
-- [Persistent Undo/Redo Storage Plan](docs/Persistent_Undo_Redo_Plan.md)
+The detailed PR-by-PR implementation plans can be found in [`FutureWork.md`](FutureWork.md) and the `docs/` directory:
+- [Future Work Implementation Plan (Phases 1–5, PRs 1–38)](FutureWork.md)
+- [ODF / DOCX Import & Export Plan (Phase 5, PRs 31–35)](docs/ODF_DOCX_Interop_Plan.md)
+- [Persistent Undo/Redo Storage Plan (Phase 5, PRs 36–38)](docs/Persistent_Undo_Redo_Plan.md)
 
 ## Development
+
+Parchment requires Go 1.24 or newer (ensure the Go binary is on your `PATH`, e.g. `export PATH=$PATH:/usr/local/go/bin:~/go/bin`).
 
 ```sh
 go build ./cmd/parchment
