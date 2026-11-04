@@ -561,30 +561,64 @@ func TestDecode(t *testing.T) {
 		t.Fatalf("failed to encode valid item: %v", err)
 	}
 
-	check := func(name string, dataFn func() []byte, wantNotFound bool, wantErr string) {
-		t.Run(name, func(t *testing.T) {
-			assertDecodeResult(t, dataFn(), wantNotFound, wantErr, validItem)
-		})
+	tests := []struct {
+		name         string
+		dataFn       func() []byte
+		wantErr      string
+		wantNotFound bool
+	}{
+		{
+			name:   "valid",
+			dataFn: func() []byte { return validData },
+		},
+		{
+			name:    "malformed artifactfile",
+			dataFn:  func() []byte { return []byte("invalid data") },
+			wantErr: "decode presentation file",
+		},
+		{
+			name: "wrong kind",
+			dataFn: func() []byte {
+				return []byte(strings.Replace(string(validData), `"kind": "presentation"`, `"kind": "document"`, 1))
+			},
+			wantNotFound: true,
+		},
+		{
+			name: "missing data block",
+			dataFn: func() []byte {
+				data, _ := artifactfile.Encode(validItem.Artifact, validItem.Source, map[string]any{})
+				return data
+			},
+			wantErr: "presentation data block is missing",
+		},
+		{
+			name: "malformed data block",
+			dataFn: func() []byte {
+				return []byte(strings.Replace(string(validData), `"version": 1`, `"version": "abc"`, 1))
+			},
+			wantErr: "decode presentation data",
+		},
+		{
+			name: "unsupported version",
+			dataFn: func() []byte {
+				return []byte(strings.Replace(string(validData), `"version": 1`, `"version": 999`, 1))
+			},
+			wantErr: "unsupported presentation file version 999",
+		},
+		{
+			name: "validate fails",
+			dataFn: func() []byte {
+				return []byte(strings.Replace(string(validData), "# Demo", string([]byte{0xff, 0xff}), 1))
+			},
+			wantErr: "validate presentation: presentation source must be valid UTF-8",
+		},
 	}
 
-	check("valid", func() []byte { return validData }, false, "")
-	check("malformed artifactfile", func() []byte { return []byte("invalid data") }, false, "decode presentation file")
-	check("wrong kind", func() []byte {
-		return []byte(strings.Replace(string(validData), `"kind": "presentation"`, `"kind": "document"`, 1))
-	}, true, "")
-	check("missing data block", func() []byte {
-		data, _ := artifactfile.Encode(validItem.Artifact, validItem.Source, map[string]any{})
-		return data
-	}, false, "presentation data block is missing")
-	check("malformed data block", func() []byte {
-		return []byte(strings.Replace(string(validData), `"version": 1`, `"version": "abc"`, 1))
-	}, false, "decode presentation data")
-	check("unsupported version", func() []byte {
-		return []byte(strings.Replace(string(validData), `"version": 1`, `"version": 999`, 1))
-	}, false, "unsupported presentation file version 999")
-	check("validate fails", func() []byte {
-		return []byte(strings.Replace(string(validData), "# Demo", string([]byte{0xff, 0xff}), 1))
-	}, false, "validate presentation: presentation source must be valid UTF-8")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertDecodeResult(t, tt.dataFn(), tt.wantNotFound, tt.wantErr, validItem)
+		})
+	}
 }
 
 func assertDecodeResult(t *testing.T, data []byte, wantNotFound bool, wantErr string, validItem Presentation) {
