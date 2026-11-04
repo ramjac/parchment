@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/filerepo"
@@ -232,6 +233,66 @@ func TestEqual(t *testing.T) {
 					Title: "different-note",
 				},
 				Body: "World",
+			},
+			expected: false,
+		},
+		{
+			name: "different ID ignored",
+			left: note.Note{
+				Artifact: artifact.Artifact{ID: "123", Title: "test-note"},
+				Body:     "Hello",
+			},
+			right: note.Note{
+				Artifact: artifact.Artifact{ID: "456", Title: "test-note"},
+				Body:     "Hello",
+			},
+			expected: true,
+		},
+		{
+			name: "different Title ignored",
+			left: note.Note{
+				Artifact: artifact.Artifact{ID: "123", Title: "test-note"},
+				Body:     "Hello",
+			},
+			right: note.Note{
+				Artifact: artifact.Artifact{ID: "123", Title: "different-note"},
+				Body:     "Hello",
+			},
+			expected: true,
+		},
+		{
+			name: "different Blocks",
+			left: note.Note{
+				Body:   "Hello",
+				Blocks: map[string]json.RawMessage{"a": []byte(`"A"`)},
+			},
+			right: note.Note{
+				Body:   "Hello",
+				Blocks: map[string]json.RawMessage{"a": []byte(`"B"`)},
+			},
+			expected: false,
+		},
+		{
+			name: "different Path",
+			left: note.Note{
+				Artifact: artifact.Artifact{Path: "a.md"},
+				Body:     "Hello",
+			},
+			right: note.Note{
+				Artifact: artifact.Artifact{Path: "b.md"},
+				Body:     "Hello",
+			},
+			expected: false,
+		},
+		{
+			name: "different CreatedAt",
+			left: note.Note{
+				Artifact: artifact.Artifact{CreatedAt: time.Now()},
+				Body:     "Hello",
+			},
+			right: note.Note{
+				Artifact: artifact.Artifact{CreatedAt: time.Now().Add(time.Second)},
+				Body:     "Hello",
 			},
 			expected: false,
 		},
