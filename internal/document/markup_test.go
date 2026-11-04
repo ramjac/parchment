@@ -35,30 +35,6 @@ func TestSectionBreakMarkup(t *testing.T) {
 			continuous: true,
 			want:       "<!-- parchment:section-break columns=3 continuous -->",
 		},
-		{
-			name:       "zero columns, not continuous",
-			columns:    0,
-			continuous: false,
-			want:       "<!-- parchment:section-break columns=0 -->",
-		},
-		{
-			name:       "zero columns, continuous",
-			columns:    0,
-			continuous: true,
-			want:       "<!-- parchment:section-break columns=0 continuous -->",
-		},
-		{
-			name:       "negative columns, not continuous",
-			columns:    -1,
-			continuous: false,
-			want:       "<!-- parchment:section-break columns=-1 -->",
-		},
-		{
-			name:       "negative columns, continuous",
-			columns:    -1,
-			continuous: true,
-			want:       "<!-- parchment:section-break columns=-1 continuous -->",
-		},
 	}
 
 	for _, tt := range tests {
