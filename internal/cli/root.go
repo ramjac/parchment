@@ -51,7 +51,7 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 	create := &cobra.Command{
 		Use: "create <file>", Short: "Create a note file", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, service, err := open(cmd)
+			repo, service, err := open(cmd)
 			if err != nil {
 				return err
 			}
@@ -64,6 +64,7 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			drainWarnings(repo, output{err: cmd.ErrOrStderr()})
 			return finishCreate(cmd, streams, n.Path, artifact.NoteKind)
 		},
 	}
@@ -88,7 +89,7 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 	edit := &cobra.Command{
 		Use: "edit <file>", Short: "Replace a note's Markdown body", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, service, err := open(cmd)
+			repo, service, err := open(cmd)
 			if err != nil {
 				return err
 			}
@@ -97,6 +98,9 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 			}
 			body, _ := cmd.Flags().GetString("body")
 			_, err = service.Update(cmd.Context(), args[0], body)
+			if err == nil {
+				drainWarnings(repo, streams)
+			}
 			return err
 		},
 	}
@@ -165,7 +169,7 @@ func openStore() (*filerepo.Repository, config.Settings, error) {
 	if err != nil {
 		return nil, config.Settings{}, err
 	}
-	repo, err := filerepo.New(stateDir)
+	repo, err := filerepo.New(stateDir, filerepo.Options{LocalBackup: settings.LocalBackup})
 	if err != nil {
 		return nil, config.Settings{}, err
 	}
@@ -178,4 +182,13 @@ func groupCommand(group *cobra.Command) *cobra.Command {
 	group.Args = cobra.NoArgs
 	group.RunE = func(cmd *cobra.Command, _ []string) error { return cmd.Help() }
 	return group
+}
+
+func drainWarnings(repo *filerepo.Repository, streams output) {
+	if repo == nil {
+		return
+	}
+	for _, w := range repo.Warnings() {
+		fmt.Fprintf(streams.err, "warning: %v\n", w)
+	}
 }

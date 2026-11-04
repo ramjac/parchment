@@ -41,7 +41,7 @@ type harness struct {
 
 func newHarness(t *testing.T, kind artifact.Kind) *harness {
 	t.Helper()
-	repo, err := filerepo.New(t.TempDir())
+	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -638,7 +638,7 @@ func TestSanitizeTerminalText(t *testing.T) {
 }
 
 func TestRun(t *testing.T) {
-	repo, err := filerepo.New(t.TempDir())
+	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1093,7 +1093,7 @@ func TestModelInit_returns_openFile_cmd_for_kinds(t *testing.T) {
 
 	for _, tc := range kinds {
 		t.Run("returns openFile cmd for "+tc.name, func(t *testing.T) {
-			repo, err := filerepo.New(t.TempDir())
+			repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1157,7 +1157,7 @@ func TestModelInit_returns_error_msg_when_opening_unsupported_kind(t *testing.T)
 }
 
 func TestModelInit_loads_existing_files_without_creating(t *testing.T) {
-	repo, err := filerepo.New(t.TempDir())
+	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1231,7 +1231,7 @@ func TestModelInit_loads_existing_files_without_creating(t *testing.T) {
 }
 
 func TestModelInit_detects_recovery_draft_for_note_and_document(t *testing.T) {
-	repo, err := filerepo.New(t.TempDir())
+	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1323,7 +1323,7 @@ func TestModelInit_detects_recovery_draft_for_note_and_document(t *testing.T) {
 }
 
 func TestModelInit_returns_error_when_service_is_nil_for_requested_kind(t *testing.T) {
-	repo, err := filerepo.New(t.TempDir())
+	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1350,7 +1350,7 @@ func TestModelInit_returns_error_when_service_is_nil_for_requested_kind(t *testi
 }
 
 func TestModelInit_returns_error_when_file_load_fails_with_filesystem_error(t *testing.T) {
-	repo, err := filerepo.New(t.TempDir())
+	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1554,7 +1554,7 @@ func TestNewModel_ZeroConfigDefaults(t *testing.T) {
 }
 
 func TestNewModel_EmptyKindSetsChooseKindStage(t *testing.T) {
-	repo, err := filerepo.New(t.TempDir())
+	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1600,7 +1600,7 @@ func TestNewModel_SpecifiedKindKeepsDefaultStage(t *testing.T) {
 }
 
 func TestNewModel_NotesServiceUndoRedoState(t *testing.T) {
-	repo, err := filerepo.New(t.TempDir())
+	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1615,7 +1615,7 @@ func TestNewModel_NotesServiceUndoRedoState(t *testing.T) {
 }
 
 func TestNewModel_DocumentsServiceInitializationAndAutosaveScheduler(t *testing.T) {
-	repo, err := filerepo.New(t.TempDir())
+	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

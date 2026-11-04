@@ -28,7 +28,7 @@ func TestNew(t *testing.T) {
 }
 
 func testNewEmptyStateDirectory(t *testing.T) {
-	repo, err := filerepo.New("")
+	repo, err := filerepo.New("", filerepo.Options{})
 	if err == nil {
 		t.Fatal("expected error for empty stateDir, got nil")
 	}
@@ -42,7 +42,7 @@ func testNewEmptyStateDirectory(t *testing.T) {
 
 func testNewValidDirectoryResolvesToAbsolutePath(t *testing.T) {
 	tempDir := t.TempDir()
-	repo, err := filerepo.New(tempDir)
+	repo, err := filerepo.New(tempDir, filerepo.Options{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -59,7 +59,7 @@ func testNewRelativePathConvertedToAbsolutePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	repo, err := filerepo.New(relPath)
+	repo, err := filerepo.New(relPath, filerepo.Options{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -79,7 +79,7 @@ func testNewRelativePathConvertedToAbsolutePath(t *testing.T) {
 func testNewNonExistentNestedDirectoryPathCreatedOnDemand(t *testing.T) {
 	tempDir := t.TempDir()
 	nestedDir := filepath.Join(tempDir, "nested", "state")
-	repo, err := filerepo.New(nestedDir)
+	repo, err := filerepo.New(nestedDir, filerepo.Options{})
 	if err != nil {
 		t.Fatalf("unexpected error for non-existent path: %v", err)
 	}
@@ -106,7 +106,7 @@ func testNewNonExistentNestedDirectoryPathCreatedOnDemand(t *testing.T) {
 func newRepo(t *testing.T) (*filerepo.Repository, string, string) {
 	t.Helper()
 	state, folder := t.TempDir(), t.TempDir()
-	repo, err := filerepo.New(state)
+	repo, err := filerepo.New(state, filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestDocumentProposalsAreStoredInTheFile(t *testing.T) {
 	if err != nil || !strings.Contains(string(data), change.ID) {
 		t.Fatalf("file lacks proposal: %s, %v", data, err)
 	}
-	reopened, err := filerepo.New(t.TempDir())
+	reopened, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -539,7 +539,7 @@ func TestStateDirectoriesAreMadeOwnerOnly(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	repo, err := filerepo.New(state)
+	repo, err := filerepo.New(state, filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

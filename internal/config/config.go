@@ -41,11 +41,7 @@ const defaultFile = "version = 1\n"
 // Load resolves built-in defaults, the TOML file at path, and environment
 // overrides. A missing file leaves the defaults in place.
 func Load(path string) (Settings, error) {
-	dir, _ := Directory()
 	defaultBackup := ""
-	if dir != "" {
-		defaultBackup = filepath.Join(dir, "backups")
-	}
 	settings := Settings{
 		UndoLimit: 100, LogLevel: "warn", LogFormat: "text",
 		LocalBackup: defaultBackup,
@@ -197,6 +193,9 @@ func apply(settings *Settings, cfg fileConfig) {
 }
 
 func applyEnvironment(settings *Settings) {
+	if value, ok := os.LookupEnv("PARCHMENT_BACKUP_DESTINATION"); ok {
+		settings.LocalBackup = value
+	}
 	if value, ok := os.LookupEnv("PARCHMENT_UNDO_LIMIT"); ok {
 		if limit, err := strconv.Atoi(value); err == nil {
 			settings.UndoLimit = limit

@@ -31,7 +31,7 @@ func newSpreadsheetCreateCmd(streams output) *cobra.Command {
 	create := &cobra.Command{
 		Use: "create <file>", Short: "Create a spreadsheet file", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, service, err := openSpreadsheets(cmd)
+			repo, service, err := openSpreadsheets(cmd)
 			if err != nil {
 				return err
 			}
@@ -60,6 +60,7 @@ func newSpreadsheetCreateCmd(streams output) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			drainWarnings(repo, output{err: cmd.ErrOrStderr()})
 			return finishCreate(cmd, streams, book.Path, artifact.SpreadsheetKind)
 		},
 	}
@@ -141,19 +142,25 @@ func addSpreadsheetInsertCommands(group *cobra.Command) {
 		run  func(*cobra.Command, string, string, int) error
 	}{
 		{name: "insert-row", run: func(cmd *cobra.Command, id, sheet string, index int) error {
-			_, service, err := openSpreadsheets(cmd)
+			repo, service, err := openSpreadsheets(cmd)
 			if err != nil {
 				return err
 			}
 			_, err = service.InsertRowInSheet(cmd.Context(), id, sheet, index)
+			if err == nil {
+				drainWarnings(repo, output{err: cmd.ErrOrStderr()})
+			}
 			return err
 		}},
 		{name: "insert-column", run: func(cmd *cobra.Command, id, sheet string, index int) error {
-			_, service, err := openSpreadsheets(cmd)
+			repo, service, err := openSpreadsheets(cmd)
 			if err != nil {
 				return err
 			}
 			_, err = service.InsertColumnInSheet(cmd.Context(), id, sheet, index)
+			if err == nil {
+				drainWarnings(repo, output{err: cmd.ErrOrStderr()})
+			}
 			return err
 		}},
 	} {
@@ -179,11 +186,14 @@ func newSpreadsheetAddSheetCmd() *cobra.Command {
 	return &cobra.Command{
 		Use: "add-sheet <file> <name>", Short: "Add a named worksheet", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, service, err := openSpreadsheets(cmd)
+			repo, service, err := openSpreadsheets(cmd)
 			if err != nil {
 				return err
 			}
 			_, err = service.AddSheet(cmd.Context(), args[0], args[1])
+			if err == nil {
+				drainWarnings(repo, output{err: cmd.ErrOrStderr()})
+			}
 			return err
 		},
 	}
