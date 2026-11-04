@@ -260,102 +260,6 @@ func (r *memoryRepository) TransitionSpreadsheet(_ context.Context, id string, e
 	return nil
 }
 
-func TestDecodeErrorPaths(t *testing.T) {
-	tests := []struct {
-		name   string
-		data   []byte
-		errStr string
-		errVal error
-	}{
-		{
-			name:   "invalid artifact file",
-			data:   []byte("not an artifact"),
-			errStr: "decode spreadsheet file:",
-		},
-		{
-			name:   "wrong artifact kind",
-			data:   []byte("```parchment-meta\n{\n  \"parchment_format\": \"parchment-single-file-v2\",\n  \"kind\": \"note\",\n  \"format_version\": 2,\n  \"created_at\": \"2026-10-28T14:10:36Z\",\n  \"modified_at\": \"2026-10-28T14:10:36Z\"\n}\n```\n\n<!-- parchment-body -->\n\n<!-- parchment-blocks -->\n"),
-			errVal: ErrNotFound,
-		},
-		{
-			name:   "missing payload block",
-			data:   []byte("```parchment-meta\n{\n  \"parchment_format\": \"parchment-single-file-v2\",\n  \"kind\": \"spreadsheet\",\n  \"format_version\": 2,\n  \"created_at\": \"2026-10-28T14:10:36Z\",\n  \"modified_at\": \"2026-10-28T14:10:36Z\"\n}\n```\n\n<!-- parchment-body -->\n\n<!-- parchment-blocks -->\n"),
-			errStr: "spreadsheet payload block is missing",
-		},
-		{
-			name:   "type mismatch JSON payload",
-			data:   []byte("```parchment-meta\n{\n  \"parchment_format\": \"parchment-single-file-v2\",\n  \"kind\": \"spreadsheet\",\n  \"format_version\": 2,\n  \"created_at\": \"2026-10-28T14:10:36Z\",\n  \"modified_at\": \"2026-10-28T14:10:36Z\"\n}\n```\n\n<!-- parchment-body -->\n\n<!-- parchment-blocks -->\n\n```parchment-spreadsheet\n{\n  \"version\": \"not-a-number\",\n  \"sheets\": [\n    {\n      \"name\": \"Sheet1\",\n      \"rows\": [\n        [\n          {\n            \"value\": \"1\"\n          }\n        ]\n      ]\n    }\n  ]\n}\n```\n"),
-			errStr: "decode spreadsheet payload:",
-		},
-		{
-			name:   "normalize error (unsupported version)",
-			data:   []byte("```parchment-meta\n{\n  \"parchment_format\": \"parchment-single-file-v2\",\n  \"kind\": \"spreadsheet\",\n  \"format_version\": 2,\n  \"created_at\": \"2026-10-28T14:10:36Z\",\n  \"modified_at\": \"2026-10-28T14:10:36Z\"\n}\n```\n\n<!-- parchment-body -->\n\n<!-- parchment-blocks -->\n\n```parchment-spreadsheet\n{\n  \"version\": 999,\n  \"sheets\": [\n    {\n      \"name\": \"Sheet1\",\n      \"rows\": [\n        [\n          {\n            \"value\": \"1\"\n          }\n        ]\n      ]\n    }\n  ]\n}\n```\n"),
-			errStr: "validate spreadsheet:",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := Decode(tt.data)
-			if err == nil {
-				t.Fatalf("expected error, got nil")
-			}
-			if tt.errVal != nil && err != tt.errVal {
-				t.Fatalf("expected error %v, got %v", tt.errVal, err)
-			}
-			if tt.errStr != "" && !strings.Contains(err.Error(), tt.errStr) {
-				t.Fatalf("expected error containing %q, got: %v", tt.errStr, err)
-			}
-		})
-	}
-}
-
-func TestDecodePredefinedJSON(t *testing.T) {
-	data := []byte("```parchment-meta\n{\n  \"parchment_format\": \"parchment-single-file-v2\",\n  \"kind\": \"spreadsheet\",\n  \"format_version\": 2,\n  \"created_at\": \"2026-10-28T14:10:36Z\",\n  \"modified_at\": \"2026-10-28T14:10:36Z\"\n}\n```\n\n<!-- parchment-body -->\n\nThis is the markdown body.\n\n<!-- parchment-blocks -->\n\n```parchment-custom-block\n{\n  \"custom\": \"data\"\n}\n```\n\n```parchment-spreadsheet\n{\n  \"version\": 1,\n  \"sheets\": [\n    {\n      \"name\": \"Sheet1\",\n      \"rows\": [\n        [\n          {\n            \"value\": \"125\"\n          }\n        ]\n      ]\n    }\n  ]\n}\n```\n")
-
-	decoded, err := Decode(data)
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-
-	createdAt, _ := time.Parse(time.RFC3339, "2026-10-28T14:10:36Z")
-	modifiedAt, _ := time.Parse(time.RFC3339, "2026-10-28T14:10:36Z")
-
-	expected := Spreadsheet{
-		Artifact: artifact.Artifact{
-			Kind:          artifact.SpreadsheetKind,
-			FormatVersion: 2,
-			CreatedAt:     createdAt.UTC(),
-			ModifiedAt:    modifiedAt.UTC(),
-		},
-		Version: 1,
-		Sheets: []Sheet{
-			{
-				Name: "Sheet1",
-				Rows: [][]Cell{
-					{
-						{Value: "125"},
-					},
-				},
-			},
-		},
-		Body: "This is the markdown body.\n",
-		Blocks: map[string]json.RawMessage{
-			"parchment-custom-block": json.RawMessage("{\n  \"custom\": \"data\"\n}"),
-		},
-	}
-
-	if decoded.Artifact.Kind != expected.Artifact.Kind ||
-		decoded.Version != expected.Version ||
-		!decoded.CreatedAt.Equal(expected.CreatedAt) ||
-		!decoded.ModifiedAt.Equal(expected.ModifiedAt) ||
-		strings.TrimSpace(decoded.Body) != strings.TrimSpace(expected.Body) ||
-		!reflect.DeepEqual(decoded.Blocks, expected.Blocks) ||
-		!reflect.DeepEqual(decoded.Sheets, expected.Sheets) {
-		t.Fatalf("decoded does not match expected.\ngot: %+v\nwant: %+v", decoded, expected)
-	}
-}
-
 func TestDecode(t *testing.T) {
 	validItem := Spreadsheet{
 		Artifact: artifact.Artifact{
@@ -378,15 +282,48 @@ func TestDecode(t *testing.T) {
 		t.Fatalf("failed to encode valid item: %v", err)
 	}
 
+	predefinedData := []byte("```parchment-meta\n{\n  \"parchment_format\": \"parchment-single-file-v2\",\n  \"kind\": \"spreadsheet\",\n  \"format_version\": 2,\n  \"created_at\": \"2026-10-28T14:10:36Z\",\n  \"modified_at\": \"2026-10-28T14:10:36Z\"\n}\n```\n\n<!-- parchment-body -->\n\nThis is the markdown body.\n\n<!-- parchment-blocks -->\n\n```parchment-custom-block\n{\n  \"custom\": \"data\"\n}\n```\n\n```parchment-spreadsheet\n{\n  \"version\": 1,\n  \"sheets\": [\n    {\n      \"name\": \"Sheet1\",\n      \"rows\": [\n        [\n          {\n            \"value\": \"125\"\n          }\n        ]\n      ]\n    }\n  ]\n}\n```\n")
+	predefinedCreatedAt, _ := time.Parse(time.RFC3339, "2026-10-28T14:10:36Z")
+	predefinedModifiedAt, _ := time.Parse(time.RFC3339, "2026-10-28T14:10:36Z")
+	predefinedExpected := Spreadsheet{
+		Artifact: artifact.Artifact{
+			Kind:          artifact.SpreadsheetKind,
+			FormatVersion: 2,
+			CreatedAt:     predefinedCreatedAt.UTC(),
+			ModifiedAt:    predefinedModifiedAt.UTC(),
+		},
+		Version: 1,
+		Sheets: []Sheet{
+			{
+				Name: "Sheet1",
+				Rows: [][]Cell{
+					{
+						{Value: "125"},
+					},
+				},
+			},
+		},
+		Body: "This is the markdown body.\n",
+		Blocks: map[string]json.RawMessage{
+			"parchment-custom-block": json.RawMessage("{\n  \"custom\": \"data\"\n}"),
+		},
+	}
+
 	tests := []struct {
 		name         string
 		dataFn       func() []byte
 		wantErr      string
 		wantNotFound bool
+		expected     *Spreadsheet
 	}{
 		{
-			name:   "valid",
+			name:   "valid generated",
 			dataFn: func() []byte { return validData },
+		},
+		{
+			name:     "valid predefined",
+			dataFn:   func() []byte { return predefinedData },
+			expected: &predefinedExpected,
 		},
 		{
 			name:    "malformed artifactfile",
@@ -442,13 +379,37 @@ func TestDecode(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			expected := cloneSpreadsheet(validItem)
-			expected.ID = got.ID
-			expected.Title = ""
-			expected.Path = ""
+			if tt.expected != nil {
+				if got.Artifact.Kind != tt.expected.Artifact.Kind {
+					t.Errorf("got kind %v, want %v", got.Artifact.Kind, tt.expected.Artifact.Kind)
+				}
+				if got.Version != tt.expected.Version {
+					t.Errorf("got version %v, want %v", got.Version, tt.expected.Version)
+				}
+				if !got.CreatedAt.Equal(tt.expected.CreatedAt) {
+					t.Errorf("got CreatedAt %v, want %v", got.CreatedAt, tt.expected.CreatedAt)
+				}
+				if !got.ModifiedAt.Equal(tt.expected.ModifiedAt) {
+					t.Errorf("got ModifiedAt %v, want %v", got.ModifiedAt, tt.expected.ModifiedAt)
+				}
+				if strings.TrimSpace(got.Body) != strings.TrimSpace(tt.expected.Body) {
+					t.Errorf("got body %q, want %q", got.Body, tt.expected.Body)
+				}
+				if !reflect.DeepEqual(got.Sheets, tt.expected.Sheets) {
+					t.Errorf("got sheets %+v, want %+v", got.Sheets, tt.expected.Sheets)
+				}
+				if !reflect.DeepEqual(got.Blocks, tt.expected.Blocks) {
+					t.Errorf("got blocks %+v, want %+v", got.Blocks, tt.expected.Blocks)
+				}
+			} else {
+				expected := cloneSpreadsheet(validItem)
+				expected.ID = got.ID
+				expected.Title = ""
+				expected.Path = ""
 
-			if !Equal(got, expected) {
-				t.Errorf("got spreadsheet %+v, want %+v", got, expected)
+				if !Equal(got, expected) {
+					t.Errorf("got spreadsheet %+v, want %+v", got, expected)
+				}
 			}
 		})
 	}
