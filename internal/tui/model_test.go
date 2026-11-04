@@ -649,88 +649,45 @@ func TestRun(t *testing.T) {
 		tea.WithoutRenderer(),
 	}
 
-	t.Run("canceled context with note config", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel() // pre-canceled context so program shuts down immediately
+	check := func(name string, cfg Config) {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel() // pre-canceled context so program shuts down immediately
+			err := Run(ctx, cfg, headlessOpts...)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				t.Fatalf("unexpected error running program: %v", err)
+			}
+		})
+	}
 
-		cfg := Config{
-			Path:     path,
-			Kind:     artifact.NoteKind,
-			Notes:    note.NewService(repo, 10),
-			Recovery: repo,
-		}
-
-		err := Run(ctx, cfg, headlessOpts...)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			t.Fatalf("unexpected error running program: %v", err)
-		}
+	check("canceled context with note config", Config{
+		Path:     path,
+		Kind:     artifact.NoteKind,
+		Notes:    note.NewService(repo, 10),
+		Recovery: repo,
 	})
-
-	t.Run("canceled context with documents config", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		cfg := Config{
-			Path:      filepath.Join(t.TempDir(), "doc.md"),
-			Kind:      artifact.DocumentKind,
-			Documents: document.NewService(repo, 10),
-			Recovery:  repo,
-		}
-
-		err := Run(ctx, cfg, headlessOpts...)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			t.Fatalf("unexpected error running program with documents config: %v", err)
-		}
+	check("canceled context with documents config", Config{
+		Path:      filepath.Join(t.TempDir(), "doc.md"),
+		Kind:      artifact.DocumentKind,
+		Documents: document.NewService(repo, 10),
+		Recovery:  repo,
 	})
-
-	t.Run("canceled context with spreadsheet config", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		cfg := Config{
-			Path:         filepath.Join(t.TempDir(), "sheet.csv"),
-			Kind:         artifact.SpreadsheetKind,
-			Spreadsheets: spreadsheet.NewService(repo, 10),
-			Recovery:     repo,
-		}
-
-		err := Run(ctx, cfg, headlessOpts...)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			t.Fatalf("unexpected error running program with spreadsheet config: %v", err)
-		}
+	check("canceled context with spreadsheet config", Config{
+		Path:         filepath.Join(t.TempDir(), "sheet.csv"),
+		Kind:         artifact.SpreadsheetKind,
+		Spreadsheets: spreadsheet.NewService(repo, 10),
+		Recovery:     repo,
 	})
-
-	t.Run("canceled context with presentation config", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		cfg := Config{
-			Path:          filepath.Join(t.TempDir(), "deck.md"),
-			Kind:          artifact.PresentationKind,
-			Presentations: presentation.NewService(repo, 10),
-			Recovery:      repo,
-		}
-
-		err := Run(ctx, cfg, headlessOpts...)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			t.Fatalf("unexpected error running program with presentation config: %v", err)
-		}
+	check("canceled context with presentation config", Config{
+		Path:          filepath.Join(t.TempDir(), "deck.md"),
+		Kind:          artifact.PresentationKind,
+		Presentations: presentation.NewService(repo, 10),
+		Recovery:      repo,
 	})
-
-	t.Run("canceled context with choose kind config", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		cfg := Config{
-			Path:     filepath.Join(t.TempDir(), "unknown.md"),
-			Kind:     "",
-			Recovery: repo,
-		}
-
-		err := Run(ctx, cfg, headlessOpts...)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			t.Fatalf("unexpected error running program with choose kind config: %v", err)
-		}
+	check("canceled context with choose kind config", Config{
+		Path:     filepath.Join(t.TempDir(), "unknown.md"),
+		Kind:     "",
+		Recovery: repo,
 	})
 }
 
@@ -911,90 +868,88 @@ func TestModelUpdateHistoryChangedMsg(t *testing.T) {
 	})
 }
 
-func TestModelUpdateKeyHandlingByStage(t *testing.T) {
-	t.Run("stageChooseKind key options", func(t *testing.T) {
-		for _, key := range []string{"n", "d", "s", "p"} {
-			h := newHarness(t, "")
-			if h.m.stage != stageChooseKind {
-				t.Fatalf("stage = %v, want stageChooseKind", h.m.stage)
-			}
-			_, cmd := h.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
-			if cmd == nil {
-				t.Errorf("expected non-nil cmd for key %q in stageChooseKind", key)
-			}
-		}
-
+func TestModelUpdateKeyHandling_ChooseKind(t *testing.T) {
+	for _, key := range []string{"n", "d", "s", "p"} {
 		h := newHarness(t, "")
-		_, cmdQ := h.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-		if cmdQ == nil || cmdQ() != tea.Quit() {
-			t.Errorf("expected tea.Quit for 'q', got %v", cmdQ)
+		if h.m.stage != stageChooseKind {
+			t.Fatalf("stage = %v, want stageChooseKind", h.m.stage)
 		}
-	})
+		_, cmd := h.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+		if cmd == nil {
+			t.Errorf("expected non-nil cmd for key %q in stageChooseKind", key)
+		}
+	}
 
-	t.Run("stageOpening / stageFailed quit keys", func(t *testing.T) {
-		for _, key := range []string{"q", "esc", "ctrl+c"} {
-			h := newHarness(t, "")
-			h.m.stage = stageFailed
-			var kMsg tea.KeyMsg
-			switch key {
-			case "q":
-				kMsg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")}
-			case "esc":
-				kMsg = tea.KeyMsg{Type: tea.KeyEsc}
-			case "ctrl+c":
-				kMsg = tea.KeyMsg{Type: tea.KeyCtrlC}
-			}
-			_, cmd := h.m.Update(kMsg)
-			if cmd == nil || cmd() != tea.Quit() {
-				t.Errorf("key %s in stageFailed did not return tea.Quit", key)
-			}
-		}
-	})
+	h := newHarness(t, "")
+	_, cmdQ := h.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if cmdQ == nil || cmdQ() != tea.Quit() {
+		t.Errorf("expected tea.Quit for 'q', got %v", cmdQ)
+	}
+}
 
-	t.Run("stageRecovery key options", func(t *testing.T) {
-		// 'r' recovers draft
-		hR := newHarness(t, artifact.NoteKind)
-		draftData, _ := json.Marshal(noteRecoveryData{Body: "Draft body"})
-		hR.m.opened = fileOpenedMsg{
-			kind:  artifact.NoteKind,
-			draft: recovery.Draft{Kind: string(artifact.NoteKind), Data: draftData},
+func TestModelUpdateKeyHandling_FailedKeys(t *testing.T) {
+	for _, key := range []string{"q", "esc", "ctrl+c"} {
+		h := newHarness(t, "")
+		h.m.stage = stageFailed
+		var kMsg tea.KeyMsg
+		switch key {
+		case "q":
+			kMsg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")}
+		case "esc":
+			kMsg = tea.KeyMsg{Type: tea.KeyEsc}
+		case "ctrl+c":
+			kMsg = tea.KeyMsg{Type: tea.KeyCtrlC}
 		}
-		hR.m.autosaveScheduler = func(session uint64) tea.Cmd {
-			return func() tea.Msg { return nil }
+		_, cmd := h.m.Update(kMsg)
+		if cmd == nil || cmd() != tea.Quit() {
+			t.Errorf("key %s in stageFailed did not return tea.Quit", key)
 		}
-		hR.m.stage = stageRecovery
-		_, cmdR := hR.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
-		if cmdR == nil {
-			t.Error("expected cmd for 'r'")
-		}
+	}
+}
 
-		// 'd' discards draft
-		hD := newHarness(t, artifact.NoteKind)
-		hD.m.stage = stageRecovery
-		_, cmdD := hD.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-		if cmdD == nil {
-			t.Error("expected cmd for 'd'")
-		}
+func TestModelUpdateKeyHandling_RecoveryOptions(t *testing.T) {
+	// 'r' recovers draft
+	hR := newHarness(t, artifact.NoteKind)
+	draftData, _ := json.Marshal(noteRecoveryData{Body: "Draft body"})
+	hR.m.opened = fileOpenedMsg{
+		kind:  artifact.NoteKind,
+		draft: recovery.Draft{Kind: string(artifact.NoteKind), Data: draftData},
+	}
+	hR.m.autosaveScheduler = func(session uint64) tea.Cmd {
+		return func() tea.Msg { return nil }
+	}
+	hR.m.stage = stageRecovery
+	_, cmdR := hR.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if cmdR == nil {
+		t.Error("expected cmd for 'r'")
+	}
 
-		// 'esc' quits
-		hEsc := newHarness(t, artifact.NoteKind)
-		hEsc.m.stage = stageRecovery
-		_, cmdEsc := hEsc.m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-		if cmdEsc == nil || cmdEsc() != tea.Quit() {
-			t.Error("expected tea.Quit for 'esc' in stageRecovery")
-		}
-	})
+	// 'd' discards draft
+	hD := newHarness(t, artifact.NoteKind)
+	hD.m.stage = stageRecovery
+	_, cmdD := hD.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if cmdD == nil {
+		t.Error("expected cmd for 'd'")
+	}
 
-	t.Run("pending state non-cancel key shows message", func(t *testing.T) {
-		h := newHarness(t, artifact.NoteKind)
-		h.m.pending = true
-		h.m.status = ""
+	// 'esc' quits
+	hEsc := newHarness(t, artifact.NoteKind)
+	hEsc.m.stage = stageRecovery
+	_, cmdEsc := hEsc.m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmdEsc == nil || cmdEsc() != tea.Quit() {
+		t.Error("expected tea.Quit for 'esc' in stageRecovery")
+	}
+}
 
-		h.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
-		if h.m.status != "Please wait for the current operation to finish" {
-			t.Errorf("status = %q, want 'Please wait for the current operation to finish'", h.m.status)
-		}
-	})
+func TestModelUpdateKeyHandling_PendingShowsMessage(t *testing.T) {
+	h := newHarness(t, artifact.NoteKind)
+	h.m.pending = true
+	h.m.status = ""
+
+	h.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if h.m.status != "Please wait for the current operation to finish" {
+		t.Errorf("status = %q, want 'Please wait for the current operation to finish'", h.m.status)
+	}
 }
 
 func TestModelUpdateNoteKeyHandling(t *testing.T) {
@@ -1189,22 +1144,11 @@ func TestModelInit_loads_existing_files_without_creating(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	testCases := []struct {
-		name string
-		kind artifact.Kind
-		path string
-	}{
-		{"note", artifact.NoteKind, notePath},
-		{"document", artifact.DocumentKind, docPath},
-		{"spreadsheet", artifact.SpreadsheetKind, sheetPath},
-		{"presentation", artifact.PresentationKind, deckPath},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
+	check := func(name string, kind artifact.Kind, path string) {
+		t.Run(name, func(t *testing.T) {
 			m := NewModel(Config{
-				Path:          tc.path,
-				Kind:          tc.kind,
+				Path:          path,
+				Kind:          kind,
 				Notes:         notes,
 				Documents:     docs,
 				Spreadsheets:  sheets,
@@ -1213,7 +1157,7 @@ func TestModelInit_loads_existing_files_without_creating(t *testing.T) {
 			})
 			cmd := m.Init()
 			if cmd == nil {
-				t.Fatalf("expected non-nil cmd for %s", tc.name)
+				t.Fatalf("expected non-nil cmd for %s", name)
 			}
 			msg := cmd()
 			openedMsg, ok := msg.(fileOpenedMsg)
@@ -1221,13 +1165,18 @@ func TestModelInit_loads_existing_files_without_creating(t *testing.T) {
 				t.Fatalf("expected fileOpenedMsg, got %T", msg)
 			}
 			if openedMsg.err != nil {
-				t.Fatalf("unexpected error loading existing %s: %v", tc.name, openedMsg.err)
+				t.Fatalf("unexpected error loading existing %s: %v", name, openedMsg.err)
 			}
 			if openedMsg.created {
-				t.Fatalf("expected existing %s file not to be marked as created", tc.name)
+				t.Fatalf("expected existing %s file not to be marked as created", name)
 			}
 		})
 	}
+
+	check("note", artifact.NoteKind, notePath)
+	check("document", artifact.DocumentKind, docPath)
+	check("spreadsheet", artifact.SpreadsheetKind, sheetPath)
+	check("presentation", artifact.PresentationKind, deckPath)
 }
 
 func TestModelInit_detects_recovery_draft_for_note_and_document(t *testing.T) {
@@ -1239,87 +1188,62 @@ func TestModelInit_detects_recovery_draft_for_note_and_document(t *testing.T) {
 	docs := document.NewService(repo, 10)
 	ctx := context.Background()
 
+	check := func(name string, kind artifact.Kind, path string, data string, cfg Config) {
+		t.Run(name, func(t *testing.T) {
+			draft := recovery.Draft{
+				Path:      path,
+				Kind:      string(kind),
+				Data:      json.RawMessage(data),
+				UpdatedAt: time.Now(),
+			}
+			if err := repo.SaveRecovery(ctx, draft); err != nil {
+				t.Fatal(err)
+			}
+			m := NewModel(cfg)
+			cmd := m.Init()
+			if cmd == nil {
+				t.Fatal("expected non-nil cmd from Init")
+			}
+			msg := cmd()
+			openedMsg, ok := msg.(fileOpenedMsg)
+			if !ok {
+				t.Fatalf("expected fileOpenedMsg, got %T", msg)
+			}
+			if openedMsg.err != nil {
+				t.Fatalf("unexpected error: %v", openedMsg.err)
+			}
+			if !openedMsg.hasDraft {
+				t.Fatal("expected hasDraft = true when recovery draft exists")
+			}
+			if openedMsg.draft.Path != path {
+				t.Fatalf("expected draft path %q, got %q", path, openedMsg.draft.Path)
+			}
+		})
+	}
+
 	// 1. Note draft recovery
 	notePath := filepath.Join(t.TempDir(), "note_with_draft.md")
 	if _, err := notes.Create(ctx, notePath, "original body"); err != nil {
 		t.Fatal(err)
 	}
-
-	noteDraft := recovery.Draft{
-		Path:      notePath,
-		Kind:      string(artifact.NoteKind),
-		Data:      json.RawMessage(`{"body":"unsaved body draft"}`),
-		UpdatedAt: time.Now(),
-	}
-	if err := repo.SaveRecovery(ctx, noteDraft); err != nil {
-		t.Fatal(err)
-	}
-
-	mNote := NewModel(Config{
+	check("note", artifact.NoteKind, notePath, `{"body":"unsaved body draft"}`, Config{
 		Path:     notePath,
 		Kind:     artifact.NoteKind,
 		Notes:    notes,
 		Recovery: repo,
 	})
-	cmdNote := mNote.Init()
-	if cmdNote == nil {
-		t.Fatal("expected non-nil cmd from Init for note")
-	}
-	msgNote := cmdNote()
-	openedMsgNote, ok := msgNote.(fileOpenedMsg)
-	if !ok {
-		t.Fatalf("expected fileOpenedMsg, got %T", msgNote)
-	}
-	if openedMsgNote.err != nil {
-		t.Fatalf("unexpected error: %v", openedMsgNote.err)
-	}
-	if !openedMsgNote.hasDraft {
-		t.Fatal("expected hasDraft = true when note recovery draft exists")
-	}
-	if openedMsgNote.draft.Path != notePath {
-		t.Fatalf("expected draft path %q, got %q", notePath, openedMsgNote.draft.Path)
-	}
 
 	// 2. Document draft recovery
 	docPath := filepath.Join(t.TempDir(), "doc_with_draft.md")
 	if _, err := docs.Create(ctx, docPath, document.Draft{Layout: document.DefaultLayout()}); err != nil {
 		t.Fatal(err)
 	}
-
-	docDraft := recovery.Draft{
-		Path:      docPath,
-		Kind:      string(artifact.DocumentKind),
-		Data:      json.RawMessage(`{"body":"unsaved doc draft"}`),
-		UpdatedAt: time.Now(),
-	}
-	if err := repo.SaveRecovery(ctx, docDraft); err != nil {
-		t.Fatal(err)
-	}
-
-	mDoc := NewModel(Config{
+	check("document", artifact.DocumentKind, docPath, `{"body":"unsaved doc draft"}`, Config{
 		Path:      docPath,
 		Kind:      artifact.DocumentKind,
 		Documents: docs,
 		Recovery:  repo,
 	})
-	cmdDoc := mDoc.Init()
-	if cmdDoc == nil {
-		t.Fatal("expected non-nil cmd from Init for document")
-	}
-	msgDoc := cmdDoc()
-	openedMsgDoc, ok := msgDoc.(fileOpenedMsg)
-	if !ok {
-		t.Fatalf("expected fileOpenedMsg, got %T", msgDoc)
-	}
-	if openedMsgDoc.err != nil {
-		t.Fatalf("unexpected error: %v", openedMsgDoc.err)
-	}
-	if !openedMsgDoc.hasDraft {
-		t.Fatal("expected hasDraft = true when document recovery draft exists")
-	}
-	if openedMsgDoc.draft.Path != docPath {
-		t.Fatalf("expected draft path %q, got %q", docPath, openedMsgDoc.draft.Path)
-	}
 }
 
 func TestModelInit_returns_error_when_service_is_nil_for_requested_kind(t *testing.T) {
