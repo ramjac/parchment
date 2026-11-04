@@ -239,7 +239,7 @@ func (s *documentsScreen) readerView(header string) string {
 	}
 
 	left := lipgloss.NewStyle().
-		Width(outlineWidth - 2).
+		Width(outlineWidth-2).
 		Border(lipgloss.NormalBorder(), false, true, false, false).
 		BorderForeground(borderColor).
 		PaddingRight(1).

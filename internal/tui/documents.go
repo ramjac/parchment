@@ -738,7 +738,7 @@ func (s *documentsScreen) viewChanges(header string) string {
 		}
 		b.WriteString("\n↑/↓ select  Enter review  ·  Esc/q returns to " + back)
 	}
-	return b.String() + s.statusLine()
+	return b.String() + "\n" + s.statusLine()
 }
 
 func changeLayoutDescription(layout document.Layout) string {
