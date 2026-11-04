@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/filerepo"
@@ -169,79 +170,54 @@ func TestHistorySnapshotsDoNotAliasReturnedNoteBlocks(t *testing.T) {
 }
 
 func TestEqual(t *testing.T) {
-	cases := []struct {
-		name     string
-		left     note.Note
-		right    note.Note
-		expected bool
-	}{
-		{
-			name: "identical",
-			left: note.Note{
-				Artifact: artifact.Artifact{
-					ID:    "123",
-					Title: "test-note",
-				},
-				Body: "Hello",
-			},
-			right: note.Note{
-				Artifact: artifact.Artifact{
-					ID:    "123",
-					Title: "test-note",
-				},
-				Body: "Hello",
-			},
-			expected: true,
-		},
-		{
-			name:     "empty",
-			left:     note.Note{},
-			right:    note.Note{},
-			expected: true,
-		},
-		{
-			name: "different body",
-			left: note.Note{
-				Artifact: artifact.Artifact{
-					ID:    "123",
-					Title: "test-note",
-				},
-				Body: "Hello",
-			},
-			right: note.Note{
-				Artifact: artifact.Artifact{
-					ID:    "123",
-					Title: "test-note",
-				},
-				Body: "World",
-			},
-			expected: false,
-		},
-		{
-			name: "completely different",
-			left: note.Note{
-				Artifact: artifact.Artifact{
-					ID:    "123",
-					Title: "test-note",
-				},
-				Body: "Hello",
-			},
-			right: note.Note{
-				Artifact: artifact.Artifact{
-					ID:    "456",
-					Title: "different-note",
-				},
-				Body: "World",
-			},
-			expected: false,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := note.Equal(tc.left, tc.right); got != tc.expected {
-				t.Errorf("Equal() = %v, expected %v", got, tc.expected)
+	check := func(name string, left, right note.Note, expected bool) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			if got := note.Equal(left, right); got != expected {
+				t.Errorf("Equal() = %v, expected %v", got, expected)
 			}
 		})
 	}
+
+	check("identical",
+		note.Note{Artifact: artifact.Artifact{ID: "123", Title: "test-note"}, Body: "Hello"},
+		note.Note{Artifact: artifact.Artifact{ID: "123", Title: "test-note"}, Body: "Hello"},
+		true,
+	)
+	check("empty", note.Note{}, note.Note{}, true)
+	check("different body",
+		note.Note{Artifact: artifact.Artifact{ID: "123", Title: "test-note"}, Body: "Hello"},
+		note.Note{Artifact: artifact.Artifact{ID: "123", Title: "test-note"}, Body: "World"},
+		false,
+	)
+	check("completely different",
+		note.Note{Artifact: artifact.Artifact{ID: "123", Title: "test-note"}, Body: "Hello"},
+		note.Note{Artifact: artifact.Artifact{ID: "456", Title: "different-note"}, Body: "World"},
+		false,
+	)
+	check("different ID ignored",
+		note.Note{Artifact: artifact.Artifact{ID: "123", Title: "test-note"}, Body: "Hello"},
+		note.Note{Artifact: artifact.Artifact{ID: "456", Title: "test-note"}, Body: "Hello"},
+		true,
+	)
+	check("different Title ignored",
+		note.Note{Artifact: artifact.Artifact{ID: "123", Title: "test-note"}, Body: "Hello"},
+		note.Note{Artifact: artifact.Artifact{ID: "123", Title: "different-note"}, Body: "Hello"},
+		true,
+	)
+	check("different Blocks",
+		note.Note{Body: "Hello", Blocks: map[string]json.RawMessage{"a": []byte(`"A"`)}},
+		note.Note{Body: "Hello", Blocks: map[string]json.RawMessage{"a": []byte(`"B"`)}},
+		false,
+	)
+	check("different Path",
+		note.Note{Artifact: artifact.Artifact{Path: "a.md"}, Body: "Hello"},
+		note.Note{Artifact: artifact.Artifact{Path: "b.md"}, Body: "Hello"},
+		false,
+	)
+	check("different CreatedAt",
+		note.Note{Artifact: artifact.Artifact{CreatedAt: time.Now()}, Body: "Hello"},
+		note.Note{Artifact: artifact.Artifact{CreatedAt: time.Now().Add(time.Second)}, Body: "Hello"},
+		false,
+	)
 }
