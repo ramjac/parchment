@@ -417,16 +417,29 @@ func TestDecode(t *testing.T) {
 
 func TestCellName(t *testing.T) {
 	for _, test := range []struct {
+		name        string
 		row, column int
 		want        string
 	}{
-		{1, 1, "A1"},
-		{9, 26, "Z9"},
-		{12, 27, "AA12"},
-		{1000, 256, "IV1000"},
+		{"first cell", 1, 1, "A1"},
+		{"Z boundary", 9, 26, "Z9"},
+		{"AA boundary", 12, 27, "AA12"},
+		{"IV boundary", 1000, 256, "IV1000"},
+		{"AZ boundary", 1, 52, "AZ1"},
+		{"BA boundary", 1, 53, "BA1"},
+		{"ZZ boundary", 1, 702, "ZZ1"},
+		{"AAA boundary", 1, 703, "AAA1"},
+		{"Excel max limits", 1048576, 16384, "XFD1048576"},
+		{"zero row", 0, 1, "A0"},
+		{"zero column", 1, 0, "1"},
+		{"zero both", 0, 0, "0"},
+		{"negative row", -1, 1, "A-1"},
+		{"negative column", 1, -1, "1"},
 	} {
-		if got := CellName(test.row, test.column); got != test.want {
-			t.Errorf("CellName(%d, %d) = %q, want %q", test.row, test.column, got, test.want)
-		}
+		t.Run(test.name, func(t *testing.T) {
+			if got := CellName(test.row, test.column); got != test.want {
+				t.Errorf("CellName(%d, %d) = %q, want %q", test.row, test.column, got, test.want)
+			}
+		})
 	}
 }

@@ -256,3 +256,20 @@ func TestShiftCellReferences(t *testing.T) {
 		})
 	}
 }
+
+func TestRecordDependencyDepth_EmptyDepths(t *testing.T) {
+	e := evaluator{}
+	// This should return immediately and not panic because e.depths is empty.
+	e.recordDependencyDepth(5)
+}
+
+func TestParsePrimary_EmptyInput(t *testing.T) {
+	parser := formulaParser{input: "   ", position: 0}
+	_, err := parser.parsePrimary()
+	if err == nil {
+		t.Fatal("Expected error for empty input in parsePrimary, got nil")
+	}
+	if !strings.Contains(err.Error(), "expected a number, cell reference, or '('") {
+		t.Errorf("Unexpected error message: %v", err)
+	}
+}

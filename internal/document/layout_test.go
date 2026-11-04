@@ -85,6 +85,26 @@ func TestLayoutGeometry(t *testing.T) {
 		}
 	})
 
+	t.Run("legal portrait", func(t *testing.T) {
+		l := Layout{
+			PageSize:    PageLegal,
+			Orientation: Portrait,
+			Margins:     Margins{Top: 10, Right: 10, Bottom: 10, Left: 10},
+		}
+		g, err := l.Geometry()
+		if err != nil {
+			t.Fatalf("Geometry() error: %v", err)
+		}
+		// Width cols: 215.9 / 2.54 = 85.0 -> 85
+		// Height rows: 355.6 / (25.4/6) = 355.6 / 4.2333... = 84.0 -> 84
+		if g.PageCols != 85 {
+			t.Errorf("PageCols = %d, want 85", g.PageCols)
+		}
+		if g.PageRows != 84 {
+			t.Errorf("PageRows = %d, want 84", g.PageRows)
+		}
+	})
+
 	t.Run("landscape a4", func(t *testing.T) {
 		l := Layout{
 			PageSize:    PageA4,
