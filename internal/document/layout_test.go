@@ -25,20 +25,28 @@ func TestDefaultLayout(t *testing.T) {
 }
 
 func TestColumnWidth(t *testing.T) {
-	check := func(name string, textCols, cols, want int) {
-		t.Run(name, func(t *testing.T) {
-			if got := ColumnWidth(textCols, cols); got != want {
-				t.Errorf("ColumnWidth(%d, %d) = %d, want %d", textCols, cols, got, want)
+	tests := []struct {
+		name     string
+		textCols int
+		cols     int
+		want     int
+	}{
+		{"1 column", 80, 1, 80},
+		{"2 columns", 80, 2, (80 - 3) / 2}, // gutter is 3
+		{"3 columns", 80, 3, (80 - 6) / 3},
+		{"4 columns", 80, 4, (80 - 9) / 4},
+		{"0 columns defaults to 1", 80, 0, 80},
+		{"negative columns defaults to 1", 80, -1, 80},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ColumnWidth(tc.textCols, tc.cols)
+			if got != tc.want {
+				t.Errorf("ColumnWidth(%d, %d) = %d, want %d", tc.textCols, tc.cols, got, tc.want)
 			}
 		})
 	}
-
-	check("1 column", 80, 1, 80)
-	check("2 columns", 80, 2, (80-3)/2) // gutter is 3
-	check("3 columns", 80, 3, (80-6)/3)
-	check("4 columns", 80, 4, (80-9)/4)
-	check("0 columns defaults to 1", 80, 0, 80)
-	check("negative columns defaults to 1", 80, -1, 80)
 }
 
 func TestGeometryBodyRows(t *testing.T) {
@@ -77,6 +85,26 @@ func TestLayoutGeometry(t *testing.T) {
 		}
 	})
 
+	t.Run("legal portrait", func(t *testing.T) {
+		l := Layout{
+			PageSize:    PageLegal,
+			Orientation: Portrait,
+			Margins:     Margins{Top: 10, Right: 10, Bottom: 10, Left: 10},
+		}
+		g, err := l.Geometry()
+		if err != nil {
+			t.Fatalf("Geometry() error: %v", err)
+		}
+		// Width cols: 215.9 / 2.54 = 85.0 -> 85
+		// Height rows: 355.6 / (25.4/6) = 355.6 / 4.2333... = 84.0 -> 84
+		if g.PageCols != 85 {
+			t.Errorf("PageCols = %d, want 85", g.PageCols)
+		}
+		if g.PageRows != 84 {
+			t.Errorf("PageRows = %d, want 84", g.PageRows)
+		}
+	})
+
 	t.Run("landscape a4", func(t *testing.T) {
 		l := Layout{
 			PageSize:    PageA4,
@@ -99,26 +127,6 @@ func TestLayoutGeometry(t *testing.T) {
 		}
 	})
 
-	t.Run("legal portrait", func(t *testing.T) {
-		l := Layout{
-			PageSize:    PageLegal,
-			Orientation: Portrait,
-			Margins:     Margins{Top: 10, Right: 10, Bottom: 10, Left: 10},
-		}
-		g, err := l.Geometry()
-		if err != nil {
-			t.Fatalf("Geometry() error: %v", err)
-		}
-		// Width cols: 215.9 / 2.54 = 85.0 -> 85
-		// Height rows: 355.6 / (25.4/6) = 355.6 / 4.2333... = 84.0 -> 84
-		if g.PageCols != 85 {
-			t.Errorf("PageCols = %d, want 85", g.PageCols)
-		}
-		if g.PageRows != 84 {
-			t.Errorf("PageRows = %d, want 84", g.PageRows)
-		}
-	})
-
 	t.Run("invalid page size", func(t *testing.T) {
 		l := Layout{PageSize: "unknown", Orientation: Portrait}
 		if _, err := l.Geometry(); err == nil {
@@ -135,19 +143,142 @@ func TestLayoutGeometry(t *testing.T) {
 }
 
 func TestLayoutValidate(t *testing.T) {
-	check := func(name string, modifier func(*Layout), wantErr bool, errText string) {
-		t.Run(name, func(t *testing.T) {
-			l := DefaultLayout()
-			if modifier != nil {
-				modifier(&l)
-			}
-			err := l.Validate()
-			if wantErr {
+	tests := []struct {
+		name    string
+		layout  Layout
+		wantErr bool
+		errText string
+	}{
+		{
+			name:   "default is valid",
+			layout: DefaultLayout(),
+		},
+		{
+			name: "unsupported version",
+			layout: func() Layout {
+				l := DefaultLayout()
+				l.Version = 99
+				return l
+			}(),
+			wantErr: true,
+			errText: "unsupported layout version",
+		},
+		{
+			name: "negative margin",
+			layout: func() Layout {
+				l := DefaultLayout()
+				l.Margins.Top = -1
+				return l
+			}(),
+			wantErr: true,
+			errText: "margin must be between",
+		},
+		{
+			name: "too large margin",
+			layout: func() Layout {
+				l := DefaultLayout()
+				l.Margins.Left = MaxMarginMM + 1
+				return l
+			}(),
+			wantErr: true,
+			errText: "margin must be between",
+		},
+		{
+			name: "zero columns",
+			layout: func() Layout {
+				l := DefaultLayout()
+				l.Columns = 0
+				return l
+			}(),
+			wantErr: true,
+			errText: "columns must be between 1 and",
+		},
+		{
+			name: "too many columns",
+			layout: func() Layout {
+				l := DefaultLayout()
+				l.Columns = MaxColumns + 1
+				return l
+			}(),
+			wantErr: true,
+			errText: "columns must be between 1 and",
+		},
+		{
+			name: "unsupported page numbers",
+			layout: func() Layout {
+				l := DefaultLayout()
+				l.PageNumbers = "bottom-right" // unsupported
+				return l
+			}(),
+			wantErr: true,
+			errText: "unsupported page number placement",
+		},
+		{
+			name: "header too long",
+			layout: func() Layout {
+				l := DefaultLayout()
+				l.Header = strings.Repeat("A", MaxRunningTextLength+1)
+				return l
+			}(),
+			wantErr: true,
+			errText: "is longer than",
+		},
+		{
+			name: "header contains control char",
+			layout: func() Layout {
+				l := DefaultLayout()
+				l.Header = "Title\nNextLine"
+				return l
+			}(),
+			wantErr: true,
+			errText: "contains a control character",
+		},
+		{
+			name: "margins leave too little room",
+			layout: func() Layout {
+				l := DefaultLayout()
+				// MaxMarginMM might not trigger this if text cols drops below min,
+				// so let's push margins to their limit to squeeze out space.
+				l.Margins.Left = 90
+				l.Margins.Right = 90 // Leaves 215 - 180 = 35mm -> ~13 columns (minTextCols is 20)
+				return l
+			}(),
+			wantErr: true,
+			errText: "margins leave too little room",
+		},
+		{
+			name: "columns too narrow",
+			layout: func() Layout {
+				l := DefaultLayout()
+				l.Columns = MaxColumns // 4
+				l.Margins.Left = 60
+				l.Margins.Right = 60
+				return l
+			}(),
+			wantErr: true,
+			errText: "columns are too narrow",
+		},
+		{
+			name: "invalid geometry config",
+			layout: func() Layout {
+				l := DefaultLayout()
+				l.PageSize = "unknown"
+				return l
+			}(),
+			wantErr: true,
+			errText: "unsupported page size",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.layout.Validate()
+			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("Validate() expected error, got nil")
 				}
-				if !strings.Contains(err.Error(), errText) {
-					t.Errorf("Validate() error = %v, want it to contain %q", err, errText)
+				if !strings.Contains(err.Error(), tc.errText) {
+					t.Errorf("Validate() error = %v, want it to contain %q", err, tc.errText)
 				}
 			} else {
 				if err != nil {
@@ -156,29 +287,4 @@ func TestLayoutValidate(t *testing.T) {
 			}
 		})
 	}
-
-	check("default is valid", nil, false, "")
-	check("unsupported version", func(l *Layout) { l.Version = 99 }, true, "unsupported layout version")
-	check("negative margin", func(l *Layout) { l.Margins.Top = -1 }, true, "margin must be between")
-	check("too large margin", func(l *Layout) { l.Margins.Left = MaxMarginMM + 1 }, true, "margin must be between")
-	check("zero columns", func(l *Layout) { l.Columns = 0 }, true, "columns must be between 1 and")
-	check("too many columns", func(l *Layout) { l.Columns = MaxColumns + 1 }, true, "columns must be between 1 and")
-	check("unsupported page numbers", func(l *Layout) { l.PageNumbers = "bottom-right" }, true, "unsupported page number placement")
-	check("header too long", func(l *Layout) { l.Header = strings.Repeat("A", MaxRunningTextLength+1) }, true, "is longer than")
-	check("header contains control char", func(l *Layout) { l.Header = "Title\nNextLine" }, true, "contains a control character")
-
-	check("margins leave too little room", func(l *Layout) {
-		// MaxMarginMM might not trigger this if text cols drops below min,
-		// so let's push margins to their limit to squeeze out space.
-		l.Margins.Left = 90
-		l.Margins.Right = 90 // Leaves 215 - 180 = 35mm -> ~13 columns (minTextCols is 20)
-	}, true, "margins leave too little room")
-
-	check("columns too narrow", func(l *Layout) {
-		l.Columns = MaxColumns // 4
-		l.Margins.Left = 60
-		l.Margins.Right = 60
-	}, true, "columns are too narrow")
-
-	check("invalid geometry config", func(l *Layout) { l.PageSize = "unknown" }, true, "unsupported page size")
 }
