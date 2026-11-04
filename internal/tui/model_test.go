@@ -650,8 +650,8 @@ func TestRun(t *testing.T) {
 	}
 
 	testCases := []struct {
-		name string
-		cfg  Config
+		name   string
+		cfg    Config
 		errMsg string
 	}{
 		{"canceled context with note config", Config{Path: path, Kind: artifact.NoteKind, Notes: note.NewService(repo, 10), Recovery: repo}, "unexpected error running program"},
