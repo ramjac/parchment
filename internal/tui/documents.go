@@ -764,7 +764,7 @@ func (s *documentsScreen) statusLine() string {
 	if message == "" {
 		message = "Ready"
 	}
-	return "\n" + sanitizeTerminalLine(message) + "  ·  " + undo + "  ·  " + redo
+	return sanitizeTerminalLine(message) + "  ·  " + undo + "  ·  " + redo
 }
 
 func (s *documentsScreen) dirty() bool { return s.currentDraft() != s.original }

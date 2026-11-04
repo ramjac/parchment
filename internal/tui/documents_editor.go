@@ -830,9 +830,6 @@ func (s *documentsScreen) editorView(header string) string {
 	}
 	content.WriteString(s.body.View())
 
-	paneHeight := max(s.height-s.toolbarRows()-4, 3)
-	pane := lipgloss.NewStyle().Width(max(s.width, 10)).Height(paneHeight).
-		Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1).Render(content.String())
-
-	return header + "\n" + state + "\n" + s.toolbarView() + "\n" + pane + s.statusLine()
+	shortcuts := state + "\n" + s.toolbarView()
+	return chromeLayout(s.width, s.height, header, shortcuts, content.String(), s.statusLine())
 }
