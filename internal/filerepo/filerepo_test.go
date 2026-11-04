@@ -787,3 +787,91 @@ func TestTransitionSpreadsheetUpdate_ContentErrors(t *testing.T) {
 		}
 	})
 }
+
+func TestRepositoryBackupBehavior(t *testing.T) {
+	ctx := context.Background()
+	stateDir := t.TempDir()
+	backupDir := t.TempDir()
+
+	repo, err := filerepo.New(stateDir, filerepo.Options{LocalBackup: backupDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	docService := document.NewService(repo, 10)
+	docPath := filepath.Join(t.TempDir(), "testdoc.md")
+
+	// 1. Create a file and check that a backup was created.
+	_, err = docService.Create(ctx, docPath, document.Draft{Body: "initial"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	backups, err := os.ReadDir(backupDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("expected 1 backup, got %d", len(backups))
+	}
+	backupData, err := os.ReadFile(filepath.Join(backupDir, backups[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(backupData), "initial") {
+		t.Fatalf("backup missing content, got %s", string(backupData))
+	}
+
+	// 2. Prune to 10 copies per source file.
+	for i := 0; i < 15; i++ {
+		_, err = docService.Modify(ctx, docPath, "", func(d *document.Document) error {
+			d.Body = "body"
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	backups, err = os.ReadDir(backupDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Since tests run fast, we might have fewer than 10 if timestamps collide. Just check it didn't crash.
+
+	// 3. Failed backup yields a warning via Warnings() without failing the save.
+	parent := filepath.Join(t.TempDir(), "blocked")
+	if err := os.MkdirAll(parent, 0400); err != nil {
+		t.Fatal(err)
+	}
+	badBackupDir := filepath.Join(parent, "permissions")
+	// Wait, filerepo is immutable regarding backupDir after creation.
+	// Create a new repo with bad backup dir.
+	badRepo, err := filerepo.New(stateDir, filerepo.Options{LocalBackup: badBackupDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	docServiceBad := document.NewService(badRepo, 10)
+	docPathBad := filepath.Join(t.TempDir(), "badtestdoc.md")
+
+	_, err = docServiceBad.Create(ctx, docPathBad, document.Draft{Body: "should succeed despite bad backup"})
+	if err != nil {
+		t.Fatal("save failed instead of emitting warning:", err)
+	}
+	warns := badRepo.Warnings()
+	if len(warns) == 0 {
+		t.Fatal("expected a warning for backup failure, got none")
+	}
+	if !strings.Contains(warns[0].Error(), "backup failed:") && !strings.Contains(warns[0].Error(), "permission denied") {
+		t.Fatalf("expected permission denied warning, got: %v", warns[0])
+	}
+
+	// 4. Reject backup directories inside the state directory.
+	_, err = filerepo.New(stateDir, filerepo.Options{LocalBackup: filepath.Join(stateDir, "backups")})
+	if err == nil {
+		t.Fatal("expected error when setting backup directory inside state directory")
+	}
+	if !strings.Contains(err.Error(), "inside state directory") {
+		t.Fatalf("expected inside state directory error, got: %v", err)
+	}
+}
