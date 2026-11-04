@@ -168,24 +168,70 @@ func TestIsImageName(t *testing.T) {
 }
 
 func TestImageMarkdown(t *testing.T) {
-	check := func(name, alt, img, want string) {
-		t.Helper()
-		t.Run(name, func(t *testing.T) {
-			got := ImageMarkdown(alt, img)
-			if got != want {
-				t.Errorf("ImageMarkdown(%q, %q) = %q, want %q", alt, img, got, want)
+	tests := []struct {
+		name string
+		alt  string
+		img  string
+		want string
+	}{
+		{
+			name: "standard input",
+			alt:  "alt text",
+			img:  "image.png",
+			want: "![alt text](image.png)",
+		},
+		{
+			name: "empty strings",
+			alt:  "",
+			img:  "",
+			want: "![]()",
+		},
+		{
+			name: "special characters",
+			alt:  "special!@#",
+			img:  "img.jpg",
+			want: "![special!@#](img.jpg)",
+		},
+		{
+			name: "whitespace and newlines in alt",
+			alt:  "  alt \n text \r  ",
+			img:  "img.jpg",
+			want: "![alt   text](img.jpg)",
+		},
+		{
+			name: "brackets in alt",
+			alt:  "[alt text]",
+			img:  "img.jpg",
+			want: "![alt text](img.jpg)",
+		},
+		{
+			name: "markdown links in alt",
+			alt:  "[link](url)",
+			img:  "img.jpg",
+			want: "![link(url)](img.jpg)",
+		},
+		{
+			name: "just spaces",
+			alt:  "   ",
+			img:  "img.jpg",
+			want: "![](img.jpg)",
+		},
+		{
+			name: "name string that includes URLs",
+			alt:  "alt text",
+			img:  "http://example.com/image.png",
+			want: "![alt text](http://example.com/image.png)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ImageMarkdown(tt.alt, tt.img)
+			if got != tt.want {
+				t.Errorf("ImageMarkdown(%q, %q) = %q, want %q", tt.alt, tt.img, got, tt.want)
 			}
 		})
 	}
-
-	check("standard input", "alt text", "image.png", "![alt text](image.png)")
-	check("empty strings", "", "", "![]()")
-	check("special characters", "special!@#", "img.jpg", "![special!@#](img.jpg)")
-	check("whitespace and newlines in alt", "  alt \n text \r  ", "img.jpg", "![alt   text](img.jpg)")
-	check("brackets in alt", "[alt text]", "img.jpg", "![alt text](img.jpg)")
-	check("markdown links in alt", "[link](url)", "img.jpg", "![link(url)](img.jpg)")
-	check("just spaces", "   ", "img.jpg", "![](img.jpg)")
-	check("name string that includes URLs", "alt text", "http://example.com/image.png", "![alt text](http://example.com/image.png)")
 }
 
 func TestImageValidate(t *testing.T) {
