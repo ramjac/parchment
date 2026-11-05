@@ -87,6 +87,7 @@ func (s *documentsScreen) toolbarButtons() []toolbarButton {
 		{"Page", "Header", "header", ""},
 		{"Page", "Footer", "footer", ""},
 		{"Page", "Page #: " + s.layout.PageNumbers, "numbers-pos", ""},
+		{"Page", "Font: " + s.layout.Font, "font", ""},
 	}
 }
 
@@ -587,6 +588,11 @@ func (s *documentsScreen) act(action string) tea.Cmd {
 			s.layout.Orientation = document.Landscape
 		} else {
 			s.layout.Orientation = document.Portrait
+		}
+	case "font":
+		s.layout.Font = nextOf([]string{"courier", "helvetica", "times"}, s.layout.Font)
+		if s.layout.Font == "" {
+			s.layout.Font = "courier"
 		}
 	case "numbers-pos":
 		s.layout.PageNumbers = nextOf(numberPlacements, s.layout.PageNumbers)

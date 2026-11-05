@@ -386,6 +386,7 @@ func addLayoutFlags(cmd *cobra.Command) {
 	flags.String("header", "", "header text")
 	flags.String("footer", "", "footer text")
 	flags.String("page-numbers", "", "page number placement: none, left, center, or right")
+	flags.String("font", "", "font family: courier, helvetica, or times")
 }
 
 // applyLayoutFlags changes only the layout fields whose flags were supplied.
@@ -415,6 +416,7 @@ func applyLayoutFlags(cmd *cobra.Command, layout *document.Layout) error {
 	setString("header", &layout.Header)
 	setString("footer", &layout.Footer)
 	setString("page-numbers", &layout.PageNumbers)
+	setString("font", &layout.Font)
 	return layout.Validate()
 }
 

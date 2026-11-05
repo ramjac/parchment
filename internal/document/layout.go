@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -69,6 +70,7 @@ type Layout struct {
 	Header      string  `json:"header"`
 	Footer      string  `json:"footer"`
 	PageNumbers string  `json:"page_numbers"`
+	Font        string  `json:"font,omitempty"`
 }
 
 // DefaultLayout returns a US Letter portrait layout with one-inch margins.
@@ -76,7 +78,7 @@ func DefaultLayout() Layout {
 	return Layout{
 		Version: LayoutVersion, PageSize: PageLetter, Orientation: Portrait,
 		Margins: Margins{Top: 25, Right: 25, Bottom: 25, Left: 25},
-		Columns: 1, PageNumbers: NumbersCenter,
+		Columns: 1, PageNumbers: NumbersCenter, Font: "courier",
 	}
 }
 
@@ -200,6 +202,11 @@ func (l Layout) Validate() error {
 	}
 	if ColumnWidth(g.TextCols, l.Columns) < MinColumnWidth {
 		return errors.New("columns are too narrow for the page width")
+	}
+	switch strings.ToLower(l.Font) {
+	case "", "courier", "helvetica", "times":
+	default:
+		return fmt.Errorf("unsupported font %q", l.Font)
 	}
 	return nil
 }
