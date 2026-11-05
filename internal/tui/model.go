@@ -635,9 +635,9 @@ func (m Model) View() string {
 		Render("parchment  ·  " + sanitizeTerminalLine(m.path))
 	switch m.stage {
 	case stageOpening:
-		return header + "\n\nOpening…" + m.statusLine()
+		return header + "\n\nOpening…\n" + m.statusLine()
 	case stageFailed:
-		return header + "\n\nThis file cannot be opened in the editor.\n\nq quits" + m.statusLine()
+		return header + "\n\nThis file cannot be opened in the editor.\n\nq quits\n" + m.statusLine()
 	case stageChooseKind:
 		options := "n  Note"
 		if m.documents != nil {
@@ -650,14 +650,14 @@ func (m Model) View() string {
 			options += "\np  Presentation"
 		}
 		return header + "\n\nThis file does not exist yet. What kind of artifact should Parchment create?\n\n" +
-			options + "\n\nq quits without creating the file" + m.statusLine()
+			options + "\n\nq quits without creating the file\n" + m.statusLine()
 	case stageRecovery:
 		draft := m.opened.draft
 		return header + "\n\nAn autosaved draft of unsaved edits to this file exists.\n\n" +
 			"Autosaved: " + draft.UpdatedAt.Local().Format("2006-01-02 15:04") + "\n\n" +
 			"r  Recover the draft into the editor\n" +
 			"d  Discard the draft and open the saved file\n" +
-			"q  Quit and keep the draft" + m.statusLine()
+			"q  Quit and keep the draft\n" + m.statusLine()
 	case stageDocument:
 		return m.documents.view(header)
 	case stageSpreadsheet:
@@ -669,19 +669,44 @@ func (m Model) View() string {
 	if m.dirty() {
 		state += " • unsaved"
 	}
-	pane := func(content string) string {
-		return lipgloss.NewStyle().Width(max(m.width, 10)).Height(max(m.height-4, 3)).
-			Border(lipgloss.NormalBorder()).BorderForeground(m.theme.Border).Padding(0, 1).Render(content)
-	}
 	if m.previewing {
-		return header + "\nPreview  ·  ↑/↓ scroll  ·  Esc returns to the editor\n" +
-			pane(m.preview.View()) + m.statusLine()
+		shortcuts := "Preview  ·  ↑/↓ scroll  ·  Esc returns to the editor"
+		return chromeLayout(m.width, m.height, header, shortcuts, m.preview.View(), m.statusLine(), m.theme.Border)
 	}
-	return header + "\n" + state + "  ·  Ctrl+S saves  ·  F5 preview  ·  Ctrl+Z/Ctrl+R undo/redo  ·  Esc quits\n" +
-		pane(m.bodyInput.View()) + m.statusLine()
+	shortcuts := state + "  ·  Ctrl+S saves  ·  F5 preview  ·  Ctrl+Z/Ctrl+R undo/redo  ·  Esc quits"
+	return chromeLayout(m.width, m.height, header, shortcuts, m.bodyInput.View(), m.statusLine(), m.theme.Border)
 }
 
 func (m Model) tooSmall() bool { return m.width < 40 || m.height < 10 }
+
+func chromeLayout(width, height int, header, shortcuts, content, status string, border lipgloss.TerminalColor) string {
+	chromeRows := lipgloss.Height(header) + lipgloss.Height(status)
+	if shortcuts != "" {
+		chromeRows += lipgloss.Height(shortcuts)
+	}
+
+	paneHeight := height - chromeRows - 2
+	if paneHeight < 1 {
+		paneHeight = 1
+	}
+	paneWidth := width - 2
+	if paneWidth < 1 {
+		paneWidth = 1
+	}
+
+	pane := lipgloss.NewStyle().
+		Width(paneWidth).
+		Height(paneHeight).
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(border).
+		Padding(0, 1).
+		Render(content)
+
+	if shortcuts == "" {
+		return header + "\n" + pane + "\n" + status
+	}
+	return header + "\n" + shortcuts + "\n" + pane + "\n" + status
+}
 
 func (m Model) statusLine() string {
 	undo, redo := "undo unavailable", "redo unavailable"
@@ -698,7 +723,7 @@ func (m Model) statusLine() string {
 	if message == "" {
 		message = "Ready"
 	}
-	return "\n" + sanitizeTerminalLine(message) + "  ·  " + undo + "  ·  " + redo
+	return sanitizeTerminalLine(message) + "  ·  " + undo + "  ·  " + redo
 }
 
 func (m *Model) refreshHistoryAvailability() {

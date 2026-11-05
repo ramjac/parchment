@@ -60,11 +60,7 @@ const defaultFile = "version = 1\n"
 // Load resolves built-in defaults, the TOML file at path, and environment
 // overrides. A missing file leaves the defaults in place.
 func Load(path string) (Settings, error) {
-	dir, _ := Directory()
 	defaultBackup := ""
-	if dir != "" {
-		defaultBackup = filepath.Join(dir, "backups")
-	}
 	settings := Settings{
 		UndoLimit: 100, LogLevel: "warn", LogFormat: "text",
 		LocalBackup: defaultBackup,
@@ -88,6 +84,16 @@ func Load(path string) (Settings, error) {
 		if hex != "" && !isValidHexColor(hex) {
 			return Settings{}, fmt.Errorf("invalid theme color %q (must be a 6-digit hex code like #RRGGBB)", hex)
 		}
+	}
+	switch settings.LogLevel {
+	case "debug", "info", "warn", "error", "off":
+	default:
+		return Settings{}, fmt.Errorf("invalid logging.level %q (want debug, info, warn, error, off)", settings.LogLevel)
+	}
+	switch settings.LogFormat {
+	case "text", "json":
+	default:
+		return Settings{}, fmt.Errorf("invalid logging.format %q (want text, json)", settings.LogFormat)
 	}
 	return settings, nil
 }
@@ -255,6 +261,9 @@ func apply(settings *Settings, cfg fileConfig) {
 }
 
 func applyEnvironment(settings *Settings) {
+	if value, ok := os.LookupEnv("PARCHMENT_BACKUP_DESTINATION"); ok {
+		settings.LocalBackup = value
+	}
 	if value, ok := os.LookupEnv("PARCHMENT_UNDO_LIMIT"); ok {
 		if limit, err := strconv.Atoi(value); err == nil {
 			settings.UndoLimit = limit

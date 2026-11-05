@@ -559,9 +559,7 @@ func (m *spreadsheetModel) renderGrid() string {
 		}
 	}
 
-	paneHeight := max(m.height-4, 3)
-	return lipgloss.NewStyle().Width(max(m.width, 20)).Height(paneHeight).
-		Border(lipgloss.NormalBorder()).BorderForeground(m.theme.Border).Padding(0, 1).Render(gridBuf.String())
+	return gridBuf.String()
 }
 
 func (m *spreadsheetModel) renderStatus() string {
@@ -589,15 +587,6 @@ func (m *spreadsheetModel) View() string {
 	if m.width < 20 || m.height < spreadsheetChromeLines+1 {
 		return "Terminal too small. Press q to quit."
 	}
-	var b strings.Builder
-	b.WriteString(m.renderHeader())
-	b.WriteByte('\n')
-	b.WriteString(m.renderFormulaBar())
-	b.WriteByte('\n')
-	b.WriteString(m.renderGrid())
-	b.WriteByte('\n')
-	b.WriteString(m.renderStatus())
-	b.WriteByte('\n')
-	b.WriteString(m.renderHelp())
-	return b.String()
+	shortcuts := m.renderHelp() + "\n" + m.renderFormulaBar()
+	return chromeLayout(m.width, m.height, m.renderHeader(), shortcuts, m.renderGrid(), m.renderStatus(), m.theme.Border)
 }
