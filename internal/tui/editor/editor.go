@@ -245,7 +245,7 @@ func (m *Model) Undo() bool {
 
 	m.Lines = cloneLines(snap.Lines)
 	m.Cursor = snap.Cursor
-	m.StickyCol = snap.Cursor.Col
+	m.updateStickyCol()
 	m.Selection = Selection{Anchor: m.Cursor, Active: false}
 	m.clampCursor()
 	m.ensureCursorVisible()
@@ -267,7 +267,7 @@ func (m *Model) Redo() bool {
 
 	m.Lines = cloneLines(snap.Lines)
 	m.Cursor = snap.Cursor
-	m.StickyCol = snap.Cursor.Col
+	m.updateStickyCol()
 	m.Selection = Selection{Anchor: m.Cursor, Active: false}
 	m.clampCursor()
 	m.ensureCursorVisible()
@@ -459,7 +459,7 @@ func (m *Model) DeleteSelection() bool {
 		m.Lines = newLines
 	}
 	m.Cursor = start
-	m.StickyCol = start.Col
+	m.updateStickyCol()
 	m.Selection = Selection{Anchor: start, Active: false}
 	m.clampCursor()
 	return true
@@ -483,7 +483,7 @@ func (m *Model) InsertRune(r rune) {
 	line = append(line[:col], append([]rune{r}, line[col:]...)...)
 	m.Lines[m.Cursor.Line] = line
 	m.Cursor.Col++
-	m.StickyCol = m.Cursor.Col
+	m.updateStickyCol()
 	m.Selection = Selection{Anchor: m.Cursor, Active: false}
 	m.ensureCursorVisible()
 }
@@ -512,7 +512,7 @@ func (m *Model) insertRuneWithoutSnapshot(r rune) {
 	line = append(line[:col], append([]rune{r}, line[col:]...)...)
 	m.Lines[m.Cursor.Line] = line
 	m.Cursor.Col++
-	m.StickyCol = m.Cursor.Col
+	m.updateStickyCol()
 	m.Selection = Selection{Anchor: m.Cursor, Active: false}
 	m.ensureCursorVisible()
 }
@@ -630,7 +630,7 @@ func (m *Model) moveWordLeft() {
 			m.Cursor.Line--
 			m.Cursor.Col = len(m.Lines[m.Cursor.Line])
 		}
-		m.StickyCol = m.Cursor.Col
+		m.updateStickyCol()
 		return
 	}
 	line := m.Lines[m.Cursor.Line]
@@ -653,7 +653,7 @@ func (m *Model) moveWordRight() {
 			m.Cursor.Line++
 			m.Cursor.Col = 0
 		}
-		m.StickyCol = m.Cursor.Col
+		m.updateStickyCol()
 		return
 	}
 	col := m.Cursor.Col
@@ -726,7 +726,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) {
 		m.lastClickPos = pos
 
 		m.Cursor = pos
-		m.StickyCol = pos.Col
+		m.updateStickyCol()
 		m.isDragging = true
 
 		if m.clickCount == 2 {
@@ -764,11 +764,11 @@ func (m *Model) handleMouse(msg tea.MouseMsg) {
 			}
 			m.Selection = Selection{Anchor: Point{Line: pos.Line, Col: startCol}, Active: true}
 			m.Cursor = Point{Line: pos.Line, Col: endCol}
-			m.StickyCol = endCol
+			m.updateStickyCol()
 		} else if m.clickCount >= 3 {
 			m.Selection = Selection{Anchor: Point{Line: pos.Line, Col: 0}, Active: true}
 			m.Cursor = Point{Line: pos.Line, Col: len(m.Lines[pos.Line])}
-			m.StickyCol = m.Cursor.Col
+			m.updateStickyCol()
 		} else {
 			m.Selection = Selection{Anchor: pos, Active: true}
 		}
@@ -777,7 +777,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) {
 	case tea.MouseActionMotion:
 		if m.isDragging {
 			m.Cursor = pos
-			m.StickyCol = pos.Col
+			m.updateStickyCol()
 			m.Selection.Active = true
 			m.ensureCursorVisible()
 		}
@@ -924,7 +924,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 	case "end", "shift+end":
 		m.lastEditType = editNone
 		m.Cursor.Col = len(m.Lines[m.Cursor.Line])
-		m.StickyCol = m.Cursor.Col
+		m.updateStickyCol()
 		if !shift {
 			m.Selection = Selection{Anchor: m.Cursor, Active: false}
 		}
@@ -999,14 +999,14 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 				line := m.Lines[m.Cursor.Line]
 				m.Lines[m.Cursor.Line] = append(line[:m.Cursor.Col-1], line[m.Cursor.Col:]...)
 				m.Cursor.Col--
-				m.StickyCol = m.Cursor.Col
+				m.updateStickyCol()
 			} else if m.Cursor.Line > 0 {
 				prevLen := len(m.Lines[m.Cursor.Line-1])
 				m.Lines[m.Cursor.Line-1] = append(m.Lines[m.Cursor.Line-1], m.Lines[m.Cursor.Line]...)
 				m.Lines = append(m.Lines[:m.Cursor.Line], m.Lines[m.Cursor.Line+1:]...)
 				m.Cursor.Line--
 				m.Cursor.Col = prevLen
-				m.StickyCol = prevLen
+				m.updateStickyCol()
 			}
 		}
 
@@ -1084,7 +1084,7 @@ func (m Model) View() string {
 			charStr := string(charRune)
 			charWidth := runeDisplayWidth(charRune, currentX)
 
-			if charRune == '	' {
+			if charRune == '\t' {
 				charStr = strings.Repeat(" ", charWidth)
 			} else if unicode.IsControl(charRune) {
 				charStr = ""

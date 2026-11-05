@@ -1598,14 +1598,11 @@ func TestRedo(t *testing.T) {
 
 		ed.Cursor = Point{Line: 0, Col: 0}
 		ed.InsertString("Prepend ") // moves cursor to Col 8 ("Prepend Hello World Very Long Line")
-		// LeftCol was adjusted during InsertString
-		ed.Undo() // restores cursor to Col 0, resets LeftCol to 0
+		ed.Undo()                   // restores cursor to Col 0, resets LeftCol to 0
 
 		if ed.Cursor.Col != 0 {
 			t.Fatalf("Cursor.Col after Undo = %d, want 0", ed.Cursor.Col)
 		}
-
-		// Reset LeftCol to 0 while restored cursor will be at Col 8
 
 		ed.Cursor = Point{Line: 0, Col: 0}
 
