@@ -51,7 +51,7 @@ func runTUI(cmd *cobra.Command, arg string, requested artifact.Kind, edit bool) 
 	if err != nil {
 		return err
 	}
-	return tui.Run(cmd.Context(), tui.Config{
+	err = tui.Run(cmd.Context(), tui.Config{
 		Path:          path,
 		Kind:          kind,
 		Edit:          edit,
@@ -61,6 +61,10 @@ func runTUI(cmd *cobra.Command, arg string, requested artifact.Kind, edit bool) 
 		Presentations: presentation.NewService(repo, settings.UndoLimit),
 		Recovery:      repo,
 	})
+	for _, w := range repo.Warnings() {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", w)
+	}
+	return err
 }
 
 // resolveTUITarget returns the absolute path and, for an existing file, its

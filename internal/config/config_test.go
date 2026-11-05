@@ -64,12 +64,12 @@ func clearEnv(t *testing.T) {
 
 func TestLoadEmptyPathAndMissingFile(t *testing.T) {
 	clearEnv(t)
-	dir, _ := Directory()
+	_, _ = Directory()
 	expectedDefaults := Settings{
 		UndoLimit:   100,
 		LogLevel:    "warn",
 		LogFormat:   "text",
-		LocalBackup: filepath.Join(dir, "backups"),
+		LocalBackup: "",
 	}
 
 	t.Run("empty path", func(t *testing.T) {
@@ -151,6 +151,7 @@ destination = "/tmp/backup"
 func TestLoadEnvironmentOverrides(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("PARCHMENT_UNDO_LIMIT", "200")
+	t.Setenv("PARCHMENT_BACKUP_DESTINATION", "")
 	t.Setenv("PARCHMENT_LOG_LEVEL", "DEBUG")
 	t.Setenv("PARCHMENT_LOG_FORMAT", "JSON")
 
@@ -159,12 +160,12 @@ func TestLoadEnvironmentOverrides(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	dir, _ := Directory()
+	_, _ = Directory()
 	expected := Settings{
 		UndoLimit:   200,
 		LogLevel:    "debug",
 		LogFormat:   "json",
-		LocalBackup: filepath.Join(dir, "backups"),
+		LocalBackup: "",
 	}
 
 	if settings != expected {
@@ -358,5 +359,44 @@ func TestEnsureDefaultConcurrentLaunchesSeeCompleteFile(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("config directory entries = %v, %v", entries, err)
+	}
+}
+
+func TestLoadLoggingValidation(t *testing.T) {
+	clearEnv(t)
+	tests := []struct {
+		name    string
+		level   string
+		format  string
+		wantErr bool
+	}{
+		{name: "valid debug text", level: "debug", format: "text", wantErr: false},
+		{name: "valid info json", level: "info", format: "json", wantErr: false},
+		{name: "valid warn json", level: "warn", format: "json", wantErr: false},
+		{name: "valid error text", level: "error", format: "text", wantErr: false},
+		{name: "valid off text", level: "off", format: "text", wantErr: false},
+		{name: "invalid level", level: "trace", format: "text", wantErr: true},
+		{name: "invalid format", level: "debug", format: "xml", wantErr: true},
+		{name: "empty level", level: "", format: "text", wantErr: true},
+		{name: "empty format", level: "debug", format: "", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("PARCHMENT_LOG_LEVEL", tt.level)
+			t.Setenv("PARCHMENT_LOG_FORMAT", tt.format)
+			settings, err := Load("")
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Load() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr {
+				if settings.LogLevel != tt.level {
+					t.Fatalf("settings.LogLevel = %s, want %s", settings.LogLevel, tt.level)
+				}
+				if settings.LogFormat != tt.format {
+					t.Fatalf("settings.LogFormat = %s, want %s", settings.LogFormat, tt.format)
+				}
+			}
+		})
 	}
 }
