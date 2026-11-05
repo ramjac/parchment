@@ -210,6 +210,12 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		m.status = "Working… (esc cancels)"
 		return nil
 	}
+	if key == "r" {
+		return m.load()
+	}
+	if !m.loaded {
+		return nil
+	}
 	if m.pendingShortcut == "d" {
 		m.pendingShortcut = ""
 		switch key {
@@ -235,12 +241,6 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 	if key == "d" {
 		m.pendingShortcut = "d"
 		m.status = "Delete (r)ow, (c)olumn, or (s)heet?"
-		return nil
-	}
-	if key == "r" {
-		return m.load()
-	}
-	if !m.loaded {
 		return nil
 	}
 	page := max(1, m.visibleRows()-1)
