@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/note"
 	"example.com/parchment/internal/presentation"
@@ -33,6 +34,54 @@ type Config struct {
 	Spreadsheets  *spreadsheet.Service
 	Presentations *presentation.Service
 	Recovery      recovery.Store
+	Theme         config.Theme
+}
+
+// Theme holds the resolved Lip Gloss colors for the TUI.
+type Theme struct {
+	Primary   lipgloss.TerminalColor
+	Border    lipgloss.TerminalColor
+	Error     lipgloss.TerminalColor
+	Selection lipgloss.TerminalColor
+	Match     lipgloss.TerminalColor
+}
+
+func resolveTheme(c config.Theme) Theme {
+	var primary, border, errColor, selection, match lipgloss.TerminalColor
+
+	defaultPrimaryLight, defaultPrimaryDark := "#4b3f72", "#c4b5fd"
+	defaultBorderLight, defaultBorderDark := "#b8b4c7", "#55516a"
+	defaultErrorLight, defaultErrorDark := "#b42318", "#f87171"
+	defaultSelectionLight, defaultSelectionDark := "#dcd6f7", "#4c1d95"
+	defaultMatchLight, defaultMatchDark := "#fde68a", "#854d0e"
+
+	getColor := func(override, defaultLight, defaultDark string) lipgloss.TerminalColor {
+		if override != "" {
+			return lipgloss.Color(override)
+		}
+		switch c.Mode {
+		case "light":
+			return lipgloss.Color(defaultLight)
+		case "dark":
+			return lipgloss.Color(defaultDark)
+		default: // "auto"
+			return lipgloss.AdaptiveColor{Light: defaultLight, Dark: defaultDark}
+		}
+	}
+
+	primary = getColor(c.Primary, defaultPrimaryLight, defaultPrimaryDark)
+	border = getColor(c.Border, defaultBorderLight, defaultBorderDark)
+	errColor = getColor(c.Error, defaultErrorLight, defaultErrorDark)
+	selection = getColor(c.Selection, defaultSelectionLight, defaultSelectionDark)
+	match = getColor(c.Match, defaultMatchLight, defaultMatchDark)
+
+	return Theme{
+		Primary:   primary,
+		Border:    border,
+		Error:     errColor,
+		Selection: selection,
+		Match:     match,
+	}
 }
 
 type stage int
@@ -83,11 +132,6 @@ type autosaveFinishedMsg struct {
 
 const autosaveInterval = 2 * time.Second
 
-var (
-	primaryColor = lipgloss.AdaptiveColor{Light: "#4b3f72", Dark: "#c4b5fd"}
-	borderColor  = lipgloss.AdaptiveColor{Light: "#b8b4c7", Dark: "#55516a"}
-)
-
 // Model is the interactive editor for one artifact file. It owns UI state
 // only; artifact rules live in the services.
 type Model struct {
@@ -98,6 +142,7 @@ type Model struct {
 	spreadsheets  *spreadsheet.Service
 	presentations *presentation.Service
 	recoveryStore recovery.Store
+	theme         Theme
 	stage         stage
 	width         int
 	height        int
@@ -125,6 +170,7 @@ func NewModel(config Config) Model {
 		path: config.Path, kind: config.Kind, edit: config.Edit,
 		service: config.Notes, spreadsheets: config.Spreadsheets, presentations: config.Presentations,
 		recoveryStore: config.Recovery,
+		theme:         resolveTheme(config.Theme),
 		noteEditor:    newNoteEditor(),
 		newOperationContext: func() (context.Context, context.CancelFunc) {
 			return context.WithCancel(context.Background())
@@ -134,7 +180,7 @@ func NewModel(config Config) Model {
 		m.canUndo, m.canRedo = m.service.CanUndo(), m.service.CanRedo()
 	}
 	if config.Documents != nil {
-		m.documents = newDocumentsScreen(config.Documents, config.Path, m.newOperationContext)
+		m.documents = newDocumentsScreen(config.Documents, config.Path, m.newOperationContext, m.theme)
 		m.documents.recoveryStore = config.Recovery
 		m.documents.autosaveScheduler = func(session uint64) tea.Cmd {
 			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
@@ -370,7 +416,7 @@ func (m *Model) enterEditor() tea.Cmd {
 		m.stage = stageNote
 		return tea.Batch(m.bodyInput.Focus(), m.scheduleAutosave(m.autosaveSession))
 	case artifact.SpreadsheetKind:
-		m.sheet = newSpreadsheetModel(m.spreadsheets, m.path)
+		m.sheet = newSpreadsheetModel(m.spreadsheets, m.path, m.theme)
 		m.sheet.newOperationContext = m.newOperationContext
 		m.sheet.width, m.sheet.height = m.width, m.height
 		m.sheet.setBook(m.opened.book)
@@ -379,7 +425,7 @@ func (m *Model) enterEditor() tea.Cmd {
 		_, cmd := m.sheet.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		return cmd
 	case artifact.PresentationKind:
-		m.deck = newPresentationModel(m.presentations, m.path)
+		m.deck = newPresentationModel(m.presentations, m.path, m.theme)
 		m.deck.newOperationContext = m.newOperationContext
 		m.deck.width, m.deck.height = m.width, m.height
 		m.deck.setItem(m.opened.deck)
@@ -585,7 +631,7 @@ func (m Model) View() string {
 	if m.tooSmall() {
 		return "parchment — terminal too small (minimum 40×10)\nResize the terminal, or press q to quit."
 	}
-	header := lipgloss.NewStyle().Bold(true).Foreground(primaryColor).
+	header := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Primary).
 		Render("parchment  ·  " + sanitizeTerminalLine(m.path))
 	switch m.stage {
 	case stageOpening:
@@ -625,15 +671,15 @@ func (m Model) View() string {
 	}
 	if m.previewing {
 		shortcuts := "Preview  ·  ↑/↓ scroll  ·  Esc returns to the editor"
-		return chromeLayout(m.width, m.height, header, shortcuts, m.preview.View(), m.statusLine())
+		return chromeLayout(m.width, m.height, header, shortcuts, m.preview.View(), m.statusLine(), m.theme.Border)
 	}
 	shortcuts := state + "  ·  Ctrl+S saves  ·  F5 preview  ·  Ctrl+Z/Ctrl+R undo/redo  ·  Esc quits"
-	return chromeLayout(m.width, m.height, header, shortcuts, m.bodyInput.View(), m.statusLine())
+	return chromeLayout(m.width, m.height, header, shortcuts, m.bodyInput.View(), m.statusLine(), m.theme.Border)
 }
 
 func (m Model) tooSmall() bool { return m.width < 40 || m.height < 10 }
 
-func chromeLayout(width, height int, header, shortcuts, content, status string) string {
+func chromeLayout(width, height int, header, shortcuts, content, status string, border lipgloss.TerminalColor) string {
 	chromeRows := lipgloss.Height(header) + lipgloss.Height(status)
 	if shortcuts != "" {
 		chromeRows += lipgloss.Height(shortcuts)
@@ -652,7 +698,7 @@ func chromeLayout(width, height int, header, shortcuts, content, status string) 
 		Width(paneWidth).
 		Height(paneHeight).
 		Border(lipgloss.NormalBorder()).
-		BorderForeground(borderColor).
+		BorderForeground(border).
 		Padding(0, 1).
 		Render(content)
 

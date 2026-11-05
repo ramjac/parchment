@@ -51,6 +51,7 @@ type Model struct {
 	ShowLineNums bool
 	Style        lipgloss.Style
 	SelectStyle  lipgloss.Style
+	CursorStyle  lipgloss.Style
 
 	// Undo/Redo history
 	undoStack    []editorSnapshot
@@ -198,6 +199,7 @@ func New() Model {
 		Height:      20,
 		Focused:     true,
 		SelectStyle: lipgloss.NewStyle().Reverse(true),
+		CursorStyle: lipgloss.NewStyle().Reverse(true),
 	}
 }
 
@@ -1096,7 +1098,7 @@ func (m Model) View() string {
 				if charStr == "" {
 					charStr = " "
 				}
-				charStr = lipgloss.NewStyle().Reverse(true).Render(charStr)
+				charStr = m.CursorStyle.Render(charStr)
 			}
 
 			sb.WriteString(charStr)
@@ -1110,7 +1112,7 @@ func (m Model) View() string {
 			isLineBreakSelected := hasSelection && (pointLess(start, pt) || start == pt) && pointLess(pt, end)
 
 			if isCursor {
-				sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(" "))
+				sb.WriteString(m.CursorStyle.Render(" "))
 			} else if isLineBreakSelected {
 				sb.WriteString(m.SelectStyle.Render(" "))
 			}
