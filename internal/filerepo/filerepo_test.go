@@ -837,6 +837,7 @@ func TestRepositoryBackupBehavior(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// We made 1 initial + 15 edits = 16 operations. Should be pruned to 10.
 	// Since tests run fast, we might have fewer than 10 if timestamps collide. Just check it didn't crash.
 
 	// 3. Failed backup yields a warning via Warnings() without failing the save.
@@ -845,8 +846,7 @@ func TestRepositoryBackupBehavior(t *testing.T) {
 		t.Fatal(err)
 	}
 	badBackupDir := filepath.Join(parent, "permissions")
-	// Wait, filerepo is immutable regarding backupDir after creation.
-	// Create a new repo with bad backup dir.
+
 	badRepo, err := filerepo.New(stateDir, filerepo.Options{LocalBackup: badBackupDir})
 	if err != nil {
 		t.Fatal(err)

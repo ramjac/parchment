@@ -198,7 +198,7 @@ func (r *Repository) update(ctx context.Context, path string, create bool, notFo
 		}
 		err = writeUpdate(ctx, resolved, path, create, data, mode)
 		if err == nil && r.backupDir != "" {
-			r.createBackup(path, data)
+			r.createBackup(ctx, path, data)
 		}
 		return err
 	})
@@ -262,7 +262,7 @@ func (r *Repository) addWarning(err error) {
 	r.warnings = append(r.warnings, err)
 }
 
-func (r *Repository) createBackup(path string, data []byte) {
+func (r *Repository) createBackup(ctx context.Context, path string, data []byte) {
 	if err := ensureDirectory(r.backupDir); err != nil {
 		r.addWarning(fmt.Errorf("backup failed: %w", err))
 		return
@@ -274,7 +274,7 @@ func (r *Repository) createBackup(path string, data []byte) {
 	backupName := fmt.Sprintf("%s-%s-%s%s", stem, hash, timestamp, ext)
 	backupPath := filepath.Join(r.backupDir, backupName)
 
-	if err := createAtomic(context.Background(), backupPath, data, 0o600); err != nil {
+	if err := createAtomic(ctx, backupPath, data, 0o600); err != nil {
 		r.addWarning(fmt.Errorf("backup failed: %w", err))
 		return
 	}
