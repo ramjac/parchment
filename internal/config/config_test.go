@@ -64,12 +64,12 @@ func clearEnv(t *testing.T) {
 
 func TestLoadEmptyPathAndMissingFile(t *testing.T) {
 	clearEnv(t)
-	dir, _ := Directory()
+	_, _ = Directory()
 	expectedDefaults := Settings{
 		UndoLimit:   100,
 		LogLevel:    "warn",
 		LogFormat:   "text",
-		LocalBackup: filepath.Join(dir, "backups"),
+		LocalBackup: "",
 	}
 
 	t.Run("empty path", func(t *testing.T) {
@@ -151,6 +151,7 @@ destination = "/tmp/backup"
 func TestLoadEnvironmentOverrides(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("PARCHMENT_UNDO_LIMIT", "200")
+	t.Setenv("PARCHMENT_BACKUP_DESTINATION", "")
 	t.Setenv("PARCHMENT_LOG_LEVEL", "DEBUG")
 	t.Setenv("PARCHMENT_LOG_FORMAT", "JSON")
 
@@ -159,12 +160,12 @@ func TestLoadEnvironmentOverrides(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	dir, _ := Directory()
+	_, _ = Directory()
 	expected := Settings{
 		UndoLimit:   200,
 		LogLevel:    "debug",
 		LogFormat:   "json",
-		LocalBackup: filepath.Join(dir, "backups"),
+		LocalBackup: "",
 	}
 
 	if settings != expected {
