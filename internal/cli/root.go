@@ -12,9 +12,11 @@ import (
 	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/filerepo"
+	"example.com/parchment/internal/logging"
 	"example.com/parchment/internal/note"
 	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/spreadsheet"
+	"log/slog"
 )
 
 type output struct {
@@ -169,6 +171,19 @@ func openStore() (*filerepo.Repository, config.Settings, error) {
 	if err != nil {
 		return nil, config.Settings{}, err
 	}
+if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return nil, config.Settings{}, fmt.Errorf("ensure state directory: %w", err)
+	}
+	logger, closer, err := logging.Setup(stateDir, settings.LogLevel, settings.LogFormat)
+	if err != nil {
+		return nil, config.Settings{}, err
+	}
+	if globalCloser != nil {
+		_ = globalCloser()
+	}
+	globalCloser = closer
+	slog.SetDefault(logger)
+
 	repo, err := filerepo.New(stateDir, filerepo.Options{LocalBackup: settings.LocalBackup})
 	if err != nil {
 		return nil, config.Settings{}, err
@@ -182,6 +197,15 @@ func groupCommand(group *cobra.Command) *cobra.Command {
 	group.Args = cobra.NoArgs
 	group.RunE = func(cmd *cobra.Command, _ []string) error { return cmd.Help() }
 	return group
+}
+
+var globalCloser func() error
+
+// Close cleans up resources held by the CLI (like open log files).
+func Close() {
+	if globalCloser != nil {
+		_ = globalCloser()
+	}
 }
 
 func drainWarnings(repo *filerepo.Repository, streams output) {

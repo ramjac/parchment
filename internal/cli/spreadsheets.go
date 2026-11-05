@@ -25,6 +25,7 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 	group.AddCommand(newSpreadsheetCellCmd(streams))
 	addSpreadsheetInsertCommands(group)
 	group.AddCommand(newSpreadsheetAddSheetCmd())
+	group.AddCommand(newSpreadsheetExportCmd(streams))
 }
 
 func newSpreadsheetCreateCmd(streams output) *cobra.Command {
@@ -89,6 +90,79 @@ func newSpreadsheetShowCmd(streams output) *cobra.Command {
 			return err
 		},
 	}
+}
+
+func newSpreadsheetExportCmd(streams output) *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "export <file>", Short: "Export a spreadsheet", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			csvFlag, _ := cmd.Flags().GetBool("csv")
+			if !csvFlag {
+				return errors.New("--csv is required")
+			}
+			_, service, err := openSpreadsheets(cmd)
+			if err != nil {
+				return err
+			}
+			book, err := service.Get(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			sheetName, _ := cmd.Flags().GetString("sheet")
+			sheetIndex := 0
+			if sheetName != "" {
+				sheetIndex, err = spreadsheet.SheetIndex(book, sheetName)
+				if err != nil {
+					return err
+				}
+			}
+
+			var out io.Writer
+			out = streams.out
+
+			outputPath, _ := cmd.Flags().GetString("output")
+			if outputPath != "" {
+				force, _ := cmd.Flags().GetBool("force")
+				flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL
+				if force {
+					flags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+				}
+				f, err := os.OpenFile(outputPath, flags, 0o600)
+				if err != nil {
+					return err
+				}
+				defer f.Close()
+				out = f
+			}
+
+			writer := csv.NewWriter(out)
+			sheet := book.Sheets[sheetIndex]
+			for r, row := range sheet.Rows {
+				record := make([]string, len(row))
+				for c, cell := range row {
+					if cell.Formula != "" {
+						value, err := spreadsheet.Evaluate(&book, sheetIndex, r+1, c+1)
+						if err != nil {
+							return err
+						}
+						record[c] = strconv.FormatFloat(value, 'f', -1, 64)
+					} else {
+						record[c] = cell.Value
+					}
+				}
+				if err := writer.Write(record); err != nil {
+					return err
+				}
+			}
+			writer.Flush()
+			return writer.Error()
+		},
+	}
+	cmd.Flags().Bool("csv", false, "export as CSV (required)")
+	cmd.Flags().String("sheet", "", "sheet to export (defaults to the first sheet)")
+	cmd.Flags().StringP("output", "o", "", "output file (defaults to stdout)")
+	cmd.Flags().Bool("force", false, "overwrite output file if it exists")
+	return cmd
 }
 
 func newSpreadsheetCellCmd(streams output) *cobra.Command {

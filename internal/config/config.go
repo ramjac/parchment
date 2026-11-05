@@ -57,6 +57,16 @@ func Load(path string) (Settings, error) {
 	if settings.UndoLimit < 1 || settings.UndoLimit > 10000 {
 		return Settings{}, errors.New("undo_limit must be between 1 and 10000")
 	}
+	switch settings.LogLevel {
+	case "debug", "info", "warn", "error", "off":
+	default:
+		return Settings{}, fmt.Errorf("invalid logging.level %q (want debug, info, warn, error, off)", settings.LogLevel)
+	}
+	switch settings.LogFormat {
+	case "text", "json":
+	default:
+		return Settings{}, fmt.Errorf("invalid logging.format %q (want text, json)", settings.LogFormat)
+	}
 	return settings, nil
 }
 

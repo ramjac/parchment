@@ -1,7 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"os"
 	"path/filepath"
@@ -35,6 +40,9 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 		newDocumentPageBreakCmd(),
 		newDocumentSectionBreakCmd(),
 		newDocumentImageCmd(streams),
+		newDocumentImagesCmd(streams),
+		newDocumentImageExtractCmd(streams),
+		newDocumentImageRemoveCmd(),
 		newDocumentPrintCmd(streams),
 	)
 }
@@ -324,6 +332,112 @@ func newDocumentImageCmd(streams output) *cobra.Command {
 		},
 	}
 	cmd.Flags().String("alt", "", "alternative text for the image")
+	return cmd
+}
+
+func newDocumentImagesCmd(streams output) *cobra.Command {
+	return &cobra.Command{
+		Use: "images <file>", Short: "List embedded images in a document", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, service, err := openDocuments(cmd)
+			if err != nil {
+				return err
+			}
+			d, err := service.Get(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			referenced := document.ReferencedImages(d.Body)
+			for _, img := range d.Images {
+				status := "unreferenced"
+				if referenced[img.Name] {
+					status = "referenced"
+				}
+				format := "unknown"
+				width, height := 0, 0
+				if config, f, err := image.DecodeConfig(bytes.NewReader(img.Data)); err == nil {
+					format = f
+					width = config.Width
+					height = config.Height
+				}
+				if _, err := fmt.Fprintf(streams.out, "%s\t%s\t%dx%d\t%d\t%s\n", img.Name, format, width, height, len(img.Data), status); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+}
+
+func newDocumentImageExtractCmd(streams output) *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "image-extract <file> <image-name>", Short: "Extract an embedded image from a document", Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, service, err := openDocuments(cmd)
+			if err != nil {
+				return err
+			}
+			d, err := service.Get(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+
+			var imgData []byte
+			for _, img := range d.Images {
+				if img.Name == args[1] {
+					imgData = img.Data
+					break
+				}
+			}
+			if imgData == nil {
+				return fmt.Errorf("image %q not found in document", args[1])
+			}
+
+			outPath, _ := cmd.Flags().GetString("output")
+			if outPath == "" {
+				_, err = streams.out.Write(imgData)
+				return err
+			}
+
+			force, _ := cmd.Flags().GetBool("force")
+			flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+			if !force {
+				flags |= os.O_EXCL
+			}
+
+			f, err := os.OpenFile(outPath, flags, 0600)
+			if err != nil {
+				if os.IsExist(err) {
+					return fmt.Errorf("file %q already exists (use --force to overwrite)", outPath)
+				}
+				return err
+			}
+			if _, err := f.Write(imgData); err != nil {
+				f.Close()
+				return err
+			}
+			return f.Close()
+		},
+	}
+	cmd.Flags().StringP("output", "o", "", "write to a file instead of standard output")
+	cmd.Flags().Bool("force", false, "overwrite output file if it exists")
+	return cmd
+}
+
+func newDocumentImageRemoveCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "image-remove <file> <image-name>", Short: "Remove an embedded image from a document", Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, service, err := openDocuments(cmd)
+			if err != nil {
+				return err
+			}
+			strip, _ := cmd.Flags().GetBool("strip-references")
+			_, err = service.RemoveImage(cmd.Context(), args[0], args[1], strip)
+			return err
+		},
+	}
+	cmd.Flags().Bool("strip-references", false, "remove Markdown image tags referencing the image from the document body")
 	return cmd
 }
 
