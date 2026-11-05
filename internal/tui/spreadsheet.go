@@ -69,6 +69,7 @@ type spreadsheetAsync struct {
 // it reads and edits the workbook file through the spreadsheet service.
 type spreadsheetModel struct {
 	service *spreadsheet.Service
+	theme   Theme
 	path    string
 	book    spreadsheet.Spreadsheet
 	loaded  bool
@@ -79,7 +80,7 @@ type spreadsheetModel struct {
 	spreadsheetAsync
 }
 
-func newSpreadsheetModel(service *spreadsheet.Service, path string) *spreadsheetModel {
+func newSpreadsheetModel(service *spreadsheet.Service, path string, theme Theme) *spreadsheetModel {
 	input := textinput.New()
 	input.Prompt = ""
 	input.CharLimit = spreadsheet.MaxFormulaLength + 1
@@ -501,7 +502,7 @@ func (m *spreadsheetModel) renderHeader() string {
 	if m.path != "" {
 		header += "  " + sanitizeTerminalLine(m.path)
 	}
-	accent := lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
+	accent := lipgloss.NewStyle().Foreground(m.theme.Primary).Bold(true)
 	return accent.Render(runewidth.Truncate(header, m.width, "…"))
 }
 
@@ -525,7 +526,7 @@ func (m *spreadsheetModel) renderColumnHeader(rowWidth, columns int) string {
 }
 
 func (m *spreadsheetModel) renderGrid() string {
-	muted := lipgloss.NewStyle().Foreground(borderColor)
+	muted := lipgloss.NewStyle().Foreground(m.theme.Border)
 	selected := lipgloss.NewStyle().Reverse(true)
 
 	rowWidth := m.rowHeaderWidth()
@@ -572,7 +573,7 @@ func (m *spreadsheetModel) renderStatus() string {
 }
 
 func (m *spreadsheetModel) renderHelp() string {
-	muted := lipgloss.NewStyle().Foreground(borderColor)
+	muted := lipgloss.NewStyle().Foreground(m.theme.Border)
 	help := "arrows move • enter edit • del clear • f formulas • tab sheet • u undo • ctrl+r redo • r reload • esc/q quit"
 	if m.editing {
 		help = "enter save • esc cancel • =formula • 'literal"
@@ -587,5 +588,5 @@ func (m *spreadsheetModel) View() string {
 		return "Terminal too small. Press q to quit."
 	}
 	shortcuts := m.renderHelp() + "\n" + m.renderFormulaBar()
-	return chromeLayout(m.width, m.height, m.renderHeader(), shortcuts, m.renderGrid(), m.renderStatus())
+	return chromeLayout(m.width, m.height, m.renderHeader(), shortcuts, m.renderGrid(), m.renderStatus(), m.theme.Border)
 }

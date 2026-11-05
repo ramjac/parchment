@@ -127,7 +127,7 @@ const toolbarTop = 2
 func (s *documentsScreen) toolbarView() string {
 	placed, rows := s.buttonLayout(max(s.width, 20))
 	buttons := s.toolbarButtons()
-	normal := lipgloss.NewStyle().Foreground(primaryColor).Background(lipgloss.AdaptiveColor{Light: "#e7e3f5", Dark: "#2f2b45"})
+	normal := lipgloss.NewStyle().Foreground(s.theme.Primary).Background(s.theme.Selection)
 	active := normal.Reverse(true).Bold(true)
 	lineBuilders := make([]strings.Builder, rows)
 	groupSeen := make([]string, rows)
@@ -831,5 +831,5 @@ func (s *documentsScreen) editorView(header string) string {
 	content.WriteString(s.body.View())
 
 	shortcuts := state + "\n" + s.toolbarView()
-	return chromeLayout(s.width, s.height, header, shortcuts, content.String(), s.statusLine())
+	return chromeLayout(s.width, s.height, header, shortcuts, content.String(), s.statusLine(), s.theme.Border)
 }

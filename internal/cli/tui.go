@@ -60,6 +60,7 @@ func runTUI(cmd *cobra.Command, arg string, requested artifact.Kind, edit bool) 
 		Spreadsheets:  spreadsheet.NewService(repo, settings.UndoLimit),
 		Presentations: presentation.NewService(repo, settings.UndoLimit),
 		Recovery:      repo,
+		Theme:         settings.Theme,
 	})
 	for _, w := range repo.Warnings() {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", w)

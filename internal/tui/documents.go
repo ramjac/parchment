@@ -232,6 +232,7 @@ type documentsScreen struct {
 	status        string
 	errMessage    string
 
+	theme               Theme
 	newOperationContext func() (context.Context, context.CancelFunc)
 	cancelOperation     context.CancelFunc
 	recoveryStore       recovery.Store
@@ -277,7 +278,7 @@ func newDocumentReaderState() documentReaderState {
 	}
 }
 
-func newDocumentsScreen(service *document.Service, path string, newContext func() (context.Context, context.CancelFunc)) *documentsScreen {
+func newDocumentsScreen(service *document.Service, path string, newContext func() (context.Context, context.CancelFunc), theme Theme) *documentsScreen {
 	return &documentsScreen{
 		service:              service,
 		path:                 path,

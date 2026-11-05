@@ -230,7 +230,7 @@ func (s *documentsScreen) readerView(header string) string {
 	if !s.wideReader() {
 		content := "Page " + s.readerPageLabel() + "\n" + s.reader.View()
 		shortcuts = runewidth.Truncate(shortcuts, max(s.width, 1), "…")
-		return chromeLayout(s.width, s.height, header, shortcuts, content, s.statusLine())
+		return chromeLayout(s.width, s.height, header, shortcuts, content, s.statusLine(), s.theme.Border)
 	}
 	outlineWidth, previewWidth := s.readerPaneWidths()
 	lines, _ := s.outlineLines()
@@ -241,7 +241,7 @@ func (s *documentsScreen) readerView(header string) string {
 	left := lipgloss.NewStyle().
 		Width(outlineWidth-2).
 		Border(lipgloss.NormalBorder(), false, true, false, false).
-		BorderForeground(borderColor).
+		BorderForeground(s.theme.Border).
 		PaddingRight(1).
 		Render(strings.Join(lines, "\n"))
 
@@ -252,7 +252,7 @@ func (s *documentsScreen) readerView(header string) string {
 
 	content := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	shortcuts = runewidth.Truncate("click outline to jump  "+shortcuts, max(s.width, 1), "…")
-	return chromeLayout(s.width, s.height, header, shortcuts, content, s.statusLine())
+	return chromeLayout(s.width, s.height, header, shortcuts, content, s.statusLine(), s.theme.Border)
 }
 
 // leaveEditor returns from the editor to the reader, discarding unsaved edits
