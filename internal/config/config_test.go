@@ -51,6 +51,7 @@ func clearEnv(t *testing.T) {
 		"PARCHMENT_LOG_LEVEL",
 		"PARCHMENT_LOG_FORMAT",
 		"PARCHMENT_CONFIG",
+		"PARCHMENT_THEME",
 	}
 	for _, k := range keys {
 		if val, ok := os.LookupEnv(k); ok {
@@ -70,6 +71,7 @@ func TestLoadEmptyPathAndMissingFile(t *testing.T) {
 		LogLevel:    "warn",
 		LogFormat:   "text",
 		LocalBackup: filepath.Join(dir, "backups"),
+		Theme:       Theme{Mode: "auto"},
 	}
 
 	t.Run("empty path", func(t *testing.T) {
@@ -110,6 +112,14 @@ format = "json"
 
 [backup.local]
 destination = "/tmp/backup"
+
+[theme]
+mode = "dark"
+primary = "#ffffff"
+border = "#000000"
+error = "#ff0000"
+selection = "#00ff00"
+match = "#0000ff"
 `
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
@@ -123,6 +133,14 @@ destination = "/tmp/backup"
 			LogLevel:    "debug",
 			LogFormat:   "json",
 			LocalBackup: "/tmp/backup",
+			Theme: Theme{
+				Mode:      "dark",
+				Primary:   "#ffffff",
+				Border:    "#000000",
+				Error:     "#ff0000",
+				Selection: "#00ff00",
+				Match:     "#0000ff",
+			},
 		}
 		if settings != expected {
 			t.Fatalf("got %+v, want %+v", settings, expected)
@@ -153,6 +171,7 @@ func TestLoadEnvironmentOverrides(t *testing.T) {
 	t.Setenv("PARCHMENT_UNDO_LIMIT", "200")
 	t.Setenv("PARCHMENT_LOG_LEVEL", "DEBUG")
 	t.Setenv("PARCHMENT_LOG_FORMAT", "JSON")
+	t.Setenv("PARCHMENT_THEME", "LIGHT")
 
 	settings, err := Load("")
 	if err != nil {
@@ -165,6 +184,7 @@ func TestLoadEnvironmentOverrides(t *testing.T) {
 		LogLevel:    "debug",
 		LogFormat:   "json",
 		LocalBackup: filepath.Join(dir, "backups"),
+		Theme:       Theme{Mode: "light"},
 	}
 
 	if settings != expected {
@@ -359,4 +379,39 @@ func TestEnsureDefaultConcurrentLaunchesSeeCompleteFile(t *testing.T) {
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("config directory entries = %v, %v", entries, err)
 	}
+}
+
+func TestLoadThemeValidation(t *testing.T) {
+	clearEnv(t)
+
+	t.Run("invalid mode", func(t *testing.T) {
+		t.Setenv("PARCHMENT_THEME", "invalid")
+		if _, err := Load(""); err == nil {
+			t.Fatal("expected error for invalid theme mode, got nil")
+		} else if !strings.Contains(err.Error(), "invalid theme mode") {
+			t.Fatalf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("invalid hex colors", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "parchment.toml")
+		content := "version = 1\n[theme]\nprimary = \"invalid\"\n"
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Fatal("expected error for invalid hex color, got nil")
+		} else if !strings.Contains(err.Error(), "invalid theme color") {
+			t.Fatalf("unexpected error message: %v", err)
+		}
+
+		content = "version = 1\n[theme]\nprimary = \"#fffffg\"\n"
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Fatal("expected error for invalid hex color, got nil")
+		}
+	})
 }

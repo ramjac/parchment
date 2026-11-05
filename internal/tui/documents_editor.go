@@ -127,7 +127,7 @@ const toolbarTop = 2
 func (s *documentsScreen) toolbarView() string {
 	placed, rows := s.buttonLayout(max(s.width, 20))
 	buttons := s.toolbarButtons()
-	normal := lipgloss.NewStyle().Foreground(primaryColor).Background(lipgloss.AdaptiveColor{Light: "#e7e3f5", Dark: "#2f2b45"})
+	normal := lipgloss.NewStyle().Foreground(s.theme.Primary).Background(s.theme.Selection)
 	active := normal.Reverse(true).Bold(true)
 	lineBuilders := make([]strings.Builder, rows)
 	groupSeen := make([]string, rows)
@@ -832,7 +832,7 @@ func (s *documentsScreen) editorView(header string) string {
 
 	paneHeight := max(s.height-s.toolbarRows()-4, 3)
 	pane := lipgloss.NewStyle().Width(max(s.width, 10)).Height(paneHeight).
-		Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1).Render(content.String())
+		Border(lipgloss.NormalBorder()).BorderForeground(s.theme.Border).Padding(0, 1).Render(content.String())
 
 	return header + "\n" + state + "\n" + s.toolbarView() + "\n" + pane + s.statusLine()
 }

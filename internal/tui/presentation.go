@@ -63,6 +63,7 @@ type presentationEditorState struct {
 // presentation service.
 type presentationModel struct {
 	service *presentation.Service
+	theme   Theme
 	path    string
 	item    presentation.Presentation
 	deck    presentation.Deck
@@ -73,11 +74,12 @@ type presentationModel struct {
 	presentationEditorState
 }
 
-func newPresentationModel(service *presentation.Service, path string) *presentationModel {
+func newPresentationModel(service *presentation.Service, path string, theme Theme) *presentationModel {
 	body := editor.New()
 	return &presentationModel{
 		service: service,
 		path:    path,
+		theme:   theme,
 		presentationEditorState: presentationEditorState{
 			editor: body,
 		},
@@ -513,7 +515,7 @@ func (m *presentationModel) pageLines() []string {
 			}
 		}
 	}
-	accent := lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
+	accent := lipgloss.NewStyle().Foreground(m.theme.Primary).Bold(true)
 	lines := []string{
 		accent.Render(runewidth.Truncate(sanitizeTerminalLine(title), width, "…")),
 		strings.Repeat("─", min(width, max(1, runewidth.StringWidth(sanitizeTerminalLine(title))))),
@@ -540,8 +542,8 @@ func (m *presentationModel) View() string {
 	if m.width < 20 || m.height < presentationChromeLines+2 {
 		return "Terminal too small. Press q to quit."
 	}
-	accent := lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
-	muted := lipgloss.NewStyle().Foreground(borderColor)
+	accent := lipgloss.NewStyle().Foreground(m.theme.Primary).Bold(true)
+	muted := lipgloss.NewStyle().Foreground(m.theme.Border)
 	var b strings.Builder
 
 	b.WriteString(m.renderHeader(accent) + "\n")
@@ -577,7 +579,7 @@ func (m *presentationModel) renderContentPane() string {
 
 	paneHeight := max(1, m.height-3)
 	return lipgloss.NewStyle().Width(max(1, m.width)).Height(paneHeight).
-		Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1).Render(content)
+		Border(lipgloss.NormalBorder()).BorderForeground(m.theme.Border).Padding(0, 1).Render(content)
 }
 
 func (m *presentationModel) renderSlideContent() string {
