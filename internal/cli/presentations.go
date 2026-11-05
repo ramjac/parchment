@@ -73,11 +73,9 @@ func addPresentationCommands(root *cobra.Command, streams output) {
 				_, err = fmt.Fprintf(streams.out, "font: %s\n", font)
 				return err
 			}
-			if cmd.Flags().Changed("font") {
-				font, _ := cmd.Flags().GetString("font")
-				if _, err := service.SetFont(cmd.Context(), args[0], font); err != nil {
-					return err
-				}
+			font, _ := cmd.Flags().GetString("font")
+			if _, err := service.SetFont(cmd.Context(), args[0], font); err != nil {
+				return err
 			}
 			return nil
 		},

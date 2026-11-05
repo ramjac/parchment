@@ -59,7 +59,7 @@ func (s *documentsScreen) marginName() string {
 // toolbarButtons lists the controls shown above the editor. Labels for page
 // settings show the current value.
 func (s *documentsScreen) toolbarButtons() []toolbarButton {
-	return []toolbarButton{
+	buttons := []toolbarButton{
 		{"File", "Save", "save", "Ctrl+S"},
 		{"File", "Propose", "propose", "F3"},
 		{"File", "Changes", "changes", "F4"},
@@ -87,8 +87,13 @@ func (s *documentsScreen) toolbarButtons() []toolbarButton {
 		{"Page", "Header", "header", ""},
 		{"Page", "Footer", "footer", ""},
 		{"Page", "Page #: " + s.layout.PageNumbers, "numbers-pos", ""},
-		{"Page", "Font: " + map[bool]string{true: s.layout.Font, false: "courier"}[s.layout.Font != ""], "font", ""},
 	}
+	font := s.layout.Font
+	if font == "" {
+		font = "courier"
+	}
+	buttons = append(buttons, toolbarButton{"Page", "Font: " + font, "font", ""})
+	return buttons
 }
 
 // buttonLayout wraps the toolbar to the available width. It is used for both
@@ -591,9 +596,6 @@ func (s *documentsScreen) act(action string) tea.Cmd {
 		}
 	case "font":
 		s.layout.Font = nextOf([]string{"courier", "helvetica", "times"}, s.layout.Font)
-		if s.layout.Font == "" {
-			s.layout.Font = "courier"
-		}
 	case "numbers-pos":
 		s.layout.PageNumbers = nextOf(numberPlacements, s.layout.PageNumbers)
 	case "header":

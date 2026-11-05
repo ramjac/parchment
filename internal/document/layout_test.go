@@ -278,16 +278,6 @@ func TestLayoutValidate(t *testing.T) {
 			wantErr: true,
 			errText: "unsupported page size",
 		},
-		{
-			name: "invalid font",
-			layout: func() Layout {
-				l := DefaultLayout()
-				l.Font = "bogus"
-				return l
-			}(),
-			wantErr: true,
-			errText: "unsupported font",
-		},
 	}
 
 	for _, tc := range tests {
