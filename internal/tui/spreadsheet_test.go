@@ -72,7 +72,7 @@ func sheetKey(name string) tea.KeyMsg {
 
 func newTestRepository(t *testing.T) *filerepo.Repository {
 	t.Helper()
-	repository, err := filerepo.New(t.TempDir(), filerepo.Options{})
+	repository, err := filerepo.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func newSheetModel(t *testing.T, rows [][]spreadsheet.Cell) (*spreadsheetModel, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := newSpreadsheetModel(service, book.Path, Theme{})
+	m := newSpreadsheetModel(service, book.Path)
 	driveSheet(t, m, tea.WindowSizeMsg{Width: 100, Height: 20})
 	if msg := m.Init()(); msg != nil {
 		driveSheet(t, m, msg)
@@ -294,7 +294,7 @@ func TestSpreadsheetCancelledContextReportsCancelled(t *testing.T) {
 
 func TestSpreadsheetLoadErrorAllowsRetryAndQuit(t *testing.T) {
 	repository := newTestRepository(t)
-	m := newSpreadsheetModel(spreadsheet.NewService(repository, 10), filepath.Join(t.TempDir(), "missing.md"), Theme{})
+	m := newSpreadsheetModel(spreadsheet.NewService(repository, 10), filepath.Join(t.TempDir(), "missing.md"))
 	driveSheet(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
 	driveSheet(t, m, m.Init()())
 	if m.loaded || m.errMessage == "" || !strings.Contains(m.View(), "Error:") {
@@ -599,7 +599,7 @@ func TestSpreadsheetViewEditingAndHelp(t *testing.T) {
 
 func TestSpreadsheetViewUnloadedAndError(t *testing.T) {
 	repository := newTestRepository(t)
-	m := newSpreadsheetModel(spreadsheet.NewService(repository, 10), "", Theme{})
+	m := newSpreadsheetModel(spreadsheet.NewService(repository, 10), "")
 	m.width, m.height = 80, 20
 	view := m.View()
 	if !strings.Contains(view, "Spreadsheet") {
@@ -831,7 +831,7 @@ func TestSpreadsheetView_EditingAndHelp(t *testing.T) {
 
 	// Unloaded help message
 	repo := newTestRepository(t)
-	mUnloaded := newSpreadsheetModel(spreadsheet.NewService(repo, 10), "missing.md", Theme{})
+	mUnloaded := newSpreadsheetModel(spreadsheet.NewService(repo, 10), "missing.md")
 	mUnloaded.width, mUnloaded.height = 80, 20
 	viewUnloaded := mUnloaded.View()
 	if !strings.Contains(viewUnloaded, "r retry • esc/q quit") {
@@ -867,9 +867,6 @@ func TestSpreadsheetView_CustomSheetNameAndEmptyPath(t *testing.T) {
 	// Silence unused variable warning if service/id are used
 	_ = service
 }
-
-
-
 
 func TestSpreadsheetTUI_DeleteShortcuts(t *testing.T) {
 	m, service, _, path := newSheetModel(t, [][]spreadsheet.Cell{
