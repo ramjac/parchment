@@ -787,3 +787,83 @@ func TestTransitionSpreadsheetUpdate_ContentErrors(t *testing.T) {
 		}
 	})
 }
+
+func TestConvertPlainMarkdownToNote(t *testing.T) {
+	ctx := context.Background()
+	repo, _, folder := newRepo(t)
+
+	path := filepath.Join(folder, "plain_note.md")
+	content := "Just a plain note."
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mtime := time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+
+	err := repo.Convert(ctx, path, artifact.NoteKind)
+	if err != nil {
+		t.Fatalf("Convert failed: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	strData := string(data)
+	if !strings.Contains(strData, "parchment-meta") {
+		t.Errorf("Missing metadata in converted file")
+	}
+	if !strings.Contains(strData, `"kind": "note"`) {
+		t.Errorf("Missing kind in converted file")
+	}
+	if !strings.Contains(strData, `"created_at": "2024-03-01T12:00:00Z"`) {
+		t.Errorf("Missing created_at matching mtime, got: %s", strData)
+	}
+	if strings.Contains(strData, "parchment-document") || strings.Contains(strData, "parchment-presentation") {
+		t.Errorf("Unexpected blocks in note conversion")
+	}
+}
+
+func TestConvertPlainMarkdownToPresentation(t *testing.T) {
+	ctx := context.Background()
+	repo, _, folder := newRepo(t)
+
+	path := filepath.Join(folder, "plain_presentation.md")
+	content := "# Presentation"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := repo.Convert(ctx, path, artifact.PresentationKind)
+	if err != nil {
+		t.Fatalf("Convert failed: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	strData := string(data)
+	if !strings.Contains(strData, `"kind": "presentation"`) {
+		t.Errorf("Missing kind in converted file")
+	}
+	if !strings.Contains(strData, "parchment-presentation") || !strings.Contains(strData, `"version": 1`) {
+		t.Errorf("Missing parchment-presentation block with version 1")
+	}
+}
+
+func TestConvertMissingFile(t *testing.T) {
+	ctx := context.Background()
+	repo, _, folder := newRepo(t)
+
+	path := filepath.Join(folder, "missing.md")
+	err := repo.Convert(ctx, path, artifact.DocumentKind)
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("Expected os.ErrNotExist, got: %v", err)
+	}
+}

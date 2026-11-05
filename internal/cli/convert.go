@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"github.com/mattn/go-isatty"
+	"github.com/spf13/cobra"
 
 	"example.com/parchment/internal/artifact"
 )
