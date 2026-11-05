@@ -70,6 +70,7 @@ type spreadsheetAsync struct {
 // it reads and edits the workbook file through the spreadsheet service.
 type spreadsheetModel struct {
 	service *spreadsheet.Service
+	theme   Theme
 	path    string
 	book    spreadsheet.Spreadsheet
 	loaded  bool
@@ -80,7 +81,7 @@ type spreadsheetModel struct {
 	spreadsheetAsync
 }
 
-func newSpreadsheetModel(service *spreadsheet.Service, path string) *spreadsheetModel {
+func newSpreadsheetModel(service *spreadsheet.Service, path string, theme Theme) *spreadsheetModel {
 	input := textinput.New()
 	input.Prompt = ""
 	input.CharLimit = spreadsheet.MaxFormulaLength + 1
@@ -532,7 +533,7 @@ func (m *spreadsheetModel) renderHeader() string {
 	if m.path != "" {
 		header += "  " + sanitizeTerminalLine(m.path)
 	}
-	accent := lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
+	accent := lipgloss.NewStyle().Foreground(m.theme.Primary).Bold(true)
 	return accent.Render(runewidth.Truncate(header, m.width, "…"))
 }
 
@@ -556,7 +557,7 @@ func (m *spreadsheetModel) renderColumnHeader(rowWidth, columns int) string {
 }
 
 func (m *spreadsheetModel) renderGrid() string {
-	muted := lipgloss.NewStyle().Foreground(borderColor)
+	muted := lipgloss.NewStyle().Foreground(m.theme.Border)
 	selected := lipgloss.NewStyle().Reverse(true)
 
 	rowWidth := m.rowHeaderWidth()
@@ -589,9 +590,7 @@ func (m *spreadsheetModel) renderGrid() string {
 		}
 	}
 
-	paneHeight := max(m.height-4, 3)
-	return lipgloss.NewStyle().Width(max(m.width, 20)).Height(paneHeight).
-		Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1).Render(gridBuf.String())
+	return gridBuf.String()
 }
 
 func (m *spreadsheetModel) renderStatus() string {
@@ -605,7 +604,7 @@ func (m *spreadsheetModel) renderStatus() string {
 }
 
 func (m *spreadsheetModel) renderHelp() string {
-	muted := lipgloss.NewStyle().Foreground(borderColor)
+	muted := lipgloss.NewStyle().Foreground(m.theme.Border)
 	help := "arrows move • enter edit • del clear • f formulas • tab sheet • u undo • ctrl+r redo • r reload • esc/q quit"
 	if m.editing {
 		help = "enter save • esc cancel • =formula • 'literal"
@@ -619,15 +618,6 @@ func (m *spreadsheetModel) View() string {
 	if m.width < 20 || m.height < spreadsheetChromeLines+1 {
 		return "Terminal too small. Press q to quit."
 	}
-	var b strings.Builder
-	b.WriteString(m.renderHeader())
-	b.WriteByte('\n')
-	b.WriteString(m.renderFormulaBar())
-	b.WriteByte('\n')
-	b.WriteString(m.renderGrid())
-	b.WriteByte('\n')
-	b.WriteString(m.renderStatus())
-	b.WriteByte('\n')
-	b.WriteString(m.renderHelp())
-	return b.String()
+	shortcuts := m.renderHelp() + "\n" + m.renderFormulaBar()
+	return chromeLayout(m.width, m.height, m.renderHeader(), shortcuts, m.renderGrid(), m.renderStatus(), m.theme.Border)
 }

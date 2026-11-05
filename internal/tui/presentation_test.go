@@ -56,7 +56,7 @@ func newPresentationTestModel(t *testing.T) (*presentationModel, *presentation.S
 		t.Fatal(err)
 	}
 	service := presentation.NewService(newTestRepository(t), 10)
-	m := newPresentationModel(service, path)
+	m := newPresentationModel(service, path, Theme{})
 	drivePresentation(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	drivePresentation(t, m, m.Init()())
 	if !m.loaded || m.pending || m.errMessage != "" {
@@ -385,7 +385,7 @@ func TestPageForSourceLineAndSlideSourceLineTrailingNewlines(t *testing.T) {
 func TestPresentationView(t *testing.T) {
 	t.Run("Terminal small size boundary", func(t *testing.T) {
 		service := presentation.NewService(newTestRepository(t), 10)
-		m := newPresentationModel(service, "deck.md")
+		m := newPresentationModel(service, "deck.md", Theme{})
 
 		m.width, m.height = 19, 30
 		if got := m.View(); got != "Terminal too small. Press q to quit." {
@@ -406,7 +406,7 @@ func TestPresentationView(t *testing.T) {
 
 	t.Run("Unloaded model states", func(t *testing.T) {
 		service := presentation.NewService(newTestRepository(t), 10)
-		m := newPresentationModel(service, "deck.md")
+		m := newPresentationModel(service, "deck.md", Theme{})
 		m.width, m.height = 80, 20
 
 		view := m.View()
@@ -420,7 +420,7 @@ func TestPresentationView(t *testing.T) {
 			t.Fatalf("unloaded view missing error message:\n%s", view)
 		}
 
-		mNoPath := newPresentationModel(service, "")
+		mNoPath := newPresentationModel(service, "", Theme{})
 		mNoPath.width, mNoPath.height = 80, 20
 		if viewNoPath := mNoPath.View(); !strings.HasPrefix(viewNoPath, "Presentation\n") {
 			t.Fatalf("unloaded model without path view wrong:\n%s", viewNoPath)
@@ -530,7 +530,7 @@ func TestPresentationView(t *testing.T) {
 
 func TestPresentationViewSmallTerminal(t *testing.T) {
 	service := presentation.NewService(newTestRepository(t), 10)
-	m := newPresentationModel(service, "deck.md")
+	m := newPresentationModel(service, "deck.md", Theme{})
 
 	m.width, m.height = 19, 30
 	if got := m.View(); got != "Terminal too small. Press q to quit." {
@@ -545,7 +545,7 @@ func TestPresentationViewSmallTerminal(t *testing.T) {
 
 func TestPresentationViewUnloadedAndErrorStates(t *testing.T) {
 	service := presentation.NewService(newTestRepository(t), 10)
-	m := newPresentationModel(service, "deck.md")
+	m := newPresentationModel(service, "deck.md", Theme{})
 	m.width, m.height = 80, 20
 
 	view := m.View()
@@ -560,7 +560,7 @@ func TestPresentationViewUnloadedAndErrorStates(t *testing.T) {
 	}
 
 	// Model without path
-	mNoPath := newPresentationModel(service, "")
+	mNoPath := newPresentationModel(service, "", Theme{})
 	mNoPath.width, mNoPath.height = 80, 20
 	if viewNoPath := mNoPath.View(); !strings.HasPrefix(viewNoPath, "Presentation\n") {
 		t.Fatalf("unloaded model without path view wrong:\n%s", viewNoPath)
