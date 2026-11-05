@@ -72,7 +72,7 @@ func sheetKey(name string) tea.KeyMsg {
 
 func newTestRepository(t *testing.T) *filerepo.Repository {
 	t.Helper()
-	repository, err := filerepo.New(t.TempDir())
+	repository, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
