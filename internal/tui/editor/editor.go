@@ -8,6 +8,7 @@ import (
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 )
 
 // Point represents a line and column location in the line-based buffer.
@@ -42,7 +43,7 @@ type Model struct {
 	Selection    Selection
 	StickyCol    int
 	TopLine      int
-	LeftCol      int
+	TopRowOffset int
 	Width        int
 	Height       int
 	Focused      bool
@@ -64,6 +65,130 @@ type Model struct {
 }
 
 var internalClipboard string
+
+type visualRow struct {
+	startCol int
+	endCol   int
+}
+
+func runeDisplayWidth(r rune, currentX int) int {
+	if r == '\t' {
+		return 4 - (currentX % 4)
+	}
+	return runewidth.RuneWidth(r)
+}
+
+func (m Model) getVisualRows(lineIdx int) []visualRow {
+	if lineIdx < 0 || lineIdx >= len(m.Lines) {
+		return nil
+	}
+	line := m.Lines[lineIdx]
+	if len(line) == 0 {
+		return []visualRow{{0, 0}}
+	}
+
+	var rows []visualRow
+	start := 0
+	w := 0
+
+	for i, r := range line {
+		rw := runeDisplayWidth(r, w)
+		if w > 0 && w+rw > m.Width {
+			rows = append(rows, visualRow{start, i})
+			start = i
+			w = 0
+		}
+		w += runeDisplayWidth(r, w)
+	}
+	rows = append(rows, visualRow{start, len(line)})
+	return rows
+}
+
+func (m Model) visualXFromCol(lineIdx, col int) int {
+	if lineIdx < 0 || lineIdx >= len(m.Lines) {
+		return 0
+	}
+	line := m.Lines[lineIdx]
+	rows := m.getVisualRows(lineIdx)
+
+	if col >= len(line) {
+		col = len(line)
+	}
+
+	rowStart := 0
+	for _, r := range rows {
+		if col >= r.startCol && col <= r.endCol {
+			// Find offset within this row
+			if col == r.endCol && col < len(line) {
+				// Continue to next row unless it's the end of line
+				continue
+			}
+			rowStart = r.startCol
+			break
+		}
+	}
+
+	x := 0
+	for i := rowStart; i < col; i++ {
+		x += runeDisplayWidth(line[i], x)
+	}
+	return x
+}
+
+func (m Model) colFromVisualX(lineIdx, rowIdx, x int) int {
+	if lineIdx < 0 || lineIdx >= len(m.Lines) {
+		return 0
+	}
+	line := m.Lines[lineIdx]
+	rows := m.getVisualRows(lineIdx)
+	if rowIdx < 0 || rowIdx >= len(rows) {
+		return 0
+	}
+
+	r := rows[rowIdx]
+	currentX := 0
+	for i := r.startCol; i < r.endCol; i++ {
+		w := runeDisplayWidth(line[i], currentX)
+		if currentX+w > x {
+			// If we are closer to the left side of this character, return i
+			// Otherwise return i + 1. But for now, returning i is standard.
+			return i
+		}
+		currentX += w
+	}
+	return r.endCol
+}
+
+func (m *Model) updateStickyCol() {
+	m.StickyCol = m.visualXFromCol(m.Cursor.Line, m.Cursor.Col)
+}
+
+func (m Model) pointFromVisual(x, y int) Point {
+	if len(m.Lines) == 0 {
+		return Point{0, 0}
+	}
+
+	lineIdx := m.TopLine
+	rowOffset := m.TopRowOffset
+
+	for i := 0; i < y; i++ {
+		rows := m.getVisualRows(lineIdx)
+		rowOffset++
+		if rowOffset >= len(rows) {
+			lineIdx++
+			rowOffset = 0
+			if lineIdx >= len(m.Lines) {
+				lineIdx = len(m.Lines) - 1
+				rows = m.getVisualRows(lineIdx)
+				rowOffset = len(rows) - 1
+				break
+			}
+		}
+	}
+
+	col := m.colFromVisualX(lineIdx, rowOffset, x)
+	return Point{lineIdx, col}
+}
 
 // New creates a new Model with default settings.
 func New() Model {
@@ -160,7 +285,7 @@ func (m *Model) SetValue(text string) {
 	m.StickyCol = 0
 	m.Selection = Selection{}
 	m.TopLine = 0
-	m.LeftCol = 0
+
 	m.undoStack = nil
 	m.redoStack = nil
 	m.lastEditType = editNone
@@ -217,28 +342,47 @@ func (m *Model) Blur() {
 
 // CursorUp moves the cursor up one line.
 func (m *Model) CursorUp() {
-	if m.Cursor.Line > 0 {
-		m.Cursor.Line--
-		lineLen := len(m.Lines[m.Cursor.Line])
-		if m.StickyCol > lineLen {
-			m.Cursor.Col = lineLen
-		} else {
-			m.Cursor.Col = m.StickyCol
+	rows := m.getVisualRows(m.Cursor.Line)
+	rowIdx := 0
+	for i, r := range rows {
+		if m.Cursor.Col >= r.startCol && m.Cursor.Col <= r.endCol {
+			if m.Cursor.Col == r.endCol && m.Cursor.Col < len(m.Lines[m.Cursor.Line]) {
+				continue
+			}
+			rowIdx = i
+			break
 		}
+	}
+
+	if rowIdx > 0 {
+		m.Cursor.Col = m.colFromVisualX(m.Cursor.Line, rowIdx-1, m.StickyCol)
+	} else if m.Cursor.Line > 0 {
+		m.Cursor.Line--
+		prevRows := m.getVisualRows(m.Cursor.Line)
+		m.Cursor.Col = m.colFromVisualX(m.Cursor.Line, len(prevRows)-1, m.StickyCol)
 	}
 	m.ensureCursorVisible()
 }
 
 // CursorDown moves the cursor down one line.
 func (m *Model) CursorDown() {
-	if m.Cursor.Line < len(m.Lines)-1 {
-		m.Cursor.Line++
-		lineLen := len(m.Lines[m.Cursor.Line])
-		if m.StickyCol > lineLen {
-			m.Cursor.Col = lineLen
-		} else {
-			m.Cursor.Col = m.StickyCol
+	rows := m.getVisualRows(m.Cursor.Line)
+	rowIdx := 0
+	for i, r := range rows {
+		if m.Cursor.Col >= r.startCol && m.Cursor.Col <= r.endCol {
+			if m.Cursor.Col == r.endCol && m.Cursor.Col < len(m.Lines[m.Cursor.Line]) {
+				continue
+			}
+			rowIdx = i
+			break
 		}
+	}
+
+	if rowIdx < len(rows)-1 {
+		m.Cursor.Col = m.colFromVisualX(m.Cursor.Line, rowIdx+1, m.StickyCol)
+	} else if m.Cursor.Line < len(m.Lines)-1 {
+		m.Cursor.Line++
+		m.Cursor.Col = m.colFromVisualX(m.Cursor.Line, 0, m.StickyCol)
 	}
 	m.ensureCursorVisible()
 }
@@ -246,7 +390,7 @@ func (m *Model) CursorDown() {
 // CursorStart moves the cursor to the beginning of the line.
 func (m *Model) CursorStart() {
 	m.Cursor.Col = 0
-	m.StickyCol = 0
+	m.updateStickyCol()
 	m.ensureCursorVisible()
 }
 
@@ -420,17 +564,59 @@ func (m *Model) clampCursor() {
 
 func (m *Model) ensureCursorVisible() {
 	m.clampCursor()
-	if m.Cursor.Line < m.TopLine {
-		m.TopLine = m.Cursor.Line
+
+	// Find cursor's visual row
+	cursorRows := m.getVisualRows(m.Cursor.Line)
+	cursorRowIdx := 0
+	for i, r := range cursorRows {
+		if m.Cursor.Col >= r.startCol && m.Cursor.Col <= r.endCol {
+			if m.Cursor.Col == r.endCol && m.Cursor.Col < len(m.Lines[m.Cursor.Line]) {
+				continue
+			}
+			cursorRowIdx = i
+			break
+		}
 	}
-	if m.Cursor.Line >= m.TopLine+m.Height {
-		m.TopLine = m.Cursor.Line - m.Height + 1
+
+	for m.Cursor.Line < m.TopLine || (m.Cursor.Line == m.TopLine && cursorRowIdx < m.TopRowOffset) {
+		if m.TopRowOffset > 0 {
+			m.TopRowOffset--
+		} else if m.TopLine > 0 {
+			m.TopLine--
+			m.TopRowOffset = len(m.getVisualRows(m.TopLine)) - 1
+		} else {
+			break
+		}
 	}
-	if m.Cursor.Col < m.LeftCol {
-		m.LeftCol = m.Cursor.Col
+
+	visibleHeight := m.Height
+	if visibleHeight < 1 {
+		visibleHeight = 1
 	}
-	if m.Cursor.Col >= m.LeftCol+m.Width {
-		m.LeftCol = m.Cursor.Col - m.Width + 1
+
+	for {
+		rowsBetween := 0
+		line := m.TopLine
+		offset := m.TopRowOffset
+
+		for line < m.Cursor.Line || (line == m.Cursor.Line && offset < cursorRowIdx) {
+			rowsBetween++
+			offset++
+			if offset >= len(m.getVisualRows(line)) {
+				line++
+				offset = 0
+			}
+		}
+
+		if rowsBetween < visibleHeight {
+			break
+		}
+
+		m.TopRowOffset++
+		if m.TopRowOffset >= len(m.getVisualRows(m.TopLine)) {
+			m.TopLine++
+			m.TopRowOffset = 0
+		}
 	}
 }
 
@@ -526,21 +712,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) {
 	if msg.Y < 0 {
 		return
 	}
-	line := m.TopLine + msg.Y
-	col := m.LeftCol + msg.X
-	if line < 0 {
-		line = 0
-	}
-	if line >= len(m.Lines) {
-		line = len(m.Lines) - 1
-	}
-	if col < 0 {
-		col = 0
-	}
-	if col > len(m.Lines[line]) {
-		col = len(m.Lines[line])
-	}
-	pos := Point{Line: line, Col: col}
+	pos := m.pointFromVisual(msg.X, msg.Y)
 
 	switch msg.Action {
 	case tea.MouseActionPress:
@@ -658,7 +830,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 				m.Selection = Selection{Anchor: m.Cursor, Active: false}
 			}
 		}
-		m.StickyCol = m.Cursor.Col
+		m.updateStickyCol()
 
 	case "right", "shift+right":
 		m.lastEditType = editNone
@@ -677,7 +849,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 				m.Selection = Selection{Anchor: m.Cursor, Active: false}
 			}
 		}
-		m.StickyCol = m.Cursor.Col
+		m.updateStickyCol()
 
 	case "pgup", "shift+pgup":
 		m.lastEditType = editNone
@@ -881,48 +1053,76 @@ func (m Model) View() string {
 		visibleHeight = 1
 	}
 
+	lineIdx := m.TopLine
+	rowOffset := m.TopRowOffset
+
 	for i := 0; i < visibleHeight; i++ {
-		lineIdx := m.TopLine + i
 		if lineIdx >= len(m.Lines) {
 			break
 		}
+		rows := m.getVisualRows(lineIdx)
+		if rowOffset >= len(rows) {
+			lineIdx++
+			rowOffset = 0
+			i--
+			continue
+		}
+
+		r := rows[rowOffset]
 		lineRunes := m.Lines[lineIdx]
 		var sb strings.Builder
+		currentX := 0
 
-		for colIdx := 0; colIdx < m.Width; colIdx++ {
-			realCol := m.LeftCol + colIdx
-			pt := Point{Line: lineIdx, Col: realCol}
+		// Render the visual row
+		for colIdx := r.startCol; colIdx < r.endCol; colIdx++ {
+			pt := Point{Line: lineIdx, Col: colIdx}
+			charRune := lineRunes[colIdx]
 
-			if realCol >= len(lineRunes) {
-				isCursor := m.Focused && lineIdx == m.Cursor.Line && realCol == m.Cursor.Col && !hasSelection
-				isLineBreakSelected := hasSelection && (pointLess(start, pt) || start == pt) && pointLess(pt, end)
-
-				if isCursor {
-					sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(" "))
-				} else if isLineBreakSelected {
-					sb.WriteString(m.SelectStyle.Render(" "))
-				}
-				break
-			}
-
-			r := lineRunes[realCol]
 			isSelected := hasSelection && (pointLess(start, pt) || start == pt) && pointLess(pt, end)
 			isCursor := m.Focused && pt == m.Cursor && !hasSelection
 
-			charStr := string(r)
-			if unicode.IsControl(r) && r != '\t' {
+			charStr := string(charRune)
+			charWidth := runeDisplayWidth(charRune, currentX)
+
+			if charRune == '	' {
+				charStr = strings.Repeat(" ", charWidth)
+			} else if unicode.IsControl(charRune) {
 				charStr = ""
 			}
+
 			if isSelected {
 				charStr = m.SelectStyle.Render(charStr)
 			} else if isCursor {
+				if charStr == "" {
+					charStr = " "
+				}
 				charStr = lipgloss.NewStyle().Reverse(true).Render(charStr)
 			}
 
 			sb.WriteString(charStr)
+			currentX += charWidth
+		}
+
+		// Handle trailing cursor or selection at the end of the logical line
+		if r.endCol == len(lineRunes) {
+			pt := Point{Line: lineIdx, Col: r.endCol}
+			isCursor := m.Focused && pt == m.Cursor && !hasSelection
+			isLineBreakSelected := hasSelection && (pointLess(start, pt) || start == pt) && pointLess(pt, end)
+
+			if isCursor {
+				sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(" "))
+			} else if isLineBreakSelected {
+				sb.WriteString(m.SelectStyle.Render(" "))
+			}
 		}
 
 		renderedLines = append(renderedLines, sb.String())
+
+		rowOffset++
+		if rowOffset >= len(rows) {
+			lineIdx++
+			rowOffset = 0
+		}
 	}
 
 	if len(renderedLines) == 0 && len(m.Lines) == 1 && len(m.Lines[0]) == 0 && m.Placeholder != "" {
