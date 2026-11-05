@@ -55,7 +55,7 @@ func BenchmarkListDocumentChanges(b *testing.B) {
 			data = append(data, 0)
 		}
 
-		img, err := document.NewImage(data)
+		img, err := artifact.NewImage(data)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -113,13 +113,13 @@ func BenchmarkListDocumentChangesHuge(b *testing.B) {
 		var buf bytes.Buffer
 		png.Encode(&buf, img)
 
-		docImage, err := document.NewImage(buf.Bytes())
+		docImage, err := artifact.NewImage(buf.Bytes())
 		if err != nil {
 			b.Fatal(err)
 		}
 		doc.Images = append(doc.Images, docImage)
 		imageNames = append(imageNames, docImage.Name)
-		doc.Body += document.ImageMarkdown(docImage.Name, docImage.Name) + "\n"
+		doc.Body += artifact.ImageMarkdown(docImage.Name, docImage.Name) + "\n"
 	}
 
 	change := document.Change{
@@ -199,13 +199,13 @@ func BenchmarkGetDocumentChangeHuge(b *testing.B) {
 		var buf bytes.Buffer
 		png.Encode(&buf, img)
 
-		docImage, err := document.NewImage(buf.Bytes())
+		docImage, err := artifact.NewImage(buf.Bytes())
 		if err != nil {
 			b.Fatal(err)
 		}
 		doc.Images = append(doc.Images, docImage)
 		imageNames = append(imageNames, docImage.Name)
-		doc.Body += document.ImageMarkdown(docImage.Name, docImage.Name) + "\n"
+		doc.Body += artifact.ImageMarkdown(docImage.Name, docImage.Name) + "\n"
 	}
 
 	change := document.Change{
@@ -299,13 +299,13 @@ func BenchmarkListDocumentChangesHugeMany(b *testing.B) {
 		var buf bytes.Buffer
 		png.Encode(&buf, img)
 
-		docImage, err := document.NewImage(buf.Bytes())
+		docImage, err := artifact.NewImage(buf.Bytes())
 		if err != nil {
 			b.Fatal(err)
 		}
 		doc.Images = append(doc.Images, docImage)
 		imageNames = append(imageNames, docImage.Name)
-		doc.Body += document.ImageMarkdown(docImage.Name, docImage.Name) + "\n"
+		doc.Body += artifact.ImageMarkdown(docImage.Name, docImage.Name) + "\n"
 	}
 
 	change := document.Change{

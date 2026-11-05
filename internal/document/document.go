@@ -27,7 +27,7 @@ type Document struct {
 	artifact.Artifact
 	Body   string
 	Layout Layout
-	Images []Image
+	Images []artifact.Image
 	Blocks map[string]json.RawMessage `json:"-"`
 }
 
@@ -35,7 +35,7 @@ type Document struct {
 type Draft struct {
 	Body   string
 	Layout Layout
-	Images []Image
+	Images []artifact.Image
 }
 
 // ChangeSnapshot captures the editable document fields without duplicating
@@ -275,7 +275,7 @@ func validateSnapshot(s ChangeSnapshot) error {
 	}
 	seen := map[string]bool{}
 	for _, name := range s.ImageNames {
-		if !IsImageName(name) || seen[name] {
+		if !artifact.IsImageName(name) || seen[name] {
 			return fmt.Errorf("invalid or duplicate image name %q", name)
 		}
 		seen[name] = true
@@ -376,13 +376,13 @@ func (s *Service) SetLayout(ctx context.Context, path string, layout Layout) (Do
 // AddImage embeds an image and appends it to the end of the body. It returns
 // the updated document and the embedded image's stable name.
 func (s *Service) AddImage(ctx context.Context, path, alt string, data []byte) (Document, string, error) {
-	img, err := NewImage(data)
+	img, err := artifact.NewImage(data)
 	if err != nil {
 		return Document{}, "", err
 	}
 	updated, err := s.Modify(ctx, path, "Insert image", func(d *Document) error {
 		*d = WithImage(*d, img)
-		d.Body = strings.TrimRight(d.Body, "\n") + "\n\n" + ImageMarkdown(alt, img.Name) + "\n"
+		d.Body = strings.TrimRight(d.Body, "\n") + "\n\n" + artifact.ImageMarkdown(alt, img.Name) + "\n"
 		return nil
 	})
 	return updated, img.Name, err
@@ -402,7 +402,7 @@ func (s *Service) CanRedo() bool { return s.history.CanRedo() }
 
 // WithImage returns the document with img added, replacing any image of the
 // same name.
-func WithImage(d Document, img Image) Document {
+func WithImage(d Document, img artifact.Image) Document {
 	for i, existing := range d.Images {
 		if existing.Name == img.Name {
 			d.Images[i] = img
@@ -447,9 +447,9 @@ func normalize(d *Document) error {
 	if err := d.Layout.Validate(); err != nil {
 		return err
 	}
-	referenced := ReferencedImages(d.Body)
+	referenced := artifact.ReferencedImages(d.Body)
 	seen := map[string]bool{}
-	var images []Image
+	var images []artifact.Image
 	for _, img := range d.Images {
 		if !referenced[img.Name] || seen[img.Name] {
 			continue
@@ -476,9 +476,9 @@ func cloneDocument(d *Document) *Document {
 		return nil
 	}
 	clone := *d
-	clone.Images = make([]Image, len(d.Images))
+	clone.Images = make([]artifact.Image, len(d.Images))
 	for i, img := range d.Images {
-		clone.Images[i] = Image{Name: img.Name, Data: append([]byte(nil), img.Data...)}
+		clone.Images[i] = artifact.Image{Name: img.Name, Data: append([]byte(nil), img.Data...)}
 	}
 	if d.Blocks != nil {
 		clone.Blocks = make(map[string]json.RawMessage, len(d.Blocks))

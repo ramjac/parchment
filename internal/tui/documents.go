@@ -12,6 +12,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/tui/editor"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -47,7 +48,7 @@ type documentChangesLoadedMsg struct {
 	err     error
 }
 type imageLoadedMsg struct {
-	image document.Image
+	image artifact.Image
 	alt   string
 	err   error
 }
@@ -71,7 +72,7 @@ type documentRecoveryData struct {
 	Snapshot       document.Document          `json:"snapshot"`
 	SnapshotBlocks map[string]json.RawMessage `json:"snapshot_blocks,omitempty"`
 	Draft          document.Draft             `json:"draft"`
-	Images         []document.Image           `json:"images,omitempty"`
+	Images         []artifact.Image           `json:"images,omitempty"`
 	SnapshotImages []int                      `json:"snapshot_images,omitempty"`
 	DraftImages    []int                      `json:"draft_images,omitempty"`
 }
@@ -88,7 +89,7 @@ func (a documentAutosaveState) equal(b documentAutosaveState) bool {
 		a.draft.Layout == b.draft.Layout && sameImages(a.draft.Images, b.draft.Images)
 }
 
-func sameImages(left, right []document.Image) bool {
+func sameImages(left, right []artifact.Image) bool {
 	if len(left) != len(right) {
 		return false
 	}
@@ -100,7 +101,7 @@ func sameImages(left, right []document.Image) bool {
 	return true
 }
 
-func poolDocumentImage(images []document.Image, image document.Image) ([]document.Image, int) {
+func poolDocumentImage(images []artifact.Image, image artifact.Image) ([]artifact.Image, int) {
 	for i, pooled := range images {
 		if pooled.Name == image.Name && bytes.Equal(pooled.Data, image.Data) {
 			return images, i
@@ -110,7 +111,7 @@ func poolDocumentImage(images []document.Image, image document.Image) ([]documen
 	return images, len(images) - 1
 }
 
-func poolDocumentImages(images, newImages []document.Image) ([]document.Image, []int) {
+func poolDocumentImages(images, newImages []artifact.Image) ([]artifact.Image, []int) {
 	var refs []int
 	var ref int
 	for _, image := range newImages {
@@ -131,8 +132,8 @@ func newDocumentRecoveryData(state documentAutosaveState) documentRecoveryData {
 	return data
 }
 
-func expandDocumentImages(images []document.Image, refs []int) ([]document.Image, error) {
-	var out []document.Image
+func expandDocumentImages(images []artifact.Image, refs []int) ([]artifact.Image, error) {
+	var out []artifact.Image
 	for _, ref := range refs {
 		if ref < 0 || ref >= len(images) {
 			return nil, fmt.Errorf("invalid image reference %d", ref)
@@ -196,7 +197,7 @@ type documentEditorState struct {
 	snapshot     document.Document
 	body         editor.Model
 	layout       document.Layout
-	images       []document.Image
+	images       []artifact.Image
 	original     editorDraft
 	focus        editorFocus
 	toolbarIndex int
@@ -444,7 +445,7 @@ func (s *documentsScreen) imageLoaded(msg imageLoadedMsg) tea.Cmd {
 	}
 	s.errMessage = ""
 	s.images = document.WithImage(document.Document{Images: s.images}, msg.image).Images
-	s.insertBlock(document.ImageMarkdown(msg.alt, msg.image.Name))
+	s.insertBlock(artifact.ImageMarkdown(msg.alt, msg.image.Name))
 	s.status = "Inserted image " + msg.image.Name
 	cmd := s.focusBody()
 	s.layoutEditor()
@@ -775,7 +776,7 @@ func (s *documentsScreen) currentDraft() editorDraft {
 	}
 }
 
-func imageKey(images []document.Image) string {
+func imageKey(images []artifact.Image) string {
 	names := make([]string, len(images))
 	for i, img := range images {
 		names[i] = img.Name
@@ -794,7 +795,7 @@ func readImageCommand(ctx context.Context, path string) tea.Cmd {
 		if err != nil {
 			return imageLoadedMsg{err: err}
 		}
-		img, err := document.NewImage(data)
+		img, err := artifact.NewImage(data)
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return imageLoadedMsg{err: ctxErr}
 		}
