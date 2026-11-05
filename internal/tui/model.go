@@ -624,7 +624,7 @@ func (m Model) View() string {
 		state += " • unsaved"
 	}
 	pane := func(content string) string {
-		return lipgloss.NewStyle().Width(max(m.width, 10)).Height(max(m.height-4, 3)).
+		return lipgloss.NewStyle().Width(max(m.width-2, 1)).Height(max(m.height-6, 1)).
 			Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1).Render(content)
 	}
 	if m.previewing {
