@@ -360,3 +360,42 @@ func TestEnsureDefaultConcurrentLaunchesSeeCompleteFile(t *testing.T) {
 		t.Fatalf("config directory entries = %v, %v", entries, err)
 	}
 }
+
+func TestLoadLoggingValidation(t *testing.T) {
+	clearEnv(t)
+	tests := []struct {
+		name    string
+		level   string
+		format  string
+		wantErr bool
+	}{
+		{name: "valid debug text", level: "debug", format: "text", wantErr: false},
+		{name: "valid info json", level: "info", format: "json", wantErr: false},
+		{name: "valid warn json", level: "warn", format: "json", wantErr: false},
+		{name: "valid error text", level: "error", format: "text", wantErr: false},
+		{name: "valid off text", level: "off", format: "text", wantErr: false},
+		{name: "invalid level", level: "trace", format: "text", wantErr: true},
+		{name: "invalid format", level: "debug", format: "xml", wantErr: true},
+		{name: "empty level", level: "", format: "text", wantErr: true},
+		{name: "empty format", level: "debug", format: "", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("PARCHMENT_LOG_LEVEL", tt.level)
+			t.Setenv("PARCHMENT_LOG_FORMAT", tt.format)
+			settings, err := Load("")
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Load() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr {
+				if settings.LogLevel != tt.level {
+					t.Fatalf("settings.LogLevel = %s, want %s", settings.LogLevel, tt.level)
+				}
+				if settings.LogFormat != tt.format {
+					t.Fatalf("settings.LogFormat = %s, want %s", settings.LogFormat, tt.format)
+				}
+			}
+		})
+	}
+}
