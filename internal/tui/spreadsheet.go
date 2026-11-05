@@ -60,6 +60,7 @@ type spreadsheetAsync struct {
 	seq                 int
 	status              string
 	errMessage          string
+	pendingShortcut     string
 	loadedStatus        string
 	newOperationContext func() (context.Context, context.CancelFunc)
 	cancelOperation     context.CancelFunc
@@ -207,6 +208,33 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	if m.pending {
 		m.status = "Working… (esc cancels)"
+		return nil
+	}
+	if m.pendingShortcut == "d" {
+		m.pendingShortcut = ""
+		switch key {
+		case "r":
+			return m.history("Deleted row", func(ctx context.Context) (string, error) {
+				_, err := m.service.DeleteRowInSheet(ctx, m.path, m.book.Sheets[m.sheet].Name, m.row+1)
+				return "", err
+			})
+		case "c":
+			return m.history("Deleted column", func(ctx context.Context) (string, error) {
+				_, err := m.service.DeleteColumnInSheet(ctx, m.path, m.book.Sheets[m.sheet].Name, m.column+1)
+				return "", err
+			})
+		case "s":
+			return m.history("Deleted sheet", func(ctx context.Context) (string, error) {
+				_, err := m.service.DeleteSheet(ctx, m.path, m.book.Sheets[m.sheet].Name)
+				return "", err
+			})
+		}
+		m.status, m.errMessage = "Cancelled", ""
+		return nil
+	}
+	if key == "d" {
+		m.pendingShortcut = "d"
+		m.status = "Delete (r)ow, (c)olumn, or (s)heet?"
 		return nil
 	}
 	if key == "r" {
