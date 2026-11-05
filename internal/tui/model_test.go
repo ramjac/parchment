@@ -453,6 +453,36 @@ func TestNoteAutosaveIsOfferedOnReopen(t *testing.T) {
 	}
 }
 
+func TestSpreadsheetAutosaveIsOfferedOnReopen(t *testing.T) {
+	ctx := context.Background()
+
+	// Spreadsheet recovery
+	hSheet := newHarness(t, "")
+	_, err := hSheet.sheets.Create(ctx, hSheet.path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hSheet.open(artifact.SpreadsheetKind)
+	// Create stub recovery
+	err = hSheet.repo.SaveRecovery(ctx, recovery.Draft{
+		Path: hSheet.path, Kind: string(artifact.SpreadsheetKind),
+		UpdatedAt: time.Now().UTC(),
+		Data:      json.RawMessage(`{"baseline":{"version":1, "artifact":{"kind":"spreadsheet"}, "created_at":"2020-01-01T00:00:00Z", "modified_at":"2020-01-01T00:00:00Z", "sheets":[{"name":"Sheet1", "rows": [[{"value":""}]]}]},"dirty":{"version":1, "artifact":{"kind":"spreadsheet"}, "created_at":"2020-01-01T00:00:00Z", "modified_at":"2020-01-01T00:00:00Z", "sheets":[{"name":"Sheet1", "rows": [[{"value":""}]]}]},"active_sheet":0,"cursor_row":0,"cursor_col":0}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate crash: reopen
+	hSheet.open(artifact.SpreadsheetKind)
+	if hSheet.m.stage != stageRecovery || !strings.Contains(hSheet.m.View(), "autosaved draft") {
+		t.Fatalf("spreadsheet stage = %d, view:\n%s", hSheet.m.stage, hSheet.m.View())
+	}
+	hSheet.key("r")
+	if hSheet.m.stage != stageSpreadsheet {
+		t.Fatalf("recovered spreadsheet stage = %d", hSheet.m.stage)
+	}
+}
+
 func TestRecoveryOfferDiscardAndQuit(t *testing.T) {
 	h := newHarness(t, artifact.NoteKind)
 	h.m.bodyInput.SetValue("draft")

@@ -188,14 +188,12 @@ func (m *Model) openFile(kind artifact.Kind) tea.Cmd {
 				msg.book, msg.err = sheets.Create(ctx, path, nil)
 				msg.created = true
 			}
-			return msg
 		case kind == artifact.PresentationKind && decks != nil:
 			msg.deck, msg.err = decks.Get(ctx, path)
 			if errors.Is(msg.err, presentation.ErrNotFound) {
 				msg.deck, msg.err = decks.Create(ctx, path, "")
 				msg.created = true
 			}
-			return msg
 		default:
 			msg.err = fmt.Errorf("the interactive editor cannot open %s artifacts", kind)
 		}
@@ -284,6 +282,12 @@ func (m *Model) handleRecoveryDiscarded(msg recoveryDiscardedMsg) (tea.Model, te
 	}
 	m.status = "Autosaved draft discarded"
 	return m, m.enterEditor()
+}
+
+func (m *Model) sheetAutosaveScheduler(session uint64) tea.Cmd {
+	return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
+		return spreadsheetAutosaveTickMsg{session: session}
+	})
 }
 
 func (m *Model) handleAutosaveTick(msg autosaveTickMsg) (tea.Model, tea.Cmd) {
@@ -375,9 +379,12 @@ func (m *Model) enterEditor() tea.Cmd {
 		m.sheet.width, m.sheet.height = m.width, m.height
 		m.sheet.setBook(m.opened.book)
 		m.sheet.status = m.status
+		m.sheet.recoveryStore = m.recoveryStore
+		m.sheet.autosaveScheduler = m.sheetAutosaveScheduler
 		m.stage = stageSpreadsheet
 		_, cmd := m.sheet.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-		return cmd
+		m.sheet.startAutosaveSession()
+		return tea.Batch(cmd, m.sheet.scheduleAutosave(m.sheet.autosaveSession))
 	case artifact.PresentationKind:
 		m.deck = newPresentationModel(m.presentations, m.path)
 		m.deck.newOperationContext = m.newOperationContext

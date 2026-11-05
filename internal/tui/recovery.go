@@ -12,6 +12,7 @@ import (
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/note"
 	"example.com/parchment/internal/recovery"
+	"example.com/parchment/internal/spreadsheet"
 )
 
 // noteRecoveryData is the autosaved note editor state: the saved note the
@@ -134,6 +135,57 @@ func (m *Model) recoverDraft() tea.Cmd {
 		}
 		m.stage = stageDocument
 		return cmd
+	case artifact.SpreadsheetKind:
+		var data spreadsheetRecoveryData
+		if err := json.Unmarshal(draft.Data, &data); err != nil {
+			m.errMessage = "Decode autosaved spreadsheet: " + err.Error() + "; press d to discard it"
+			return nil
+		}
+
+		m.sheet = newSpreadsheetModel(m.spreadsheets, m.path)
+		m.sheet.newOperationContext = m.newOperationContext
+		m.sheet.width, m.sheet.height = m.width, m.height
+		// Ensure recovered spreadsheet grid is valid before updating views
+		spreadsheet.Normalize(&data.Dirty)
+
+		m.sheet.setBook(data.Dirty)
+
+		m.sheet.sheet = data.ActiveSheet
+		m.sheet.row = data.CursorRow
+		m.sheet.column = data.CursorCol
+		m.sheet.scrollToSelection()
+		if data.PendingCellInput != "" {
+			m.sheet.editing = true // Stub for PR 7 implementation
+			m.sheet.input.SetValue(data.PendingCellInput)
+			m.sheet.input.CursorEnd()
+		}
+		m.sheet.recoveryStore = m.recoveryStore
+		m.sheet.autosaveScheduler = m.sheetAutosaveScheduler
+		m.sheet.draftStored = true
+
+		m.sheet.status = "Recovered unsaved spreadsheet draft"
+		if !spreadsheet.Equal(data.Baseline, opened.book) {
+			m.sheet.status += "; the file changed after the draft was saved, so saving will report a conflict"
+		}
+
+		m.stage = stageSpreadsheet
+		_, cmd := m.sheet.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+
+		var initCmd tea.Cmd
+		if m.sheet.editing {
+			initCmd = m.sheet.input.Focus()
+		}
+		m.sheet.startAutosaveSession()
+		return tea.Batch(cmd, initCmd, m.sheet.scheduleAutosave(m.sheet.autosaveSession))
 	}
 	return nil
+}
+
+type spreadsheetRecoveryData struct {
+	Baseline         spreadsheet.Spreadsheet `json:"baseline"`
+	Dirty            spreadsheet.Spreadsheet `json:"dirty"`
+	ActiveSheet      int                     `json:"active_sheet"`
+	CursorRow        int                     `json:"cursor_row"`
+	CursorCol        int                     `json:"cursor_col"`
+	PendingCellInput string                  `json:"pending_cell_input,omitempty"`
 }

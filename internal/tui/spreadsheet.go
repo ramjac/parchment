@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"example.com/parchment/internal/recovery"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -43,6 +44,14 @@ type spreadsheetHistoryMsg struct {
 	err         error
 }
 
+type spreadsheetAutosaveTickMsg struct{ session uint64 }
+
+type spreadsheetAutosaveFinishedMsg struct {
+	session uint64
+	err     error
+	cleared bool
+}
+
 // spreadsheetGrid holds viewport navigation, selection, and value display state.
 type spreadsheetGrid struct {
 	sheet         int
@@ -77,6 +86,12 @@ type spreadsheetModel struct {
 
 	spreadsheetGrid
 	spreadsheetAsync
+
+	recoveryStore     recovery.Store
+	autosaveSession   uint64
+	autosaveCancel    context.CancelFunc
+	draftStored       bool
+	autosaveScheduler func(uint64) tea.Cmd
 }
 
 func newSpreadsheetModel(service *spreadsheet.Service, path string) *spreadsheetModel {
@@ -92,6 +107,28 @@ func newSpreadsheetModel(service *spreadsheet.Service, path string) *spreadsheet
 		return context.WithCancel(context.Background())
 	}
 	return m
+}
+
+func (m *spreadsheetModel) startAutosaveSession() {
+	m.autosaveSession++
+	if m.autosaveCancel != nil {
+		m.autosaveCancel()
+		m.autosaveCancel = nil
+	}
+}
+
+func (m *spreadsheetModel) scheduleAutosave(session uint64) tea.Cmd {
+	if m.recoveryStore == nil || m.autosaveScheduler == nil {
+		return nil
+	}
+	return m.autosaveScheduler(session)
+}
+
+func (m *spreadsheetModel) stopAutosave() { m.startAutosaveSession() }
+
+func (m *spreadsheetModel) saveRecovery(session uint64) tea.Cmd {
+	// Stub for PR 8 autosave logic (will be fully implemented when PR 7 is merged)
+	return nil
 }
 
 func (m *spreadsheetModel) Init() tea.Cmd { return m.load() }
@@ -141,6 +178,26 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := m.load()
 		m.loadedStatus = msg.description
 		return m, cmd
+	case spreadsheetAutosaveTickMsg:
+		if msg.session == m.autosaveSession {
+			return m, m.saveRecovery(msg.session)
+		}
+		return m, nil
+	case spreadsheetAutosaveFinishedMsg:
+		if msg.session != m.autosaveSession {
+			return m, nil
+		}
+		if m.autosaveCancel != nil {
+			m.autosaveCancel()
+			m.autosaveCancel = nil
+		}
+		if msg.cleared {
+			m.draftStored = false
+		}
+		if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
+			m.errMessage = "Autosave failed: " + msg.err.Error()
+		}
+		return m, m.scheduleAutosave(msg.session)
 	case tea.KeyMsg:
 		if m.editing {
 			return m, m.updateEditKey(msg)
