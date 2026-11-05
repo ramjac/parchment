@@ -232,7 +232,7 @@ type documentsScreen struct {
 	status        string
 	errMessage    string
 
-	theme Theme
+	theme               Theme
 	newOperationContext func() (context.Context, context.CancelFunc)
 	cancelOperation     context.CancelFunc
 	recoveryStore       recovery.Store

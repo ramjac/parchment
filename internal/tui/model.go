@@ -11,8 +11,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/note"
 	"example.com/parchment/internal/presentation"
@@ -36,7 +36,6 @@ type Config struct {
 	Recovery      recovery.Store
 	Theme         config.Theme
 }
-
 
 // Theme holds the resolved Lip Gloss colors for the TUI.
 type Theme struct {
@@ -132,8 +131,6 @@ type autosaveFinishedMsg struct {
 }
 
 const autosaveInterval = 2 * time.Second
-
-
 
 // Model is the interactive editor for one artifact file. It owns UI state
 // only; artifact rules live in the services.
