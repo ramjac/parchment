@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -58,6 +59,18 @@ func addPresentationCommands(root *cobra.Command, streams output) {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openPresentations(cmd)
 			if err != nil {
+				return err
+			}
+			if !cmd.Flags().Changed("font") {
+				item, err := service.Get(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+				font := item.Font
+				if font == "" {
+					font = "courier"
+				}
+				_, err = fmt.Fprintf(streams.out, "font: %s\n", font)
 				return err
 			}
 			if cmd.Flags().Changed("font") {

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -203,7 +202,7 @@ func (l Layout) Validate() error {
 	if ColumnWidth(g.TextCols, l.Columns) < MinColumnWidth {
 		return errors.New("columns are too narrow for the page width")
 	}
-	switch strings.ToLower(l.Font) {
+	switch l.Font {
 	case "", "courier", "helvetica", "times":
 	default:
 		return fmt.Errorf("unsupported font %q", l.Font)

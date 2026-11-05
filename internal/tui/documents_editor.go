@@ -87,7 +87,7 @@ func (s *documentsScreen) toolbarButtons() []toolbarButton {
 		{"Page", "Header", "header", ""},
 		{"Page", "Footer", "footer", ""},
 		{"Page", "Page #: " + s.layout.PageNumbers, "numbers-pos", ""},
-		{"Page", "Font: " + s.layout.Font, "font", ""},
+		{"Page", "Font: " + map[bool]string{true: s.layout.Font, false: "courier"}[s.layout.Font != ""], "font", ""},
 	}
 }
 

@@ -483,7 +483,7 @@ func Validate(item Presentation) error {
 	if !utf8.ValidString(item.Source) {
 		return errors.New("presentation source must be valid UTF-8")
 	}
-	switch strings.ToLower(item.Font) {
+	switch item.Font {
 	case "", "courier", "helvetica", "times":
 	default:
 		return fmt.Errorf("unsupported font %q", item.Font)
@@ -527,7 +527,7 @@ func Decode(data []byte) (Presentation, error) {
 	}
 	item := Presentation{
 		Artifact: file.Artifact, Version: payload.Version, Source: file.Body,
-		Font: payload.Font,
+		Font:   payload.Font,
 		Blocks: cloneBlocksExcept(file.Blocks, "parchment-presentation"),
 	}
 	item.CreatedAt = item.CreatedAt.UTC()
