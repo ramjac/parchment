@@ -106,6 +106,7 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 	addSpreadsheetCommands(root, streams)
 	addPresentationCommands(root, streams)
 
+	root.AddCommand(newConvertCmd(streams))
 	root.AddCommand(tuiCommand())
 	return root
 }
