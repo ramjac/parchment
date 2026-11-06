@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -386,6 +387,60 @@ func (s *Service) AddImage(ctx context.Context, path, alt string, data []byte) (
 		return nil
 	})
 	return updated, img.Name, err
+}
+
+// RemoveImage removes an image from a document. If it is referenced in the body,
+// it is only removed if stripReferences is true. It fails if the image is in a
+// pending proposal.
+func (s *Service) RemoveImage(ctx context.Context, path, imageName string, stripReferences bool) (Document, error) {
+	changes, err := s.Changes(ctx, path)
+	if err != nil {
+		return Document{}, err
+	}
+	for _, c := range changes {
+		if c.Status != ChangePending {
+			continue
+		}
+		for _, name := range c.Before.ImageNames {
+			if name == imageName {
+				return Document{}, fmt.Errorf("cannot remove image %q because it is referenced in pending proposal %s", imageName, c.ID)
+			}
+		}
+		for _, name := range c.After.ImageNames {
+			if name == imageName {
+				return Document{}, fmt.Errorf("cannot remove image %q because it is referenced in pending proposal %s", imageName, c.ID)
+			}
+		}
+	}
+
+	return s.Modify(ctx, path, "Remove image", func(d *Document) error {
+		hasImage := false
+		for _, img := range d.Images {
+			if img.Name == imageName {
+				hasImage = true
+				break
+			}
+		}
+		if !hasImage {
+			return fmt.Errorf("image %q not found in document", imageName)
+		}
+
+		if ReferencedImages(d.Body)[imageName] {
+			if !stripReferences {
+				return fmt.Errorf("cannot remove image %q because it is referenced in the document body", imageName)
+			}
+			re := regexp.MustCompile(`!\[[^\]]*\]\(` + regexp.QuoteMeta(imageName) + `\)`)
+			d.Body = re.ReplaceAllString(d.Body, "")
+		}
+		images := make([]Image, 0, len(d.Images)-1)
+		for _, img := range d.Images {
+			if img.Name != imageName {
+				images = append(images, img)
+			}
+		}
+		d.Images = images
+		return nil
+	})
 }
 
 // Undo reverses the most recent document change.
