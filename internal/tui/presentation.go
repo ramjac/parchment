@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"example.com/parchment/internal/document"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
@@ -63,7 +64,6 @@ type presentationEditorState struct {
 // presentation service.
 type presentationModel struct {
 	service *presentation.Service
-	theme   Theme
 	path    string
 	item    presentation.Presentation
 	deck    presentation.Deck
@@ -74,12 +74,11 @@ type presentationModel struct {
 	presentationEditorState
 }
 
-func newPresentationModel(service *presentation.Service, path string, theme Theme) *presentationModel {
+func newPresentationModel(service *presentation.Service, path string) *presentationModel {
 	body := editor.New()
 	return &presentationModel{
 		service: service,
 		path:    path,
-		theme:   theme,
 		presentationEditorState: presentationEditorState{
 			editor: body,
 		},
@@ -123,7 +122,9 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.setError("Save failed", msg.err)
 			return m, nil
 		}
-		m.leaveEditor()
+		if m.editing {
+			m.leaveEditor()
+		}
 		m.setItem(msg.item)
 		m.status = "Saved"
 		return m, nil
@@ -259,7 +260,7 @@ func (m *presentationModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		m.showNotes = !m.showNotes
 		m.clampScroll()
 	case "f":
-		fonts := []string{"courier", "helvetica", "times"}
+		fonts := document.SupportedFonts
 		current := m.item.Font
 		if current == "" {
 			current = "courier"
@@ -534,7 +535,7 @@ func (m *presentationModel) pageLines() []string {
 			}
 		}
 	}
-	accent := lipgloss.NewStyle().Foreground(m.theme.Primary).Bold(true)
+	accent := lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
 	lines := []string{
 		accent.Render(runewidth.Truncate(sanitizeTerminalLine(title), width, "…")),
 		strings.Repeat("─", min(width, max(1, runewidth.StringWidth(sanitizeTerminalLine(title))))),
@@ -561,15 +562,15 @@ func (m *presentationModel) View() string {
 	if m.width < 20 || m.height < presentationChromeLines+2 {
 		return "Terminal too small. Press q to quit."
 	}
-	accent := lipgloss.NewStyle().Foreground(m.theme.Primary).Bold(true)
-	muted := lipgloss.NewStyle().Foreground(m.theme.Border)
-	var content string
-	if m.editing {
-		content = m.editor.View()
-	} else {
-		content = m.renderSlideContent()
-	}
-	return chromeLayout(m.width, m.height, m.renderHeader(accent), m.renderHelp(muted), content, m.renderStatus(), m.theme.Border)
+	accent := lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
+	muted := lipgloss.NewStyle().Foreground(borderColor)
+	var b strings.Builder
+
+	b.WriteString(m.renderHeader(accent) + "\n")
+	b.WriteString(m.renderContentPane() + "\n")
+	b.WriteString(m.renderStatus() + "\n")
+	b.WriteString(m.renderHelp(muted))
+	return b.String()
 }
 
 func (m *presentationModel) renderHeader(accent lipgloss.Style) string {
@@ -586,6 +587,19 @@ func (m *presentationModel) renderHeader(accent lipgloss.Style) string {
 		header += "  " + sanitizeTerminalLine(m.path)
 	}
 	return accent.Render(runewidth.Truncate(header, m.width, "…"))
+}
+
+func (m *presentationModel) renderContentPane() string {
+	var content string
+	if m.editing {
+		content = m.editor.View()
+	} else {
+		content = m.renderSlideContent()
+	}
+
+	paneHeight := max(1, m.height-3)
+	return lipgloss.NewStyle().Width(max(1, m.width)).Height(paneHeight).
+		Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1).Render(content)
 }
 
 func (m *presentationModel) renderSlideContent() string {

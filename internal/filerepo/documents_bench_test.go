@@ -27,7 +27,7 @@ var tinyPNG = []byte{
 func BenchmarkListDocumentChanges(b *testing.B) {
 	ctx := context.Background()
 	dir := b.TempDir()
-	repo, err := New(dir, Options{})
+	repo, err := New(dir)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func BenchmarkListDocumentChanges(b *testing.B) {
 }
 func BenchmarkListDocumentChangesHuge(b *testing.B) {
 	ctx := context.Background()
-	repo, err := New(b.TempDir(), Options{})
+	repo, err := New(b.TempDir())
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func BenchmarkListDocumentChangesHuge(b *testing.B) {
 
 func BenchmarkGetDocumentChangeHuge(b *testing.B) {
 	ctx := context.Background()
-	repo, err := New(b.TempDir(), Options{})
+	repo, err := New(b.TempDir())
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func BenchmarkGetDocumentChangeHuge(b *testing.B) {
 
 func BenchmarkListDocumentChangesHugeMany(b *testing.B) {
 	ctx := context.Background()
-	repo, err := New(b.TempDir(), Options{})
+	repo, err := New(b.TempDir())
 	if err != nil {
 		b.Fatal(err)
 	}
