@@ -84,6 +84,69 @@ func TestReadSpreadsheetCSVEnforcesInputAndDimensionLimits(t *testing.T) {
 	}
 }
 
+func TestSpreadsheetCSVExport(t *testing.T) {
+	c := newCLI(t)
+	must, run := c.must, c.run
+	id := "export.md"
+
+	input := filepath.Join(t.TempDir(), "input.csv")
+	if err := os.WriteFile(input, []byte("Item,Cost,Quantity\nApple,1.5,4\nOrange,2.0,3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	must("spreadsheet", "create", id, "--csv-file", input)
+	must("spreadsheet", "cell", id, "D1", "Total")
+	must("spreadsheet", "cell", id, "D2", "=B2*C2", "--formula")
+	must("spreadsheet", "cell", id, "D3", "=B3*C3", "--formula")
+
+	// Test --csv is required
+	if _, err := run("spreadsheet", "export", id); err == nil || !strings.Contains(err.Error(), "--csv is required") {
+		t.Fatalf("expected --csv required error, got %v", err)
+	}
+
+	// Test export to stdout
+	out := must("spreadsheet", "export", id, "--csv")
+	expected := "Item,Cost,Quantity,Total\nApple,1.5,4,6\nOrange,2.0,3,6\n"
+	if out != expected {
+		t.Fatalf("expected %q, got %q", expected, out)
+	}
+
+	// Test export with -o
+	output := filepath.Join(t.TempDir(), "output.csv")
+	must("spreadsheet", "export", id, "--csv", "-o", output)
+	content, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != expected {
+		t.Fatalf("expected %q in file, got %q", expected, string(content))
+	}
+
+	// Test -o without --force on existing file
+	if _, err := run("spreadsheet", "export", id, "--csv", "-o", output); err == nil || !strings.Contains(err.Error(), "file exists") {
+		t.Fatalf("expected file exists error, got %v", err)
+	}
+
+	// Test -o with --force
+	must("spreadsheet", "export", id, "--csv", "-o", output, "--force")
+	content, err = os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != expected {
+		t.Fatalf("expected %q in file after force, got %q", expected, string(content))
+	}
+
+	// Test export of a specific sheet via --sheet
+	must("spreadsheet", "add-sheet", id, "Summary")
+	must("spreadsheet", "cell", id, "A1", "Test", "--sheet", "Summary")
+	out = must("spreadsheet", "export", id, "--csv", "--sheet", "Summary")
+	if out != "Test\n" {
+		t.Fatalf("expected %q, got %q", "Test\n", out)
+	}
+
+	// Wait, we can test that division by zero formula fails to save entirely, so we shouldn't attempt to add it.
+}
+
 func TestSpreadsheetCLI_Deletions(t *testing.T) {
 	c := newCLI(t)
 	must, run := c.must, c.run

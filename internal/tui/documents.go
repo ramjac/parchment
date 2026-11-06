@@ -232,6 +232,7 @@ type documentsScreen struct {
 	status        string
 	errMessage    string
 
+	theme               Theme
 	newOperationContext func() (context.Context, context.CancelFunc)
 	cancelOperation     context.CancelFunc
 	recoveryStore       recovery.Store
@@ -277,7 +278,7 @@ func newDocumentReaderState() documentReaderState {
 	}
 }
 
-func newDocumentsScreen(service *document.Service, path string, newContext func() (context.Context, context.CancelFunc)) *documentsScreen {
+func newDocumentsScreen(service *document.Service, path string, newContext func() (context.Context, context.CancelFunc), theme Theme) *documentsScreen {
 	return &documentsScreen{
 		service:              service,
 		path:                 path,
@@ -738,7 +739,7 @@ func (s *documentsScreen) viewChanges(header string) string {
 		}
 		b.WriteString("\n↑/↓ select  Enter review  ·  Esc/q returns to " + back)
 	}
-	return b.String() + s.statusLine()
+	return b.String() + "\n" + s.statusLine()
 }
 
 func changeLayoutDescription(layout document.Layout) string {
@@ -764,7 +765,7 @@ func (s *documentsScreen) statusLine() string {
 	if message == "" {
 		message = "Ready"
 	}
-	return "\n" + sanitizeTerminalLine(message) + "  ·  " + undo + "  ·  " + redo
+	return sanitizeTerminalLine(message) + "  ·  " + undo + "  ·  " + redo
 }
 
 func (s *documentsScreen) dirty() bool { return s.currentDraft() != s.original }
