@@ -51,7 +51,6 @@ func clearEnv(t *testing.T) {
 		"PARCHMENT_LOG_LEVEL",
 		"PARCHMENT_LOG_FORMAT",
 		"PARCHMENT_CONFIG",
-		"PARCHMENT_THEME",
 	}
 	for _, k := range keys {
 		if val, ok := os.LookupEnv(k); ok {
@@ -65,13 +64,12 @@ func clearEnv(t *testing.T) {
 
 func TestLoadEmptyPathAndMissingFile(t *testing.T) {
 	clearEnv(t)
-	_, _ = Directory()
+	dir, _ := Directory()
 	expectedDefaults := Settings{
 		UndoLimit:   100,
 		LogLevel:    "warn",
 		LogFormat:   "text",
-		LocalBackup: "",
-		Theme:       Theme{Mode: "auto"},
+		LocalBackup: filepath.Join(dir, "backups"),
 	}
 
 	t.Run("empty path", func(t *testing.T) {
@@ -112,14 +110,6 @@ format = "json"
 
 [backup.local]
 destination = "/tmp/backup"
-
-[theme]
-mode = "dark"
-primary = "#ffffff"
-border = "#000000"
-error = "#ff0000"
-selection = "#00ff00"
-match = "#0000ff"
 `
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
@@ -133,14 +123,6 @@ match = "#0000ff"
 			LogLevel:    "debug",
 			LogFormat:   "json",
 			LocalBackup: "/tmp/backup",
-			Theme: Theme{
-				Mode:      "dark",
-				Primary:   "#ffffff",
-				Border:    "#000000",
-				Error:     "#ff0000",
-				Selection: "#00ff00",
-				Match:     "#0000ff",
-			},
 		}
 		if settings != expected {
 			t.Fatalf("got %+v, want %+v", settings, expected)
@@ -169,23 +151,20 @@ match = "#0000ff"
 func TestLoadEnvironmentOverrides(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("PARCHMENT_UNDO_LIMIT", "200")
-	t.Setenv("PARCHMENT_BACKUP_DESTINATION", "")
 	t.Setenv("PARCHMENT_LOG_LEVEL", "DEBUG")
 	t.Setenv("PARCHMENT_LOG_FORMAT", "JSON")
-	t.Setenv("PARCHMENT_THEME", "LIGHT")
 
 	settings, err := Load("")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	_, _ = Directory()
+	dir, _ := Directory()
 	expected := Settings{
 		UndoLimit:   200,
 		LogLevel:    "debug",
 		LogFormat:   "json",
-		LocalBackup: "",
-		Theme:       Theme{Mode: "light"},
+		LocalBackup: filepath.Join(dir, "backups"),
 	}
 
 	if settings != expected {
@@ -379,79 +358,5 @@ func TestEnsureDefaultConcurrentLaunchesSeeCompleteFile(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("config directory entries = %v, %v", entries, err)
-	}
-}
-
-func TestLoadThemeValidation(t *testing.T) {
-	clearEnv(t)
-
-	t.Run("invalid mode", func(t *testing.T) {
-		t.Setenv("PARCHMENT_THEME", "invalid")
-		if _, err := Load(""); err == nil {
-			t.Fatal("expected error for invalid theme mode, got nil")
-		} else if !strings.Contains(err.Error(), "invalid theme mode") {
-			t.Fatalf("unexpected error message: %v", err)
-		}
-	})
-
-	t.Run("invalid hex colors", func(t *testing.T) {
-		dir := t.TempDir()
-		path := filepath.Join(dir, "parchment.toml")
-		content := "version = 1\n[theme]\nprimary = \"invalid\"\n"
-		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := Load(path); err == nil {
-			t.Fatal("expected error for invalid hex color, got nil")
-		} else if !strings.Contains(err.Error(), "invalid theme color") {
-			t.Fatalf("unexpected error message: %v", err)
-		}
-
-		content = "version = 1\n[theme]\nprimary = \"#fffffg\"\n"
-		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := Load(path); err == nil {
-			t.Fatal("expected error for invalid hex color, got nil")
-		}
-	})
-}
-
-func TestLoadLoggingValidation(t *testing.T) {
-	clearEnv(t)
-	tests := []struct {
-		name    string
-		level   string
-		format  string
-		wantErr bool
-	}{
-		{name: "valid debug text", level: "debug", format: "text", wantErr: false},
-		{name: "valid info json", level: "info", format: "json", wantErr: false},
-		{name: "valid warn json", level: "warn", format: "json", wantErr: false},
-		{name: "valid error text", level: "error", format: "text", wantErr: false},
-		{name: "valid off text", level: "off", format: "text", wantErr: false},
-		{name: "invalid level", level: "trace", format: "text", wantErr: true},
-		{name: "invalid format", level: "debug", format: "xml", wantErr: true},
-		{name: "empty level", level: "", format: "text", wantErr: true},
-		{name: "empty format", level: "debug", format: "", wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("PARCHMENT_LOG_LEVEL", tt.level)
-			t.Setenv("PARCHMENT_LOG_FORMAT", tt.format)
-			settings, err := Load("")
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("Load() error = %v, wantErr %v", err, tt.wantErr)
-			}
-			if !tt.wantErr {
-				if settings.LogLevel != tt.level {
-					t.Fatalf("settings.LogLevel = %s, want %s", settings.LogLevel, tt.level)
-				}
-				if settings.LogFormat != tt.format {
-					t.Fatalf("settings.LogFormat = %s, want %s", settings.LogFormat, tt.format)
-				}
-			}
-		})
 	}
 }
