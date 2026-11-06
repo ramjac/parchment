@@ -23,7 +23,7 @@ func addPresentationCommands(root *cobra.Command, streams output) {
 	create := &cobra.Command{
 		Use: "create <file>", Short: "Create a presentation file", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, service, err := openPresentations(cmd)
+			repo, service, err := openPresentations(cmd)
 			if err != nil {
 				return err
 			}
@@ -39,6 +39,7 @@ func addPresentationCommands(root *cobra.Command, streams output) {
 			if err != nil {
 				return err
 			}
+			drainWarnings(repo, output{err: cmd.ErrOrStderr()})
 			if cmd.Flags().Changed("font") {
 				font, _ := cmd.Flags().GetString("font")
 				item, err = service.SetFont(cmd.Context(), item.Path, font)
@@ -125,7 +126,7 @@ func addPresentationCommands(root *cobra.Command, streams output) {
 			if !cmd.Flags().Changed("body-file") {
 				return errors.New("edit requires --body-file")
 			}
-			_, service, err := openPresentations(cmd)
+			repo, service, err := openPresentations(cmd)
 			if err != nil {
 				return err
 			}
@@ -138,6 +139,9 @@ func addPresentationCommands(root *cobra.Command, streams output) {
 				return err
 			}
 			_, err = service.Update(cmd.Context(), current, source)
+			if err == nil {
+				drainWarnings(repo, output{err: cmd.ErrOrStderr()})
+			}
 			return err
 		},
 	}
