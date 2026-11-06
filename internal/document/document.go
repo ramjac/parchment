@@ -425,14 +425,14 @@ func (s *Service) RemoveImage(ctx context.Context, path, imageName string, strip
 			return fmt.Errorf("image %q not found in document", imageName)
 		}
 
-		if ReferencedImages(d.Body)[imageName] {
+		if artifact.ReferencedImages(d.Body)[imageName] {
 			if !stripReferences {
 				return fmt.Errorf("cannot remove image %q because it is referenced in the document body", imageName)
 			}
 			re := regexp.MustCompile(`!\[[^\]]*\]\(` + regexp.QuoteMeta(imageName) + `\)`)
 			d.Body = re.ReplaceAllString(d.Body, "")
 		}
-		images := make([]Image, 0, len(d.Images)-1)
+		images := make([]artifact.Image, 0, len(d.Images)-1)
 		for _, img := range d.Images {
 			if img.Name != imageName {
 				images = append(images, img)
