@@ -142,7 +142,7 @@ func (m *Model) recoverDraft() tea.Cmd {
 			return nil
 		}
 
-		m.sheet = newSpreadsheetModel(m.spreadsheets, m.path, m.theme)
+		m.sheet = newSpreadsheetModel(m.spreadsheets, m.path)
 		m.sheet.newOperationContext = m.newOperationContext
 		m.sheet.width, m.sheet.height = m.width, m.height
 		// Ensure recovered spreadsheet grid is valid before updating views
