@@ -12,7 +12,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/note"
 	"example.com/parchment/internal/presentation"
@@ -34,54 +33,6 @@ type Config struct {
 	Spreadsheets  *spreadsheet.Service
 	Presentations *presentation.Service
 	Recovery      recovery.Store
-	Theme         config.Theme
-}
-
-// Theme holds the resolved Lip Gloss colors for the TUI.
-type Theme struct {
-	Primary   lipgloss.TerminalColor
-	Border    lipgloss.TerminalColor
-	Error     lipgloss.TerminalColor
-	Selection lipgloss.TerminalColor
-	Match     lipgloss.TerminalColor
-}
-
-func resolveTheme(c config.Theme) Theme {
-	var primary, border, errColor, selection, match lipgloss.TerminalColor
-
-	defaultPrimaryLight, defaultPrimaryDark := "#4b3f72", "#c4b5fd"
-	defaultBorderLight, defaultBorderDark := "#b8b4c7", "#55516a"
-	defaultErrorLight, defaultErrorDark := "#b42318", "#f87171"
-	defaultSelectionLight, defaultSelectionDark := "#dcd6f7", "#4c1d95"
-	defaultMatchLight, defaultMatchDark := "#fde68a", "#854d0e"
-
-	getColor := func(override, defaultLight, defaultDark string) lipgloss.TerminalColor {
-		if override != "" {
-			return lipgloss.Color(override)
-		}
-		switch c.Mode {
-		case "light":
-			return lipgloss.Color(defaultLight)
-		case "dark":
-			return lipgloss.Color(defaultDark)
-		default: // "auto"
-			return lipgloss.AdaptiveColor{Light: defaultLight, Dark: defaultDark}
-		}
-	}
-
-	primary = getColor(c.Primary, defaultPrimaryLight, defaultPrimaryDark)
-	border = getColor(c.Border, defaultBorderLight, defaultBorderDark)
-	errColor = getColor(c.Error, defaultErrorLight, defaultErrorDark)
-	selection = getColor(c.Selection, defaultSelectionLight, defaultSelectionDark)
-	match = getColor(c.Match, defaultMatchLight, defaultMatchDark)
-
-	return Theme{
-		Primary:   primary,
-		Border:    border,
-		Error:     errColor,
-		Selection: selection,
-		Match:     match,
-	}
 }
 
 type stage int
@@ -132,6 +83,11 @@ type autosaveFinishedMsg struct {
 
 const autosaveInterval = 2 * time.Second
 
+var (
+	primaryColor = lipgloss.AdaptiveColor{Light: "#4b3f72", Dark: "#c4b5fd"}
+	borderColor  = lipgloss.AdaptiveColor{Light: "#b8b4c7", Dark: "#55516a"}
+)
+
 // Model is the interactive editor for one artifact file. It owns UI state
 // only; artifact rules live in the services.
 type Model struct {
@@ -142,7 +98,6 @@ type Model struct {
 	spreadsheets  *spreadsheet.Service
 	presentations *presentation.Service
 	recoveryStore recovery.Store
-	theme         Theme
 	stage         stage
 	width         int
 	height        int
@@ -170,7 +125,6 @@ func NewModel(config Config) Model {
 		path: config.Path, kind: config.Kind, edit: config.Edit,
 		service: config.Notes, spreadsheets: config.Spreadsheets, presentations: config.Presentations,
 		recoveryStore: config.Recovery,
-		theme:         resolveTheme(config.Theme),
 		noteEditor:    newNoteEditor(),
 		newOperationContext: func() (context.Context, context.CancelFunc) {
 			return context.WithCancel(context.Background())
@@ -180,7 +134,7 @@ func NewModel(config Config) Model {
 		m.canUndo, m.canRedo = m.service.CanUndo(), m.service.CanRedo()
 	}
 	if config.Documents != nil {
-		m.documents = newDocumentsScreen(config.Documents, config.Path, m.newOperationContext, m.theme)
+		m.documents = newDocumentsScreen(config.Documents, config.Path, m.newOperationContext)
 		m.documents.recoveryStore = config.Recovery
 		m.documents.autosaveScheduler = func(session uint64) tea.Cmd {
 			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
@@ -416,7 +370,7 @@ func (m *Model) enterEditor() tea.Cmd {
 		m.stage = stageNote
 		return tea.Batch(m.bodyInput.Focus(), m.scheduleAutosave(m.autosaveSession))
 	case artifact.SpreadsheetKind:
-		m.sheet = newSpreadsheetModel(m.spreadsheets, m.path, m.theme)
+		m.sheet = newSpreadsheetModel(m.spreadsheets, m.path)
 		m.sheet.newOperationContext = m.newOperationContext
 		m.sheet.width, m.sheet.height = m.width, m.height
 		m.sheet.setBook(m.opened.book)
@@ -425,7 +379,7 @@ func (m *Model) enterEditor() tea.Cmd {
 		_, cmd := m.sheet.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		return cmd
 	case artifact.PresentationKind:
-		m.deck = newPresentationModel(m.presentations, m.path, m.theme)
+		m.deck = newPresentationModel(m.presentations, m.path)
 		m.deck.newOperationContext = m.newOperationContext
 		m.deck.width, m.deck.height = m.width, m.height
 		m.deck.setItem(m.opened.deck)
@@ -631,13 +585,13 @@ func (m Model) View() string {
 	if m.tooSmall() {
 		return "parchment — terminal too small (minimum 40×10)\nResize the terminal, or press q to quit."
 	}
-	header := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Primary).
+	header := lipgloss.NewStyle().Bold(true).Foreground(primaryColor).
 		Render("parchment  ·  " + sanitizeTerminalLine(m.path))
 	switch m.stage {
 	case stageOpening:
-		return header + "\n\nOpening…\n" + m.statusLine()
+		return header + "\n\nOpening…" + m.statusLine()
 	case stageFailed:
-		return header + "\n\nThis file cannot be opened in the editor.\n\nq quits\n" + m.statusLine()
+		return header + "\n\nThis file cannot be opened in the editor.\n\nq quits" + m.statusLine()
 	case stageChooseKind:
 		options := "n  Note"
 		if m.documents != nil {
@@ -650,14 +604,14 @@ func (m Model) View() string {
 			options += "\np  Presentation"
 		}
 		return header + "\n\nThis file does not exist yet. What kind of artifact should Parchment create?\n\n" +
-			options + "\n\nq quits without creating the file\n" + m.statusLine()
+			options + "\n\nq quits without creating the file" + m.statusLine()
 	case stageRecovery:
 		draft := m.opened.draft
 		return header + "\n\nAn autosaved draft of unsaved edits to this file exists.\n\n" +
 			"Autosaved: " + draft.UpdatedAt.Local().Format("2006-01-02 15:04") + "\n\n" +
 			"r  Recover the draft into the editor\n" +
 			"d  Discard the draft and open the saved file\n" +
-			"q  Quit and keep the draft\n" + m.statusLine()
+			"q  Quit and keep the draft" + m.statusLine()
 	case stageDocument:
 		return m.documents.view(header)
 	case stageSpreadsheet:
@@ -669,44 +623,19 @@ func (m Model) View() string {
 	if m.dirty() {
 		state += " • unsaved"
 	}
-	if m.previewing {
-		shortcuts := "Preview  ·  ↑/↓ scroll  ·  Esc returns to the editor"
-		return chromeLayout(m.width, m.height, header, shortcuts, m.preview.View(), m.statusLine(), m.theme.Border)
+	pane := func(content string) string {
+		return lipgloss.NewStyle().Width(max(m.width, 10)).Height(max(m.height-4, 3)).
+			Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1).Render(content)
 	}
-	shortcuts := state + "  ·  Ctrl+S saves  ·  F5 preview  ·  Ctrl+Z/Ctrl+R undo/redo  ·  Esc quits"
-	return chromeLayout(m.width, m.height, header, shortcuts, m.bodyInput.View(), m.statusLine(), m.theme.Border)
+	if m.previewing {
+		return header + "\nPreview  ·  ↑/↓ scroll  ·  Esc returns to the editor\n" +
+			pane(m.preview.View()) + m.statusLine()
+	}
+	return header + "\n" + state + "  ·  Ctrl+S saves  ·  F5 preview  ·  Ctrl+Z/Ctrl+R undo/redo  ·  Esc quits\n" +
+		pane(m.bodyInput.View()) + m.statusLine()
 }
 
 func (m Model) tooSmall() bool { return m.width < 40 || m.height < 10 }
-
-func chromeLayout(width, height int, header, shortcuts, content, status string, border lipgloss.TerminalColor) string {
-	chromeRows := lipgloss.Height(header) + lipgloss.Height(status)
-	if shortcuts != "" {
-		chromeRows += lipgloss.Height(shortcuts)
-	}
-
-	paneHeight := height - chromeRows - 2
-	if paneHeight < 1 {
-		paneHeight = 1
-	}
-	paneWidth := width - 2
-	if paneWidth < 1 {
-		paneWidth = 1
-	}
-
-	pane := lipgloss.NewStyle().
-		Width(paneWidth).
-		Height(paneHeight).
-		Border(lipgloss.NormalBorder()).
-		BorderForeground(border).
-		Padding(0, 1).
-		Render(content)
-
-	if shortcuts == "" {
-		return header + "\n" + pane + "\n" + status
-	}
-	return header + "\n" + shortcuts + "\n" + pane + "\n" + status
-}
 
 func (m Model) statusLine() string {
 	undo, redo := "undo unavailable", "redo unavailable"
@@ -723,7 +652,7 @@ func (m Model) statusLine() string {
 	if message == "" {
 		message = "Ready"
 	}
-	return sanitizeTerminalLine(message) + "  ·  " + undo + "  ·  " + redo
+	return "\n" + sanitizeTerminalLine(message) + "  ·  " + undo + "  ·  " + redo
 }
 
 func (m *Model) refreshHistoryAvailability() {
