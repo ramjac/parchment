@@ -706,3 +706,80 @@ func WithImage(p Presentation, img artifact.Image) Presentation {
 	p.Images = append(p.Images, img)
 	return p
 }
+
+// GetImage returns the embedded image with the given name.
+func (s *Service) GetImage(ctx context.Context, path, imageName string) (artifact.Image, error) {
+	p, err := s.Get(ctx, path)
+	if err != nil {
+		return artifact.Image{}, err
+	}
+	for _, img := range p.Images {
+		if img.Name == imageName {
+			return img, nil
+		}
+	}
+	return artifact.Image{}, fmt.Errorf("image %q not found in presentation", imageName)
+}
+
+// RemoveImage removes an image from a presentation. If it is referenced in the source,
+// it is only removed if stripReferences is true.
+func (s *Service) RemoveImage(ctx context.Context, path, imageName string, stripReferences bool) (Presentation, error) {
+	before, err := s.repository.GetPresentation(ctx, path)
+	if err != nil {
+		return Presentation{}, err
+	}
+	found := false
+	for _, img := range before.Images {
+		if img.Name == imageName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return Presentation{}, fmt.Errorf("image %q not found in presentation", imageName)
+	}
+
+	after := clonePresentation(before)
+
+	if stripReferences {
+		// Strip standard markdown tags
+		after.Source = regexp.MustCompile(`!\[[^\]]*\]\(`+regexp.QuoteMeta(imageName)+`\)`).ReplaceAllString(after.Source, "")
+		// Strip .image directives
+		after.Source = regexp.MustCompile(`(?m)^\.image\s+`+regexp.QuoteMeta(imageName)+`.*$`).ReplaceAllString(after.Source, "")
+	}
+
+	images := after.Images[:0]
+	for _, img := range after.Images {
+		if img.Name != imageName {
+			images = append(images, img)
+		}
+	}
+	after.Images = images
+	after.ModifiedAt = s.now().UTC()
+
+	if err := normalize(&after); err != nil {
+		if stripReferences {
+			return Presentation{}, err
+		}
+		// Since normalize prunes unreferenced images, if it complains, it means it's still referenced! Wait! Normalize doesn't complain about images being present if they are not referenced, it just removes them!
+		// But if we remove it manually above, and the source STILL references it, it might be fine, but we should reject if it's referenced and stripReferences=false.
+	}
+
+	// We need to enforce stripReferences = false failure.
+	if !stripReferences {
+		refs := artifact.ReferencedImages(after.Source)
+		for _, match := range presentationDirectiveRE.FindAllStringSubmatch(after.Source, -1) {
+			if len(match) > 1 {
+				refs[match[1]] = true
+			}
+		}
+		if refs[imageName] {
+			return Presentation{}, fmt.Errorf("image %q is referenced in presentation source (use stripReferences to force)", imageName)
+		}
+	}
+
+	if err := s.change(ctx, &before, &after, "Remove image"); err != nil {
+		return Presentation{}, err
+	}
+	return clonePresentation(after), nil
+}

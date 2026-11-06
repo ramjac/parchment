@@ -1,9 +1,10 @@
 package docinterop
 
 import (
-	"example.com/parchment/internal/document"
 	"math"
 	"strings"
+
+	"example.com/parchment/internal/document"
 )
 
 // TwipToMM converts twips (1/1440 inch) to millimeters.
