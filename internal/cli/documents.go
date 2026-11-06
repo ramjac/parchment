@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/docinterop"
 	"example.com/parchment/internal/document"
 )
 
@@ -44,7 +45,73 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 		newDocumentImageExtractCmd(streams),
 		newDocumentImageRemoveCmd(),
 		newDocumentPrintCmd(streams),
+		newDocumentExportCmd(streams),
 	)
+}
+
+func newDocumentExportCmd(streams output) *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "export <file> -o <target>", Short: "Export a document to an external format", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repo, service, err := openDocuments(cmd)
+			if err != nil {
+				return err
+			}
+			doc, err := service.Get(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+
+			outPath, _ := cmd.Flags().GetString("output")
+			if outPath == "" {
+				return fmt.Errorf("output file (-o) is required")
+			}
+
+			format, _ := cmd.Flags().GetString("format")
+			if format == "" {
+				if filepath.Ext(outPath) == ".odt" {
+					format = "odt"
+				} else {
+					return fmt.Errorf("could not determine format from extension, use --format")
+				}
+			}
+			if format != "odt" {
+				return fmt.Errorf("unsupported format: %q", format)
+			}
+
+			force, _ := cmd.Flags().GetBool("force")
+			flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+			if !force {
+				flags |= os.O_EXCL
+			}
+
+			f, err := os.OpenFile(outPath, flags, 0600)
+			if err != nil {
+				if os.IsExist(err) {
+					return fmt.Errorf("file %q already exists (use --force to overwrite)", outPath)
+				}
+				return err
+			}
+			defer f.Close()
+
+			exporter := docinterop.ODFExporter{}
+			warnings, err := exporter.Export(f, doc)
+			if err != nil {
+				return err
+			}
+
+			for _, warning := range warnings {
+				fmt.Fprintln(streams.err, warning.Error())
+			}
+
+			drainWarnings(repo, output{err: cmd.ErrOrStderr()})
+			return nil
+		},
+	}
+	cmd.Flags().StringP("output", "o", "", "output file path")
+	cmd.Flags().String("format", "", "export format (odt)")
+	cmd.Flags().Bool("force", false, "overwrite output file if it exists")
+	return cmd
 }
 
 func newDocumentCreateCmd(streams output) *cobra.Command {
