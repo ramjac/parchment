@@ -187,7 +187,7 @@ func (s *Service) InsertRowInSheet(ctx context.Context, path, name string, row i
 		*grid = append(*grid, nil)
 		copy((*grid)[row:], (*grid)[row-1:])
 		(*grid)[row-1] = inserted
-		shiftFormulas(sheet, index, row, 0)
+		shiftFormulas(sheet, index, row, 0, false)
 		return nil
 	})
 }
@@ -212,7 +212,7 @@ func (s *Service) InsertColumnInSheet(ctx context.Context, path, name string, co
 			copy((*grid)[i][column:], (*grid)[i][column-1:])
 			(*grid)[i][column-1] = Cell{}
 		}
-		shiftFormulas(sheet, index, 0, column)
+		shiftFormulas(sheet, index, 0, column, false)
 		return nil
 	})
 }
@@ -330,6 +330,10 @@ func validateFormulas(book *Spreadsheet) error {
 					continue
 				}
 				if _, err := evaluator.cell(sheetIndex, row+1, column+1); err != nil {
+					var errVal ErrorValue
+					if errors.As(err, &errVal) {
+						continue
+					}
 					return fmt.Errorf("sheet %q cell %s formula: %w", book.Sheets[sheetIndex].Name,
 						CellName(row+1, column+1), err)
 				}
@@ -397,12 +401,12 @@ func cloneSpreadsheetPointer(book *Spreadsheet) *Spreadsheet {
 	return &clone
 }
 
-func shiftFormulas(book *Spreadsheet, sheetIndex, fromRow, fromColumn int) {
+func shiftFormulas(book *Spreadsheet, sheetIndex, fromRow, fromColumn int, delete bool) {
 	for row := range book.Sheets[sheetIndex].Rows {
 		for column := range book.Sheets[sheetIndex].Rows[row] {
 			cell := &book.Sheets[sheetIndex].Rows[row][column]
 			if cell.Formula != "" {
-				cell.Formula = shiftCellReferences(cell.Formula, fromRow, fromColumn)
+				cell.Formula = shiftCellReferences(cell.Formula, fromRow, fromColumn, delete)
 			}
 		}
 	}
@@ -533,4 +537,68 @@ func CellCoordinates(reference string) (row, column int, err error) {
 		return 0, 0, fmt.Errorf("cell reference %q is outside supported dimensions", reference)
 	}
 	return row, column, nil
+}
+
+func (s *Service) DeleteRow(ctx context.Context, path string, row int) (Spreadsheet, error) {
+	return s.DeleteRowInSheet(ctx, path, "Sheet1", row)
+}
+
+func (s *Service) DeleteRowInSheet(ctx context.Context, path, name string, row int) (Spreadsheet, error) {
+	return s.modify(ctx, path, "Delete row", func(sheet *Spreadsheet) error {
+		index, err := SheetIndex(*sheet, name)
+		if err != nil {
+			return err
+		}
+		grid := &sheet.Sheets[index].Rows
+		if row < 1 || row > len(*grid) {
+			return fmt.Errorf("row must be between 1 and %d", len(*grid))
+		}
+		shiftFormulas(sheet, index, row, 0, true)
+		copy((*grid)[row-1:], (*grid)[row:])
+		(*grid)[len(*grid)-1] = nil
+		*grid = (*grid)[:len(*grid)-1]
+		return nil
+	})
+}
+
+func (s *Service) DeleteColumn(ctx context.Context, path string, column int) (Spreadsheet, error) {
+	return s.DeleteColumnInSheet(ctx, path, "Sheet1", column)
+}
+
+func (s *Service) DeleteColumnInSheet(ctx context.Context, path, name string, column int) (Spreadsheet, error) {
+	return s.modify(ctx, path, "Delete column", func(sheet *Spreadsheet) error {
+		index, err := SheetIndex(*sheet, name)
+		if err != nil {
+			return err
+		}
+		grid := &sheet.Sheets[index].Rows
+		width := rowWidth(*grid)
+		if column < 1 || column > width {
+			return fmt.Errorf("column must be between 1 and %d", width)
+		}
+		shiftFormulas(sheet, index, 0, column, true)
+		for i := range *grid {
+			if column <= len((*grid)[i]) {
+				copy((*grid)[i][column-1:], (*grid)[i][column:])
+				(*grid)[i][len((*grid)[i])-1] = Cell{}
+				(*grid)[i] = (*grid)[i][:len((*grid)[i])-1]
+			}
+		}
+		return nil
+	})
+}
+
+func (s *Service) DeleteSheet(ctx context.Context, path, name string) (Spreadsheet, error) {
+	return s.modify(ctx, path, "Delete sheet", func(sheet *Spreadsheet) error {
+		if len(sheet.Sheets) <= 1 {
+			return errors.New("cannot delete the only sheet")
+		}
+		index, err := SheetIndex(*sheet, name)
+		if err != nil {
+			return err
+		}
+		copy(sheet.Sheets[index:], sheet.Sheets[index+1:])
+		sheet.Sheets = sheet.Sheets[:len(sheet.Sheets)-1]
+		return nil
+	})
 }
