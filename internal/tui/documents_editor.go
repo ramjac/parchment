@@ -595,7 +595,7 @@ func (s *documentsScreen) act(action string) tea.Cmd {
 			s.layout.Orientation = document.Portrait
 		}
 	case "font":
-		s.layout.Font = nextOf(document.SupportedFonts, s.layout.Font)
+		s.layout.Font = nextOf([]string{"courier", "helvetica", "times"}, s.layout.Font)
 	case "numbers-pos":
 		s.layout.PageNumbers = nextOf(numberPlacements, s.layout.PageNumbers)
 	case "header":

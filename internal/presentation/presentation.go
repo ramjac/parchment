@@ -118,6 +118,9 @@ func (s *Service) SetFont(ctx context.Context, path, font string) (Presentation,
 	after := current
 	after.Font = strings.ToLower(font)
 	after.ModifiedAt = s.now().UTC()
+	if err := Validate(after); err != nil {
+		return Presentation{}, err
+	}
 	if err := s.change(ctx, &current, &after, "Changed font"); err != nil {
 		return Presentation{}, err
 	}

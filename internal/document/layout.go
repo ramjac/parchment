@@ -11,9 +11,6 @@ import (
 // LayoutVersion is the supported document layout format version.
 const LayoutVersion = 1
 
-// SupportedFonts lists the core font families available for printing.
-var SupportedFonts = []string{"courier", "helvetica", "times"}
-
 // Supported page sizes, orientations, and page-number placements.
 const (
 	PageLetter = "letter"

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"example.com/parchment/internal/document"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
@@ -262,7 +261,7 @@ func (m *presentationModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		m.showNotes = !m.showNotes
 		m.clampScroll()
 	case "f":
-		fonts := document.SupportedFonts
+		fonts := []string{"courier", "helvetica", "times"}
 		current := m.item.Font
 		if current == "" {
 			current = "courier"
