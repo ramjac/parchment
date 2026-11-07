@@ -348,7 +348,7 @@ func newDocumentImagesCmd(streams output) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			referenced := document.ReferencedImages(d.Body)
+			referenced := artifact.ReferencedImages(d.Body)
 			for _, img := range d.Images {
 				status := "unreferenced"
 				if referenced[img.Name] {

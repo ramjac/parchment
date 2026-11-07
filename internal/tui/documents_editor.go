@@ -303,8 +303,8 @@ func (s *documentsScreen) saveDocumentRecovery(session uint64) tea.Cmd {
 	}
 }
 
-func cloneDocumentImages(source []document.Image) []document.Image {
-	images := make([]document.Image, len(source))
+func cloneDocumentImages(source []artifact.Image) []artifact.Image {
+	images := make([]artifact.Image, len(source))
 	for i, image := range source {
 		images[i] = image
 		images[i].Data = append([]byte(nil), image.Data...)

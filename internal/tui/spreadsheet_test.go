@@ -867,3 +867,54 @@ func TestSpreadsheetView_CustomSheetNameAndEmptyPath(t *testing.T) {
 	// Silence unused variable warning if service/id are used
 	_ = service
 }
+
+func TestSpreadsheetTUI_DeleteShortcuts(t *testing.T) {
+	m, service, _, path := newSheetModel(t, [][]spreadsheet.Cell{
+		{{Value: "A1"}, {Value: "B1"}},
+		{{Value: "A2"}, {Value: "B2"}},
+	})
+	ctx := context.Background()
+	service.AddSheet(ctx, path, "Sheet2")
+
+	// Ensure not loaded (shortcut guarded by !m.loaded)
+	m.loaded = false
+	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+
+	m.Init()
+	book, _ := service.Get(ctx, path)
+	driveSheet(t, m, spreadsheetLoadedMsg{seq: m.seq, book: book})
+
+	// Delete sheet
+	m.sheet = 1
+	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+
+	if len(m.book.Sheets) != 1 {
+		t.Fatalf("expected 1 sheet, got %d", len(m.book.Sheets))
+	}
+
+	if len(m.book.Sheets[0].Rows) != 2 {
+		t.Fatalf("expected 2 rows before delete, got %d", len(m.book.Sheets[0].Rows))
+	}
+
+	// Delete row
+	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+
+	if len(m.book.Sheets[0].Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(m.book.Sheets[0].Rows))
+	}
+
+	if len(m.book.Sheets[0].Rows[0]) != 2 {
+		t.Fatalf("expected 2 columns before delete, got %d", len(m.book.Sheets[0].Rows[0]))
+	}
+
+	// Delete column
+	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+
+	if len(m.book.Sheets[0].Rows[0]) != 1 {
+		t.Fatalf("expected 1 column, got %d", len(m.book.Sheets[0].Rows[0]))
+	}
+}
