@@ -46,6 +46,7 @@ type Presentation struct {
 	artifact.Artifact
 	Version int
 	Source  string
+	Font    string
 	Images  []artifact.Image
 	Blocks  map[string]json.RawMessage `json:"-"`
 }
@@ -57,6 +58,7 @@ type embeddedImage struct {
 
 type fileContent struct {
 	Version int             `json:"version"`
+	Font    string          `json:"font,omitempty"`
 	Images  []embeddedImage `json:"images,omitempty"`
 }
 
@@ -108,7 +110,7 @@ func (s *Service) Create(ctx context.Context, path, source string) (Presentation
 			CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
 			Path: path,
 		},
-		Version: FileVersion, Source: source,
+		Version: FileVersion, Source: source, Font: "courier",
 	}
 	if err := normalize(&item); err != nil {
 		return Presentation{}, err
@@ -117,6 +119,24 @@ func (s *Service) Create(ctx context.Context, path, source string) (Presentation
 		return Presentation{}, err
 	}
 	return s.repository.GetPresentation(ctx, path)
+}
+
+// SetFont updates the core font.
+func (s *Service) SetFont(ctx context.Context, path, font string) (Presentation, error) {
+	current, err := s.Get(ctx, path)
+	if err != nil {
+		return Presentation{}, err
+	}
+	after := current
+	after.Font = strings.ToLower(font)
+	after.ModifiedAt = s.now().UTC()
+	if err := Validate(after); err != nil {
+		return Presentation{}, err
+	}
+	if err := s.change(ctx, &current, &after, "Changed font"); err != nil {
+		return Presentation{}, err
+	}
+	return after, nil
 }
 
 // Update replaces the presentation source if expected still matches storage.
@@ -478,6 +498,11 @@ func Validate(item Presentation) error {
 	if !utf8.ValidString(item.Source) {
 		return errors.New("presentation source must be valid UTF-8")
 	}
+	switch item.Font {
+	case "", "courier", "helvetica", "times":
+	default:
+		return fmt.Errorf("unsupported font %q", item.Font)
+	}
 	_, err := Parse(item.Source)
 	return err
 }
@@ -518,7 +543,7 @@ func Encode(item Presentation) ([]byte, error) {
 	for name, payload := range item.Blocks {
 		blocks[name] = payload
 	}
-	payload := fileContent{Version: item.Version}
+	payload := fileContent{Version: item.Version, Font: item.Font}
 	for _, img := range item.Images {
 		payload.Images = append(payload.Images, embeddedImage{Name: img.Name, Data: img.Data})
 	}
@@ -548,6 +573,7 @@ func Decode(data []byte) (Presentation, error) {
 	}
 	item := Presentation{
 		Artifact: file.Artifact, Version: payload.Version, Source: file.Body,
+		Font:   payload.Font,
 		Blocks: cloneBlocksExcept(file.Blocks, "parchment-presentation"),
 	}
 	for _, img := range payload.Images {

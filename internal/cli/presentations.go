@@ -42,12 +42,49 @@ func addPresentationCommands(root *cobra.Command, streams output) {
 				return err
 			}
 			drainWarnings(repo, output{err: cmd.ErrOrStderr()})
+			if cmd.Flags().Changed("font") {
+				font, _ := cmd.Flags().GetString("font")
+				item, err = service.SetFont(cmd.Context(), item.Path, font)
+				if err != nil {
+					return err
+				}
+			}
 			return finishCreate(cmd, streams, item.Path, artifact.PresentationKind)
 		},
 	}
 	create.Flags().String("body-file", "", "read Markdown presentation source from a file (- for standard input)")
+	create.Flags().String("font", "", "font family: courier, helvetica, or times")
 	addEditFlag(create)
 	group.AddCommand(create)
+
+	layout := &cobra.Command{
+		Use: "layout <file>", Short: "Change presentation layout", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, service, err := openPresentations(cmd)
+			if err != nil {
+				return err
+			}
+			if !cmd.Flags().Changed("font") {
+				item, err := service.Get(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+				font := item.Font
+				if font == "" {
+					font = "courier"
+				}
+				_, err = fmt.Fprintf(streams.out, "font: %s\n", font)
+				return err
+			}
+			font, _ := cmd.Flags().GetString("font")
+			if _, err := service.SetFont(cmd.Context(), args[0], font); err != nil {
+				return err
+			}
+			return nil
+		},
+	}
+	layout.Flags().String("font", "", "font family: courier, helvetica, or times")
+	group.AddCommand(layout)
 
 	group.AddCommand(&cobra.Command{
 		Use: "show <file>", Short: "Show the editable Markdown source", Args: cobra.ExactArgs(1),
