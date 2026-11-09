@@ -40,12 +40,14 @@ type Deck struct {
 type Presentation struct {
 	artifact.Artifact
 	Version int
+	Font    string
 	Source  string
 	Blocks  map[string]json.RawMessage `json:"-"`
 }
 
 type fileContent struct {
-	Version int `json:"version"`
+	Version int    `json:"version"`
+	Font    string `json:"font,omitempty"`
 }
 
 // Repository persists presentations as single-file artifacts.
@@ -96,7 +98,7 @@ func (s *Service) Create(ctx context.Context, path, source string) (Presentation
 			CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
 			Path: path,
 		},
-		Version: FileVersion, Source: source,
+		Version: FileVersion, Font: "courier", Source: source,
 	}
 	if err := Validate(item); err != nil {
 		return Presentation{}, err
@@ -463,6 +465,14 @@ func Validate(item Presentation) error {
 	if item.Version != FileVersion {
 		return fmt.Errorf("unsupported presentation version %d", item.Version)
 	}
+	if item.Font == "" {
+		item.Font = "courier"
+	}
+	switch item.Font {
+	case "courier", "helvetica", "times": // TODO: Support custom font files.
+	default:
+		return fmt.Errorf("unsupported font %q", item.Font)
+	}
 	if !utf8.ValidString(item.Source) {
 		return errors.New("presentation source must be valid UTF-8")
 	}
@@ -479,7 +489,7 @@ func Encode(item Presentation) ([]byte, error) {
 	for name, payload := range item.Blocks {
 		blocks[name] = payload
 	}
-	blocks["parchment-presentation"] = fileContent{Version: item.Version}
+	blocks["parchment-presentation"] = fileContent{Version: item.Version, Font: item.Font}
 	return artifactfile.Encode(item.Artifact, item.Source, blocks)
 }
 
@@ -503,8 +513,12 @@ func Decode(data []byte) (Presentation, error) {
 	if payload.Version != FileVersion {
 		return Presentation{}, fmt.Errorf("unsupported presentation file version %d", payload.Version)
 	}
+	font := payload.Font
+	if font == "" {
+		font = "courier"
+	}
 	item := Presentation{
-		Artifact: file.Artifact, Version: payload.Version, Source: file.Body,
+		Artifact: file.Artifact, Version: payload.Version, Font: font, Source: file.Body,
 		Blocks: cloneBlocksExcept(file.Blocks, "parchment-presentation"),
 	}
 	item.CreatedAt = item.CreatedAt.UTC()
@@ -513,6 +527,27 @@ func Decode(data []byte) (Presentation, error) {
 		return Presentation{}, fmt.Errorf("validate presentation: %w", err)
 	}
 	return item, nil
+}
+
+// SetFont changes the presentation font.
+func (s *Service) SetFont(ctx context.Context, path string, font string) (Presentation, error) {
+	expected, err := s.Get(ctx, path)
+	if err != nil {
+		return Presentation{}, err
+	}
+	if expected.Font == font {
+		return expected, nil
+	}
+	updated := clonePresentation(expected)
+	updated.Font = font
+	updated.ModifiedAt = s.now().UTC()
+	if err := Validate(updated); err != nil {
+		return Presentation{}, err
+	}
+	if err := s.change(ctx, &expected, &updated, "Change font"); err != nil {
+		return Presentation{}, err
+	}
+	return updated, nil
 }
 
 // Preview returns slide text without speaker notes or comments. It deliberately

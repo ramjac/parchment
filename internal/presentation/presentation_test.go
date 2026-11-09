@@ -521,7 +521,7 @@ func (f *failingRepository) TransitionPresentation(_ context.Context, _ string, 
 }
 
 func TestDecodePredefinedJSON(t *testing.T) {
-	data := []byte("```parchment-meta\n{\n  \"parchment_format\": \"parchment-single-file-v2\",\n  \"kind\": \"presentation\",\n  \"format_version\": 2,\n  \"created_at\": \"2026-11-04T02:34:41Z\",\n  \"modified_at\": \"2026-11-04T02:34:41Z\"\n}\n```\n\n<!-- parchment-body -->\n# Demo\n\n## Slide 1\n\nHello.\n\n<!-- parchment-blocks -->\n\n```parchment-presentation\n{\n  \"version\": 1\n}\n```\n")
+	data := []byte("```parchment-meta\n{\n  \"parchment_format\": \"parchment-single-file-v2\",\n  \"kind\": \"presentation\",\n  \"format_version\": 2,\n  \"created_at\": \"2026-11-04T02:34:41Z\",\n  \"modified_at\": \"2026-11-04T02:34:41Z\"\n}\n```\n\n<!-- parchment-body -->\n# Demo\n\n## Slide 1\n\nHello.\n\n<!-- parchment-blocks -->\n\n```parchment-presentation\n{\n  \"version\": 1,\n  \"font\": \"helvetica\"\n}\n```\n")
 
 	decoded, err := Decode(data)
 	if err != nil {
@@ -539,11 +539,13 @@ func TestDecodePredefinedJSON(t *testing.T) {
 			ModifiedAt:    modifiedAt.UTC(),
 		},
 		Version: 1,
+		Font: "helvetica",
 		Source:  "# Demo\n\n## Slide 1\n\nHello.\n",
 	}
 
 	if decoded.Artifact.Kind != expected.Artifact.Kind ||
 		decoded.Version != expected.Version ||
+		decoded.Font != expected.Font ||
 		!decoded.CreatedAt.Equal(expected.CreatedAt) ||
 		!decoded.ModifiedAt.Equal(expected.ModifiedAt) ||
 		strings.TrimSpace(decoded.Source) != strings.TrimSpace(expected.Source) {
@@ -655,5 +657,28 @@ func assertDecodeResult(t *testing.T, data []byte, wantNotFound bool, wantErr st
 			!reflect.DeepEqual(decoded.Blocks, validItem.Blocks) {
 			t.Errorf("round trip changed persisted presentation content:\noriginal: %+v\ndecoded: %+v", validItem, decoded)
 		}
+	}
+}
+
+func TestSetFont(t *testing.T) {
+	ctx := context.Background()
+	repository := newMemoryRepository()
+	service := NewService(repository, 10)
+	item, _ := service.Create(ctx, "test.md", "")
+	if item.Font != "courier" {
+		t.Fatalf("expected initial font courier, got %q", item.Font)
+	}
+
+	updated, err := service.SetFont(ctx, item.Path, "helvetica")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if updated.Font != "helvetica" {
+		t.Errorf("expected font helvetica, got %q", updated.Font)
+	}
+
+	retrieved, _ := service.Get(ctx, item.Path)
+	if retrieved.Font != "helvetica" {
+		t.Errorf("expected font helvetica to persist, got %q", retrieved.Font)
 	}
 }

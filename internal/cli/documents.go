@@ -255,9 +255,9 @@ func newDocumentLayoutCmd(streams output) *cobra.Command {
 				}
 			}
 			l := d.Layout
-			_, err = fmt.Fprintf(streams.out, "page-size: %s\norientation: %s\nmargins: top=%d right=%d bottom=%d left=%d (mm)\ncolumns: %d\nheader: %q\nfooter: %q\npage-numbers: %s\n",
+			_, err = fmt.Fprintf(streams.out, "page-size: %s\norientation: %s\nmargins: top=%d right=%d bottom=%d left=%d (mm)\ncolumns: %d\nheader: %q\nfooter: %q\npage-numbers: %s\nfont: %s\n",
 				l.PageSize, l.Orientation, l.Margins.Top, l.Margins.Right, l.Margins.Bottom, l.Margins.Left,
-				l.Columns, l.Header, l.Footer, l.PageNumbers)
+				l.Columns, l.Header, l.Footer, l.PageNumbers, l.Font)
 			return err
 		},
 	}
@@ -386,6 +386,7 @@ func addLayoutFlags(cmd *cobra.Command) {
 	flags.String("header", "", "header text")
 	flags.String("footer", "", "footer text")
 	flags.String("page-numbers", "", "page number placement: none, left, center, or right")
+	flags.String("font", "", "font: courier, helvetica, or times")
 }
 
 // applyLayoutFlags changes only the layout fields whose flags were supplied.
@@ -415,6 +416,7 @@ func applyLayoutFlags(cmd *cobra.Command, layout *document.Layout) error {
 	setString("header", &layout.Header)
 	setString("footer", &layout.Footer)
 	setString("page-numbers", &layout.PageNumbers)
+	setString("font", &layout.Font)
 	return layout.Validate()
 }
 
@@ -438,8 +440,8 @@ func trimTrailingNewlines(s string) string {
 }
 
 func changeLayoutDescription(layout document.Layout) string {
-	return fmt.Sprintf("page size: %s\norientation: %s\nmargins (mm): top=%d right=%d bottom=%d left=%d\ncolumns: %d\nheader: %q\nfooter: %q\npage numbers: %s",
+	return fmt.Sprintf("page size: %s\norientation: %s\nmargins (mm): top=%d right=%d bottom=%d left=%d\ncolumns: %d\nheader: %q\nfooter: %q\npage numbers: %s\nfont: %s",
 		layout.PageSize, layout.Orientation, layout.Margins.Top, layout.Margins.Right,
 		layout.Margins.Bottom, layout.Margins.Left, layout.Columns, layout.Header,
-		layout.Footer, layout.PageNumbers)
+		layout.Footer, layout.PageNumbers, layout.Font)
 }
