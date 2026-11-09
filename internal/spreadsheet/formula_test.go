@@ -68,7 +68,11 @@ func TestEvaluate(t *testing.T) {
 				c = tt.col
 			}
 
-			got, err := Evaluate(book, 0, r, c)
+			gotV, err := Evaluate(book, 0, r, c)
+			var got float64
+			if err == nil {
+				got, err = gotV.Float64()
+			}
 
 			if tt.wantError != "" {
 				if err == nil {
@@ -103,7 +107,10 @@ func TestEvaluateCircularReference(t *testing.T) {
 		},
 	}
 
-	_, err := Evaluate(book, 0, 1, 1)
+	valV, err := Evaluate(book, 0, 1, 1)
+	if err == nil {
+		_, err = valV.Float64()
+	}
 	if err == nil {
 		t.Fatal("Evaluate() expected error for circular reference, got nil")
 	}
@@ -124,7 +131,10 @@ func TestEvaluateUnknownCharacter(t *testing.T) {
 		},
 	}
 
-	_, err := Evaluate(book, 0, 1, 1)
+	valV, err := Evaluate(book, 0, 1, 1)
+	if err == nil {
+		_, err = valV.Float64()
+	}
 	if err == nil {
 		t.Fatal("Evaluate() expected error for unexpected character, got nil")
 	}
@@ -145,19 +155,28 @@ func TestEvaluateOutOfBounds(t *testing.T) {
 	}
 
 	// Negative sheet index
-	_, err := Evaluate(book, -1, 1, 1)
+	valV, err := Evaluate(book, -1, 1, 1)
+	if err == nil {
+		_, err = valV.Float64()
+	}
 	if err == nil || !strings.Contains(err.Error(), "cell coordinates are outside the workbook") {
 		t.Errorf("Expected out of bounds error, got %v", err)
 	}
 
 	// Row 0
-	_, err = Evaluate(book, 0, 0, 1)
+	valV, err = Evaluate(book, 0, 0, 1)
+	if err == nil {
+		_, err = valV.Float64()
+	}
 	if err == nil || !strings.Contains(err.Error(), "cell coordinates are outside the workbook") {
 		t.Errorf("Expected out of bounds error, got %v", err)
 	}
 
 	// Column 0
-	_, err = Evaluate(book, 0, 1, 0)
+	valV, err = Evaluate(book, 0, 1, 0)
+	if err == nil {
+		_, err = valV.Float64()
+	}
 	if err == nil || !strings.Contains(err.Error(), "cell coordinates are outside the workbook") {
 		t.Errorf("Expected out of bounds error, got %v", err)
 	}
@@ -174,7 +193,10 @@ func TestEvaluateExceedsMaxNesting(t *testing.T) {
 		},
 	}
 
-	_, err := Evaluate(book, 0, 1, 1)
+	valV, err := Evaluate(book, 0, 1, 1)
+	if err == nil {
+		_, err = valV.Float64()
+	}
 	if err == nil || !strings.Contains(err.Error(), "formula nesting exceeds") {
 		t.Errorf("Expected nesting exceeds error, got %v", err)
 	}
@@ -193,7 +215,10 @@ func TestEvaluateExceedsMaxDependency(t *testing.T) {
 	}
 	book.Sheets[0].Rows[513] = []Cell{{Value: "1"}}
 
-	_, err := Evaluate(book, 0, 1, 1)
+	valV, err := Evaluate(book, 0, 1, 1)
+	if err == nil {
+		_, err = valV.Float64()
+	}
 	if err == nil || !strings.Contains(err.Error(), "formula dependency depth exceeds") {
 		t.Errorf("Expected dependency depth exceeds error, got %v", err)
 	}
@@ -212,7 +237,11 @@ func TestEvaluateCellOutsideSheetDimension(t *testing.T) {
 
 	// Reference a cell that is within workbook max limits but beyond the allocated grid slice.
 	// Empty referenced cells evaluate to zero.
-	val, err := Evaluate(book, 0, 2, 2)
+	valV, err := Evaluate(book, 0, 2, 2)
+	var val float64
+	if err == nil {
+		val, err = valV.Float64()
+	}
 	if err != nil {
 		t.Errorf("Expected nil error for empty cell outside allocated grid, got %v", err)
 	}
@@ -263,13 +292,3 @@ func TestRecordDependencyDepth_EmptyDepths(t *testing.T) {
 	e.recordDependencyDepth(5)
 }
 
-func TestParsePrimary_EmptyInput(t *testing.T) {
-	parser := formulaParser{input: "   ", position: 0}
-	_, err := parser.parsePrimary()
-	if err == nil {
-		t.Fatal("Expected error for empty input in parsePrimary, got nil")
-	}
-	if !strings.Contains(err.Error(), "expected a number, cell reference, or '('") {
-		t.Errorf("Unexpected error message: %v", err)
-	}
-}

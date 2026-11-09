@@ -382,7 +382,11 @@ func (m *spreadsheetModel) computeValues() {
 			if cell.Formula == "" {
 				continue
 			}
-			value, err := spreadsheet.Evaluate(&m.book, m.sheet, row+1, column+1)
+			valueV, err := spreadsheet.Evaluate(&m.book, m.sheet, row+1, column+1)
+			var value float64
+			if err == nil {
+				value, err = valueV.Float64()
+			}
 			if err != nil {
 				m.values[[2]int{row, column}] = "#ERR"
 				continue
