@@ -169,6 +169,7 @@ type editorFocus int
 const (
 	focusBody editorFocus = iota
 	focusToolbar
+	focusOutline
 )
 
 type promptKind int
@@ -227,6 +228,7 @@ type documentsScreen struct {
 	path          string
 	width, height int
 	pending       bool
+	outlineVisible bool
 	canUndo       bool
 	canRedo       bool
 	status        string
