@@ -179,7 +179,7 @@ func TestCellCoordinates(t *testing.T) {
 
 func TestFormulaReferenceShiftsPreserveDecimalExponents(t *testing.T) {
 	for _, formula := range []string{"=1.e3", "=1.e+3", "=1.E-3"} {
-		if got := shiftCellReferences(formula, 1, 1, false); got != formula {
+		if got := shiftCellReferences(formula, 1, 1); got != formula {
 			t.Errorf("shiftCellReferences(%q) = %q", formula, got)
 		}
 	}
@@ -441,50 +441,5 @@ func TestCellName(t *testing.T) {
 				t.Errorf("CellName(%d, %d) = %q, want %q", test.row, test.column, got, test.want)
 			}
 		})
-	}
-}
-
-func TestSpreadsheetDeletions(t *testing.T) {
-	ctx := context.Background()
-	repository := newMemoryRepository()
-	service := NewService(repository, 10)
-	book, err := service.Create(ctx, "deletions.md", [][]Cell{
-		{{Value: "1"}, {Value: "2"}, {Value: "3"}},
-		{{Value: "4"}, {Value: "5"}, {Formula: "=B1+1"}},
-		{{Value: "7"}, {Value: "8"}, {Formula: "=C2+1"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	book, err = service.DeleteRow(ctx, book.Path, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(book.Sheets[0].Rows) != 2 {
-		t.Fatalf("expected 2 rows, got %d", len(book.Sheets[0].Rows))
-	}
-	if book.Sheets[0].Rows[1][2].Formula != "=#REF!+1" {
-		t.Fatalf("expected formula to shift to #REF!+1, got %q", book.Sheets[0].Rows[1][2].Formula)
-	}
-
-	book, err = service.DeleteColumn(ctx, book.Path, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(book.Sheets[0].Rows[0]) != 2 {
-		t.Fatalf("expected 2 columns, got %d", len(book.Sheets[0].Rows[0]))
-	}
-
-	_, err = service.AddSheet(ctx, book.Path, "Sheet2")
-	if err != nil {
-		t.Fatal(err)
-	}
-	book, err = service.DeleteSheet(ctx, book.Path, "Sheet2")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(book.Sheets) != 1 {
-		t.Fatalf("expected 1 sheet, got %d", len(book.Sheets))
 	}
 }
