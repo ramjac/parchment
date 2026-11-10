@@ -149,18 +149,6 @@ func decodeArtifact(path string, content []byte) (artifactfile.File, error) {
 	return file, nil
 }
 
-// decodeArtifactBlocks decodes metadata and blocks of content already checked by checkKind.
-func decodeArtifactBlocks(path string, content []byte) (artifact.Artifact, map[string]json.RawMessage, error) {
-	item, blocks, err := artifactfile.DecodeBlocks(content)
-	if err != nil {
-		return artifact.Artifact{}, nil, fmt.Errorf("decode blocks %s: %w", path, err)
-	}
-	item.CreatedAt = item.CreatedAt.UTC()
-	item.ModifiedAt = item.ModifiedAt.UTC()
-	setRuntimeIdentity(&item, path)
-	return item, blocks, nil
-}
-
 // setRuntimeIdentity derives the artifact's runtime ID and title from its
 // path. Neither is persisted; the file name is how users identify a file.
 func setRuntimeIdentity(item *artifact.Artifact, path string) {

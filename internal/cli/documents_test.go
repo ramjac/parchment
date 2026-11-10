@@ -39,6 +39,24 @@ func TestDocumentCLI(t *testing.T) {
 	if out := must("document", "show", id); strings.Contains(out, "proposed text") || !strings.Contains(out, "second page") {
 		t.Fatalf("proposal changed live content before acceptance: %q", out)
 	}
+
+	// Test Export command
+	outPath := "quarterly.odt"
+	must("document", "export", id, "-o", outPath)
+	if _, err := os.Stat(outPath); os.IsNotExist(err) {
+		t.Fatalf("export did not create %q", outPath)
+	}
+
+	// Test Export error without -o
+	if _, err := run("document", "export", id, "--format", "odt"); err == nil || !strings.Contains(err.Error(), "output file (-o) is required") {
+		t.Fatalf("export without -o should fail: %v", err)
+	}
+
+	// Test Export force
+	if _, err := run("document", "export", id, "-o", outPath); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("export should fail if file exists and --force is not passed: %v", err)
+	}
+	must("document", "export", id, "-o", outPath, "--force")
 	if out := must("document", "changes", id); !strings.Contains(out, changeID) || !strings.Contains(out, "pending") {
 		t.Fatalf("changes = %q", out)
 	}

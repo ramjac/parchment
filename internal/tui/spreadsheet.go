@@ -60,7 +60,6 @@ type spreadsheetAsync struct {
 	seq                 int
 	status              string
 	errMessage          string
-	pendingShortcut     string
 	loadedStatus        string
 	newOperationContext func() (context.Context, context.CancelFunc)
 	cancelOperation     context.CancelFunc
@@ -199,11 +198,6 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		m.cancelPending()
 		return tea.Quit
 	case "esc":
-		if m.pendingShortcut != "" {
-			m.pendingShortcut = ""
-			m.status = ""
-			return nil
-		}
 		if m.pending {
 			m.cancelPending()
 			m.status, m.errMessage = "Cancelled", ""
@@ -216,42 +210,12 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		m.status = "Working… (esc cancels)"
 		return nil
 	}
-
-	if key == "r" && m.pendingShortcut != "d" {
+	if key == "r" {
 		return m.load()
 	}
 	if !m.loaded {
 		return nil
 	}
-
-	if m.pendingShortcut == "d" {
-		m.pendingShortcut = ""
-		switch key {
-		case "r":
-			return m.history("Deleted row", func(ctx context.Context) (string, error) {
-				_, err := m.service.DeleteRowInSheet(ctx, m.path, m.book.Sheets[m.sheet].Name, m.row+1)
-				return "", err
-			})
-		case "c":
-			return m.history("Deleted column", func(ctx context.Context) (string, error) {
-				_, err := m.service.DeleteColumnInSheet(ctx, m.path, m.book.Sheets[m.sheet].Name, m.column+1)
-				return "", err
-			})
-		case "s":
-			return m.history("Deleted sheet", func(ctx context.Context) (string, error) {
-				_, err := m.service.DeleteSheet(ctx, m.path, m.book.Sheets[m.sheet].Name)
-				return "", err
-			})
-		}
-		m.status, m.errMessage = "Cancelled", ""
-		return nil
-	}
-	if key == "d" {
-		m.pendingShortcut = "d"
-		m.status = "Delete (r)ow, (c)olumn, or (s)heet?"
-		return nil
-	}
-
 	page := max(1, m.visibleRows()-1)
 	switch key {
 	case "up", "k":
@@ -610,7 +574,7 @@ func (m *spreadsheetModel) renderStatus() string {
 
 func (m *spreadsheetModel) renderHelp() string {
 	muted := lipgloss.NewStyle().Foreground(m.theme.Border)
-	help := "arrows move • enter edit • del clear • f formulas • tab sheet • u undo • ctrl+r redo • d delete • r reload • esc/q quit"
+	help := "arrows move • enter edit • del clear • f formulas • tab sheet • u undo • ctrl+r redo • r reload • esc/q quit"
 	if m.editing {
 		help = "enter save • esc cancel • =formula • 'literal"
 	} else if !m.loaded {
