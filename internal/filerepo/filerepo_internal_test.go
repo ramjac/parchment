@@ -8,7 +8,7 @@ import (
 )
 
 func TestNewInternal_EmptyStateDir(t *testing.T) {
-	repo, err := New("")
+	repo, err := New("", Options{})
 	if err == nil {
 		t.Fatal("expected error for empty stateDir, got nil")
 	}
@@ -22,7 +22,7 @@ func TestNewInternal_EmptyStateDir(t *testing.T) {
 
 func TestNewInternal_AbsolutePath(t *testing.T) {
 	tempDir := t.TempDir()
-	repo, err := New(tempDir)
+	repo, err := New(tempDir, Options{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestNewInternal_RelativePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	repo, err := New(relPath)
+	repo, err := New(relPath, Options{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestNewInternal_RelativePath(t *testing.T) {
 func TestNewInternal_NonExistentDir(t *testing.T) {
 	tempDir := t.TempDir()
 	nonExistentPath := filepath.Join(tempDir, "sub", "dir")
-	repo, err := New(nonExistentPath)
+	repo, err := New(nonExistentPath, Options{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestNewInternal_FilepathAbsError(t *testing.T) {
 	t.Chdir(dir)
 	_ = os.RemoveAll(dir)
 
-	repo, err := New("relative_path")
+	repo, err := New("relative_path", Options{})
 	if err == nil {
 		t.Fatal("expected error when working directory is deleted, got nil")
 	}
