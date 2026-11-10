@@ -24,14 +24,17 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 	group.AddCommand(newSpreadsheetShowCmd(streams))
 	group.AddCommand(newSpreadsheetCellCmd(streams))
 	addSpreadsheetInsertCommands(group)
+	addSpreadsheetDeleteCommands(group)
+	group.AddCommand(newSpreadsheetDeleteSheetCmd())
 	group.AddCommand(newSpreadsheetAddSheetCmd())
+	group.AddCommand(newSpreadsheetExportCmd(streams))
 }
 
 func newSpreadsheetCreateCmd(streams output) *cobra.Command {
 	create := &cobra.Command{
 		Use: "create <file>", Short: "Create a spreadsheet file", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, service, err := openSpreadsheets(cmd)
+			repo, service, err := openSpreadsheets(cmd)
 			if err != nil {
 				return err
 			}
@@ -60,6 +63,7 @@ func newSpreadsheetCreateCmd(streams output) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			drainWarnings(repo, output{err: cmd.ErrOrStderr()})
 			return finishCreate(cmd, streams, book.Path, artifact.SpreadsheetKind)
 		},
 	}
@@ -88,6 +92,79 @@ func newSpreadsheetShowCmd(streams output) *cobra.Command {
 			return err
 		},
 	}
+}
+
+func newSpreadsheetExportCmd(streams output) *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "export <file>", Short: "Export a spreadsheet", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			csvFlag, _ := cmd.Flags().GetBool("csv")
+			if !csvFlag {
+				return errors.New("--csv is required")
+			}
+			_, service, err := openSpreadsheets(cmd)
+			if err != nil {
+				return err
+			}
+			book, err := service.Get(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			sheetName, _ := cmd.Flags().GetString("sheet")
+			sheetIndex := 0
+			if sheetName != "" {
+				sheetIndex, err = spreadsheet.SheetIndex(book, sheetName)
+				if err != nil {
+					return err
+				}
+			}
+
+			var out io.Writer
+			out = streams.out
+
+			outputPath, _ := cmd.Flags().GetString("output")
+			if outputPath != "" {
+				force, _ := cmd.Flags().GetBool("force")
+				flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL
+				if force {
+					flags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+				}
+				f, err := os.OpenFile(outputPath, flags, 0o600)
+				if err != nil {
+					return err
+				}
+				defer f.Close()
+				out = f
+			}
+
+			writer := csv.NewWriter(out)
+			sheet := book.Sheets[sheetIndex]
+			for r, row := range sheet.Rows {
+				record := make([]string, len(row))
+				for c, cell := range row {
+					if cell.Formula != "" {
+						value, err := spreadsheet.Evaluate(&book, sheetIndex, r+1, c+1)
+						if err != nil {
+							return err
+						}
+						record[c] = strconv.FormatFloat(value, 'f', -1, 64)
+					} else {
+						record[c] = cell.Value
+					}
+				}
+				if err := writer.Write(record); err != nil {
+					return err
+				}
+			}
+			writer.Flush()
+			return writer.Error()
+		},
+	}
+	cmd.Flags().Bool("csv", false, "export as CSV (required)")
+	cmd.Flags().String("sheet", "", "sheet to export (defaults to the first sheet)")
+	cmd.Flags().StringP("output", "o", "", "output file (defaults to stdout)")
+	cmd.Flags().Bool("force", false, "overwrite output file if it exists")
+	return cmd
 }
 
 func newSpreadsheetCellCmd(streams output) *cobra.Command {
@@ -141,19 +218,25 @@ func addSpreadsheetInsertCommands(group *cobra.Command) {
 		run  func(*cobra.Command, string, string, int) error
 	}{
 		{name: "insert-row", run: func(cmd *cobra.Command, id, sheet string, index int) error {
-			_, service, err := openSpreadsheets(cmd)
+			repo, service, err := openSpreadsheets(cmd)
 			if err != nil {
 				return err
 			}
 			_, err = service.InsertRowInSheet(cmd.Context(), id, sheet, index)
+			if err == nil {
+				drainWarnings(repo, output{err: cmd.ErrOrStderr()})
+			}
 			return err
 		}},
 		{name: "insert-column", run: func(cmd *cobra.Command, id, sheet string, index int) error {
-			_, service, err := openSpreadsheets(cmd)
+			repo, service, err := openSpreadsheets(cmd)
 			if err != nil {
 				return err
 			}
 			_, err = service.InsertColumnInSheet(cmd.Context(), id, sheet, index)
+			if err == nil {
+				drainWarnings(repo, output{err: cmd.ErrOrStderr()})
+			}
 			return err
 		}},
 	} {
@@ -179,11 +262,14 @@ func newSpreadsheetAddSheetCmd() *cobra.Command {
 	return &cobra.Command{
 		Use: "add-sheet <file> <name>", Short: "Add a named worksheet", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, service, err := openSpreadsheets(cmd)
+			repo, service, err := openSpreadsheets(cmd)
 			if err != nil {
 				return err
 			}
 			_, err = service.AddSheet(cmd.Context(), args[0], args[1])
+			if err == nil {
+				drainWarnings(repo, output{err: cmd.ErrOrStderr()})
+			}
 			return err
 		},
 	}
@@ -240,5 +326,59 @@ func readSpreadsheetCSV(input io.Reader, maxBytes int64) ([][]spreadsheet.Cell, 
 			row[i] = spreadsheet.Cell{Value: value}
 		}
 		rows = append(rows, row)
+	}
+}
+
+func addSpreadsheetDeleteCommands(group *cobra.Command) {
+	for _, operation := range []struct {
+		name string
+		run  func(*cobra.Command, string, string, int) error
+	}{
+		{name: "delete-row", run: func(cmd *cobra.Command, id, sheet string, index int) error {
+			_, service, err := openSpreadsheets(cmd)
+			if err != nil {
+				return err
+			}
+			_, err = service.DeleteRowInSheet(cmd.Context(), id, sheet, index)
+			return err
+		}},
+		{name: "delete-column", run: func(cmd *cobra.Command, id, sheet string, index int) error {
+			_, service, err := openSpreadsheets(cmd)
+			if err != nil {
+				return err
+			}
+			_, err = service.DeleteColumnInSheet(cmd.Context(), id, sheet, index)
+			return err
+		}},
+	} {
+		operation := operation
+		command := &cobra.Command{
+			Use: operation.name + " <file> <index>", Short: "Delete a spreadsheet " + strings.TrimPrefix(operation.name, "delete-"),
+			Args: cobra.ExactArgs(2),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				index, err := strconv.Atoi(args[1])
+				if err != nil {
+					return fmt.Errorf("invalid index %q: %w", args[1], err)
+				}
+				sheet, _ := cmd.Flags().GetString("sheet")
+				return operation.run(cmd, args[0], sheet, index)
+			},
+		}
+		command.Flags().String("sheet", "Sheet1", "sheet to edit")
+		group.AddCommand(command)
+	}
+}
+
+func newSpreadsheetDeleteSheetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "delete-sheet <file> <name>", Short: "Delete a named worksheet", Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, service, err := openSpreadsheets(cmd)
+			if err != nil {
+				return err
+			}
+			_, err = service.DeleteSheet(cmd.Context(), args[0], args[1])
+			return err
+		},
 	}
 }
