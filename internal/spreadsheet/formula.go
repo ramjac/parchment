@@ -599,14 +599,14 @@ func extractRefs(node Node) []*RefNode {
 	return refs
 }
 
-func shiftCellReferences(formula string, fromRow, fromColumn int) string {
+func shiftCellReferences(formula string, fromRow, fromColumn int, delete bool) string {
 	if !strings.HasPrefix(formula, "=") {
 		return formula
 	}
 	parser := NewParser(strings.TrimPrefix(formula, "="))
 	node, err := parser.Parse()
 	if err != nil {
-		return fallbackShift(formula, fromRow, fromColumn)
+		return fallbackShift(formula, fromRow, fromColumn, delete)
 	}
 
 	refs := extractRefs(node)
@@ -622,19 +622,42 @@ func shiftCellReferences(formula string, fromRow, fromColumn int) string {
 		}
 
 		r, c := ref.Row, ref.Col
+
+		if delete && (fromRow > 0 && r == fromRow || fromColumn > 0 && c == fromColumn) {
+			start := ref.Start + 1
+			end := ref.End + 1
+			bytes = append(bytes[:start], append([]byte("#REF!"), bytes[end:]...)...)
+			continue
+		}
+
 		shifted := false
-		if fromRow > 0 && r >= fromRow {
+		if fromRow > 0 && r > fromRow {
+			if delete {
+				r--
+			} else {
+				r++
+			}
+			shifted = true
+		} else if fromRow > 0 && r >= fromRow && !delete {
 			r++
 			shifted = true
 		}
-		if fromColumn > 0 && c >= fromColumn {
+
+		if fromColumn > 0 && c > fromColumn {
+			if delete {
+				c--
+			} else {
+				c++
+			}
+			shifted = true
+		} else if fromColumn > 0 && c >= fromColumn && !delete {
 			c++
 			shifted = true
 		}
+
 		if shifted {
 			start := ref.Start + 1
 			end := ref.End + 1
-
 			newName := CellName(r, c)
 			bytes = append(bytes[:start], append([]byte(newName), bytes[end:]...)...)
 		}
@@ -642,7 +665,7 @@ func shiftCellReferences(formula string, fromRow, fromColumn int) string {
 	return string(bytes)
 }
 
-func fallbackShift(formula string, fromRow, fromColumn int) string {
+func fallbackShift(formula string, fromRow, fromColumn int, delete bool) string {
 	var result strings.Builder
 	for i := 0; i < len(formula); {
 		if isDecimalExponent(formula, i) {
@@ -674,11 +697,25 @@ func fallbackShift(formula string, fromRow, fromColumn int) string {
 			i = end
 			continue
 		}
-		if fromRow > 0 && row >= fromRow {
-			row++
-		}
-		if fromColumn > 0 && column >= fromColumn {
-			column++
+		if delete {
+			if (fromRow > 0 && row == fromRow) || (fromColumn > 0 && column == fromColumn) {
+				result.WriteString("#REF!")
+				i = end
+				continue
+			}
+			if fromRow > 0 && row > fromRow {
+				row--
+			}
+			if fromColumn > 0 && column > fromColumn {
+				column--
+			}
+		} else {
+			if fromRow > 0 && row >= fromRow {
+				row++
+			}
+			if fromColumn > 0 && column >= fromColumn {
+				column++
+			}
 		}
 		result.WriteString(CellName(row, column))
 		i = end

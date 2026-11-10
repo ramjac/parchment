@@ -278,7 +278,7 @@ func TestShiftCellReferences(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := shiftCellReferences(tt.formula, tt.fromRow, tt.fromColumn)
+			got := shiftCellReferences(tt.formula, tt.fromRow, tt.fromColumn, false)
 			if got != tt.want {
 				t.Errorf("shiftCellReferences(%q, %d, %d) = %q, want %q", tt.formula, tt.fromRow, tt.fromColumn, got, tt.want)
 			}
@@ -291,4 +291,3 @@ func TestRecordDependencyDepth_EmptyDepths(t *testing.T) {
 	// This should return immediately and not panic because e.depths is empty.
 	e.recordDependencyDepth(5)
 }
-
