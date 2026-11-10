@@ -143,7 +143,11 @@ func newSpreadsheetExportCmd(streams output) *cobra.Command {
 				record := make([]string, len(row))
 				for c, cell := range row {
 					if cell.Formula != "" {
-						value, err := spreadsheet.Evaluate(&book, sheetIndex, r+1, c+1)
+						valueV, err := spreadsheet.Evaluate(&book, sheetIndex, r+1, c+1)
+						var value float64
+						if err == nil {
+							value, err = valueV.Float64()
+						}
 						if err != nil {
 							return err
 						}
@@ -284,7 +288,11 @@ func readSpreadsheetCell(out io.Writer, cmd *cobra.Command, book spreadsheet.Spr
 		cellValue = book.Sheets[sheetIndex].Rows[row-1][column-1]
 	}
 	if cellValue.Formula != "" {
-		value, err := spreadsheet.Evaluate(&book, sheetIndex, row, column)
+		valueV, err := spreadsheet.Evaluate(&book, sheetIndex, row, column)
+		var value float64
+		if err == nil {
+			value, err = valueV.Float64()
+		}
 		if err != nil {
 			return err
 		}
