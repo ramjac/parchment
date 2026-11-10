@@ -291,3 +291,178 @@ func TestRecordDependencyDepth_EmptyDepths(t *testing.T) {
 	// This should return immediately and not panic because e.depths is empty.
 	e.recordDependencyDepth(5)
 }
+
+func TestAggregatesAndRanges(t *testing.T) {
+	book := &Spreadsheet{
+		Sheets: []Sheet{
+			{
+				Name: "Sheet1",
+				Rows: [][]Cell{
+					{{Value: "10"}, {Value: "20"}},            // A1, B1
+					{{Value: "text"}, {Value: ""}},            // A2, B2
+					{{Value: "30"}, {Formula: "=SUM(A1:B2)"}}, // A3, B3
+				},
+			},
+			{
+				Name: "Sheet Two",
+				Rows: [][]Cell{
+					{{Value: "100"}, {Value: "200"}},
+				},
+			},
+		},
+	}
+
+	// SUM ignores non-numeric text ("text") and empty cells inside ranges
+	val, err := Evaluate(book, 0, 3, 2)
+	if err != nil {
+		t.Fatalf("Evaluate SUM(A1:B2) failed: %v", err)
+	}
+	if val.Kind != NumKind || val.Num != 30 {
+		t.Fatalf("expected SUM(A1:B2) = 30, got %+v", val)
+	}
+
+	// AVERAGE
+	book.Sheets[0].Rows[2][1] = Cell{Formula: "=AVERAGE(A1:B1)"}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != NumKind || val.Num != 15 {
+		t.Fatalf("expected AVERAGE(A1:B1) = 15, got %+v (err: %v)", val, err)
+	}
+
+	// COUNT
+	book.Sheets[0].Rows[2][1] = Cell{Formula: "=COUNT(A1:B2)"}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != NumKind || val.Num != 2 {
+		t.Fatalf("expected COUNT(A1:B2) = 2, got %+v (err: %v)", val, err)
+	}
+
+	// MIN and MAX
+	book.Sheets[0].Rows[2][1] = Cell{Formula: "=MIN(A1:B2)"}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != NumKind || val.Num != 10 {
+		t.Fatalf("expected MIN(A1:B2) = 10, got %+v (err: %v)", val, err)
+	}
+	book.Sheets[0].Rows[2][1] = Cell{Formula: "=MAX(A1:B2)"}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != NumKind || val.Num != 20 {
+		t.Fatalf("expected MAX(A1:B2) = 20, got %+v (err: %v)", val, err)
+	}
+
+	// Direct scalar string coercion: numeric string parses
+	book.Sheets[0].Rows[2][1] = Cell{Formula: `=SUM(A1, "50")`}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != NumKind || val.Num != 60 {
+		t.Fatalf("expected SUM(A1, \"50\") = 60, got %+v (err: %v)", val, err)
+	}
+
+	// Direct non-numeric scalar string returns #VALUE!
+	book.Sheets[0].Rows[2][1] = Cell{Formula: `=SUM(A1, "invalid")`}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != ErrKind || val.Err != ErrValue {
+		t.Fatalf("expected SUM(A1, \"invalid\") = #VALUE!, got %+v (err: %v)", val, err)
+	}
+
+	// AVERAGE of empty range returns #DIV/0!
+	book.Sheets[0].Rows[2][1] = Cell{Formula: "=AVERAGE(B2)"}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != ErrKind || val.Err != ErrDiv0 {
+		t.Fatalf("expected AVERAGE(B2) = #DIV/0!, got %+v (err: %v)", val, err)
+	}
+
+	// MIN / MAX of empty range returns #VALUE!
+	book.Sheets[0].Rows[2][1] = Cell{Formula: "=MIN(B2)"}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != ErrKind || val.Err != ErrValue {
+		t.Fatalf("expected MIN(B2) = #VALUE!, got %+v (err: %v)", val, err)
+	}
+
+	// Unknown function name returns #NAME?
+	book.Sheets[0].Rows[2][1] = Cell{Formula: "=UNKNOWN(A1)"}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != ErrKind || val.Err != ErrName {
+		t.Fatalf("expected UNKNOWN(A1) = #NAME?, got %+v (err: %v)", val, err)
+	}
+
+	// Nested function calls
+	book.Sheets[0].Rows[2][1] = Cell{Formula: "=SUM(AVERAGE(A1:B1), MAX(A1:A1))"}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != NumKind || val.Num != 25 {
+		t.Fatalf("expected nested SUM = 25, got %+v (err: %v)", val, err)
+	}
+
+	// Cross-sheet range references
+	book.Sheets[0].Rows[2][1] = Cell{Formula: `='Sheet Two'!A1:B1`}
+	// A standalone range in scalar context returns #VALUE!
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != ErrKind || val.Err != ErrValue {
+		t.Fatalf("expected standalone range = #VALUE!, got %+v (err: %v)", val, err)
+	}
+
+	book.Sheets[0].Rows[2][1] = Cell{Formula: `=SUM('Sheet Two'!A1:B1)`}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != NumKind || val.Num != 300 {
+		t.Fatalf("expected SUM('Sheet Two'!A1:B1) = 300, got %+v (err: %v)", val, err)
+	}
+
+	// Escaped string literal: "foo""bar" -> foo"bar
+	book.Sheets[0].Rows[2][1] = Cell{Formula: `="foo""bar"`}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != StrKind || val.Str != `foo"bar` {
+		t.Fatalf("expected escaped string foo\"bar, got %+v (err: %v)", val, err)
+	}
+
+	// Error literal propagation
+	book.Sheets[0].Rows[2][1] = Cell{Formula: `=#REF!`}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != ErrKind || val.Err != ErrRef {
+		t.Fatalf("expected #REF! literal, got %+v (err: %v)", val, err)
+	}
+	book.Sheets[0].Rows[2][1] = Cell{Formula: `=1 + #DIV/0!`}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != ErrKind || val.Err != ErrDiv0 {
+		t.Fatalf("expected #DIV/0! propagation, got %+v (err: %v)", val, err)
+	}
+}
+
+func TestRangeShifting(t *testing.T) {
+	// Row deletion shrinking range
+	got := shiftCellReferences("=SUM(A1:A5)", 3, 0, true)
+	if got != "=SUM(A1:A4)" {
+		t.Errorf("delete row 3 from A1:A5 = %q, want =SUM(A1:A4)", got)
+	}
+
+	// Row deletion at top boundary
+	got = shiftCellReferences("=SUM(A1:A5)", 1, 0, true)
+	if got != "=SUM(A1:A4)" {
+		t.Errorf("delete row 1 from A1:A5 = %q, want =SUM(A1:A4)", got)
+	}
+
+	// Row deletion collapsing 1-row range
+	got = shiftCellReferences("=SUM(A3:B3)", 3, 0, true)
+	if got != "=SUM(#REF!)" {
+		t.Errorf("delete row 3 from A3:B3 = %q, want =SUM(#REF!)", got)
+	}
+
+	// Col deletion shrinking range
+	got = shiftCellReferences("=SUM(A1:E1)", 0, 2, true)
+	if got != "=SUM(A1:D1)" {
+		t.Errorf("delete col 2 from A1:E1 = %q, want =SUM(A1:D1)", got)
+	}
+
+	// Col deletion collapsing 1-col range
+	got = shiftCellReferences("=SUM(B1:B5)", 0, 2, true)
+	if got != "=SUM(#REF!)" {
+		t.Errorf("delete col 2 from B1:B5 = %q, want =SUM(#REF!)", got)
+	}
+
+	// Row insertion expanding range
+	got = shiftCellReferences("=SUM(A1:A5)", 3, 0, false)
+	if got != "=SUM(A1:A6)" {
+		t.Errorf("insert row 3 into A1:A5 = %q, want =SUM(A1:A6)", got)
+	}
+
+	// Col insertion expanding range
+	got = shiftCellReferences("=SUM(A1:E1)", 0, 2, false)
+	if got != "=SUM(A1:F1)" {
+		t.Errorf("insert col 2 into A1:E1 = %q, want =SUM(A1:F1)", got)
+	}
+}
