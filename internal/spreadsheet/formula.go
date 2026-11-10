@@ -186,6 +186,7 @@ func (l *Lexer) Next() (Token, error) {
 	if l.pos >= len(l.input) {
 		return Token{Kind: TokEOF, Start: l.pos, End: l.pos}, nil
 	}
+
 	start := l.pos
 	c := l.input[l.pos]
 
@@ -739,7 +740,3 @@ func isLetter(value byte) bool {
 }
 
 func isDigit(value byte) bool { return value >= '0' && value <= '9' }
-
-type ErrorValue string
-
-func (e ErrorValue) Error() string { return string(e) }
