@@ -208,10 +208,6 @@ func (p *formulaParser) parsePrimary() (float64, error) {
 	if p.position >= len(p.input) {
 		return 0, errors.New("expected a number, cell reference, or '('")
 	}
-	if strings.HasPrefix(p.input[p.position:], "#REF!") {
-		p.position += 5
-		return 0, ErrorValue("#REF!")
-	}
 	if p.input[p.position] == '(' {
 		if p.nesting >= maxFormulaDepth {
 			return 0, fmt.Errorf("formula nesting exceeds %d", maxFormulaDepth)
@@ -289,7 +285,7 @@ func isLetter(value byte) bool {
 
 func isDigit(value byte) bool { return value >= '0' && value <= '9' }
 
-func shiftCellReferences(formula string, fromRow, fromColumn int, delete bool) string {
+func shiftCellReferences(formula string, fromRow, fromColumn int) string {
 	var result strings.Builder
 	for i := 0; i < len(formula); {
 		if isDecimalExponent(formula, i) {
@@ -321,25 +317,11 @@ func shiftCellReferences(formula string, fromRow, fromColumn int, delete bool) s
 			i = end
 			continue
 		}
-		if delete {
-			if (fromRow > 0 && row == fromRow) || (fromColumn > 0 && column == fromColumn) {
-				result.WriteString("#REF!")
-				i = end
-				continue
-			}
-			if fromRow > 0 && row > fromRow {
-				row--
-			}
-			if fromColumn > 0 && column > fromColumn {
-				column--
-			}
-		} else {
-			if fromRow > 0 && row >= fromRow {
-				row++
-			}
-			if fromColumn > 0 && column >= fromColumn {
-				column++
-			}
+		if fromRow > 0 && row >= fromRow {
+			row++
+		}
+		if fromColumn > 0 && column >= fromColumn {
+			column++
 		}
 		result.WriteString(CellName(row, column))
 		i = end
@@ -358,7 +340,3 @@ func isDecimalExponent(formula string, index int) bool {
 	}
 	return next < len(formula) && isDigit(formula[next])
 }
-
-type ErrorValue string
-
-func (e ErrorValue) Error() string { return string(e) }
