@@ -322,6 +322,11 @@ func (s *documentsScreen) focusToolbar() {
 	s.body.Blur()
 }
 
+func (s *documentsScreen) focusOutline() {
+	s.focus = focusOutline
+	s.body.Blur()
+}
+
 func (s *documentsScreen) layoutEditor() {
 	if s.width == 0 {
 		return
@@ -369,6 +374,12 @@ func (s *documentsScreen) updateEditorShortcuts(msg tea.KeyMsg, key string) (tea
 	case "f5":
 		s.openPreview()
 		return nil, true
+	case "f6":
+		s.focusOutline()
+		return nil, true
+	case "ctrl+o":
+		s.outlineVisible = !s.outlineVisible
+		return nil, true
 	case "ctrl+z", "ctrl+r", "ctrl+y", "ctrl+shift+z":
 		if key == "ctrl+z" && s.body.CanUndo() {
 			s.body.Undo()
@@ -392,11 +403,8 @@ func (s *documentsScreen) updateEditorShortcuts(msg tea.KeyMsg, key string) (tea
 		}
 		return s.requestClose("Esc"), true
 	case "tab":
-		if s.focus == focusBody {
-			s.focusToolbar()
-			return nil, true
-		}
-		return s.focusBody(), true
+		// if in body, it falls through to insert spaces
+		return nil, false
 	case "f2":
 		s.focusToolbar()
 		return nil, true
@@ -417,6 +425,19 @@ func (s *documentsScreen) updateEditorKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	if cmd, handled := s.updateEditorShortcuts(msg, key); handled {
 		return cmd
+	}
+	if s.focus == focusOutline {
+		switch key {
+		case "up", "k":
+			s.changeEditorOutlineSelection(-1)
+		case "down", "j":
+			s.changeEditorOutlineSelection(1)
+		case "enter":
+			s.jumpToEditorOutlineSelection()
+		case "tab":
+			return s.focusBody()
+		}
+		return nil
 	}
 	if action, ok := altActions[key]; ok {
 		return s.act(action)
@@ -477,14 +498,25 @@ func (s *documentsScreen) updateMouse(msg tea.MouseMsg) tea.Cmd {
 		}
 	}
 	editorY := msg.Y - (toolbarTop + s.toolbarRows() + 1)
+	outlineWidth, _ := s.readerPaneWidths()
+	inOutline := s.outlineVisible && s.wideReader() && msg.X < outlineWidth+2
 	editorX := msg.X - 2
+	if s.outlineVisible && s.wideReader() && !inOutline {
+		editorX = msg.X - outlineWidth - 2
+	}
 	if editorY >= 0 && editorX >= 0 {
 		mouseMsg := msg
 		mouseMsg.Y = editorY
 		mouseMsg.X = editorX
 		var cmd tea.Cmd
-		s.body, cmd = s.body.Update(mouseMsg)
-		if msg.Action == tea.MouseActionPress {
+		if inOutline {
+			if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+				s.clickEditorOutline(msg.X, editorY)
+			}
+		} else {
+			s.body, cmd = s.body.Update(mouseMsg)
+		}
+		if msg.Action == tea.MouseActionPress && !inOutline {
 			return tea.Batch(cmd, s.focusBody())
 		}
 		return cmd
@@ -815,7 +847,7 @@ func (s *documentsScreen) editorView(header string) string {
 	if s.dirty() {
 		state += " • unsaved"
 	}
-	state += "  ·  Tab switches Body/Toolbar  ·  F2 toolbar  ·  Ctrl+S saves  ·  F3 proposes  ·  F4 changes  ·  Esc returns to the reader"
+	state += "  ·  F2 toolbar  ·  F6 outline  ·  Ctrl+S saves  ·  F3 proposes  ·  F4 changes  ·  Esc returns to the reader"
 	if s.previewing {
 		// A printed page is usually taller than the terminal. Show only the
 		// lines that fit; an over-tall view would be clipped from the top,
@@ -839,5 +871,127 @@ func (s *documentsScreen) editorView(header string) string {
 	content.WriteString(s.body.View())
 
 	shortcuts := state + "\n" + s.toolbarView()
-	return chromeLayout(s.width, s.height, header, shortcuts, content.String(), s.statusLine(), s.theme.Border)
+
+	var renderedPane string
+	if s.outlineVisible && s.wideReader() {
+		outlineWidth, previewWidth := s.readerPaneWidths()
+		lines, _ := s.editorOutlineLines()
+		for i, line := range lines {
+			lines[i] = runewidth.Truncate(line, max(outlineWidth-2, 1), "…")
+		}
+
+		paneStyle := lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).BorderForeground(s.theme.Border).Padding(0, 1)
+		outlinePane := paneStyle.Width(outlineWidth).Render(strings.Join(lines, "\n"))
+		editorPane := paneStyle.Width(previewWidth).Render(content.String())
+
+		renderedPane = lipgloss.JoinHorizontal(lipgloss.Top, outlinePane, editorPane)
+	} else {
+		renderedPane = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).BorderForeground(s.theme.Border).Padding(0, 1).Render(content.String())
+	}
+	return chromeLayout(s.width, s.height, header, shortcuts, renderedPane, s.statusLine(), s.theme.Border)
+}
+
+func (s *documentsScreen) editorOutline() []document.Section {
+	outline, _ := document.Outline(s.editorDocument())
+	return outline
+}
+
+func (s *documentsScreen) changeEditorOutlineSelection(step int) {
+	outline := s.editorOutline()
+	if len(outline) == 0 {
+		return
+	}
+	current := s.currentSection()
+	if current < 0 {
+		current = 0
+	}
+	next := current + step
+	if next < 0 {
+		next = 0
+	}
+	if next >= len(outline) {
+		next = len(outline) - 1
+	}
+	s.gotoEditorSection(next)
+}
+
+func (s *documentsScreen) gotoEditorSection(index int) {
+	outline := s.editorOutline()
+	if index < 0 || index >= len(outline) {
+		return
+	}
+	section := outline[index]
+
+	pages, err := document.Paginate(s.editorDocument())
+	if err != nil || section.Page < 1 || section.Page > len(pages) {
+		return
+	}
+
+	// Try to find the heading in the page lines to jump the cursor
+	page := pages[section.Page-1]
+	for idx, line := range page.Lines {
+		if strings.HasPrefix(strings.TrimSpace(line), strings.Repeat("#", section.Level)+" "+section.Title) {
+			s.editPage = section.Page - 1
+			s.editPageLine = idx
+
+			// We can also try to move the cursor. Let's just find the line in the body text
+			bodyLines := strings.Split(s.body.Value(), "\n")
+			for i, bline := range bodyLines {
+				if strings.HasPrefix(strings.TrimSpace(bline), strings.Repeat("#", section.Level)+" "+section.Title) {
+					s.body.Cursor.Line = i
+					s.body.Cursor.Col = 0
+
+					break
+				}
+			}
+			break
+		}
+	}
+}
+
+func (s *documentsScreen) jumpToEditorOutlineSelection() {
+	s.focusBody()
+}
+
+func (s *documentsScreen) clickEditorOutline(x, row int) {
+	if !s.wideReader() {
+		return
+	}
+	outlineWidth, _ := s.readerPaneWidths()
+	if x < 1 || x > outlineWidth+1 {
+		return
+	}
+	_, targets := s.editorOutlineLines()
+	if row >= 0 && row < len(targets) && targets[row] >= 0 {
+		s.gotoEditorSection(targets[row])
+		s.focusOutline()
+	}
+}
+
+func (s *documentsScreen) editorOutlineLines() (lines []string, targets []int) {
+	outline := s.editorOutline()
+	add := func(line string, target int) {
+		lines = append(lines, line)
+		targets = append(targets, target)
+	}
+	add("Outline", -1)
+	if len(outline) == 0 {
+		add("  No headings", -1)
+		return lines, targets
+	}
+	room := max(s.height-5-len(lines), 1)
+	current := -1
+	start := 0
+	for i := start; i < min(start+room, len(outline)); i++ {
+		section := outline[i]
+		marker := "  "
+		if i == current {
+			marker = "› "
+		}
+		indent := strings.Repeat("  ", min(max(section.Level-1, 0), 4))
+		add(marker+indent+sanitizeTerminalLine(section.Title), i)
+	}
+	return lines, targets
 }

@@ -105,6 +105,9 @@ func (s *documentsScreen) updateReaderKey(msg tea.KeyMsg) tea.Cmd {
 	key := msg.String()
 	switch key {
 	case "q", "esc", "ctrl+c":
+		if s.showChanges {
+			return s.updateChangesKey(msg)
+		}
 		return s.close()
 	case "e":
 		cmd, ok := s.startEdit(s.snapshot)
@@ -119,6 +122,8 @@ func (s *documentsScreen) updateReaderKey(msg tea.KeyMsg) tea.Cmd {
 		return s.history(true)
 	case "ctrl+r":
 		return s.history(false)
+	case "ctrl+o":
+		s.outlineVisible = !s.outlineVisible
 	case "right", "]":
 		s.changeReaderPage(1, key == "]")
 	case "left", "[":
