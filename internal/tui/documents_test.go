@@ -594,6 +594,51 @@ func TestDocumentOpensInReaderWithOutline(t *testing.T) {
 	}
 }
 
+func TestDocumentEditorOutlinePaneTogglesAndNavigates(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "# Start\n\nText."})
+	h.send(tea.WindowSizeMsg{Width: 100, Height: 24})
+	s := h.m.documents
+
+	if s.outlineVisible {
+		t.Fatal("outline should be hidden by default")
+	}
+
+	h.key("ctrl+o")
+	if !s.outlineVisible {
+		t.Fatal("ctrl+o did not show the outline")
+	}
+
+	h.key("f6")
+	if s.focus != focusOutline {
+		t.Fatal("f6 did not focus the outline")
+	}
+
+	view := h.m.View()
+	if !strings.Contains(view, "Outline") {
+		t.Fatal("outline pane is missing")
+	}
+
+	h.send(tea.MouseMsg{X: 3, Y: 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+
+	h.key("tab")
+	if s.focus != focusBody {
+		t.Fatal("tab did not return focus to body")
+	}
+
+	h.key("f6")
+	h.key("down")
+	h.key("enter")
+
+	if s.focus != focusBody {
+		t.Fatal("enter on outline item did not return to body")
+	}
+
+	h.key("ctrl+o")
+	if s.outlineVisible {
+		t.Fatal("ctrl+o did not hide the outline")
+	}
+}
+
 func TestDocumentReaderShowsSavedEditsAndDiscardsDraft(t *testing.T) {
 	h := newDocumentHarness(t, document.Draft{Body: "# Start\n\nText."})
 	s := h.m.documents
