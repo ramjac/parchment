@@ -2,12 +2,15 @@ package presentation
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -17,6 +20,8 @@ import (
 	"example.com/parchment/internal/artifactfile"
 	"example.com/parchment/internal/history"
 )
+
+var presentationDirectiveRE = regexp.MustCompile(`(?m)^\.image\s+([^\s]+)`)
 
 const FileVersion = 1
 
@@ -41,11 +46,20 @@ type Presentation struct {
 	artifact.Artifact
 	Version int
 	Source  string
+	Font    string
+	Images  []artifact.Image
 	Blocks  map[string]json.RawMessage `json:"-"`
 }
 
+type embeddedImage struct {
+	Name string `json:"name"`
+	Data []byte `json:"data"`
+}
+
 type fileContent struct {
-	Version int `json:"version"`
+	Version int             `json:"version"`
+	Font    string          `json:"font,omitempty"`
+	Images  []embeddedImage `json:"images,omitempty"`
 }
 
 // Repository persists presentations as single-file artifacts.
@@ -96,15 +110,33 @@ func (s *Service) Create(ctx context.Context, path, source string) (Presentation
 			CreatedAt: now, ModifiedAt: now, FormatVersion: artifact.FormatVersion,
 			Path: path,
 		},
-		Version: FileVersion, Source: source,
+		Version: FileVersion, Source: source, Font: "courier",
 	}
-	if err := Validate(item); err != nil {
+	if err := normalize(&item); err != nil {
 		return Presentation{}, err
 	}
 	if err := s.repository.TransitionPresentation(ctx, path, nil, &item); err != nil {
 		return Presentation{}, err
 	}
 	return s.repository.GetPresentation(ctx, path)
+}
+
+// SetFont updates the core font.
+func (s *Service) SetFont(ctx context.Context, path, font string) (Presentation, error) {
+	current, err := s.Get(ctx, path)
+	if err != nil {
+		return Presentation{}, err
+	}
+	after := current
+	after.Font = strings.ToLower(font)
+	after.ModifiedAt = s.now().UTC()
+	if err := Validate(after); err != nil {
+		return Presentation{}, err
+	}
+	if err := s.change(ctx, &current, &after, "Changed font"); err != nil {
+		return Presentation{}, err
+	}
+	return after, nil
 }
 
 // Update replaces the presentation source if expected still matches storage.
@@ -118,7 +150,7 @@ func (s *Service) Update(ctx context.Context, expected Presentation, source stri
 	after := clonePresentation(expected)
 	after.Source = source
 	after.ModifiedAt = s.now().UTC()
-	if err := Validate(after); err != nil {
+	if err := normalize(&after); err != nil {
 		return Presentation{}, err
 	}
 	if err := s.change(ctx, &expected, &after, "Edit presentation"); err != nil {
@@ -466,8 +498,40 @@ func Validate(item Presentation) error {
 	if !utf8.ValidString(item.Source) {
 		return errors.New("presentation source must be valid UTF-8")
 	}
+	switch item.Font {
+	case "", "courier", "helvetica", "times":
+	default:
+		return fmt.Errorf("unsupported font %q", item.Font)
+	}
 	_, err := Parse(item.Source)
 	return err
+}
+
+func normalize(p *Presentation) error {
+	if err := Validate(*p); err != nil {
+		return err
+	}
+	referenced := artifact.ReferencedImages(p.Source)
+	for _, match := range presentationDirectiveRE.FindAllStringSubmatch(p.Source, -1) {
+		if len(match) > 1 {
+			referenced[match[1]] = true
+		}
+	}
+	seen := map[string]bool{}
+	var images []artifact.Image
+	for _, img := range p.Images {
+		if !referenced[img.Name] || seen[img.Name] {
+			continue
+		}
+		if err := img.Validate(); err != nil {
+			return err
+		}
+		seen[img.Name] = true
+		images = append(images, img)
+	}
+	sort.Slice(images, func(i, j int) bool { return images[i].Name < images[j].Name })
+	p.Images = images
+	return nil
 }
 
 // Encode writes a self-contained Markdown file with a leading metadata block.
@@ -479,7 +543,11 @@ func Encode(item Presentation) ([]byte, error) {
 	for name, payload := range item.Blocks {
 		blocks[name] = payload
 	}
-	blocks["parchment-presentation"] = fileContent{Version: item.Version}
+	payload := fileContent{Version: item.Version, Font: item.Font}
+	for _, img := range item.Images {
+		payload.Images = append(payload.Images, embeddedImage{Name: img.Name, Data: img.Data})
+	}
+	blocks["parchment-presentation"] = payload
 	return artifactfile.Encode(item.Artifact, item.Source, blocks)
 }
 
@@ -505,11 +573,15 @@ func Decode(data []byte) (Presentation, error) {
 	}
 	item := Presentation{
 		Artifact: file.Artifact, Version: payload.Version, Source: file.Body,
+		Font:   payload.Font,
 		Blocks: cloneBlocksExcept(file.Blocks, "parchment-presentation"),
+	}
+	for _, img := range payload.Images {
+		item.Images = append(item.Images, artifact.Image{Name: img.Name, Data: img.Data})
 	}
 	item.CreatedAt = item.CreatedAt.UTC()
 	item.ModifiedAt = item.ModifiedAt.UTC()
-	if err := Validate(item); err != nil {
+	if err := normalize(&item); err != nil {
 		return Presentation{}, fmt.Errorf("validate presentation: %w", err)
 	}
 	return item, nil
@@ -541,6 +613,11 @@ func Preview(deck Deck) string {
 
 func clonePresentation(item Presentation) Presentation {
 	item.Blocks = cloneBlocks(item.Blocks)
+	images := make([]artifact.Image, len(item.Images))
+	for i, img := range item.Images {
+		images[i] = artifact.Image{Name: img.Name, Data: append([]byte(nil), img.Data...)}
+	}
+	item.Images = images
 	return item
 }
 
@@ -571,6 +648,15 @@ func cloneBlocksExcept(blocks map[string]json.RawMessage, excluded ...string) ma
 
 func Equal(left, right Presentation) bool {
 	left.Title, right.Title = "", ""
+	if len(left.Images) != len(right.Images) {
+		return false
+	}
+	for i := range left.Images {
+		if left.Images[i].Name != right.Images[i].Name || !bytes.Equal(left.Images[i].Data, right.Images[i].Data) {
+			return false
+		}
+	}
+	left.Images, right.Images = nil, nil
 	return reflect.DeepEqual(left, right)
 }
 
@@ -608,4 +694,118 @@ func (o presentationOperation) transition(ctx context.Context, expected, target 
 		return errors.New("presentation operation must have a before and after value")
 	}
 	return o.repository.TransitionPresentation(ctx, o.before.Path, expected, target)
+}
+
+// AddImage embeds an image and appends it to the end of the presentation source.
+// It returns the updated presentation and the embedded image's stable name.
+func (s *Service) AddImage(ctx context.Context, path, alt string, data []byte) (Presentation, string, error) {
+	img, err := artifact.NewImage(data)
+	if err != nil {
+		return Presentation{}, "", err
+	}
+	before, err := s.repository.GetPresentation(ctx, path)
+	if err != nil {
+		return Presentation{}, "", err
+	}
+	after := clonePresentation(before)
+	after = WithImage(after, img)
+	after.Source = strings.TrimRight(after.Source, "\n") + "\n\n" + artifact.ImageMarkdown(alt, img.Name) + "\n"
+	after.ModifiedAt = s.now().UTC()
+	if err := normalize(&after); err != nil {
+		return Presentation{}, "", err
+	}
+	if err := s.change(ctx, &before, &after, "Insert image"); err != nil {
+		return Presentation{}, "", err
+	}
+	return clonePresentation(after), img.Name, err
+}
+
+// WithImage returns the presentation with img added, replacing any image of the
+// same name.
+func WithImage(p Presentation, img artifact.Image) Presentation {
+	for i, existing := range p.Images {
+		if existing.Name == img.Name {
+			p.Images[i] = img
+			return p
+		}
+	}
+	p.Images = append(p.Images, img)
+	return p
+}
+
+// GetImage returns the embedded image with the given name.
+func (s *Service) GetImage(ctx context.Context, path, imageName string) (artifact.Image, error) {
+	p, err := s.Get(ctx, path)
+	if err != nil {
+		return artifact.Image{}, err
+	}
+	for _, img := range p.Images {
+		if img.Name == imageName {
+			return img, nil
+		}
+	}
+	return artifact.Image{}, fmt.Errorf("image %q not found in presentation", imageName)
+}
+
+// RemoveImage removes an image from a presentation. If it is referenced in the source,
+// it is only removed if stripReferences is true.
+func (s *Service) RemoveImage(ctx context.Context, path, imageName string, stripReferences bool) (Presentation, error) {
+	before, err := s.repository.GetPresentation(ctx, path)
+	if err != nil {
+		return Presentation{}, err
+	}
+	found := false
+	for _, img := range before.Images {
+		if img.Name == imageName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return Presentation{}, fmt.Errorf("image %q not found in presentation", imageName)
+	}
+
+	after := clonePresentation(before)
+
+	if stripReferences {
+		// Strip standard markdown tags
+		after.Source = regexp.MustCompile(`!\[[^\]]*\]\(`+regexp.QuoteMeta(imageName)+`\)`).ReplaceAllString(after.Source, "")
+		// Strip .image directives
+		after.Source = regexp.MustCompile(`(?m)^\.image\s+`+regexp.QuoteMeta(imageName)+`.*$`).ReplaceAllString(after.Source, "")
+	}
+
+	images := after.Images[:0]
+	for _, img := range after.Images {
+		if img.Name != imageName {
+			images = append(images, img)
+		}
+	}
+	after.Images = images
+	after.ModifiedAt = s.now().UTC()
+
+	if err := normalize(&after); err != nil {
+		if stripReferences {
+			return Presentation{}, err
+		}
+		// Since normalize prunes unreferenced images, if it complains, it means it's still referenced! Wait! Normalize doesn't complain about images being present if they are not referenced, it just removes them!
+		// But if we remove it manually above, and the source STILL references it, it might be fine, but we should reject if it's referenced and stripReferences=false.
+	}
+
+	// We need to enforce stripReferences = false failure.
+	if !stripReferences {
+		refs := artifact.ReferencedImages(after.Source)
+		for _, match := range presentationDirectiveRE.FindAllStringSubmatch(after.Source, -1) {
+			if len(match) > 1 {
+				refs[match[1]] = true
+			}
+		}
+		if refs[imageName] {
+			return Presentation{}, fmt.Errorf("image %q is referenced in presentation source (use stripReferences to force)", imageName)
+		}
+	}
+
+	if err := s.change(ctx, &before, &after, "Remove image"); err != nil {
+		return Presentation{}, err
+	}
+	return clonePresentation(after), nil
 }

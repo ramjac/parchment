@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -273,9 +274,9 @@ func newDocumentLayoutCmd(streams output) *cobra.Command {
 				drainWarnings(repo, output{err: cmd.ErrOrStderr()})
 			}
 			l := d.Layout
-			_, err = fmt.Fprintf(streams.out, "page-size: %s\norientation: %s\nmargins: top=%d right=%d bottom=%d left=%d (mm)\ncolumns: %d\nheader: %q\nfooter: %q\npage-numbers: %s\n",
+			_, err = fmt.Fprintf(streams.out, "page-size: %s\norientation: %s\nmargins: top=%d right=%d bottom=%d left=%d (mm)\ncolumns: %d\nheader: %q\nfooter: %q\npage-numbers: %s\nfont: %s\n",
 				l.PageSize, l.Orientation, l.Margins.Top, l.Margins.Right, l.Margins.Bottom, l.Margins.Left,
-				l.Columns, l.Header, l.Footer, l.PageNumbers)
+				l.Columns, l.Header, l.Footer, l.PageNumbers, l.Font)
 			return err
 		},
 	}
@@ -347,7 +348,7 @@ func newDocumentImagesCmd(streams output) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			referenced := document.ReferencedImages(d.Body)
+			referenced := artifact.ReferencedImages(d.Body)
 			for _, img := range d.Images {
 				status := "unreferenced"
 				if referenced[img.Name] {
@@ -511,6 +512,7 @@ func addLayoutFlags(cmd *cobra.Command) {
 	flags.String("header", "", "header text")
 	flags.String("footer", "", "footer text")
 	flags.String("page-numbers", "", "page number placement: none, left, center, or right")
+	flags.String("font", "", "font family: courier, helvetica, or times")
 }
 
 // applyLayoutFlags changes only the layout fields whose flags were supplied.
@@ -540,6 +542,8 @@ func applyLayoutFlags(cmd *cobra.Command, layout *document.Layout) error {
 	setString("header", &layout.Header)
 	setString("footer", &layout.Footer)
 	setString("page-numbers", &layout.PageNumbers)
+	setString("font", &layout.Font)
+	layout.Font = strings.ToLower(layout.Font)
 	return layout.Validate()
 }
 
