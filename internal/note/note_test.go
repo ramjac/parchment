@@ -14,7 +14,7 @@ import (
 
 func newService(t *testing.T, undoLimit int) (*note.Service, *filerepo.Repository, string) {
 	t.Helper()
-	repo, err := filerepo.New(t.TempDir())
+	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

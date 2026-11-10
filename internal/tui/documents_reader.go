@@ -231,24 +231,33 @@ func (s *documentsScreen) readerPageLabel() string {
 }
 
 func (s *documentsScreen) readerView(header string) string {
-	footer := "e edit  ↑/↓ scroll  ←/→ or [ ] page  { } section  v changes  u undo  Ctrl+R redo  esc/q quit"
+	shortcuts := "e edit  ↑/↓ scroll  ←/→ or [ ] page  { } section  v changes  u undo  Ctrl+R redo  esc/q quit"
 	if !s.wideReader() {
-		return header + "\nPage " + s.readerPageLabel() + "\n" + s.reader.View() + "\n" +
-			runewidth.Truncate(footer, max(s.width, 1), "…") + s.statusLine()
+		content := "Page " + s.readerPageLabel() + "\n" + s.reader.View()
+		shortcuts = runewidth.Truncate(shortcuts, max(s.width, 1), "…")
+		return chromeLayout(s.width, s.height, header, shortcuts, content, s.statusLine(), s.theme.Border)
 	}
 	outlineWidth, previewWidth := s.readerPaneWidths()
 	lines, _ := s.outlineLines()
 	for i, line := range lines {
 		lines[i] = runewidth.Truncate(line, max(outlineWidth-2, 1), "…")
 	}
-	pane := func(width int, content string) string {
-		return lipgloss.NewStyle().Width(width).Height(max(s.height-5, 1)).MaxHeight(max(s.height-3, 1)).
-			Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1).Render(content)
-	}
-	content := "Page " + s.readerPageLabel() + "\n" + s.reader.View()
-	footer = "click outline to jump  " + footer
-	return header + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, pane(outlineWidth, strings.Join(lines, "\n")), pane(previewWidth, content)) +
-		"\n" + runewidth.Truncate(footer, max(s.width, 1), "…") + s.statusLine()
+
+	left := lipgloss.NewStyle().
+		Width(outlineWidth-2).
+		Border(lipgloss.NormalBorder(), false, true, false, false).
+		BorderForeground(s.theme.Border).
+		PaddingRight(1).
+		Render(strings.Join(lines, "\n"))
+
+	right := lipgloss.NewStyle().
+		Width(previewWidth - 2).
+		PaddingLeft(1).
+		Render("Page " + s.readerPageLabel() + "\n" + s.reader.View())
+
+	content := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	shortcuts = runewidth.Truncate("click outline to jump  "+shortcuts, max(s.width, 1), "…")
+	return chromeLayout(s.width, s.height, header, shortcuts, content, s.statusLine(), s.theme.Border)
 }
 
 // leaveEditor returns from the editor to the reader, discarding unsaved edits

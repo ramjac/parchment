@@ -59,7 +59,7 @@ func (s *documentsScreen) marginName() string {
 // toolbarButtons lists the controls shown above the editor. Labels for page
 // settings show the current value.
 func (s *documentsScreen) toolbarButtons() []toolbarButton {
-	return []toolbarButton{
+	buttons := []toolbarButton{
 		{"File", "Save", "save", "Ctrl+S"},
 		{"File", "Propose", "propose", "F3"},
 		{"File", "Changes", "changes", "F4"},
@@ -88,6 +88,12 @@ func (s *documentsScreen) toolbarButtons() []toolbarButton {
 		{"Page", "Footer", "footer", ""},
 		{"Page", "Page #: " + s.layout.PageNumbers, "numbers-pos", ""},
 	}
+	font := s.layout.Font
+	if font == "" {
+		font = "courier"
+	}
+	buttons = append(buttons, toolbarButton{"Page", "Font: " + font, "font", ""})
+	return buttons
 }
 
 // buttonLayout wraps the toolbar to the available width. It is used for both
@@ -127,7 +133,7 @@ const toolbarTop = 2
 func (s *documentsScreen) toolbarView() string {
 	placed, rows := s.buttonLayout(max(s.width, 20))
 	buttons := s.toolbarButtons()
-	normal := lipgloss.NewStyle().Foreground(primaryColor).Background(lipgloss.AdaptiveColor{Light: "#e7e3f5", Dark: "#2f2b45"})
+	normal := lipgloss.NewStyle().Foreground(s.theme.Primary).Background(s.theme.Selection)
 	active := normal.Reverse(true).Bold(true)
 	lineBuilders := make([]strings.Builder, rows)
 	groupSeen := make([]string, rows)
@@ -297,8 +303,8 @@ func (s *documentsScreen) saveDocumentRecovery(session uint64) tea.Cmd {
 	}
 }
 
-func cloneDocumentImages(source []document.Image) []document.Image {
-	images := make([]document.Image, len(source))
+func cloneDocumentImages(source []artifact.Image) []artifact.Image {
+	images := make([]artifact.Image, len(source))
 	for i, image := range source {
 		images[i] = image
 		images[i].Data = append([]byte(nil), image.Data...)
@@ -620,6 +626,8 @@ func (s *documentsScreen) act(action string) tea.Cmd {
 		} else {
 			s.layout.Orientation = document.Portrait
 		}
+	case "font":
+		s.layout.Font = nextOf([]string{"courier", "helvetica", "times"}, s.layout.Font)
 	case "numbers-pos":
 		s.layout.PageNumbers = nextOf(numberPlacements, s.layout.PageNumbers)
 	case "header":
@@ -862,7 +870,8 @@ func (s *documentsScreen) editorView(header string) string {
 	}
 	content.WriteString(s.body.View())
 
-	paneHeight := max(s.height-s.toolbarRows()-4, 3)
+	shortcuts := state + "\n" + s.toolbarView()
+
 	var renderedPane string
 	if s.outlineVisible && s.wideReader() {
 		outlineWidth, previewWidth := s.readerPaneWidths()
@@ -871,18 +880,17 @@ func (s *documentsScreen) editorView(header string) string {
 			lines[i] = runewidth.Truncate(line, max(outlineWidth-2, 1), "…")
 		}
 
-		paneStyle := lipgloss.NewStyle().Height(paneHeight).MaxHeight(paneHeight).
-			Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1)
+		paneStyle := lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).BorderForeground(s.theme.Border).Padding(0, 1)
 		outlinePane := paneStyle.Width(outlineWidth).Render(strings.Join(lines, "\n"))
 		editorPane := paneStyle.Width(previewWidth).Render(content.String())
 
 		renderedPane = lipgloss.JoinHorizontal(lipgloss.Top, outlinePane, editorPane)
 	} else {
-		renderedPane = lipgloss.NewStyle().Width(max(s.width, 10)).Height(paneHeight).
-			Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1).Render(content.String())
+		renderedPane = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).BorderForeground(s.theme.Border).Padding(0, 1).Render(content.String())
 	}
-
-	return header + "\n" + state + "\n" + s.toolbarView() + "\n" + renderedPane + s.statusLine()
+	return chromeLayout(s.width, s.height, header, shortcuts, renderedPane, s.statusLine(), s.theme.Border)
 }
 
 func (s *documentsScreen) editorOutline() []document.Section {
