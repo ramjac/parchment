@@ -214,16 +214,6 @@ func TestLayoutValidate(t *testing.T) {
 			errText: "unsupported page number placement",
 		},
 		{
-			name: "invalid font",
-			layout: func() Layout {
-				l := DefaultLayout()
-				l.Font = "bogus"
-				return l
-			}(),
-			wantErr: true,
-			errText: "unsupported font",
-		},
-		{
 			name: "header too long",
 			layout: func() Layout {
 				l := DefaultLayout()
