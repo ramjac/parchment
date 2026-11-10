@@ -225,15 +225,15 @@ type documentReaderState struct {
 // documentsScreen edits one document file and reviews its proposed changes.
 // It owns UI state only; document rules live in the document service.
 type documentsScreen struct {
-	service       *document.Service
-	path          string
-	width, height int
-	pending       bool
+	service        *document.Service
+	path           string
+	width, height  int
+	pending        bool
 	outlineVisible bool
-	canUndo       bool
-	canRedo       bool
-	status        string
-	errMessage    string
+	canUndo        bool
+	canRedo        bool
+	status         string
+	errMessage     string
 
 	theme               Theme
 	newOperationContext func() (context.Context, context.CancelFunc)

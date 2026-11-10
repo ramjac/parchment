@@ -930,16 +930,16 @@ func (s *documentsScreen) gotoEditorSection(index int) {
 	}
 
 	// Try to find the heading in the page lines to jump the cursor
-	page := pages[section.Page - 1]
+	page := pages[section.Page-1]
 	for idx, line := range page.Lines {
-		if strings.HasPrefix(strings.TrimSpace(line), strings.Repeat("#", section.Level) + " " + section.Title) {
+		if strings.HasPrefix(strings.TrimSpace(line), strings.Repeat("#", section.Level)+" "+section.Title) {
 			s.editPage = section.Page - 1
 			s.editPageLine = idx
 
 			// We can also try to move the cursor. Let's just find the line in the body text
 			bodyLines := strings.Split(s.body.Value(), "\n")
 			for i, bline := range bodyLines {
-				if strings.HasPrefix(strings.TrimSpace(bline), strings.Repeat("#", section.Level) + " " + section.Title) {
+				if strings.HasPrefix(strings.TrimSpace(bline), strings.Repeat("#", section.Level)+" "+section.Title) {
 					s.body.Cursor.Line = i
 					s.body.Cursor.Col = 0
 
@@ -954,7 +954,6 @@ func (s *documentsScreen) gotoEditorSection(index int) {
 func (s *documentsScreen) jumpToEditorOutlineSelection() {
 	s.focusBody()
 }
-
 
 func (s *documentsScreen) clickEditorOutline(x, row int) {
 	if !s.wideReader() {
