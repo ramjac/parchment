@@ -333,7 +333,7 @@ func decodeDocument(path string, content []byte) (document.Document, []document.
 	}
 	seenImages := map[string]bool{}
 	for _, imageData := range payload.Images {
-		img := document.Image{Name: imageData.Name, Data: imageData.Data}
+		img := artifact.Image{Name: imageData.Name, Data: imageData.Data}
 		if err := img.Validate(); err != nil {
 			return document.Document{}, nil, fmt.Errorf("validate document image %s: %w", img.Name, err)
 		}
