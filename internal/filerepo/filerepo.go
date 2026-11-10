@@ -17,7 +17,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/artifactfile"
@@ -29,14 +32,22 @@ var ErrExists = errors.New("file already exists")
 // ErrNotArtifact reports that a file has no Parchment metadata envelope.
 var ErrNotArtifact = errors.New("file is not a Parchment artifact")
 
+// Options configure the repository.
+type Options struct {
+	LocalBackup string
+}
+
 // Repository reads and writes artifact files by path.
 type Repository struct {
-	stateDir string
+	stateDir  string
+	backupDir string
+	warnings  []error
+	mu        sync.Mutex
 }
 
 // New returns a repository that keeps its write lock and recovery drafts in
 // stateDir, which is created on demand with owner-only permissions.
-func New(stateDir string) (*Repository, error) {
+func New(stateDir string, opts Options) (*Repository, error) {
 	if stateDir == "" {
 		return nil, errors.New("state directory is required")
 	}
@@ -44,7 +55,20 @@ func New(stateDir string) (*Repository, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve state directory: %w", err)
 	}
-	return &Repository{stateDir: abs}, nil
+	repo := &Repository{stateDir: abs}
+	if opts.LocalBackup != "" {
+		backupAbs, err := filepath.Abs(opts.LocalBackup)
+		if err != nil {
+			return nil, fmt.Errorf("resolve backup directory: %w", err)
+		}
+		cleanState := filepath.Clean(abs)
+		cleanBackup := filepath.Clean(backupAbs)
+		if cleanBackup == cleanState || strings.HasPrefix(cleanBackup, cleanState+string(filepath.Separator)) {
+			return nil, fmt.Errorf("backup directory cannot be inside state directory")
+		}
+		repo.backupDir = backupAbs
+	}
+	return repo, nil
 }
 
 // KindError reports that a file holds a different kind of artifact.
@@ -125,6 +149,18 @@ func decodeArtifact(path string, content []byte) (artifactfile.File, error) {
 	return file, nil
 }
 
+// decodeArtifactBlocks decodes metadata and blocks of content already checked by checkKind.
+func decodeArtifactBlocks(path string, content []byte) (artifact.Artifact, map[string]json.RawMessage, error) {
+	item, blocks, err := artifactfile.DecodeBlocks(content)
+	if err != nil {
+		return artifact.Artifact{}, nil, fmt.Errorf("decode blocks %s: %w", path, err)
+	}
+	item.CreatedAt = item.CreatedAt.UTC()
+	item.ModifiedAt = item.ModifiedAt.UTC()
+	setRuntimeIdentity(&item, path)
+	return item, blocks, nil
+}
+
 // setRuntimeIdentity derives the artifact's runtime ID and title from its
 // path. Neither is persisted; the file name is how users identify a file.
 func setRuntimeIdentity(item *artifact.Artifact, path string) {
@@ -172,7 +208,11 @@ func (r *Repository) update(ctx context.Context, path string, create bool, notFo
 		if err != nil {
 			return err
 		}
-		return writeUpdate(ctx, resolved, path, create, data, mode)
+		err = writeUpdate(ctx, resolved, path, create, data, mode)
+		if err == nil && r.backupDir != "" {
+			r.createBackup(ctx, path, data)
+		}
+		return err
 	})
 }
 
@@ -217,6 +257,65 @@ func writeUpdate(ctx context.Context, resolved, path string, create bool, data [
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
+}
+
+// Warnings returns and clears any non-fatal errors accumulated by the repository.
+func (r *Repository) Warnings() []error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	w := r.warnings
+	r.warnings = nil
+	return w
+}
+
+func (r *Repository) addWarning(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.warnings = append(r.warnings, err)
+}
+
+func (r *Repository) createBackup(ctx context.Context, path string, data []byte) {
+	if err := ensureDirectory(r.backupDir); err != nil {
+		r.addWarning(fmt.Errorf("backup failed: %w", err))
+		return
+	}
+	stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	ext := filepath.Ext(path)
+	hash := fmt.Sprintf("%08x", sha256.Sum256([]byte(path)))[:8]
+	timestamp := time.Now().UTC().Format("20060102T150405Z")
+	backupName := fmt.Sprintf("%s-%s-%s%s", stem, hash, timestamp, ext)
+	backupPath := filepath.Join(r.backupDir, backupName)
+
+	if err := createAtomic(ctx, backupPath, data, 0o600); err != nil {
+		r.addWarning(fmt.Errorf("backup failed: %w", err))
+		return
+	}
+
+	r.pruneBackups(stem, hash, ext)
+}
+
+func (r *Repository) pruneBackups(stem, hash, ext string) {
+	entries, err := os.ReadDir(r.backupDir)
+	if err != nil {
+		r.addWarning(fmt.Errorf("backup prune failed: %w", err))
+		return
+	}
+	prefix := fmt.Sprintf("%s-%s-", stem, hash)
+	var matches []string
+	for _, entry := range entries {
+		if entry.Type().IsRegular() && strings.HasPrefix(entry.Name(), prefix) && strings.HasSuffix(entry.Name(), ext) {
+			matches = append(matches, entry.Name())
+		}
+	}
+	if len(matches) <= 10 {
+		return
+	}
+	sort.Strings(matches)
+	for i := 0; i < len(matches)-10; i++ {
+		if err := os.Remove(filepath.Join(r.backupDir, matches[i])); err != nil && !os.IsNotExist(err) {
+			r.addWarning(fmt.Errorf("backup prune failed: %w", err))
+		}
+	}
 }
 
 func (r *Repository) withLock(ctx context.Context, operation func() error) error {
