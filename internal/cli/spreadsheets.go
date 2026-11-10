@@ -24,8 +24,6 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 	group.AddCommand(newSpreadsheetShowCmd(streams))
 	group.AddCommand(newSpreadsheetCellCmd(streams))
 	addSpreadsheetInsertCommands(group)
-	addSpreadsheetDeleteCommands(group)
-	group.AddCommand(newSpreadsheetDeleteSheetCmd())
 	group.AddCommand(newSpreadsheetAddSheetCmd())
 	group.AddCommand(newSpreadsheetExportCmd(streams))
 }
@@ -326,59 +324,5 @@ func readSpreadsheetCSV(input io.Reader, maxBytes int64) ([][]spreadsheet.Cell, 
 			row[i] = spreadsheet.Cell{Value: value}
 		}
 		rows = append(rows, row)
-	}
-}
-
-func addSpreadsheetDeleteCommands(group *cobra.Command) {
-	for _, operation := range []struct {
-		name string
-		run  func(*cobra.Command, string, string, int) error
-	}{
-		{name: "delete-row", run: func(cmd *cobra.Command, id, sheet string, index int) error {
-			_, service, err := openSpreadsheets(cmd)
-			if err != nil {
-				return err
-			}
-			_, err = service.DeleteRowInSheet(cmd.Context(), id, sheet, index)
-			return err
-		}},
-		{name: "delete-column", run: func(cmd *cobra.Command, id, sheet string, index int) error {
-			_, service, err := openSpreadsheets(cmd)
-			if err != nil {
-				return err
-			}
-			_, err = service.DeleteColumnInSheet(cmd.Context(), id, sheet, index)
-			return err
-		}},
-	} {
-		operation := operation
-		command := &cobra.Command{
-			Use: operation.name + " <file> <index>", Short: "Delete a spreadsheet " + strings.TrimPrefix(operation.name, "delete-"),
-			Args: cobra.ExactArgs(2),
-			RunE: func(cmd *cobra.Command, args []string) error {
-				index, err := strconv.Atoi(args[1])
-				if err != nil {
-					return fmt.Errorf("invalid index %q: %w", args[1], err)
-				}
-				sheet, _ := cmd.Flags().GetString("sheet")
-				return operation.run(cmd, args[0], sheet, index)
-			},
-		}
-		command.Flags().String("sheet", "Sheet1", "sheet to edit")
-		group.AddCommand(command)
-	}
-}
-
-func newSpreadsheetDeleteSheetCmd() *cobra.Command {
-	return &cobra.Command{
-		Use: "delete-sheet <file> <name>", Short: "Delete a named worksheet", Args: cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			_, service, err := openSpreadsheets(cmd)
-			if err != nil {
-				return err
-			}
-			_, err = service.DeleteSheet(cmd.Context(), args[0], args[1])
-			return err
-		},
 	}
 }

@@ -8,8 +8,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"log/slog"
-
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/document"
@@ -18,6 +16,7 @@ import (
 	"example.com/parchment/internal/note"
 	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/spreadsheet"
+	"log/slog"
 )
 
 type output struct {
@@ -173,7 +172,7 @@ func openStore() (*filerepo.Repository, config.Settings, error) {
 	if err != nil {
 		return nil, config.Settings{}, err
 	}
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return nil, config.Settings{}, fmt.Errorf("ensure state directory: %w", err)
 	}
 	logger, closer, err := logging.Setup(stateDir, settings.LogLevel, settings.LogFormat)

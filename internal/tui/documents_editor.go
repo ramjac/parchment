@@ -59,7 +59,7 @@ func (s *documentsScreen) marginName() string {
 // toolbarButtons lists the controls shown above the editor. Labels for page
 // settings show the current value.
 func (s *documentsScreen) toolbarButtons() []toolbarButton {
-	buttons := []toolbarButton{
+	return []toolbarButton{
 		{"File", "Save", "save", "Ctrl+S"},
 		{"File", "Propose", "propose", "F3"},
 		{"File", "Changes", "changes", "F4"},
@@ -88,12 +88,6 @@ func (s *documentsScreen) toolbarButtons() []toolbarButton {
 		{"Page", "Footer", "footer", ""},
 		{"Page", "Page #: " + s.layout.PageNumbers, "numbers-pos", ""},
 	}
-	font := s.layout.Font
-	if font == "" {
-		font = "courier"
-	}
-	buttons = append(buttons, toolbarButton{"Page", "Font: " + font, "font", ""})
-	return buttons
 }
 
 // buttonLayout wraps the toolbar to the available width. It is used for both
@@ -303,8 +297,8 @@ func (s *documentsScreen) saveDocumentRecovery(session uint64) tea.Cmd {
 	}
 }
 
-func cloneDocumentImages(source []artifact.Image) []artifact.Image {
-	images := make([]artifact.Image, len(source))
+func cloneDocumentImages(source []document.Image) []document.Image {
+	images := make([]document.Image, len(source))
 	for i, image := range source {
 		images[i] = image
 		images[i].Data = append([]byte(nil), image.Data...)
@@ -594,8 +588,6 @@ func (s *documentsScreen) act(action string) tea.Cmd {
 		} else {
 			s.layout.Orientation = document.Portrait
 		}
-	case "font":
-		s.layout.Font = nextOf([]string{"courier", "helvetica", "times"}, s.layout.Font)
 	case "numbers-pos":
 		s.layout.PageNumbers = nextOf(numberPlacements, s.layout.PageNumbers)
 	case "header":
