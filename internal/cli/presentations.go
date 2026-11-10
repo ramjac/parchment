@@ -2,7 +2,6 @@ package cli
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -39,17 +38,10 @@ func addPresentationCommands(root *cobra.Command, streams output) {
 			if err != nil {
 				return err
 			}
-			font, _ := cmd.Flags().GetString("font")
-			if font != "" {
-				if item, err = service.SetFont(cmd.Context(), item.Path, font); err != nil {
-					return err
-				}
-			}
 			return finishCreate(cmd, streams, item.Path, artifact.PresentationKind)
 		},
 	}
 	create.Flags().String("body-file", "", "read Markdown presentation source from a file (- for standard input)")
-	create.Flags().String("font", "", "font: courier, helvetica, or times")
 	addEditFlag(create)
 	group.AddCommand(create)
 
@@ -114,36 +106,6 @@ func addPresentationCommands(root *cobra.Command, streams output) {
 	edit.Flags().String("body-file", "", "read replacement Markdown source from a file (- for standard input)")
 	group.AddCommand(edit)
 
-	group.AddCommand(newPresentationLayoutCmd(streams))
-
-}
-
-func newPresentationLayoutCmd(streams output) *cobra.Command {
-	cmd := &cobra.Command{
-		Use: "layout <file>", Short: "Show or change presentation layout",
-		Long: "Show a presentation's layout (currently just the font), or change the layout fields given as flags.",
-		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			_, service, err := openPresentations(cmd)
-			if err != nil {
-				return err
-			}
-			p, err := service.Get(cmd.Context(), args[0])
-			if err != nil {
-				return err
-			}
-			font, _ := cmd.Flags().GetString("font")
-			if font != "" && font != p.Font {
-				if p, err = service.SetFont(cmd.Context(), args[0], font); err != nil {
-					return err
-				}
-			}
-			_, err = fmt.Fprintf(streams.out, "font: %s\n", p.Font)
-			return err
-		},
-	}
-	cmd.Flags().String("font", "", "font: courier, helvetica, or times")
-	return cmd
 }
 
 func readPresentationSource(cmd *cobra.Command) (string, error) {

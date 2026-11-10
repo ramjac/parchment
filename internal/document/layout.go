@@ -60,9 +60,6 @@ type Margins struct {
 // Header and Footer hold up to three "|"-separated parts: one part is left
 // aligned, two are left and right, and three are left, center, and right.
 // The tokens {title}, {page}, and {pages} are replaced when printing.
-//
-// TODO: Replace hardcoded font enum strings with an extensible font manager
-// that loads standard TTF/OTF files.
 type Layout struct {
 	Version     int     `json:"version"`
 	PageSize    string  `json:"page_size"`
@@ -72,7 +69,6 @@ type Layout struct {
 	Header      string  `json:"header"`
 	Footer      string  `json:"footer"`
 	PageNumbers string  `json:"page_numbers"`
-	Font        string  `json:"font"`
 }
 
 // DefaultLayout returns a US Letter portrait layout with one-inch margins.
@@ -80,7 +76,7 @@ func DefaultLayout() Layout {
 	return Layout{
 		Version: LayoutVersion, PageSize: PageLetter, Orientation: Portrait,
 		Margins: Margins{Top: 25, Right: 25, Bottom: 25, Left: 25},
-		Columns: 1, PageNumbers: NumbersCenter, Font: "courier",
+		Columns: 1, PageNumbers: NumbersCenter,
 	}
 }
 
@@ -184,14 +180,6 @@ func (l Layout) Validate() error {
 	case NumbersNone, NumbersLeft, NumbersCenter, NumbersRight:
 	default:
 		return fmt.Errorf("unsupported page number placement %q", l.PageNumbers)
-	}
-	if l.Font == "" {
-		l.Font = "courier"
-	}
-	switch l.Font {
-	case "courier", "helvetica", "times": // TODO: Support loading custom fonts.
-	default:
-		return fmt.Errorf("unsupported font %q", l.Font)
 	}
 	for name, text := range map[string]string{"header": l.Header, "footer": l.Footer} {
 		if utf8.RuneCountInString(text) > MaxRunningTextLength {

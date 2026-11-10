@@ -22,9 +22,6 @@ func TestDefaultLayout(t *testing.T) {
 	if l.Columns != 1 {
 		t.Errorf("DefaultLayout Columns = %v, want 1", l.Columns)
 	}
-	if l.Font != "courier" {
-		t.Errorf("DefaultLayout Font = %q, want \"courier\"", l.Font)
-	}
 }
 
 func TestColumnWidth(t *testing.T) {
@@ -270,34 +267,6 @@ func TestLayoutValidate(t *testing.T) {
 			}(),
 			wantErr: true,
 			errText: "unsupported page size",
-		},
-		{
-			name: "unsupported font",
-			layout: func() Layout {
-				l := DefaultLayout()
-				l.Font = "comic-sans"
-				return l
-			}(),
-			wantErr: true,
-			errText: "unsupported font \"comic-sans\"",
-		},
-		{
-			name: "helvetica is valid",
-			layout: func() Layout {
-				l := DefaultLayout()
-				l.Font = "helvetica"
-				return l
-			}(),
-			wantErr: false,
-		},
-		{
-			name: "times is valid",
-			layout: func() Layout {
-				l := DefaultLayout()
-				l.Font = "times"
-				return l
-			}(),
-			wantErr: false,
 		},
 	}
 

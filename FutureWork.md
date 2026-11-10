@@ -860,6 +860,3 @@ and `go build ./cmd/parchment` as final verification checks for every PR.
 Each PR must include focused Go unit and TUI model tests using temporary
 directories (`HOME` isolated via `t.Setenv("HOME", ...)`). Run `go test -race ./...`
 and `go build ./cmd/parchment` as final verification checks for every PR.
-
-### Future Phase: Extensible Font Management
-- [ ] **Extensible Font Support:** Replace the hardcoded `courier`, `helvetica`, `times` font restrictions with a generalized font handling system that supports parsing and embedding standard TrueType/OpenType font files. This will include updating `document.Layout` and `parchment-presentation` validation, and replacing the simple TUI font-cycling toggle (`f` / `font` button) with a modal font-picker dialog.

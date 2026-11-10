@@ -29,12 +29,6 @@ type presentationSavedMsg struct {
 	err  error
 }
 
-type presentationFontMsg struct {
-	seq  int
-	item presentation.Presentation
-	err  error
-}
-
 type presentationHistoryMsg struct {
 	seq         int
 	description string
@@ -262,8 +256,6 @@ func (m *presentationModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 	case "s":
 		m.showNotes = !m.showNotes
 		m.clampScroll()
-	case "f":
-		return m.cycleFont()
 	case "enter", "e":
 		return m.beginEdit()
 	case "u", "ctrl+z":
@@ -434,24 +426,6 @@ func (m *presentationModel) load() tea.Cmd {
 	return func() tea.Msg {
 		item, err := service.Get(ctx, path)
 		return presentationLoadedMsg{seq: seq, item: item, err: err}
-	}
-}
-
-func (m *presentationModel) cycleFont() tea.Cmd {
-	font := m.item.Font
-	if font == "courier" {
-		font = "helvetica"
-	} else if font == "helvetica" {
-		font = "times"
-	} else {
-		font = "courier"
-	}
-	ctx, seq := m.startOperation()
-	m.status, m.errMessage = "Changing font…", ""
-	service, path := m.service, m.path
-	return func() tea.Msg {
-		item, err := service.SetFont(ctx, path, font)
-		return presentationFontMsg{seq: seq, item: item, err: err}
 	}
 }
 
@@ -635,7 +609,7 @@ func (m *presentationModel) renderStatus() string {
 }
 
 func (m *presentationModel) renderHelp(muted lipgloss.Style) string {
-	help := "←/→ slide • ↑/↓ scroll • e edit • s notes • f font • u undo • ctrl+r redo • r reload • esc/q quit"
+	help := "←/→ slide • ↑/↓ scroll • e edit • s notes • u undo • ctrl+r redo • r reload • esc/q quit"
 	if m.editing {
 		help = "ctrl+s save • esc cancel • ctrl+c quit"
 	} else if !m.loaded {
