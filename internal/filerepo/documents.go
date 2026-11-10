@@ -70,11 +70,11 @@ func (r *Repository) GetDocumentChange(ctx context.Context, path, changeID strin
 }
 
 func decodeDocumentChange(path string, content []byte, changeID string) (document.Change, error) {
-	file, err := decodeArtifact(path, content)
+	item, blocks, err := decodeArtifactBlocks(path, content)
 	if err != nil {
 		return document.Change{}, err
 	}
-	payloadJSON, ok := file.Blocks[documentDataBlock]
+	payloadJSON, ok := blocks[documentDataBlock]
 	if !ok {
 		return document.Change{}, fmt.Errorf("%s: document data block is missing", path)
 	}
@@ -97,7 +97,7 @@ func decodeDocumentChange(path string, content []byte, changeID string) (documen
 			if err := json.Unmarshal(raw, &change); err != nil {
 				return document.Change{}, fmt.Errorf("decode document change %s: %w", path, err)
 			}
-			change.DocumentID = file.Artifact.ID
+			change.DocumentID = item.ID
 			if err := change.Validate(); err != nil {
 				return document.Change{}, fmt.Errorf("validate document change %s: %w", path, err)
 			}
@@ -108,11 +108,11 @@ func decodeDocumentChange(path string, content []byte, changeID string) (documen
 }
 
 func decodeDocumentChanges(path string, content []byte) ([]document.Change, error) {
-	file, err := decodeArtifact(path, content)
+	item, blocks, err := decodeArtifactBlocks(path, content)
 	if err != nil {
 		return nil, err
 	}
-	payloadJSON, ok := file.Blocks[documentDataBlock]
+	payloadJSON, ok := blocks[documentDataBlock]
 	if !ok {
 		return nil, fmt.Errorf("%s: document data block is missing", path)
 	}
@@ -123,9 +123,9 @@ func decodeDocumentChanges(path string, content []byte) ([]document.Change, erro
 		return nil, fmt.Errorf("decode document data %s: %w", path, err)
 	}
 	for i := range payload.Changes {
-		payload.Changes[i].DocumentID = file.Artifact.ID
+		payload.Changes[i].DocumentID = item.ID
 	}
-	if err := validateDocumentChanges(file.Artifact.ID, payload.Changes); err != nil {
+	if err := validateDocumentChanges(item.ID, payload.Changes); err != nil {
 		return nil, fmt.Errorf("validate document changes %s: %w", path, err)
 	}
 	return payload.Changes, nil
@@ -333,7 +333,7 @@ func decodeDocument(path string, content []byte) (document.Document, []document.
 	}
 	seenImages := map[string]bool{}
 	for _, imageData := range payload.Images {
-		img := document.Image{Name: imageData.Name, Data: imageData.Data}
+		img := artifact.Image{Name: imageData.Name, Data: imageData.Data}
 		if err := img.Validate(); err != nil {
 			return document.Document{}, nil, fmt.Errorf("validate document image %s: %w", img.Name, err)
 		}
