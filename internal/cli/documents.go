@@ -1,17 +1,11 @@
 package cli
 
 import (
-	"bytes"
 	"fmt"
-	"image"
-	_ "image/gif"
-	_ "image/jpeg"
-	_ "image/png"
 	"io"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -41,9 +35,6 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 		newDocumentPageBreakCmd(),
 		newDocumentSectionBreakCmd(),
 		newDocumentImageCmd(streams),
-		newDocumentImagesCmd(streams),
-		newDocumentImageExtractCmd(streams),
-		newDocumentImageRemoveCmd(),
 		newDocumentPrintCmd(streams),
 	)
 }
@@ -52,7 +43,7 @@ func newDocumentCreateCmd(streams output) *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "create <file>", Short: "Create a document file", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repo, service, err := openDocuments(cmd)
+			_, service, err := openDocuments(cmd)
 			if err != nil {
 				return err
 			}
@@ -72,7 +63,6 @@ func newDocumentCreateCmd(streams output) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			drainWarnings(repo, output{err: cmd.ErrOrStderr()})
 			return finishCreate(cmd, streams, d.Path, artifact.DocumentKind)
 		},
 	}
@@ -104,7 +94,7 @@ func newDocumentEditCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "edit <file>", Short: "Replace a document's Markdown body", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repo, service, err := openDocuments(cmd)
+			_, service, err := openDocuments(cmd)
 			if err != nil {
 				return err
 			}
@@ -119,9 +109,6 @@ func newDocumentEditCmd() *cobra.Command {
 				d.Body = body
 				return nil
 			})
-			if err == nil {
-				drainWarnings(repo, output{err: cmd.ErrOrStderr()})
-			}
 			return err
 		},
 	}
@@ -133,7 +120,7 @@ func newDocumentProposeCmd(streams output) *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "propose <file>", Short: "Record a document edit for review", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repo, service, err := openDocuments(cmd)
+			_, service, err := openDocuments(cmd)
 			if err != nil {
 				return err
 			}
@@ -159,7 +146,6 @@ func newDocumentProposeCmd(streams output) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			drainWarnings(repo, output{err: cmd.ErrOrStderr()})
 			_, err = fmt.Fprintln(streams.out, change.ID)
 			return err
 		},
@@ -174,7 +160,7 @@ func newDocumentChangesCmd(streams output) *cobra.Command {
 	return &cobra.Command{
 		Use: "changes <file>", Short: "List proposed and resolved document edits", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repo, service, err := openDocuments(cmd)
+			_, service, err := openDocuments(cmd)
 			if err != nil {
 				return err
 			}
@@ -182,7 +168,6 @@ func newDocumentChangesCmd(streams output) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			drainWarnings(repo, output{err: cmd.ErrOrStderr()})
 			for _, change := range changes {
 				if _, err := fmt.Fprintf(streams.out, "%s\t%s\t%s\t%s\n",
 					change.ID, change.Status, change.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
@@ -221,14 +206,11 @@ func newDocumentAcceptCmd() *cobra.Command {
 	return &cobra.Command{
 		Use: "accept <file> <change-id>", Short: "Accept and apply a proposed document edit", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repo, service, err := openDocuments(cmd)
+			_, service, err := openDocuments(cmd)
 			if err != nil {
 				return err
 			}
 			_, err = service.Accept(cmd.Context(), args[0], args[1])
-			if err == nil {
-				drainWarnings(repo, output{err: cmd.ErrOrStderr()})
-			}
 			return err
 		},
 	}
@@ -255,7 +237,7 @@ func newDocumentLayoutCmd(streams output) *cobra.Command {
 			"and {pages}, and \"|\" separates left, center, and right parts.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repo, service, err := openDocuments(cmd)
+			_, service, err := openDocuments(cmd)
 			if err != nil {
 				return err
 			}
@@ -271,12 +253,11 @@ func newDocumentLayoutCmd(streams output) *cobra.Command {
 				if d, err = service.SetLayout(cmd.Context(), args[0], layout); err != nil {
 					return err
 				}
-				drainWarnings(repo, output{err: cmd.ErrOrStderr()})
 			}
 			l := d.Layout
-			_, err = fmt.Fprintf(streams.out, "page-size: %s\norientation: %s\nmargins: top=%d right=%d bottom=%d left=%d (mm)\ncolumns: %d\nheader: %q\nfooter: %q\npage-numbers: %s\nfont: %s\n",
+			_, err = fmt.Fprintf(streams.out, "page-size: %s\norientation: %s\nmargins: top=%d right=%d bottom=%d left=%d (mm)\ncolumns: %d\nheader: %q\nfooter: %q\npage-numbers: %s\n",
 				l.PageSize, l.Orientation, l.Margins.Top, l.Margins.Right, l.Margins.Bottom, l.Margins.Left,
-				l.Columns, l.Header, l.Footer, l.PageNumbers, l.Font)
+				l.Columns, l.Header, l.Footer, l.PageNumbers)
 			return err
 		},
 	}
@@ -314,7 +295,7 @@ func newDocumentImageCmd(streams output) *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "image <file> <image-file>", Short: "Embed a PNG, JPEG, or GIF image at the end of a document", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repo, service, err := openDocuments(cmd)
+			_, service, err := openDocuments(cmd)
 			if err != nil {
 				return err
 			}
@@ -327,118 +308,11 @@ func newDocumentImageCmd(streams output) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			drainWarnings(repo, output{err: cmd.ErrOrStderr()})
 			_, err = fmt.Fprintf(streams.out, "%s\n", name)
 			return err
 		},
 	}
 	cmd.Flags().String("alt", "", "alternative text for the image")
-	return cmd
-}
-
-func newDocumentImagesCmd(streams output) *cobra.Command {
-	return &cobra.Command{
-		Use: "images <file>", Short: "List embedded images in a document", Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			_, service, err := openDocuments(cmd)
-			if err != nil {
-				return err
-			}
-			d, err := service.Get(cmd.Context(), args[0])
-			if err != nil {
-				return err
-			}
-			referenced := artifact.ReferencedImages(d.Body)
-			for _, img := range d.Images {
-				status := "unreferenced"
-				if referenced[img.Name] {
-					status = "referenced"
-				}
-				format := "unknown"
-				width, height := 0, 0
-				if config, f, err := image.DecodeConfig(bytes.NewReader(img.Data)); err == nil {
-					format = f
-					width = config.Width
-					height = config.Height
-				}
-				if _, err := fmt.Fprintf(streams.out, "%s\t%s\t%dx%d\t%d\t%s\n", img.Name, format, width, height, len(img.Data), status); err != nil {
-					return err
-				}
-			}
-			return nil
-		},
-	}
-}
-
-func newDocumentImageExtractCmd(streams output) *cobra.Command {
-	cmd := &cobra.Command{
-		Use: "image-extract <file> <image-name>", Short: "Extract an embedded image from a document", Args: cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			_, service, err := openDocuments(cmd)
-			if err != nil {
-				return err
-			}
-			d, err := service.Get(cmd.Context(), args[0])
-			if err != nil {
-				return err
-			}
-
-			var imgData []byte
-			for _, img := range d.Images {
-				if img.Name == args[1] {
-					imgData = img.Data
-					break
-				}
-			}
-			if imgData == nil {
-				return fmt.Errorf("image %q not found in document", args[1])
-			}
-
-			outPath, _ := cmd.Flags().GetString("output")
-			if outPath == "" {
-				_, err = streams.out.Write(imgData)
-				return err
-			}
-
-			force, _ := cmd.Flags().GetBool("force")
-			flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
-			if !force {
-				flags |= os.O_EXCL
-			}
-
-			f, err := os.OpenFile(outPath, flags, 0600)
-			if err != nil {
-				if os.IsExist(err) {
-					return fmt.Errorf("file %q already exists (use --force to overwrite)", outPath)
-				}
-				return err
-			}
-			if _, err := f.Write(imgData); err != nil {
-				f.Close()
-				return err
-			}
-			return f.Close()
-		},
-	}
-	cmd.Flags().StringP("output", "o", "", "write to a file instead of standard output")
-	cmd.Flags().Bool("force", false, "overwrite output file if it exists")
-	return cmd
-}
-
-func newDocumentImageRemoveCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use: "image-remove <file> <image-name>", Short: "Remove an embedded image from a document", Args: cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			_, service, err := openDocuments(cmd)
-			if err != nil {
-				return err
-			}
-			strip, _ := cmd.Flags().GetBool("strip-references")
-			_, err = service.RemoveImage(cmd.Context(), args[0], args[1], strip)
-			return err
-		},
-	}
-	cmd.Flags().Bool("strip-references", false, "remove Markdown image tags referencing the image from the document body")
 	return cmd
 }
 
@@ -512,7 +386,6 @@ func addLayoutFlags(cmd *cobra.Command) {
 	flags.String("header", "", "header text")
 	flags.String("footer", "", "footer text")
 	flags.String("page-numbers", "", "page number placement: none, left, center, or right")
-	flags.String("font", "", "font family: courier, helvetica, or times")
 }
 
 // applyLayoutFlags changes only the layout fields whose flags were supplied.
@@ -542,13 +415,11 @@ func applyLayoutFlags(cmd *cobra.Command, layout *document.Layout) error {
 	setString("header", &layout.Header)
 	setString("footer", &layout.Footer)
 	setString("page-numbers", &layout.PageNumbers)
-	setString("font", &layout.Font)
-	layout.Font = strings.ToLower(layout.Font)
 	return layout.Validate()
 }
 
 func appendMarkup(cmd *cobra.Command, id, description, markup string) error {
-	repo, service, err := openDocuments(cmd)
+	_, service, err := openDocuments(cmd)
 	if err != nil {
 		return err
 	}
@@ -556,9 +427,6 @@ func appendMarkup(cmd *cobra.Command, id, description, markup string) error {
 		d.Body = trimTrailingNewlines(d.Body) + "\n\n" + markup + "\n\n"
 		return nil
 	})
-	if err == nil {
-		drainWarnings(repo, output{err: cmd.ErrOrStderr()})
-	}
 	return err
 }
 

@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/parchment/internal/artifact"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -301,25 +300,25 @@ func TestLayoutValidationAndGeometry(t *testing.T) {
 }
 
 func TestNewImageValidatesAndNamesByContent(t *testing.T) {
-	if _, err := artifact.NewImage([]byte("not an image")); err == nil {
+	if _, err := NewImage([]byte("not an image")); err == nil {
 		t.Fatal("non-image data was accepted")
 	}
-	if _, err := artifact.NewImage(nil); err == nil {
+	if _, err := NewImage(nil); err == nil {
 		t.Fatal("empty data was accepted")
 	}
 	data := tinyPNG(t)
-	first, err := artifact.NewImage(data)
+	first, err := NewImage(data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, _ := artifact.NewImage(data)
-	if first.Name != second.Name || !artifact.IsImageName(first.Name) || !strings.HasSuffix(first.Name, ".png") {
+	second, _ := NewImage(data)
+	if first.Name != second.Name || !IsImageName(first.Name) || !strings.HasSuffix(first.Name, ".png") {
 		t.Fatalf("image names = %q, %q", first.Name, second.Name)
 	}
-	if got := artifact.ImageMarkdown("a [b]\nc", first.Name); got != "![a b c]("+first.Name+")" {
+	if got := ImageMarkdown("a [b]\nc", first.Name); got != "![a b c]("+first.Name+")" {
 		t.Fatalf("markdown = %q", got)
 	}
-	if !artifact.ReferencedImages("x ![a](" + first.Name + ") y")[first.Name] {
+	if !ReferencedImages("x ![a](" + first.Name + ") y")[first.Name] {
 		t.Fatal("embedded image was not detected")
 	}
 }
@@ -344,18 +343,18 @@ func TestDeeplyIndentedListStaysWithinPageWidth(t *testing.T) {
 }
 
 func TestImageValidateRejectsMismatchedOrCorruptData(t *testing.T) {
-	img, err := artifact.NewImage(tinyPNG(t))
+	img, err := NewImage(tinyPNG(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := img.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	renamed := artifact.Image{Name: "image-0000000000000000.png", Data: img.Data}
+	renamed := Image{Name: "image-0000000000000000.png", Data: img.Data}
 	if renamed.Validate() == nil {
 		t.Fatal("image with a name that does not match its content was accepted")
 	}
-	corrupt := artifact.Image{Name: img.Name, Data: []byte("not an image")}
+	corrupt := Image{Name: img.Name, Data: []byte("not an image")}
 	if corrupt.Validate() == nil {
 		t.Fatal("corrupt image data was accepted")
 	}
@@ -371,16 +370,16 @@ func TestReferencedImagesRecognizesMarkdownForms(t *testing.T) {
 		"![Chart][fig]\n\n[fig]: " + a + ` "caption"`,
 		`<img src="` + a + `" alt="Chart">`,
 	} {
-		if !artifact.ReferencedImages(body)[a] {
+		if !ReferencedImages(body)[a] {
 			t.Errorf("reference not detected in %q", body)
 		}
 	}
-	both := artifact.ReferencedImages("![x](" + a + ") ![y](" + b + ")")
+	both := ReferencedImages("![x](" + a + ") ![y](" + b + ")")
 	if !both[a] || !both[b] {
 		t.Fatalf("adjacent references = %v", both)
 	}
 	for _, body := range []string{"x" + a, a + "x", "my-" + a, "image-0123456789abcdef0.png"} {
-		if refs := artifact.ReferencedImages(body); len(refs) != 0 {
+		if refs := ReferencedImages(body); len(refs) != 0 {
 			t.Errorf("%q matched %v", body, refs)
 		}
 	}
