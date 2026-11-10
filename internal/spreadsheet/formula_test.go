@@ -1,8 +1,6 @@
 package spreadsheet
 
 import (
-	"errors"
-
 	"math"
 	"strings"
 	"testing"
@@ -251,7 +249,7 @@ func TestShiftCellReferences(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := shiftCellReferences(tt.formula, tt.fromRow, tt.fromColumn, false)
+			got := shiftCellReferences(tt.formula, tt.fromRow, tt.fromColumn)
 			if got != tt.want {
 				t.Errorf("shiftCellReferences(%q, %d, %d) = %q, want %q", tt.formula, tt.fromRow, tt.fromColumn, got, tt.want)
 			}
@@ -273,35 +271,5 @@ func TestParsePrimary_EmptyInput(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "expected a number, cell reference, or '('") {
 		t.Errorf("Unexpected error message: %v", err)
-	}
-}
-
-func TestErrorValueParsing(t *testing.T) {
-	parser := formulaParser{input: "#REF!"}
-	val, err := parser.parsePrimary()
-	if val != 0 {
-		t.Errorf("expected 0, got %v", val)
-	}
-	var errVal ErrorValue
-	if !errors.As(err, &errVal) || errVal != "#REF!" {
-		t.Errorf("expected ErrorValue(\"#REF!\"), got %v", err)
-	}
-}
-
-func TestShiftCellReferencesDeletion(t *testing.T) {
-	for _, test := range []struct {
-		formula    string
-		fromRow    int
-		fromColumn int
-		want       string
-	}{
-		{"=A1+B2", 1, 0, "=#REF!+B1"},
-		{"=A2+B2", 0, 1, "=#REF!+A2"},
-		{"=C3", 2, 0, "=C2"},
-		{"=C3", 0, 2, "=B3"},
-	} {
-		if got := shiftCellReferences(test.formula, test.fromRow, test.fromColumn, true); got != test.want {
-			t.Errorf("shiftCellReferences(%q, %d, %d, true) = %q, want %q", test.formula, test.fromRow, test.fromColumn, got, test.want)
-		}
 	}
 }

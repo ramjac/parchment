@@ -60,7 +60,6 @@ type spreadsheetAsync struct {
 	seq                 int
 	status              string
 	errMessage          string
-	pendingShortcut     string
 	loadedStatus        string
 	newOperationContext func() (context.Context, context.CancelFunc)
 	cancelOperation     context.CancelFunc
@@ -70,7 +69,6 @@ type spreadsheetAsync struct {
 // it reads and edits the workbook file through the spreadsheet service.
 type spreadsheetModel struct {
 	service *spreadsheet.Service
-	theme   Theme
 	path    string
 	book    spreadsheet.Spreadsheet
 	loaded  bool
@@ -81,7 +79,7 @@ type spreadsheetModel struct {
 	spreadsheetAsync
 }
 
-func newSpreadsheetModel(service *spreadsheet.Service, path string, theme Theme) *spreadsheetModel {
+func newSpreadsheetModel(service *spreadsheet.Service, path string) *spreadsheetModel {
 	input := textinput.New()
 	input.Prompt = ""
 	input.CharLimit = spreadsheet.MaxFormulaLength + 1
@@ -199,11 +197,6 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		m.cancelPending()
 		return tea.Quit
 	case "esc":
-		if m.pendingShortcut != "" {
-			m.pendingShortcut = ""
-			m.status = ""
-			return nil
-		}
 		if m.pending {
 			m.cancelPending()
 			m.status, m.errMessage = "Cancelled", ""
@@ -216,42 +209,12 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		m.status = "Working… (esc cancels)"
 		return nil
 	}
-
-	if key == "r" && m.pendingShortcut != "d" {
+	if key == "r" {
 		return m.load()
 	}
 	if !m.loaded {
 		return nil
 	}
-
-	if m.pendingShortcut == "d" {
-		m.pendingShortcut = ""
-		switch key {
-		case "r":
-			return m.history("Deleted row", func(ctx context.Context) (string, error) {
-				_, err := m.service.DeleteRowInSheet(ctx, m.path, m.book.Sheets[m.sheet].Name, m.row+1)
-				return "", err
-			})
-		case "c":
-			return m.history("Deleted column", func(ctx context.Context) (string, error) {
-				_, err := m.service.DeleteColumnInSheet(ctx, m.path, m.book.Sheets[m.sheet].Name, m.column+1)
-				return "", err
-			})
-		case "s":
-			return m.history("Deleted sheet", func(ctx context.Context) (string, error) {
-				_, err := m.service.DeleteSheet(ctx, m.path, m.book.Sheets[m.sheet].Name)
-				return "", err
-			})
-		}
-		m.status, m.errMessage = "Cancelled", ""
-		return nil
-	}
-	if key == "d" {
-		m.pendingShortcut = "d"
-		m.status = "Delete (r)ow, (c)olumn, or (s)heet?"
-		return nil
-	}
-
 	page := max(1, m.visibleRows()-1)
 	switch key {
 	case "up", "k":
@@ -538,7 +501,7 @@ func (m *spreadsheetModel) renderHeader() string {
 	if m.path != "" {
 		header += "  " + sanitizeTerminalLine(m.path)
 	}
-	accent := lipgloss.NewStyle().Foreground(m.theme.Primary).Bold(true)
+	accent := lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
 	return accent.Render(runewidth.Truncate(header, m.width, "…"))
 }
 
@@ -562,7 +525,7 @@ func (m *spreadsheetModel) renderColumnHeader(rowWidth, columns int) string {
 }
 
 func (m *spreadsheetModel) renderGrid() string {
-	muted := lipgloss.NewStyle().Foreground(m.theme.Border)
+	muted := lipgloss.NewStyle().Foreground(borderColor)
 	selected := lipgloss.NewStyle().Reverse(true)
 
 	rowWidth := m.rowHeaderWidth()
@@ -595,7 +558,9 @@ func (m *spreadsheetModel) renderGrid() string {
 		}
 	}
 
-	return gridBuf.String()
+	paneHeight := max(m.height-4, 3)
+	return lipgloss.NewStyle().Width(max(m.width, 20)).Height(paneHeight).
+		Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1).Render(gridBuf.String())
 }
 
 func (m *spreadsheetModel) renderStatus() string {
@@ -609,8 +574,8 @@ func (m *spreadsheetModel) renderStatus() string {
 }
 
 func (m *spreadsheetModel) renderHelp() string {
-	muted := lipgloss.NewStyle().Foreground(m.theme.Border)
-	help := "arrows move • enter edit • del clear • f formulas • tab sheet • u undo • ctrl+r redo • d delete • r reload • esc/q quit"
+	muted := lipgloss.NewStyle().Foreground(borderColor)
+	help := "arrows move • enter edit • del clear • f formulas • tab sheet • u undo • ctrl+r redo • r reload • esc/q quit"
 	if m.editing {
 		help = "enter save • esc cancel • =formula • 'literal"
 	} else if !m.loaded {
@@ -623,6 +588,15 @@ func (m *spreadsheetModel) View() string {
 	if m.width < 20 || m.height < spreadsheetChromeLines+1 {
 		return "Terminal too small. Press q to quit."
 	}
-	shortcuts := m.renderHelp() + "\n" + m.renderFormulaBar()
-	return chromeLayout(m.width, m.height, m.renderHeader(), shortcuts, m.renderGrid(), m.renderStatus(), m.theme.Border)
+	var b strings.Builder
+	b.WriteString(m.renderHeader())
+	b.WriteByte('\n')
+	b.WriteString(m.renderFormulaBar())
+	b.WriteByte('\n')
+	b.WriteString(m.renderGrid())
+	b.WriteByte('\n')
+	b.WriteString(m.renderStatus())
+	b.WriteByte('\n')
+	b.WriteString(m.renderHelp())
+	return b.String()
 }
