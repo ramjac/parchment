@@ -153,6 +153,51 @@ func Decode(data []byte) (File, error) {
 	return file, nil
 }
 
+// DecodeBlocks reads an artifact envelope and returns its metadata and trailing
+// blocks, skipping the reading of the body content for performance.
+func DecodeBlocks(data []byte) (artifact.Artifact, map[string]json.RawMessage, error) {
+	if len(data) > MaxFileSize {
+		return artifact.Artifact{}, nil, fmt.Errorf("artifact file is larger than %d MiB", MaxFileSize>>20)
+	}
+	source := string(data)
+	item, offset, err := readMetadata(source)
+	if err != nil {
+		return artifact.Artifact{}, nil, err
+	}
+	foundBodyBoundary := false
+	for offset < len(source) {
+		probe := offset
+		for {
+			line, end := nextLine(source, probe)
+			if !isBlankLine(line) {
+				break
+			}
+			probe = end
+			if probe == len(source) {
+				break
+			}
+		}
+		if probe == len(source) {
+			break
+		}
+		line, end := nextLine(source, probe)
+		if strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r") == bodyBoundary {
+			offset = end
+			foundBodyBoundary = true
+			break
+		}
+		return artifact.Artifact{}, nil, errors.New("unexpected content before artifact body separator")
+	}
+	if !foundBodyBoundary {
+		return artifact.Artifact{}, nil, errors.New("artifact body separator is missing")
+	}
+	_, blocks, err := readTrailingBlocks(source, offset)
+	if err != nil {
+		return artifact.Artifact{}, nil, err
+	}
+	return item, blocks, nil
+}
+
 func readTrailingBlocks(source string, bodyStart int) (string, map[string]json.RawMessage, error) {
 	boundary := -1
 	var afterBoundary int
