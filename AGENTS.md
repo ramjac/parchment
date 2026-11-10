@@ -129,9 +129,6 @@ does not record the file's path; the path is wherever the file is.
 
 ## Repository-specific conventions
 
-- Changes to `main` must only be integrated by merging a Pull Request on GitHub.
-  Never commit directly to `main` or update it outside a GitHub Pull Request
-  merge.
 - Parchment has not had its first release and has no legacy artifacts or
   compatibility obligations. Do not add legacy-format support, migrations, or
   backwards-compatibility handling for artifact format changes. If format
@@ -152,9 +149,7 @@ does not record the file's path; the path is wherever the file is.
 - Follow Bubble Tea's model/update/view/command structure. Keep views free of
   I/O and domain mutation; represent blocking operations as commands returning
   typed result messages. Keep key bindings contextual and ensure text editing
-  and confirmation states receive input before background screens. Dispatch a
-  pending multi-key shortcut before standalone bindings for its continuation
-  key, so the continuation is not intercepted as an unrelated action. Do not
+  and confirmation states receive input before background screens. Do not
   introduce a universal child-component interface until multiple real
   components need it.
 - Text editors in notes, documents, and presentations will use a dedicated native
