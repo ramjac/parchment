@@ -123,7 +123,9 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.setError("Save failed", msg.err)
 			return m, nil
 		}
-		m.leaveEditor()
+		if m.editing {
+			m.leaveEditor()
+		}
 		m.setItem(msg.item)
 		m.status = "Saved"
 		return m, nil
@@ -258,6 +260,25 @@ func (m *presentationModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 	case "s":
 		m.showNotes = !m.showNotes
 		m.clampScroll()
+	case "f":
+		fonts := []string{"courier", "helvetica", "times"}
+		current := m.item.Font
+		if current == "" {
+			current = "courier"
+		}
+		next := fonts[0]
+		for i, f := range fonts {
+			if f == current {
+				next = fonts[(i+1)%len(fonts)]
+			}
+		}
+		ctx, seq := m.startOperation()
+		m.status, m.errMessage = "Saving…", ""
+		service, path := m.service, m.path
+		return func() tea.Msg {
+			item, err := service.SetFont(ctx, path, next)
+			return presentationSavedMsg{seq: seq, item: item, err: err}
+		}
 	case "enter", "e":
 		return m.beginEdit()
 	case "u", "ctrl+z":
@@ -598,7 +619,7 @@ func (m *presentationModel) renderStatus() string {
 }
 
 func (m *presentationModel) renderHelp(muted lipgloss.Style) string {
-	help := "←/→ slide • ↑/↓ scroll • e edit • s notes • u undo • ctrl+r redo • r reload • esc/q quit"
+	help := "←/→ slide • ↑/↓ scroll • e edit • s notes • f font • u undo • ctrl+r redo • r reload • esc/q quit"
 	if m.editing {
 		help = "ctrl+s save • esc cancel • ctrl+c quit"
 	} else if !m.loaded {
