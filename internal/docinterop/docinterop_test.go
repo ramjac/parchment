@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
 	"example.com/parchment/internal/document"
 )
 
@@ -68,7 +69,6 @@ func TestReadZipEntriesLimit(t *testing.T) {
 	}
 }
 
-
 func TestMapMargins(t *testing.T) {
 	m, w := MapMargins(10.5, -5.0, 150.0, 25.1)
 	if m.Top != 11 || m.Right != 0 || m.Bottom != document.MaxMarginMM || m.Left != 25 {
@@ -106,9 +106,15 @@ func TestMapPageSize(t *testing.T) {
 }
 
 func TestMapFontFamily(t *testing.T) {
-	if f := MapFontFamily("Courier New"); f != "courier" { t.Errorf("Expected courier, got %s", f) }
-	if f := MapFontFamily("Times New Roman"); f != "times" { t.Errorf("Expected times, got %s", f) }
-	if f := MapFontFamily("Arial"); f != "helvetica" { t.Errorf("Expected helvetica, got %s", f) }
+	if f := MapFontFamily("Courier New"); f != "courier" {
+		t.Errorf("Expected courier, got %s", f)
+	}
+	if f := MapFontFamily("Times New Roman"); f != "times" {
+		t.Errorf("Expected times, got %s", f)
+	}
+	if f := MapFontFamily("Arial"); f != "helvetica" {
+		t.Errorf("Expected helvetica, got %s", f)
+	}
 }
 
 func TestMarkdownBuilder(t *testing.T) {

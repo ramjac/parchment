@@ -146,3 +146,31 @@ func TestSpreadsheetCSVExport(t *testing.T) {
 
 	// Wait, we can test that division by zero formula fails to save entirely, so we shouldn't attempt to add it.
 }
+
+func TestSpreadsheetCLI_Deletions(t *testing.T) {
+	c := newCLI(t)
+	must, run := c.must, c.run
+	id := "deletions.md"
+
+	// Create with basic dimensions 3x3 + Sheet2
+	must("spreadsheet", "create", id)
+	must("spreadsheet", "cell", id, "A1", "Val")
+	must("spreadsheet", "cell", id, "B2", "Val")
+	must("spreadsheet", "cell", id, "C3", "Val")
+	must("spreadsheet", "add-sheet", id, "Sheet2")
+
+	must("spreadsheet", "delete-row", id, "2")
+	must("spreadsheet", "delete-column", id, "2")
+	must("spreadsheet", "delete-sheet", id, "Sheet2")
+
+	// Out of bounds checking
+	if _, err := run("spreadsheet", "delete-row", id, "999"); err == nil {
+		t.Fatal("expected error deleting out of bounds row")
+	}
+	if _, err := run("spreadsheet", "delete-column", id, "999"); err == nil {
+		t.Fatal("expected error deleting out of bounds column")
+	}
+	if _, err := run("spreadsheet", "delete-sheet", id, "Sheet1"); err == nil {
+		t.Fatal("expected error deleting the only sheet")
+	}
+}
