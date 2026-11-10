@@ -291,3 +291,40 @@ func TestRecordDependencyDepth_EmptyDepths(t *testing.T) {
 	// This should return immediately and not panic because e.depths is empty.
 	e.recordDependencyDepth(5)
 }
+func TestParsePrimary_EmptyInput(t *testing.T) {
+	parser := NewParser("   ")
+	_, err := parser.Parse()
+	if err == nil {
+		t.Fatal("Expected error for empty input in Parse, got nil")
+	}
+}
+
+func TestErrorValueParsing(t *testing.T) {
+	parser := NewParser("#REF!")
+	node, err := parser.Parse()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	errNode, ok := node.(*ErrorNode)
+	if !ok || errNode.Err != ErrRef {
+		t.Errorf("expected ErrorNode with ErrRef, got %v", node)
+	}
+}
+
+func TestShiftCellReferencesDeletion(t *testing.T) {
+	for _, test := range []struct {
+		formula    string
+		fromRow    int
+		fromColumn int
+		want       string
+	}{
+		{"=A1+B2", 1, 0, "=#REF!+B1"},
+		{"=A2+B2", 0, 1, "=#REF!+A2"},
+		{"=C3", 2, 0, "=C2"},
+		{"=C3", 0, 2, "=B3"},
+	} {
+		if got := shiftCellReferences(test.formula, test.fromRow, test.fromColumn, true); got != test.want {
+			t.Errorf("shiftCellReferences(%q, %d, %d, true) = %q, want %q", test.formula, test.fromRow, test.fromColumn, got, test.want)
+		}
+	}
+}
