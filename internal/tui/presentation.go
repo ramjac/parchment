@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -526,7 +527,11 @@ func (m *presentationModel) pageLines() []string {
 	} else {
 		slide := m.deck.Slides[m.page-1]
 		title = slide.Title
-		text.WriteString(slide.Body)
+		body := slide.Body
+		if expanded, err := presentation.ExpandDirectives(slide.Body, filepath.Dir(m.path), m.item.Images); err == nil {
+			body = expanded
+		}
+		text.WriteString(body)
 		if m.showNotes {
 			text.WriteString("\n\n── Speaker notes ──\n")
 			if slide.Notes == "" {
