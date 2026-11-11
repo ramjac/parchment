@@ -48,6 +48,7 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 		newDocumentImageRemoveCmd(),
 		newDocumentPrintCmd(streams),
 		newDocumentExportCmd(streams),
+		newDocumentImportCmd(streams),
 	)
 }
 
@@ -700,5 +701,85 @@ func newDocumentExportCmd(streams output) *cobra.Command {
 	cmd.Flags().StringP("output", "o", "", "output file (required)")
 	cmd.Flags().String("format", "", "export format: docx or odt")
 	cmd.Flags().Bool("force", false, "overwrite output file if it exists")
+	return cmd
+}
+
+func newDocumentImportCmd(streams output) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "import <source> <target.md>",
+		Short: "Import a document from DOCX or ODF format",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			srcPath, err := filepath.Abs(args[0])
+			if err != nil {
+				return err
+			}
+			targetPath, err := filepath.Abs(args[1])
+			if err != nil {
+				return err
+			}
+
+			// Refuse to overwrite target if it already exists
+			if _, err := os.Stat(targetPath); err == nil {
+				return fmt.Errorf("%s already exists", targetPath)
+			}
+
+			format, _ := cmd.Flags().GetString("format")
+			if format == "" {
+				ext := strings.ToLower(filepath.Ext(srcPath))
+				switch ext {
+				case ".docx":
+					format = "docx"
+				case ".odt":
+					format = "odt"
+				default:
+					return fmt.Errorf("unable to determine import format from %q (use --format)", srcPath)
+				}
+			} else {
+				format = strings.ToLower(format)
+			}
+
+			if format == "odt" {
+				return errors.New("unsupported import format \"odt\" (ODF import not yet supported)")
+			}
+			if format != "docx" {
+				return fmt.Errorf("unsupported import format %q", format)
+			}
+
+			srcFile, err := os.Open(srcPath)
+			if err != nil {
+				return err
+			}
+			defer srcFile.Close()
+
+			fi, err := srcFile.Stat()
+			if err != nil {
+				return err
+			}
+
+			importer := docinterop.NewDocxImporter()
+			draft, warnings, err := importer.Import(srcFile, fi.Size())
+			if err != nil {
+				return err
+			}
+			for _, w := range warnings {
+				fmt.Fprintf(streams.err, "%s\n", w.Error())
+			}
+
+			repo, service, err := openDocuments(cmd)
+			if err != nil {
+				return err
+			}
+
+			d, err := service.Create(cmd.Context(), targetPath, draft)
+			if err != nil {
+				return err
+			}
+			drainWarnings(repo, output{err: cmd.ErrOrStderr()})
+			return finishCreate(cmd, streams, d.Path, artifact.DocumentKind)
+		},
+	}
+	cmd.Flags().String("format", "", "import format: docx or odt")
+	addEditFlag(cmd)
 	return cmd
 }

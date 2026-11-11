@@ -129,3 +129,35 @@ func TestDocumentExportCLI(t *testing.T) {
 		t.Fatalf("expected pending proposals warning, got: %q", errOutput)
 	}
 }
+
+func TestDocumentImportCLI(t *testing.T) {
+	c := newCLI(t)
+	must, run := c.must, c.run
+
+	id := "src.md"
+	must("document", "create", id, "--body", "# Imported Header\n\nSome body text.\n\n- Item 1\n- Item 2")
+
+	docxOut := "src.docx"
+	must("document", "export", id, "-o", docxOut)
+
+	target := "dst.md"
+	out := strings.TrimSpace(must("document", "import", docxOut, target, "--no-edit"))
+	if !strings.HasSuffix(out, target) {
+		t.Fatalf("expected stdout to print target path, got: %q", out)
+	}
+
+	shown := must("document", "show", target)
+	if !strings.Contains(shown, "# Imported Header") || !strings.Contains(shown, "Some body text.") {
+		t.Fatalf("unexpected content in imported document:\n%s", shown)
+	}
+
+	// Refuse to overwrite existing target
+	if _, err := run("document", "import", docxOut, target, "--no-edit"); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected target already exists error, got: %v", err)
+	}
+
+	// Unsupported format
+	if _, err := run("document", "import", "sample.odt", "target2.md", "--no-edit"); err == nil || !strings.Contains(err.Error(), "ODF import not yet supported") {
+		t.Fatalf("expected unsupported ODF import error, got: %v", err)
+	}
+}
