@@ -19,97 +19,101 @@ import (
 // twice as tall as it is wide, and each half-block represents two vertical pixels,
 // one cell can render a 1x2 block of pixels without distortion.
 func Fallback(img image.Image, maxCols, maxRows int) string {
-    // If the image is nil or dimensions are non-positive, return an empty string.
-    if img == nil || maxCols <= 0 || maxRows <= 0 {
-        return ""
-    }
+	// If the image is nil or dimensions are non-positive, return an empty string.
+	if img == nil || maxCols <= 0 || maxRows <= 0 {
+		return ""
+	}
 
-    bounds := img.Bounds()
-    imgW, imgH := bounds.Dx(), bounds.Dy()
-    if imgW == 0 || imgH == 0 {
-        return ""
-    }
+	bounds := img.Bounds()
+	imgW, imgH := bounds.Dx(), bounds.Dy()
+	if imgW == 0 || imgH == 0 {
+		return ""
+	}
 
-    // Calculate aspect ratios
-    imgAspect := float64(imgW) / (float64(imgH) / 2.0)
-    termAspect := float64(maxCols) / float64(maxRows)
+	// Calculate aspect ratios
+	imgAspect := float64(imgW) / (float64(imgH) / 2.0)
+	termAspect := float64(maxCols) / float64(maxRows)
 
-    var outW, outH int
-    if imgAspect > termAspect {
-        // Image is wider than the terminal view
-        outW = maxCols
-        outH = int(float64(maxCols) / imgAspect)
-    } else {
-        // Image is taller than the terminal view
-        outH = maxRows
-        outW = int(float64(maxRows) * imgAspect)
-    }
+	var outW, outH int
+	if imgAspect > termAspect {
+		// Image is wider than the terminal view
+		outW = maxCols
+		outH = int(float64(maxCols) / imgAspect)
+	} else {
+		// Image is taller than the terminal view
+		outH = maxRows
+		outW = int(float64(maxRows) * imgAspect)
+	}
 
-    if outW <= 0 { outW = 1 }
-    if outH <= 0 { outH = 1 }
+	if outW <= 0 {
+		outW = 1
+	}
+	if outH <= 0 {
+		outH = 1
+	}
 
-    // The number of pixel rows we need is outH * 2
-    pxRows := outH * 2
-    pxCols := outW
+	// The number of pixel rows we need is outH * 2
+	pxRows := outH * 2
+	pxCols := outW
 
-    var b strings.Builder
+	var b strings.Builder
 
-    for y := 0; y < pxRows; y += 2 {
-        for x := 0; x < pxCols; x++ {
-            srcX := bounds.Min.X + (x * imgW / pxCols)
-            srcYTop := bounds.Min.Y + (y * imgH / pxRows)
+	for y := 0; y < pxRows; y += 2 {
+		for x := 0; x < pxCols; x++ {
+			srcX := bounds.Min.X + (x * imgW / pxCols)
+			srcYTop := bounds.Min.Y + (y * imgH / pxRows)
 
-            topColor := img.At(srcX, srcYTop)
+			topColor := img.At(srcX, srcYTop)
 
-            var bottomColor color.Color
-            if y+1 < pxRows {
-                srcYBot := bounds.Min.Y + ((y+1) * imgH / pxRows)
-                bottomColor = img.At(srcX, srcYBot)
-            } else {
-                bottomColor = color.Transparent
-            }
+			var bottomColor color.Color
+			if y+1 < pxRows {
+				srcYBot := bounds.Min.Y + ((y + 1) * imgH / pxRows)
+				bottomColor = img.At(srcX, srcYBot)
+			} else {
+				bottomColor = color.Transparent
+			}
 
-            b.WriteString(renderHalfBlock(topColor, bottomColor))
-        }
-        if y + 2 < pxRows {
-            b.WriteString("\n")
-        }
-    }
+			b.WriteString(renderHalfBlock(topColor, bottomColor))
+		}
+		if y+2 < pxRows {
+			b.WriteString("\n")
+		}
+	}
 
-    return b.String()
+	return b.String()
 }
 
 func renderHalfBlock(top, bottom color.Color) string {
-    _, _, _, aT := top.RGBA()
-    _, _, _, aB := bottom.RGBA()
+	_, _, _, aT := top.RGBA()
+	_, _, _, aB := bottom.RGBA()
 
-    if aT == 0 && aB == 0 {
-        return " "
-    }
+	if aT == 0 && aB == 0 {
+		return " "
+	}
 
-    style := lipgloss.NewStyle()
-    char := "▀"
+	style := lipgloss.NewStyle()
+	char := "▀"
 
-    if aT > 0 {
-        style = style.Foreground(lipgloss.Color(colorToHex(top)))
-    } else {
-        char = "▄"
-        if aB > 0 {
-            style = style.Foreground(lipgloss.Color(colorToHex(bottom)))
-        }
-        return style.Render(char)
-    }
+	if aT > 0 {
+		style = style.Foreground(lipgloss.Color(colorToHex(top)))
+	} else {
+		char = "▄"
+		if aB > 0 {
+			style = style.Foreground(lipgloss.Color(colorToHex(bottom)))
+		}
+		return style.Render(char)
+	}
 
-    if aB > 0 {
-        style = style.Background(lipgloss.Color(colorToHex(bottom)))
-    }
+	if aB > 0 {
+		style = style.Background(lipgloss.Color(colorToHex(bottom)))
+	}
 
-    return style.Render(char)
+	return style.Render(char)
 }
 
 func colorToHex(c color.Color) string {
-    r, g, b, _ := c.RGBA()
-    return fmt.Sprintf("#%02x%02x%02x", uint8(r>>8), uint8(g>>8), uint8(b>>8))
+	r, g, b, _ := c.RGBA()
+	return fmt.Sprintf("#%02x%02x%02x", uint8(r>>8), uint8(g>>8), uint8(b>>8))
 }
 
 // GraphicsProtocol describes the terminal image rendering capability
@@ -148,8 +152,8 @@ func DetectProtocol() GraphicsProtocol {
 
 	// E.g. xterm can support sixel, mlterm, foot
 	if strings.Contains(term, "xterm") ||
-	   strings.Contains(term, "mlterm") ||
-	   strings.Contains(term, "foot") {
+		strings.Contains(term, "mlterm") ||
+		strings.Contains(term, "foot") {
 		// This is a naive detection but fits the "detect ... strictly via environment variables" rule
 		// Without terminal queries, accurate sixel detection is hard, but we do our best based on TERM.
 		// For the sake of the PR, we'll implement the shell of the renderers and just let the PR implement the details.
