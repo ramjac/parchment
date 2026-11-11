@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/document"
@@ -29,14 +30,13 @@ func (s *documentsScreen) startReading(d document.Document) {
 // refreshReader paginates the saved document and rebuilds its outline,
 // keeping the current page when it still exists.
 func (s *documentsScreen) refreshReader() {
-	s.readerPages, s.outline = nil, nil
-	pages, err := document.PaginateWithFormatter(s.snapshot, func(lines []string, width int) []string {
-		return strings.Split(renderMarkdown(strings.Join(lines, "\n"), width), "\n")
-	})
+	s.readerPages, s.outline, s.readerLinks = nil, nil, nil
+	pages, links, err := s.paginateDocumentWithLinks(s.snapshot)
 	if err != nil {
 		s.errMessage = err.Error()
 	} else {
 		s.readerPages = pages
+		s.readerLinks = links
 		s.outline, _ = document.Outline(s.snapshot)
 	}
 	s.readerPage = min(max(s.readerPage, 0), max(len(s.readerPages)-1, 0))
@@ -150,11 +150,65 @@ func (s *documentsScreen) updateReaderMouse(msg tea.MouseMsg) {
 	}
 	switch msg.Button {
 	case tea.MouseButtonLeft:
-		s.clickOutline(msg.X, msg.Y)
+		if s.wideReader() {
+			outlineWidth, _ := s.readerPaneWidths()
+			if msg.X >= 1 && msg.X <= outlineWidth+1 {
+				s.clickOutline(msg.X, msg.Y)
+				return
+			}
+		}
+		s.clickReaderLink(msg.X, msg.Y)
 	case tea.MouseButtonWheelDown:
 		s.scrollReader(true, msg)
 	case tea.MouseButtonWheelUp:
 		s.scrollReader(false, msg)
+	}
+}
+
+func (s *documentsScreen) clickReaderLink(x, y int) {
+	if s.readerPage >= len(s.readerPages) {
+		return
+	}
+	pageRow := (y - 4) + s.reader.YOffset
+	pageCol := x - 1
+	if s.wideReader() {
+		outlineWidth, _ := s.readerPaneWidths()
+		pageCol = x - (outlineWidth + 2)
+	}
+	for _, box := range s.readerLinks {
+		if box.page == s.readerPage && box.row == pageRow && pageCol >= box.startCol && pageCol < box.endCol {
+			s.navigateToTarget(box.target)
+			return
+		}
+	}
+}
+
+func (s *documentsScreen) navigateToTarget(target string) {
+	clean := strings.TrimPrefix(target, "#")
+	if clean == "" {
+		return
+	}
+	targetPage := -1
+	targetTitle := ""
+	for _, sec := range s.outline {
+		if strings.EqualFold(sec.Slug, clean) {
+			targetPage = sec.Page - 1
+			targetTitle = sec.Title
+			break
+		}
+	}
+	if targetPage < 0 || targetPage >= len(s.readerPages) {
+		return
+	}
+	s.readerPage = targetPage
+	s.showReaderPage()
+	if targetTitle != "" {
+		for r, line := range s.readerPages[targetPage].Lines {
+			if strings.Contains(ansi.Strip(line), targetTitle) {
+				s.reader.SetYOffset(max(0, r-1))
+				break
+			}
+		}
 	}
 }
 

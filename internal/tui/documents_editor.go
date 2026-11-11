@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/artifact"
@@ -476,6 +477,9 @@ func (s *documentsScreen) updateToolbarKey(key string) tea.Cmd {
 func (s *documentsScreen) updateMouse(msg tea.MouseMsg) tea.Cmd {
 	if s.previewing && msg.Action == tea.MouseActionPress {
 		switch msg.Button {
+		case tea.MouseButtonLeft:
+			s.clickPreviewLink(msg.X, msg.Y)
+			return nil
 		case tea.MouseButtonWheelDown:
 			s.editPageLine += 3
 		case tea.MouseButtonWheelUp:
@@ -573,13 +577,58 @@ func (s *documentsScreen) propose() tea.Cmd {
 }
 
 func (s *documentsScreen) openPreview() {
-	pages, err := document.Paginate(s.editorDocument())
+	pages, links, err := s.paginateDocumentWithLinks(s.editorDocument())
 	if err != nil {
 		s.errMessage = err.Error()
 		return
 	}
 	s.errMessage = ""
-	s.editPages, s.editPage, s.editPageLine, s.previewing = pages, 0, 0, true
+	s.outline, _ = document.Outline(s.editorDocument())
+	s.editPages, s.editLinks, s.editPage, s.editPageLine, s.previewing = pages, links, 0, 0, true
+}
+
+func (s *documentsScreen) clickPreviewLink(x, y int) {
+	if s.editPage >= len(s.editPages) {
+		return
+	}
+	pageRow := (y - 2) + s.editPageLine
+	pageCol := x
+	for _, box := range s.editLinks {
+		if box.page == s.editPage && box.row == pageRow && pageCol >= box.startCol && pageCol < box.endCol {
+			s.navigateToTargetPreview(box.target)
+			return
+		}
+	}
+}
+
+func (s *documentsScreen) navigateToTargetPreview(target string) {
+	clean := strings.TrimPrefix(target, "#")
+	if clean == "" {
+		return
+	}
+	targetPage := -1
+	targetTitle := ""
+	for _, sec := range s.outline {
+		if strings.EqualFold(sec.Slug, clean) {
+			targetPage = sec.Page - 1
+			targetTitle = sec.Title
+			break
+		}
+	}
+	if targetPage < 0 || targetPage >= len(s.editPages) {
+		return
+	}
+	s.editPage = targetPage
+	s.editPageLine = 0
+	if targetTitle != "" {
+		for r, line := range s.editPages[targetPage].Lines {
+			if strings.Contains(ansi.Strip(line), targetTitle) {
+				s.editPageLine = max(0, r-1)
+				break
+			}
+		}
+	}
+	s.clampPreviewLine()
 }
 
 func (s *documentsScreen) previewPage() document.Page {
