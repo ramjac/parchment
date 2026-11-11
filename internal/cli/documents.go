@@ -606,10 +606,13 @@ func newDocumentExportCmd(streams output) *cobra.Command {
 				format = strings.ToLower(format)
 			}
 
-			if format == "odt" {
-				return errors.New("unsupported export format \"odt\" (ODF export not yet supported)")
-			}
-			if format != "docx" {
+			var exporter docinterop.Exporter
+			switch format {
+			case "docx":
+				exporter = docinterop.NewDocxExporter()
+			case "odt":
+				exporter = docinterop.NewOdtExporter()
+			default:
 				return fmt.Errorf("unsupported export format %q", format)
 			}
 
@@ -652,7 +655,6 @@ func newDocumentExportCmd(streams output) *cobra.Command {
 			}
 
 			var buf bytes.Buffer
-			exporter := docinterop.NewDocxExporter()
 			warnings, err := exporter.Export(&buf, doc)
 			if err != nil {
 				return err
