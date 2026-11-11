@@ -296,9 +296,9 @@ func TestToolbarMouseClickAndUnsavedEscape(t *testing.T) {
 func TestAltFormattingFromToolbarFocusesBody(t *testing.T) {
 	h := newDocumentHarness(t, document.Draft{})
 	s := h.m.documents
-	h.key("tab")
+	h.key("f2")
 	if s.focus != focusToolbar || s.body.Focused {
-		t.Fatal("Tab did not move focus from the body to the toolbar")
+		t.Fatal("F2 did not move focus from the body to the toolbar")
 	}
 	h.send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b"), Alt: true})
 	h.typeText("x")
