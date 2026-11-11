@@ -158,8 +158,21 @@ func TestDocumentImportCLI(t *testing.T) {
 		t.Fatalf("expected target already exists error, got: %v", err)
 	}
 
-	// Unsupported format
-	if _, err := run("document", "import", "sample.odt", "target2.md", "--no-edit"); err == nil || !strings.Contains(err.Error(), "ODF import not yet supported") {
-		t.Fatalf("expected unsupported ODF import error, got: %v", err)
+	// ODF export & import
+	odtOut := "src.odt"
+	must("document", "export", id, "-o", odtOut)
+	targetODT := "dst_odt.md"
+	outODT := strings.TrimSpace(must("document", "import", odtOut, targetODT, "--no-edit"))
+	if !strings.HasSuffix(outODT, targetODT) {
+		t.Fatalf("expected stdout to print target path, got: %q", outODT)
+	}
+	shownODT := must("document", "show", targetODT)
+	if !strings.Contains(shownODT, "# Imported Header") {
+		t.Fatalf("unexpected content in imported ODF document:\n%s", shownODT)
+	}
+
+	// Unsupported / unknown format
+	if _, err := run("document", "import", "sample.xyz", "target3.md", "--no-edit"); err == nil {
+		t.Fatal("expected error for unknown format")
 	}
 }
