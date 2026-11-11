@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/document"
@@ -170,6 +171,7 @@ type editorFocus int
 const (
 	focusBody editorFocus = iota
 	focusToolbar
+	focusOutline
 )
 
 type promptKind int
@@ -224,14 +226,15 @@ type documentReaderState struct {
 // documentsScreen edits one document file and reviews its proposed changes.
 // It owns UI state only; document rules live in the document service.
 type documentsScreen struct {
-	service       *document.Service
-	path          string
-	width, height int
-	pending       bool
-	canUndo       bool
-	canRedo       bool
-	status        string
-	errMessage    string
+	service        *document.Service
+	path           string
+	width, height  int
+	pending        bool
+	outlineVisible bool
+	canUndo        bool
+	canRedo        bool
+	status         string
+	errMessage     string
 
 	theme               Theme
 	newOperationContext func() (context.Context, context.CancelFunc)
@@ -281,6 +284,7 @@ func newDocumentReaderState() documentReaderState {
 
 func newDocumentsScreen(service *document.Service, path string, newContext func() (context.Context, context.CancelFunc), theme Theme) *documentsScreen {
 	return &documentsScreen{
+		theme:                theme,
 		service:              service,
 		path:                 path,
 		documentEditorState:  newDocumentEditorState(),
@@ -689,7 +693,7 @@ func (s *documentsScreen) refreshHistory() {
 func pageText(page document.Page, width int) string {
 	lines := make([]string, len(page.Lines))
 	for i, line := range page.Lines {
-		lines[i] = runewidth.Truncate(sanitizeTerminalLine(line), max(width, 1), "")
+		lines[i] = ansi.Truncate(line, max(width, 1), "")
 	}
 	return strings.Join(lines, "\n")
 }

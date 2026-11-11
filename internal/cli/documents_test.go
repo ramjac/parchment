@@ -78,3 +78,101 @@ func TestDocumentProposalKeepsEmbeddedImages(t *testing.T) {
 		t.Fatalf("accepted proposal dropped the embedded image:\n%s", after)
 	}
 }
+
+func TestDocumentExportCLI(t *testing.T) {
+	c := newCLI(t)
+	must, run := c.must, c.run
+
+	id := "export_doc.md"
+	must("document", "create", id, "--body", "# Export Header\n\nParagraph with **bold** text.")
+
+	// Test export with -o inferred extension
+	docxOut := "export_doc.docx"
+	must("document", "export", id, "-o", docxOut)
+
+	if fi, err := os.Stat(docxOut); err != nil || fi.Size() == 0 {
+		t.Fatalf("expected %s to be created and non-empty, err: %v", docxOut, err)
+	}
+
+	// Refuse overwrite without --force
+	if _, err := run("document", "export", id, "-o", docxOut); err == nil {
+		t.Fatal("expected error when overwriting existing file without --force")
+	}
+
+	// Overwrite with --force succeeds
+	must("document", "export", id, "-o", docxOut, "--force")
+
+	// ODF export with -o inferred extension
+	odtOut := "out.odt"
+	must("document", "export", id, "-o", odtOut)
+	if fi, err := os.Stat(odtOut); err != nil || fi.Size() == 0 {
+		t.Fatalf("expected %s to be created and non-empty, err: %v", odtOut, err)
+	}
+
+	// Unknown format error
+	if _, err := run("document", "export", id, "-o", "out.txt"); err == nil {
+		t.Fatal("expected error for unknown extension without --format")
+	}
+
+	// Explicit --format docx with custom extension
+	customOut := "custom.bin"
+	must("document", "export", id, "-o", customOut, "--format", "docx")
+	if fi, err := os.Stat(customOut); err != nil || fi.Size() == 0 {
+		t.Fatalf("expected %s to be created, err: %v", customOut, err)
+	}
+
+	// Pending proposals warning test
+	must("document", "propose", id, "--body", "Propose edit", "--description", "Pending test")
+	_, errOutput, err := c.runWithStderr("document", "export", id, "-o", "with_proposals.docx")
+	if err != nil {
+		t.Fatalf("export with pending proposal failed: %v", err)
+	}
+	if !strings.Contains(errOutput, "warning: 1 pending proposal(s) not exported") {
+		t.Fatalf("expected pending proposals warning, got: %q", errOutput)
+	}
+}
+
+func TestDocumentImportCLI(t *testing.T) {
+	c := newCLI(t)
+	must, run := c.must, c.run
+
+	id := "src.md"
+	must("document", "create", id, "--body", "# Imported Header\n\nSome body text.\n\n- Item 1\n- Item 2")
+
+	docxOut := "src.docx"
+	must("document", "export", id, "-o", docxOut)
+
+	target := "dst.md"
+	out := strings.TrimSpace(must("document", "import", docxOut, target, "--no-edit"))
+	if !strings.HasSuffix(out, target) {
+		t.Fatalf("expected stdout to print target path, got: %q", out)
+	}
+
+	shown := must("document", "show", target)
+	if !strings.Contains(shown, "# Imported Header") || !strings.Contains(shown, "Some body text.") {
+		t.Fatalf("unexpected content in imported document:\n%s", shown)
+	}
+
+	// Refuse to overwrite existing target
+	if _, err := run("document", "import", docxOut, target, "--no-edit"); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected target already exists error, got: %v", err)
+	}
+
+	// ODF export & import
+	odtOut := "src.odt"
+	must("document", "export", id, "-o", odtOut)
+	targetODT := "dst_odt.md"
+	outODT := strings.TrimSpace(must("document", "import", odtOut, targetODT, "--no-edit"))
+	if !strings.HasSuffix(outODT, targetODT) {
+		t.Fatalf("expected stdout to print target path, got: %q", outODT)
+	}
+	shownODT := must("document", "show", targetODT)
+	if !strings.Contains(shownODT, "# Imported Header") {
+		t.Fatalf("unexpected content in imported ODF document:\n%s", shownODT)
+	}
+
+	// Unsupported / unknown format
+	if _, err := run("document", "import", "sample.xyz", "target3.md", "--no-edit"); err == nil {
+		t.Fatal("expected error for unknown format")
+	}
+}

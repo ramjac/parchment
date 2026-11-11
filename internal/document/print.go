@@ -17,11 +17,18 @@ type Page struct {
 	Lines  []string
 }
 
+// Formatter formats a block of Markdown lines to text wrapped to width.
+type Formatter func(lines []string, width int) []string
+
 // Paginate lays a document out as printer-friendly monospaced pages, applying
 // its margins, columns, page and section breaks, header, footer, and page
 // numbers. Markdown is converted to plain text suitable for any printer;
 // images print as bracketed placeholders.
 func Paginate(d Document) ([]Page, error) {
+	return PaginateWithFormatter(d, nil)
+}
+
+func PaginateWithFormatter(d Document, formatter Formatter) ([]Page, error) {
 	if err := d.Layout.Validate(); err != nil {
 		return nil, err
 	}
@@ -29,7 +36,7 @@ func Paginate(d Document) ([]Page, error) {
 	if err != nil {
 		return nil, err
 	}
-	bodies := paginateBody(d.Body, d.Layout.Columns, g.TextCols, g.BodyRows(), nil)
+	bodies := paginateBody(d.Body, d.Layout.Columns, g.TextCols, g.BodyRows(), nil, formatter)
 	pages := make([]Page, len(bodies))
 	for i, rows := range bodies {
 		pages[i] = Page{Number: i + 1, Lines: composePage(d, g, rows, i+1, len(bodies))}
@@ -39,9 +46,13 @@ func Paginate(d Document) ([]Page, error) {
 
 // Section is one heading in a document and the page it is printed on.
 type Section struct {
-	Level int
-	Title string
-	Page  int
+	Level        int
+	Title        string
+	Page         int
+	Slug         string
+	Anchor       bool
+	SectionBreak bool
+	Columns      int
 }
 
 // Outline lists the document's headings with the page each one lands on, in
@@ -55,7 +66,7 @@ func Outline(d Document) ([]Section, error) {
 		return nil, err
 	}
 	var sections []Section
-	paginateBody(d.Body, d.Layout.Columns, g.TextCols, g.BodyRows(), &sections)
+	paginateBody(d.Body, d.Layout.Columns, g.TextCols, g.BodyRows(), &sections, nil)
 	return sections, nil
 }
 
@@ -82,9 +93,13 @@ func clampColumns(columns, textCols int) int {
 }
 
 type headMark struct {
-	line  int
-	level int
-	title string
+	line         int
+	level        int
+	title        string
+	slug         string
+	anchor       bool
+	sectionBreak bool
+	columns      int
 }
 
 type bodyPaginator struct {
@@ -94,19 +109,33 @@ type bodyPaginator struct {
 	pages         [][]string
 	current       []string
 	pendingBreaks int
+	seenSlugs     map[string]int
+	formatter     Formatter
 }
 
-func paginateBody(body string, defaultColumns, textCols, bodyRows int, sections *[]Section) [][]string {
+func paginateBody(body string, defaultColumns, textCols, bodyRows int, sections *[]Section, formatter Formatter) [][]string {
 	p := bodyPaginator{
-		textCols: textCols,
-		bodyRows: bodyRows,
-		sections: sections,
+		textCols:  textCols,
+		bodyRows:  bodyRows,
+		sections:  sections,
+		seenSlugs: make(map[string]int),
+		formatter: formatter,
 	}
 	return p.paginate(body, defaultColumns)
 }
 
 func (p *bodyPaginator) paginate(body string, defaultColumns int) [][]string {
+	wasSectionBreak := false
 	for _, r := range splitRuns(body, defaultColumns) {
+		if wasSectionBreak && p.sections != nil {
+			*p.sections = append(*p.sections, Section{
+				Title:        fmt.Sprintf("── Section (%d cols)", clampColumns(r.columns, p.textCols)),
+				Page:         len(p.pages) + 1,
+				SectionBreak: true,
+				Columns:      clampColumns(r.columns, p.textCols),
+			})
+		}
+		wasSectionBreak = r.end == sectionBreak
 		p.processRun(r)
 	}
 	if len(p.current) > 0 || len(p.pages) == 0 {
@@ -124,7 +153,12 @@ func (p *bodyPaginator) processRun(r run) {
 	columns := clampColumns(r.columns, p.textCols)
 	width := ColumnWidth(p.textCols, columns)
 	var marks []headMark
-	raw := formatBlocks(r.lines, width, &marks)
+	var raw []string
+	if p.formatter != nil {
+		raw = p.formatter(r.lines, width)
+	} else {
+		raw = formatBlocks(r.lines, width, &marks, p.seenSlugs)
+	}
 	flat := trimBlankEnds(raw)
 
 	if len(flat) > 0 {
@@ -176,9 +210,13 @@ func (p *bodyPaginator) recordMarks(marks *[]headMark, pos int) {
 	for len(*marks) > 0 && (*marks)[0].line < pos {
 		if p.sections != nil {
 			*p.sections = append(*p.sections, Section{
-				Level: (*marks)[0].level,
-				Title: (*marks)[0].title,
-				Page:  len(p.pages) + 1,
+				Level:        (*marks)[0].level,
+				Title:        (*marks)[0].title,
+				Page:         len(p.pages) + 1,
+				Slug:         (*marks)[0].slug,
+				Anchor:       (*marks)[0].anchor,
+				SectionBreak: (*marks)[0].sectionBreak,
+				Columns:      (*marks)[0].columns,
 			})
 		}
 		*marks = (*marks)[1:]
@@ -345,6 +383,9 @@ var (
 	italicRE    = regexp.MustCompile(`\*([^*\s](?:[^*]*[^*\s])?)\*`)
 	strikeRE    = regexp.MustCompile(`~~(.+?)~~`)
 	codeRE      = regexp.MustCompile("`([^`]+)`")
+	anchorRE    = regexp.MustCompile(`(?i)<a\s+(?:id|name)=["']([^"']+)["'][^>]*>`)
+	slugPunctRE = regexp.MustCompile(`[^a-z0-9\s-]+`)
+	slugSpaceRE = regexp.MustCompile(`\s+`)
 )
 
 func inlineText(text string) string {
@@ -389,11 +430,26 @@ type paragraph struct {
 }
 
 type blockFormatter struct {
-	width int
-	marks *[]headMark
-	out   []string
-	p     paragraph
-	fence string
+	seenSlugs map[string]int
+	width     int
+	marks     *[]headMark
+	out       []string
+	p         paragraph
+	fence     string
+}
+
+// slugify converts a heading title into a GitHub-compatible anchor slug.
+func slugify(title string, seen map[string]int) string {
+	title = strings.ToLower(title)
+	title = slugPunctRE.ReplaceAllString(title, "")
+	title = slugSpaceRE.ReplaceAllString(strings.TrimSpace(title), "-")
+
+	count := seen[title]
+	seen[title] = count + 1
+	if count > 0 {
+		return fmt.Sprintf("%s-%d", title, count)
+	}
+	return title
 }
 
 func (f *blockFormatter) flush() {
@@ -413,7 +469,7 @@ func (f *blockFormatter) heading(level int, raw string) {
 	f.blank()
 	text := inlineText(raw)
 	if f.marks != nil {
-		*f.marks = append(*f.marks, headMark{line: len(f.out), level: level, title: text})
+		*f.marks = append(*f.marks, headMark{line: len(f.out), level: level, title: text, slug: slugify(text, f.seenSlugs)})
 	}
 	if level == 1 {
 		text = strings.ToUpper(text)
@@ -452,6 +508,15 @@ func (f *blockFormatter) processLine(raw string) {
 		f.fence = marker
 		return
 	}
+
+	if matches := anchorRE.FindAllStringSubmatch(line, -1); len(matches) > 0 {
+		for _, match := range matches {
+			if f.marks != nil {
+				*f.marks = append(*f.marks, headMark{line: len(f.out), anchor: true, slug: match[1]})
+			}
+		}
+	}
+
 	switch {
 	case trimmed == "":
 		f.flush()
@@ -498,8 +563,8 @@ func (f *blockFormatter) processLine(raw string) {
 }
 
 // formatBlocks converts Markdown lines to plain text wrapped to width.
-func formatBlocks(lines []string, width int, marks *[]headMark) []string {
-	f := blockFormatter{width: width, marks: marks}
+func formatBlocks(lines []string, width int, marks *[]headMark, seenSlugs map[string]int) []string {
+	f := blockFormatter{width: width, marks: marks, seenSlugs: seenSlugs}
 	for _, line := range lines {
 		f.processLine(line)
 	}

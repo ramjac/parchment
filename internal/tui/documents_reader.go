@@ -30,7 +30,9 @@ func (s *documentsScreen) startReading(d document.Document) {
 // keeping the current page when it still exists.
 func (s *documentsScreen) refreshReader() {
 	s.readerPages, s.outline = nil, nil
-	pages, err := document.Paginate(s.snapshot)
+	pages, err := document.PaginateWithFormatter(s.snapshot, func(lines []string, width int) []string {
+		return strings.Split(renderMarkdown(strings.Join(lines, "\n"), width), "\n")
+	})
 	if err != nil {
 		s.errMessage = err.Error()
 	} else {
@@ -105,6 +107,9 @@ func (s *documentsScreen) updateReaderKey(msg tea.KeyMsg) tea.Cmd {
 	key := msg.String()
 	switch key {
 	case "q", "esc", "ctrl+c":
+		if s.showChanges {
+			return s.updateChangesKey(msg)
+		}
 		return s.close()
 	case "e":
 		cmd, ok := s.startEdit(s.snapshot)
@@ -119,6 +124,8 @@ func (s *documentsScreen) updateReaderKey(msg tea.KeyMsg) tea.Cmd {
 		return s.history(true)
 	case "ctrl+r":
 		return s.history(false)
+	case "ctrl+o":
+		s.outlineVisible = !s.outlineVisible
 	case "right", "]":
 		s.changeReaderPage(1, key == "]")
 	case "left", "[":
