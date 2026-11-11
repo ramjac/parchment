@@ -2,21 +2,33 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 
+	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/presentation"
+	"example.com/parchment/internal/recovery"
 	"example.com/parchment/internal/tui/editor"
 )
 
 // presentationChromeLines counts the header, status, and help lines.
 const presentationChromeLines = 3
+
+type presentationAutosaveTickMsg struct{ session uint64 }
+
+type presentationAutosaveFinishedMsg struct {
+	session uint64
+	err     error
+	cleared bool
+}
 
 type presentationLoadedMsg struct {
 	seq  int
@@ -70,6 +82,12 @@ type presentationModel struct {
 	deck    presentation.Deck
 	loaded  bool
 
+	recoveryStore     recovery.Store
+	autosaveScheduler func(session uint64) tea.Cmd
+	autosaveSession   uint64
+	autosaveCancel    context.CancelFunc
+	draftStored       bool
+
 	presentationOpState
 	presentationViewState
 	presentationEditorState
@@ -122,13 +140,42 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			// Keep the editor open so the draft is not lost.
 			m.setError("Save failed", msg.err)
-			return m, nil
+			m.startAutosaveSession()
+			return m, m.scheduleAutosave(m.autosaveSession)
 		}
 		if m.editing {
 			m.leaveEditor()
 		}
 		m.setItem(msg.item)
 		m.status = "Saved"
+		if m.recoveryStore != nil {
+			if cleanupErr := m.recoveryStore.DeleteRecovery(context.Background(), m.path); cleanupErr != nil {
+				m.status += " (could not remove recovery draft: " + cleanupErr.Error() + ")"
+			}
+			m.draftStored = false
+		}
+		return m, nil
+	case presentationAutosaveTickMsg:
+		if msg.session == m.autosaveSession && m.editing {
+			return m, m.saveRecovery(msg.session)
+		}
+		return m, nil
+	case presentationAutosaveFinishedMsg:
+		if msg.session == m.autosaveSession {
+			if m.autosaveCancel != nil {
+				m.autosaveCancel()
+				m.autosaveCancel = nil
+			}
+			if msg.cleared && msg.err == nil {
+				m.draftStored = false
+			}
+			if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
+				m.errMessage = "Autosave failed: " + msg.err.Error()
+			}
+			if m.editing {
+				return m, m.scheduleAutosave(msg.session)
+			}
+		}
 		return m, nil
 	case presentationHistoryMsg:
 		if msg.seq != m.seq {
@@ -221,9 +268,12 @@ func (m *presentationModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
 func (m *presentationModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 	key := msg.String()
 	switch key {
-	case "ctrl+c", "q":
+	case "ctrl+c":
 		m.cancelPending()
 		return tea.Quit
+	case "q":
+		m.cancelPending()
+		return m.close()
 	case "esc":
 		if m.pending {
 			m.cancelPending()
@@ -231,7 +281,7 @@ func (m *presentationModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 		m.cancelPending()
-		return tea.Quit
+		return m.close()
 	}
 	if m.pending {
 		m.status = "Working… (esc cancels)"
@@ -305,8 +355,86 @@ func (m *presentationModel) beginEdit() tea.Cmd {
 	m.status, m.errMessage = "", ""
 	m.editor.SetValue(m.item.Source)
 	m.moveEditorToLine(slideSourceLine(m.item.Source, m.page))
-	cmd := m.editor.Focus()
-	return cmd
+	m.startAutosaveSession()
+	return tea.Batch(m.editor.Focus(), m.scheduleAutosave(m.autosaveSession))
+}
+
+func (m *presentationModel) restoreDraft(source string) tea.Cmd {
+	m.editing, m.discardWarning = true, false
+	m.errMessage = ""
+	m.draftStored = true
+	m.editor.SetValue(source)
+	m.moveEditorToLine(slideSourceLine(source, m.page))
+	m.startAutosaveSession()
+	return tea.Batch(m.editor.Focus(), m.scheduleAutosave(m.autosaveSession))
+}
+
+func (m *presentationModel) dirty() bool {
+	return m.editing && m.editor.Value() != m.item.Source
+}
+
+func (m *presentationModel) startAutosaveSession() {
+	m.autosaveSession++
+	if m.autosaveCancel != nil {
+		m.autosaveCancel()
+		m.autosaveCancel = nil
+	}
+}
+
+func (m *presentationModel) stopAutosave() {
+	m.startAutosaveSession()
+}
+
+func (m *presentationModel) scheduleAutosave(session uint64) tea.Cmd {
+	if m.recoveryStore == nil || m.autosaveScheduler == nil {
+		return nil
+	}
+	return m.autosaveScheduler(session)
+}
+
+func (m *presentationModel) saveRecovery(session uint64) tea.Cmd {
+	if m.recoveryStore == nil {
+		return nil
+	}
+	if !m.dirty() {
+		if !m.draftStored {
+			return m.scheduleAutosave(session)
+		}
+		store, path := m.recoveryStore, m.path
+		return func() tea.Msg {
+			return presentationAutosaveFinishedMsg{
+				session: session,
+				err:     store.DeleteRecovery(context.Background(), path),
+				cleared: true,
+			}
+		}
+	}
+	m.draftStored = true
+	data := presentationRecoveryData{
+		Baseline: m.item,
+		Source:   m.editor.Value(),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.autosaveCancel = cancel
+	store := m.recoveryStore
+	draft := recovery.Draft{
+		Path:      m.path,
+		Kind:      string(artifact.PresentationKind),
+		UpdatedAt: time.Now().UTC(),
+	}
+	return func() tea.Msg {
+		encoded, err := json.Marshal(data)
+		if err == nil {
+			draft.Data = encoded
+			err = store.SaveRecovery(ctx, draft)
+		}
+		return presentationAutosaveFinishedMsg{session: session, err: err}
+	}
+}
+
+func (m *presentationModel) close() tea.Cmd {
+	m.stopAutosave()
+	return closeEditor(m.recoveryStore, m.path)
 }
 
 func (m *presentationModel) moveEditorToLine(line int) {
@@ -421,6 +549,14 @@ func (m *presentationModel) leaveEditor() {
 	m.goToPage(pageForSourceLine(m.editor.Value(), m.editor.Cursor.Line))
 	m.editing, m.discardWarning = false, false
 	m.editor.Blur()
+	m.stopAutosave()
+	if m.draftStored && m.recoveryStore != nil {
+		store, path := m.recoveryStore, m.path
+		m.draftStored = false
+		go func() {
+			_ = store.DeleteRecovery(context.Background(), path)
+		}()
+	}
 }
 
 func (m *presentationModel) save() tea.Cmd {

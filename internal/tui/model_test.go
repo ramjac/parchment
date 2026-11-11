@@ -87,6 +87,9 @@ func (h *harness) send(message tea.Msg) {
 	if h.m.documents != nil {
 		h.m.documents.autosaveScheduler = nil
 	}
+	if h.m.deck != nil {
+		h.m.deck.autosaveScheduler = nil
+	}
 	_, cmd := h.m.Update(message)
 	h.run(cmd)
 }
@@ -482,6 +485,113 @@ func TestRecoveryWarnsWhenFileChangedAfterDraft(t *testing.T) {
 	h.key("r")
 	if !strings.Contains(h.m.status, "saving will report a conflict") {
 		t.Fatalf("status = %q", h.m.status)
+	}
+}
+
+func TestPresentationRecoveryOfferRecoverDiscardQuit(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, artifact.PresentationKind)
+	h.key("e")
+	if !h.m.deck.editing {
+		t.Fatal("not in edit mode")
+	}
+	h.m.deck.editor.SetValue(h.m.deck.item.Source + "\n---\n\n## Recovered Slide\n")
+	h.run(h.m.deck.saveRecovery(h.m.deck.autosaveSession))
+	if !h.hasDraft() {
+		t.Fatal("failed to store recovery draft")
+	}
+
+	// 1. Test 'q' keeps draft
+	h.open(artifact.PresentationKind)
+	if h.m.stage != stageRecovery {
+		t.Fatalf("stage = %d, want stageRecovery", h.m.stage)
+	}
+	h.key("q")
+	if !h.quit || !h.hasDraft() {
+		t.Fatalf("q at offer: quit=%t, hasDraft=%t", h.quit, h.hasDraft())
+	}
+
+	// 2. Test 'd' discards draft and opens saved file
+	h.open(artifact.PresentationKind)
+	if h.m.stage != stageRecovery {
+		t.Fatalf("stage = %d, want stageRecovery", h.m.stage)
+	}
+	h.key("d")
+	if h.m.stage != stagePresentation || h.hasDraft() {
+		t.Fatalf("d at offer: stage=%d, hasDraft=%t", h.m.stage, h.hasDraft())
+	}
+
+	// Recreate draft
+	h.key("e")
+	h.m.deck.editor.SetValue(h.m.deck.item.Source + "\n---\n\n## Recovered Slide\n")
+	h.run(h.m.deck.saveRecovery(h.m.deck.autosaveSession))
+	if !h.hasDraft() {
+		t.Fatal("failed to store recovery draft again")
+	}
+
+	// 3. Test 'r' recovers directly into editor
+	h.open(artifact.PresentationKind)
+	if h.m.stage != stageRecovery {
+		t.Fatalf("stage = %d, want stageRecovery", h.m.stage)
+	}
+	h.key("r")
+	if h.m.stage != stagePresentation || !h.m.deck.editing {
+		t.Fatalf("r at offer: stage=%d, editing=%t", h.m.stage, h.m.deck.editing)
+	}
+	if !strings.Contains(h.m.deck.editor.Value(), "Recovered Slide") {
+		t.Fatalf("editor value = %q, want 'Recovered Slide'", h.m.deck.editor.Value())
+	}
+
+	// Save recovered presentation via ctrl+s
+	h.key("ctrl+s")
+	if h.m.deck.editing {
+		t.Fatalf("editor did not close after successful save (errMessage = %q, status = %q)", h.m.deck.errMessage, h.m.deck.status)
+	}
+	saved, err := h.decks.Get(ctx, h.path)
+	if err != nil || !strings.Contains(saved.Source, "Recovered Slide") {
+		t.Fatalf("saved deck source = %q, err=%v", saved.Source, err)
+	}
+	if h.hasDraft() {
+		t.Fatal("draft was not deleted after successful save")
+	}
+}
+
+func TestPresentationRecoveryWarnsWhenFileChangedAfterDraft(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, artifact.PresentationKind)
+	h.key("e")
+	h.m.deck.editor.SetValue(h.m.deck.item.Source + "\n---\n\n## Draft Content\n")
+	h.run(h.m.deck.saveRecovery(h.m.deck.autosaveSession))
+	if !h.hasDraft() {
+		t.Fatal("draft not stored")
+	}
+
+	// Modify file externally
+	deck, err := h.decks.Get(ctx, h.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.decks.Update(ctx, deck, deck.Source+"\n---\n\n## External Edit\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopen and recover
+	h.open(artifact.PresentationKind)
+	if h.m.stage != stageRecovery {
+		t.Fatalf("stage = %d, want stageRecovery", h.m.stage)
+	}
+	h.key("r")
+	if !strings.Contains(h.m.deck.status, "saving will report a conflict") {
+		t.Fatalf("status = %q, want conflict warning", h.m.deck.status)
+	}
+
+	// Attempting save should fail with conflict and keep editor open
+	h.key("ctrl+s")
+	if !h.m.deck.editing {
+		t.Fatal("editor closed on save failure")
+	}
+	if !strings.Contains(h.m.deck.errMessage, "Save failed:") {
+		t.Fatalf("errMessage = %q, want 'Save failed:'", h.m.deck.errMessage)
 	}
 }
 

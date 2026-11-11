@@ -241,7 +241,6 @@ func (m *Model) openFile(kind artifact.Kind) tea.Cmd {
 				msg.deck, msg.err = decks.Create(ctx, path, "")
 				msg.created = true
 			}
-			return msg
 		default:
 			msg.err = fmt.Errorf("the interactive editor cannot open %s artifacts", kind)
 		}
@@ -426,6 +425,12 @@ func (m *Model) enterEditor() tea.Cmd {
 		return cmd
 	case artifact.PresentationKind:
 		m.deck = newPresentationModel(m.presentations, m.path, m.theme)
+		m.deck.recoveryStore = m.recoveryStore
+		m.deck.autosaveScheduler = func(session uint64) tea.Cmd {
+			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
+				return presentationAutosaveTickMsg{session: session}
+			})
+		}
 		m.deck.newOperationContext = m.newOperationContext
 		m.deck.width, m.deck.height = m.width, m.height
 		m.deck.setItem(m.opened.deck)
