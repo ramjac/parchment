@@ -13,7 +13,19 @@ import (
 	"example.com/parchment/internal/note"
 	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/recovery"
+	"example.com/parchment/internal/spreadsheet"
 )
+
+// spreadsheetRecoveryData is the autosaved spreadsheet editor state: the saved
+// workbook the edits started from, dirty sheet state, and cursor/cell input positions.
+type spreadsheetRecoveryData struct {
+	Baseline         spreadsheet.Spreadsheet `json:"baseline"`
+	Dirty            spreadsheet.Spreadsheet `json:"dirty"`
+	ActiveSheet      int                     `json:"active_sheet"`
+	CursorRow        int                     `json:"cursor_row"`
+	CursorCol        int                     `json:"cursor_col"`
+	PendingCellInput string                  `json:"pending_cell_input,omitempty"`
+}
 
 // presentationRecoveryData is the autosaved presentation editor state: the saved
 // presentation the edits started from and the unsaved Markdown source.
@@ -168,6 +180,47 @@ func (m *Model) recoverDraft() tea.Cmd {
 		_, sizeCmd := m.deck.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		restoreCmd := m.deck.restoreDraft(data.Source)
 		return tea.Batch(sizeCmd, restoreCmd)
+	case artifact.SpreadsheetKind:
+		var data spreadsheetRecoveryData
+		if err := json.Unmarshal(draft.Data, &data); err != nil {
+			m.errMessage = "Decode autosaved spreadsheet: " + err.Error() + "; press d to discard it"
+			return nil
+		}
+		data.Baseline.Path = m.path
+		data.Dirty.Path = m.path
+		m.sheet = newSpreadsheetModel(m.spreadsheets, m.path, m.theme)
+		m.sheet.recoveryStore = m.recoveryStore
+		m.sheet.autosaveScheduler = func(session uint64) tea.Cmd {
+			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
+				return spreadsheetAutosaveTickMsg{session: session}
+			})
+		}
+		m.sheet.newOperationContext = m.newOperationContext
+		m.sheet.width, m.sheet.height = m.width, m.height
+		spreadsheet.Normalize(&data.Dirty)
+		m.sheet.setBook(data.Dirty)
+		m.sheet.sheet = data.ActiveSheet
+		m.sheet.row = data.CursorRow
+		m.sheet.column = data.CursorCol
+		m.sheet.scrollToSelection()
+		if data.PendingCellInput != "" {
+			m.sheet.editing = true
+			m.sheet.input.SetValue(data.PendingCellInput)
+			m.sheet.input.CursorEnd()
+		}
+		m.sheet.draftStored = true
+		m.sheet.status = "Recovered unsaved spreadsheet draft"
+		if !spreadsheet.Equal(data.Baseline, opened.book) {
+			m.sheet.status += "; the file changed after the draft was saved, so saving will report a conflict"
+		}
+		m.stage = stageSpreadsheet
+		_, sizeCmd := m.sheet.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+		var initCmd tea.Cmd
+		if m.sheet.editing {
+			initCmd = m.sheet.input.Focus()
+		}
+		m.sheet.startAutosaveSession()
+		return tea.Batch(sizeCmd, initCmd, m.sheet.scheduleAutosave(m.sheet.autosaveSession))
 	}
 	return nil
 }

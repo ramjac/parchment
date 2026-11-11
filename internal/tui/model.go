@@ -234,7 +234,6 @@ func (m *Model) openFile(kind artifact.Kind) tea.Cmd {
 				msg.book, msg.err = sheets.Create(ctx, path, nil)
 				msg.created = true
 			}
-			return msg
 		case kind == artifact.PresentationKind && decks != nil:
 			msg.deck, msg.err = decks.Get(ctx, path)
 			if errors.Is(msg.err, presentation.ErrNotFound) {
@@ -416,13 +415,20 @@ func (m *Model) enterEditor() tea.Cmd {
 		return tea.Batch(m.bodyInput.Focus(), m.scheduleAutosave(m.autosaveSession))
 	case artifact.SpreadsheetKind:
 		m.sheet = newSpreadsheetModel(m.spreadsheets, m.path, m.theme)
+		m.sheet.recoveryStore = m.recoveryStore
+		m.sheet.autosaveScheduler = func(session uint64) tea.Cmd {
+			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
+				return spreadsheetAutosaveTickMsg{session: session}
+			})
+		}
 		m.sheet.newOperationContext = m.newOperationContext
 		m.sheet.width, m.sheet.height = m.width, m.height
 		m.sheet.setBook(m.opened.book)
 		m.sheet.status = m.status
 		m.stage = stageSpreadsheet
 		_, cmd := m.sheet.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-		return cmd
+		m.sheet.startAutosaveSession()
+		return tea.Batch(cmd, m.sheet.scheduleAutosave(m.sheet.autosaveSession))
 	case artifact.PresentationKind:
 		m.deck = newPresentationModel(m.presentations, m.path, m.theme)
 		m.deck.recoveryStore = m.recoveryStore
