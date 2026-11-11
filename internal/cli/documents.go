@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -16,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/docinterop"
 	"example.com/parchment/internal/document"
 )
 
@@ -45,6 +47,7 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 		newDocumentImageExtractCmd(streams),
 		newDocumentImageRemoveCmd(),
 		newDocumentPrintCmd(streams),
+		newDocumentExportCmd(streams),
 	)
 }
 
@@ -574,4 +577,128 @@ func changeLayoutDescription(layout document.Layout) string {
 		layout.PageSize, layout.Orientation, layout.Margins.Top, layout.Margins.Right,
 		layout.Margins.Bottom, layout.Margins.Left, layout.Columns, layout.Header,
 		layout.Footer, layout.PageNumbers)
+}
+
+func newDocumentExportCmd(streams output) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "export <file> -o <target.odt|target.docx>",
+		Short: "Export a document to DOCX or ODF format",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			outputPath, _ := cmd.Flags().GetString("output")
+			if outputPath == "" {
+				return errors.New("output file is required (-o/--output)")
+			}
+
+			format, _ := cmd.Flags().GetString("format")
+			if format == "" {
+				ext := strings.ToLower(filepath.Ext(outputPath))
+				switch ext {
+				case ".docx":
+					format = "docx"
+				case ".odt":
+					format = "odt"
+				default:
+					return fmt.Errorf("unable to determine export format from %q (use --format)", outputPath)
+				}
+			} else {
+				format = strings.ToLower(format)
+			}
+
+			if format == "odt" {
+				return errors.New("unsupported export format \"odt\" (ODF export not yet supported)")
+			}
+			if format != "docx" {
+				return fmt.Errorf("unsupported export format %q", format)
+			}
+
+			force, _ := cmd.Flags().GetBool("force")
+			mode := os.FileMode(0o600)
+			if info, err := os.Stat(outputPath); err == nil {
+				mode = info.Mode().Perm()
+				if !force {
+					return fmt.Errorf("%s already exists (use --force to overwrite)", outputPath)
+				}
+			}
+
+			repo, service, err := openDocuments(cmd)
+			if err != nil {
+				return err
+			}
+
+			srcPath, err := filepath.Abs(args[0])
+			if err != nil {
+				return err
+			}
+
+			doc, err := service.Get(cmd.Context(), srcPath)
+			if err != nil {
+				return err
+			}
+
+			// Check pending proposals
+			changes, err := repo.ListDocumentChanges(cmd.Context(), srcPath)
+			if err == nil {
+				pendingCount := 0
+				for _, ch := range changes {
+					if ch.Status == document.ChangePending {
+						pendingCount++
+					}
+				}
+				if pendingCount > 0 {
+					fmt.Fprintf(streams.err, "warning: %d pending proposal(s) not exported\n", pendingCount)
+				}
+			}
+
+			var buf bytes.Buffer
+			exporter := docinterop.NewDocxExporter()
+			warnings, err := exporter.Export(&buf, doc)
+			if err != nil {
+				return err
+			}
+			for _, w := range warnings {
+				fmt.Fprintf(streams.err, "%s\n", w.Error())
+			}
+
+			// Write atomically beside target
+			dir := filepath.Dir(outputPath)
+			tempFile, err := os.CreateTemp(dir, ".parchment-export-*")
+			if err != nil {
+				return err
+			}
+			tempName := tempFile.Name()
+			written := false
+			defer func() {
+				if !written {
+					_ = os.Remove(tempName)
+				}
+			}()
+
+			if err := tempFile.Chmod(mode); err != nil {
+				_ = tempFile.Close()
+				return err
+			}
+			if _, err := tempFile.Write(buf.Bytes()); err != nil {
+				_ = tempFile.Close()
+				return err
+			}
+			if err := tempFile.Sync(); err != nil {
+				_ = tempFile.Close()
+				return err
+			}
+			if err := tempFile.Close(); err != nil {
+				return err
+			}
+			if err := os.Rename(tempName, outputPath); err != nil {
+				return err
+			}
+			written = true
+			drainWarnings(repo, output{err: cmd.ErrOrStderr()})
+			return nil
+		},
+	}
+	cmd.Flags().StringP("output", "o", "", "output file (required)")
+	cmd.Flags().String("format", "", "export format: docx or odt")
+	cmd.Flags().Bool("force", false, "overwrite output file if it exists")
+	return cmd
 }

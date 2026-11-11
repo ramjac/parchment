@@ -78,3 +78,54 @@ func TestDocumentProposalKeepsEmbeddedImages(t *testing.T) {
 		t.Fatalf("accepted proposal dropped the embedded image:\n%s", after)
 	}
 }
+
+func TestDocumentExportCLI(t *testing.T) {
+	c := newCLI(t)
+	must, run := c.must, c.run
+
+	id := "export_doc.md"
+	must("document", "create", id, "--body", "# Export Header\n\nParagraph with **bold** text.")
+
+	// Test export with -o inferred extension
+	docxOut := "export_doc.docx"
+	must("document", "export", id, "-o", docxOut)
+
+	if fi, err := os.Stat(docxOut); err != nil || fi.Size() == 0 {
+		t.Fatalf("expected %s to be created and non-empty, err: %v", docxOut, err)
+	}
+
+	// Refuse overwrite without --force
+	if _, err := run("document", "export", id, "-o", docxOut); err == nil {
+		t.Fatal("expected error when overwriting existing file without --force")
+	}
+
+	// Overwrite with --force succeeds
+	must("document", "export", id, "-o", docxOut, "--force")
+
+	// Unsupported ODF export
+	if _, err := run("document", "export", id, "-o", "out.odt"); err == nil || !strings.Contains(err.Error(), "ODF export not yet supported") {
+		t.Fatalf("expected unsupported ODF error, got %v", err)
+	}
+
+	// Unknown format error
+	if _, err := run("document", "export", id, "-o", "out.txt"); err == nil {
+		t.Fatal("expected error for unknown extension without --format")
+	}
+
+	// Explicit --format docx with custom extension
+	customOut := "custom.bin"
+	must("document", "export", id, "-o", customOut, "--format", "docx")
+	if fi, err := os.Stat(customOut); err != nil || fi.Size() == 0 {
+		t.Fatalf("expected %s to be created, err: %v", customOut, err)
+	}
+
+	// Pending proposals warning test
+	must("document", "propose", id, "--body", "Propose edit", "--description", "Pending test")
+	_, errOutput, err := c.runWithStderr("document", "export", id, "-o", "with_proposals.docx")
+	if err != nil {
+		t.Fatalf("export with pending proposal failed: %v", err)
+	}
+	if !strings.Contains(errOutput, "warning: 1 pending proposal(s) not exported") {
+		t.Fatalf("expected pending proposals warning, got: %q", errOutput)
+	}
+}
