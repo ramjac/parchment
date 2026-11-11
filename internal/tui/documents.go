@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/document"
@@ -692,7 +693,7 @@ func (s *documentsScreen) refreshHistory() {
 func pageText(page document.Page, width int) string {
 	lines := make([]string, len(page.Lines))
 	for i, line := range page.Lines {
-		lines[i] = runewidth.Truncate(sanitizeTerminalLine(line), max(width, 1), "")
+		lines[i] = ansi.Truncate(line, max(width, 1), "")
 	}
 	return strings.Join(lines, "\n")
 }

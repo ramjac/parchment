@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/presentation"
@@ -83,7 +84,7 @@ func TestPresentationViewNavigatesSlidesAndNotes(t *testing.T) {
 	m, _, _ := newPresentationTestModel(t)
 	view := m.View()
 	for _, want := range []string{"Product Update", "deck.md", "Parchment team", "Title page"} {
-		if !strings.Contains(view, want) {
+		if !strings.Contains(ansi.Strip(view), want) {
 			t.Fatalf("title page missing %q:\n%s", want, view)
 		}
 	}
@@ -92,7 +93,7 @@ func TestPresentationViewNavigatesSlidesAndNotes(t *testing.T) {
 	}
 	drivePresentation(t, m, sheetKey("right"))
 	view = m.View()
-	if !strings.Contains(view, "What shipped") || !strings.Contains(view, "Slide 1 of") {
+	if !strings.Contains(ansi.Strip(view), "What shipped") || !strings.Contains(ansi.Strip(view), "Slide 1 of") {
 		t.Fatalf("first slide not shown:\n%s", view)
 	}
 	withNotes := -1
@@ -108,11 +109,11 @@ func TestPresentationViewNavigatesSlidesAndNotes(t *testing.T) {
 	for m.page < withNotes+1 {
 		drivePresentation(t, m, sheetKey("n"))
 	}
-	if strings.Contains(m.View(), m.deck.Slides[withNotes].Notes) {
+	if strings.Contains(ansi.Strip(m.View()), m.deck.Slides[withNotes].Notes) {
 		t.Fatal("speaker notes shown before toggling")
 	}
 	drivePresentation(t, m, sheetKey("s"))
-	if view := m.View(); !strings.Contains(view, "Speaker notes") ||
+	if view := ansi.Strip(m.View()); !strings.Contains(view, "Speaker notes") ||
 		!strings.Contains(view, m.deck.Slides[withNotes].Notes) {
 		t.Fatalf("notes not shown:\n%s", view)
 	}
@@ -462,21 +463,21 @@ func TestPresentationView(t *testing.T) {
 		m.width, m.height = 80, 20
 
 		// Set slide source with one slide having notes and another with empty notes
-		src := "# Title\n\n## Slide With Notes\nBody 1\n\n<!-- parchment-notes\nSome speaker notes\n-->\n\n## Slide Empty Notes\nBody 2\n\n<!-- parchment-notes\n-->\n"
+		src := "# Title\n\n## Slide With Notes\nBody 1\n\n: Some speaker notes\n\n## Slide Empty Notes\nBody 2\n"
 		m.setItem(presentation.Presentation{Source: src})
 
 		// Slide 1 with notes
 		m.goToPage(1)
 		m.showNotes = true
 		view := m.View()
-		if !strings.Contains(view, "── Speaker notes ──") || !strings.Contains(view, "Some speaker notes") {
+		if !strings.Contains(ansi.Strip(view), "── Speaker notes ──") || !strings.Contains(ansi.Strip(view), "Some speaker notes") {
 			t.Fatalf("slide 1 notes not rendered:\n%s", view)
 		}
 
 		// Slide 2 with empty notes
 		m.goToPage(2)
 		view = m.View()
-		if !strings.Contains(view, "── Speaker notes ──") || !strings.Contains(view, "(none)") {
+		if !strings.Contains(ansi.Strip(view), "── Speaker notes ──") || !strings.Contains(ansi.Strip(view), "(none)") {
 			t.Fatalf("slide 2 empty notes not rendered as '(none)':\n%s", view)
 		}
 	})

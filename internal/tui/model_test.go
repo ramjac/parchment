@@ -14,6 +14,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
@@ -405,19 +406,19 @@ func TestPreviewCanScroll(t *testing.T) {
 	for i := range lines {
 		lines[i] = fmt.Sprintf("Line %02d", i+1)
 	}
-	if _, err := h.notes.Create(context.Background(), h.path, strings.Join(lines, "\n")); err != nil {
+	if _, err := h.notes.Create(context.Background(), h.path, strings.Join(lines, "\n\n")); err != nil {
 		t.Fatal(err)
 	}
 	h.open(artifact.NoteKind)
 	h.send(tea.WindowSizeMsg{Width: 100, Height: 16})
 	h.key("f5")
-	if view := h.m.View(); !strings.Contains(view, "Line 01") || strings.Contains(view, "Line 60") {
+	if view := ansi.Strip(h.m.View()); !strings.Contains(view, "Line 01") || strings.Contains(view, "Line 60") {
 		t.Fatalf("initial preview = %q", view)
 	}
-	for range 3 {
+	for range 6 {
 		h.key("pgdown")
 	}
-	if view := h.m.View(); !strings.Contains(view, "Line 3") {
+	if view := ansi.Strip(h.m.View()); !strings.Contains(view, "Line 3") {
 		t.Fatalf("scrolled preview = %q", view)
 	}
 	h.key("esc")

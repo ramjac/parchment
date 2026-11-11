@@ -673,7 +673,7 @@ func (m *presentationModel) pageLines() []string {
 			if slide.Notes == "" {
 				text.WriteString("(none)")
 			} else {
-				text.WriteString(slide.Notes)
+				text.WriteString(strings.TrimSpace(slide.Notes))
 			}
 		}
 	}
@@ -685,8 +685,8 @@ func (m *presentationModel) pageLines() []string {
 	}
 	body := strings.ReplaceAll(sanitizeTerminalText(strings.Trim(text.String(), "\n")), "\t", "    ")
 	if body != "" {
-		wrapped := lipgloss.NewStyle().Width(width).Render(body)
-		lines = append(lines, strings.Split(wrapped, "\n")...)
+		rendered := renderMarkdown(body, width)
+		lines = append(lines, strings.Split(rendered, "\n")...)
 	}
 	return lines
 }

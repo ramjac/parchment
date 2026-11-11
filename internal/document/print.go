@@ -17,11 +17,18 @@ type Page struct {
 	Lines  []string
 }
 
+// Formatter formats a block of Markdown lines to text wrapped to width.
+type Formatter func(lines []string, width int) []string
+
 // Paginate lays a document out as printer-friendly monospaced pages, applying
 // its margins, columns, page and section breaks, header, footer, and page
 // numbers. Markdown is converted to plain text suitable for any printer;
 // images print as bracketed placeholders.
 func Paginate(d Document) ([]Page, error) {
+	return PaginateWithFormatter(d, nil)
+}
+
+func PaginateWithFormatter(d Document, formatter Formatter) ([]Page, error) {
 	if err := d.Layout.Validate(); err != nil {
 		return nil, err
 	}
@@ -29,7 +36,7 @@ func Paginate(d Document) ([]Page, error) {
 	if err != nil {
 		return nil, err
 	}
-	bodies := paginateBody(d.Body, d.Layout.Columns, g.TextCols, g.BodyRows(), nil)
+	bodies := paginateBody(d.Body, d.Layout.Columns, g.TextCols, g.BodyRows(), nil, formatter)
 	pages := make([]Page, len(bodies))
 	for i, rows := range bodies {
 		pages[i] = Page{Number: i + 1, Lines: composePage(d, g, rows, i+1, len(bodies))}
@@ -59,7 +66,7 @@ func Outline(d Document) ([]Section, error) {
 		return nil, err
 	}
 	var sections []Section
-	paginateBody(d.Body, d.Layout.Columns, g.TextCols, g.BodyRows(), &sections)
+	paginateBody(d.Body, d.Layout.Columns, g.TextCols, g.BodyRows(), &sections, nil)
 	return sections, nil
 }
 
@@ -103,14 +110,16 @@ type bodyPaginator struct {
 	current       []string
 	pendingBreaks int
 	seenSlugs     map[string]int
+	formatter     Formatter
 }
 
-func paginateBody(body string, defaultColumns, textCols, bodyRows int, sections *[]Section) [][]string {
+func paginateBody(body string, defaultColumns, textCols, bodyRows int, sections *[]Section, formatter Formatter) [][]string {
 	p := bodyPaginator{
 		textCols:  textCols,
 		bodyRows:  bodyRows,
 		sections:  sections,
 		seenSlugs: make(map[string]int),
+		formatter: formatter,
 	}
 	return p.paginate(body, defaultColumns)
 }
@@ -144,7 +153,12 @@ func (p *bodyPaginator) processRun(r run) {
 	columns := clampColumns(r.columns, p.textCols)
 	width := ColumnWidth(p.textCols, columns)
 	var marks []headMark
-	raw := formatBlocks(r.lines, width, &marks, p.seenSlugs)
+	var raw []string
+	if p.formatter != nil {
+		raw = p.formatter(r.lines, width)
+	} else {
+		raw = formatBlocks(r.lines, width, &marks, p.seenSlugs)
+	}
 	flat := trimBlankEnds(raw)
 
 	if len(flat) > 0 {
