@@ -741,10 +741,13 @@ func newDocumentImportCmd(streams output) *cobra.Command {
 				format = strings.ToLower(format)
 			}
 
-			if format == "odt" {
-				return errors.New("unsupported import format \"odt\" (ODF import not yet supported)")
-			}
-			if format != "docx" {
+			var importer docinterop.Importer
+			switch format {
+			case "docx":
+				importer = docinterop.NewDocxImporter()
+			case "odt":
+				importer = docinterop.NewOdtImporter()
+			default:
 				return fmt.Errorf("unsupported import format %q", format)
 			}
 
@@ -759,7 +762,6 @@ func newDocumentImportCmd(streams output) *cobra.Command {
 				return err
 			}
 
-			importer := docinterop.NewDocxImporter()
 			draft, warnings, err := importer.Import(srcFile, fi.Size())
 			if err != nil {
 				return err
