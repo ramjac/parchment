@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/presentation"
 )
 
@@ -35,7 +36,7 @@ func drivePresentation(t *testing.T, m *presentationModel, message tea.Msg) tea.
 		case nil:
 		case tea.QuitMsg:
 			last = result
-		case presentationLoadedMsg, presentationSavedMsg, presentationHistoryMsg:
+		case presentationLoadedMsg, presentationSavedMsg, presentationHistoryMsg, presentationAutosaveFinishedMsg:
 			last = result
 			_, next := m.Update(result)
 			run(next)
@@ -1082,5 +1083,91 @@ func TestPresentationSetErrorVariants(t *testing.T) {
 	m.setError("Action failed", errors.New("network failure"))
 	if m.errMessage != "Action failed: network failure" || m.status != "" {
 		t.Fatalf("Generic error state: status=%q, errMessage=%q", m.status, m.errMessage)
+	}
+}
+
+func TestPresentationAutosaveAndRecoveryLifecycle(t *testing.T) {
+	repo := newTestRepository(t)
+	service := presentation.NewService(repo, 10)
+	sample, err := os.ReadFile("../../examples/presentation.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "deck.md")
+	if err := os.WriteFile(path, sample, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m := newPresentationModel(service, path, Theme{})
+	m.recoveryStore = repo
+	drivePresentation(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	drivePresentation(t, m, m.Init()())
+
+	// Initially not editing, not dirty
+	if m.dirty() {
+		t.Fatal("expected dirty = false initially")
+	}
+
+	// Begin edit
+	m.beginEdit()
+	if !m.editing {
+		t.Fatal("expected editing = true")
+	}
+	if m.dirty() {
+		t.Fatal("expected dirty = false before changes")
+	}
+
+	// Modify editor content
+	m.editor.SetValue(m.item.Source + "\n---\n\n## Extra Slide\n")
+	if !m.dirty() {
+		t.Fatal("expected dirty = true after change")
+	}
+
+	// Trigger autosave
+	cmd := m.saveRecovery(m.autosaveSession)
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd from saveRecovery")
+	}
+	msg := cmd()
+	finMsg, ok := msg.(presentationAutosaveFinishedMsg)
+	if !ok || finMsg.err != nil {
+		t.Fatalf("unexpected autosave msg: %+v", msg)
+	}
+	m.Update(finMsg)
+	if !m.draftStored {
+		t.Fatal("expected draftStored = true")
+	}
+
+	// Check recovery draft exists in repo
+	draft, hasDraft, err := repo.LoadRecovery(context.Background(), path)
+	if err != nil || !hasDraft {
+		t.Fatalf("draft not saved in store: err=%v, hasDraft=%t", err, hasDraft)
+	}
+	if draft.Kind != string(artifact.PresentationKind) {
+		t.Fatalf("draft kind = %q, want presentation", draft.Kind)
+	}
+
+	// Clean edits revert and autosave clears draft
+	m.editor.SetValue(m.item.Source)
+	if m.dirty() {
+		t.Fatal("expected dirty = false after reverting")
+	}
+	cmdClear := m.saveRecovery(m.autosaveSession)
+	if cmdClear == nil {
+		t.Fatal("expected non-nil cmdClear")
+	}
+	finClear := cmdClear().(presentationAutosaveFinishedMsg)
+	if !finClear.cleared {
+		t.Fatal("expected cleared = true")
+	}
+	m.Update(finClear)
+	if m.draftStored {
+		t.Fatal("expected draftStored = false after clearing")
+	}
+
+	// Verify draft deleted from store
+	_, hasDraft, err = repo.LoadRecovery(context.Background(), path)
+	if err != nil || hasDraft {
+		t.Fatalf("draft still in store after clear: err=%v, hasDraft=%t", err, hasDraft)
 	}
 }

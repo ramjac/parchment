@@ -11,8 +11,16 @@ import (
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/note"
+	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/recovery"
 )
+
+// presentationRecoveryData is the autosaved presentation editor state: the saved
+// presentation the edits started from and the unsaved Markdown source.
+type presentationRecoveryData struct {
+	Baseline presentation.Presentation `json:"baseline"`
+	Source   string                    `json:"source"`
+}
 
 // noteRecoveryData is the autosaved note editor state: the saved note the
 // edits started from and the unsaved body.
@@ -134,6 +142,32 @@ func (m *Model) recoverDraft() tea.Cmd {
 		}
 		m.stage = stageDocument
 		return cmd
+	case artifact.PresentationKind:
+		var data presentationRecoveryData
+		if err := json.Unmarshal(draft.Data, &data); err != nil {
+			m.errMessage = "Decode autosaved presentation: " + err.Error() + "; press d to discard it"
+			return nil
+		}
+		data.Baseline.Path = m.path
+		m.deck = newPresentationModel(m.presentations, m.path, m.theme)
+		m.deck.recoveryStore = m.recoveryStore
+		m.deck.autosaveScheduler = func(session uint64) tea.Cmd {
+			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
+				return presentationAutosaveTickMsg{session: session}
+			})
+		}
+		m.deck.newOperationContext = m.newOperationContext
+		m.deck.width, m.deck.height = m.width, m.height
+		m.deck.setItem(data.Baseline)
+		m.deck.status = "Recovered unsaved presentation draft"
+		if !presentation.Equal(data.Baseline, opened.deck) {
+			m.deck.status += "; the file changed after the draft was saved, so saving will report a conflict"
+		}
+		m.stage = stagePresentation
+		m.draftStored = true
+		_, sizeCmd := m.deck.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+		restoreCmd := m.deck.restoreDraft(data.Source)
+		return tea.Batch(sizeCmd, restoreCmd)
 	}
 	return nil
 }
