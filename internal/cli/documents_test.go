@@ -102,9 +102,11 @@ func TestDocumentExportCLI(t *testing.T) {
 	// Overwrite with --force succeeds
 	must("document", "export", id, "-o", docxOut, "--force")
 
-	// Unsupported ODF export
-	if _, err := run("document", "export", id, "-o", "out.odt"); err == nil || !strings.Contains(err.Error(), "ODF export not yet supported") {
-		t.Fatalf("expected unsupported ODF error, got %v", err)
+	// ODF export with -o inferred extension
+	odtOut := "out.odt"
+	must("document", "export", id, "-o", odtOut)
+	if fi, err := os.Stat(odtOut); err != nil || fi.Size() == 0 {
+		t.Fatalf("expected %s to be created and non-empty, err: %v", odtOut, err)
 	}
 
 	// Unknown format error
