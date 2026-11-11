@@ -30,7 +30,9 @@ func (s *documentsScreen) startReading(d document.Document) {
 // keeping the current page when it still exists.
 func (s *documentsScreen) refreshReader() {
 	s.readerPages, s.outline = nil, nil
-	pages, err := document.Paginate(s.snapshot)
+	pages, err := document.PaginateWithFormatter(s.snapshot, func(lines []string, width int) []string {
+		return strings.Split(renderMarkdown(strings.Join(lines, "\n"), width), "\n")
+	})
 	if err != nil {
 		s.errMessage = err.Error()
 	} else {
