@@ -207,6 +207,7 @@ type documentEditorState struct {
 	promptInput  textinput.Model
 	previewing   bool
 	editPages    []document.Page
+	editLinks    []linkHitBox
 	editPage     int
 	// editPageLine is the first page line shown by the print preview.
 	editPageLine   int
@@ -219,6 +220,7 @@ type documentReaderState struct {
 	reading     bool
 	reader      viewport.Model
 	readerPages []document.Page
+	readerLinks []linkHitBox
 	readerPage  int
 	outline     []document.Section
 }

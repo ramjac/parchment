@@ -15,6 +15,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
@@ -507,7 +508,8 @@ func TestDocumentPreviewFitsTerminalAndScrolls(t *testing.T) {
 	if lines := strings.Count(view, "\n") + 1; lines > 24 {
 		t.Fatalf("preview view has %d lines for a 24-line terminal", lines)
 	}
-	if !strings.Contains(view, "HELLO") || !strings.Contains(view, "Some text") || !strings.Contains(view, "lines 1–22 of") {
+	cleanView := ansi.Strip(view)
+	if !strings.Contains(cleanView, "Hello") || !strings.Contains(cleanView, "Some text") || !strings.Contains(cleanView, "lines 1–22 of") {
 		t.Fatalf("preview does not show the top of the page:\n%s", view)
 	}
 	h.send(tea.KeyMsg{Type: tea.KeyDown})
