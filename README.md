@@ -300,9 +300,145 @@ into **38 reviewable Pull Requests (`PR 1`–`PR 38`)**:
 ## Architecture & Planning
 
 The detailed PR-by-PR implementation plans can be found in [`FutureWork.md`](FutureWork.md) and the `docs/` directory:
+
 - [Future Work Implementation Plan (Phases 1–5, PRs 1–38)](FutureWork.md)
 - [ODF / DOCX Import & Export Plan (Phase 5, PRs 31–35)](docs/ODF_DOCX_Interop_Plan.md)
 - [Persistent Undo/Redo Storage Plan (Phase 5, PRs 36–38)](docs/Persistent_Undo_Redo_Plan.md)
+
+The supplemental backlog below adds priorities and acceptance criteria, not claims
+of completed functionality. Before implementation, reconcile each item with the
+existing plans and current behavior so overlapping work is not scheduled twice.
+
+### TUI quality and regression prevention
+
+Because AI agents implement most of Parchment, UI expectations must be enforced
+by tests and reviewable visual evidence, not instructions alone. Prioritize the
+design contract and known-bug regression tests before broad UI refactoring.
+
+- **Document the design language.** Create `docs/TUI_Design.md` and reference it
+  from `AGENTS.md`, keeping `.github/copilot-instructions.md` consistent. Define
+  semantic roles such as accent, muted text, border, selection, error, search
+  match, heading, and code block; light/dark palettes; and legible limited-color
+  and monochrome fallbacks. Specify fixed header/help/status areas, pane sizing,
+  focus indicators, contextual shortcuts, and small-terminal behavior. Include
+  approved example screenshots. Agents must not remove colors, borders, help,
+  or other useful affordances unless an intentional design change is approved.
+- **Centralize theme and styling.** Implement reusable semantic Lip Gloss styles
+  in a central theme definition, such as `internal/tui/theme.go`, rather than
+  scattering color literals across views. Pass styles to the native editor
+  widget without introducing an import cycle. Share the role mapping with
+  Markdown rendering and honor configured theme modes and color overrides
+  planned in PR 3; resolve configuration at the application boundary.
+- **Make view-state preservation an explicit contract.** Cursor, selection,
+  focused pane, viewport offsets, and active cell/slide are model state, not
+  disposable rendering state. Saves, save-result messages, status changes, and
+  background updates must not jump to the top or reset focus. Update content in
+  existing editor/viewport components instead of reconstructing them on save.
+  Document necessary remapping or clamping after resizing or content shrinkage,
+  and intentional reader/editor transitions. Keep `View()` free of I/O and
+  mutation, and add these rules to the agent instructions.
+- **Add behavioral regression tests for UI bugs.** Extend the existing
+  message-driven Go TUI harness over real services and temporary files. For the
+  save-jump bug, open a long artifact, scroll well below the first screen
+  (for example, to line 200), position the cursor, send `Ctrl+S`, process the
+  returned command/result messages, and verify the visible content anchor,
+  cursor, selection, focus, and viewport position are preserved. Cover repeated
+  saves, failed saves, and relevant background updates; add focused resize and
+  mode-transition cases where behavior differs. Require every UI bug fix to
+  include a regression test that fails without the fix.
+- **Add deterministic golden-file rendering tests.** Capture full `View()`
+  output, including ANSI color/style sequences, under `internal/tui/testdata/`.
+  Use the existing harness and a small Go golden-file helper, or
+  `charmbracelet/x/exp/teatest` if its runner is needed. Cover representative
+  editors, readers/previews, spreadsheet grids, dialogs, and error states at
+  fixed sizes such as 80x24 and 120x40, plus a small-terminal case. Explicitly
+  control light/dark mode, color profile, cursor blink, time, and fixture paths;
+  restore any renderer globals and avoid parallel tests that mutate them.
+  Assert ANSI-aware screen dimensions and fixed chrome as well as output.
+  Establish approved baselines rather than blessing broken rendering, provide
+  readable diffs, and make baseline regeneration an explicit local action.
+- **Enforce styling with automated guards.** Add a lightweight Go test or CI
+  check rejecting new hard-coded UI colors and direct `lipgloss.Color` /
+  `lipgloss.AdaptiveColor` palette declarations outside the approved theme code.
+  Exempt test fixtures and distinguish image pixel colors and user-provided
+  configuration from semantic UI colors. Add render assertions that important
+  regions actually use their expected styles under a forced color profile;
+  checking for any ANSI escape sequence is insufficient. Test monochrome
+  behavior separately. Run these guards and golden tests in the existing PR CI.
+- **Require visual evidence and focused review.** Keep TUI PRs small and separate
+  from unrelated feature or domain changes. Add a PR checklist requiring
+  before/after screenshots or reproducible Charm VHS recordings using the same
+  fixture, dimensions, and theme. A save/scroll fix needs evidence of the
+  interaction, not just a static screen. Use the repository's
+  `review-pull-request` skill with explicit checks for state preservation,
+  design-language compliance, helpful controls, and golden-file differences.
+  Do not bulk-update goldens merely to make CI pass; intentional visual changes
+  need an explanation and visual approval.
+- **Repair Document reader and preview rendering.** Align this work with
+  PRs 14-16: render Markdown through Glamour with the shared theme, restoring
+  visible hierarchy and styling for headings, emphasis, lists, quotes, links,
+  and ordinary code blocks rather than showing formatting delimiters as prose.
+  Add rendering fixtures and golden tests for these elements. Preserve canonical
+  Markdown and hide reserved `parchment-*` fences without losing ordinary code
+  fences or literal Markdown examples. Retain existing reader views and the
+  distinction between editor image placeholders and graphical preview/reader
+  images. Document outline and internal-link navigation remain Document-only.
+
+### Additional functionality
+
+- **Refine CLI file-opening convenience.** Review the existing
+  `parchment <file>` entry point rather than introducing duplicate routing.
+  The desired shortcut is to open/edit the named file, or create a Document if
+  it does not exist. Reconcile that proposed default with the current kind
+  prompt and Document reader-first behavior before implementation; retain
+  explicit kind selection, preserve plain Markdown files as plain notes, and
+  never overwrite an existing file. Update CLI help, tests, documentation, and
+  agent instructions together for any approved change to opening defaults.
+- **Retire proposals and specify real Document change tracking.** Remove the
+  existing proposal workflow and its UI/commands, updating affected tests,
+  examples, and plans. Before implementing a replacement, agree on tracked
+  insertions/deletions, review presentation, accept/reject operations, and
+  interactions with save, undo/redo, and external edits. Specify how tracking
+  data stays in the artifact's single Markdown file, with concrete interaction
+  examples and acceptance tests. Do not relabel proposals or undo history as
+  change tracking.
+- **Expand spreadsheet built-in formulas.** Reconcile the initial formula work
+  in PRs 24-25, then cover SUM, AVERAGE, COUNT, COUNTA, MIN, MAX, ROUND, IF,
+  IFERROR, SUMIFS, COUNTIFS, XLOOKUP, INDEX, MATCH, XMATCH, TEXTJOIN, TODAY, NOW,
+  DATE, YEAR, MONTH, DAY, FILTER, SORT, UNIQUE, and SEQUENCE. Specify argument,
+  empty-cell, error, date/time, and array-result semantics before implementation,
+  and test representative successful and failing calculations.
+- **Complete formula parsing and cycle handling.** Support parentheses,
+  operator precedence, nested function calls, and expressions mixing operators
+  and functions. Detect direct and indirect circular dependencies and report
+  clear cell errors instead of hanging or recursing indefinitely. Keep parsing,
+  evaluation, and error rules in the spreadsheet domain layer.
+- **Add spreadsheet copy/paste with reference adjustment.** Update relative
+  formula references when copying cells or ranges, while preserving absolute
+  and mixed references (`$A$1`, `$A1`, `A$1`). Define clipboard behavior and
+  boundary/error handling, and test copying in both row and column directions.
+- **Add spreadsheet charts.** Support pie, bar, and line charts sourced from
+  workbook ranges. Define data binding, TUI rendering, persistence, and export
+  behavior before implementation; keep chart definitions in the spreadsheet
+  artifact rather than per-artifact sidecars.
+
+### Large-artifact performance and responsiveness
+
+Extend the existing Go benchmarks with reproducibly generated inputs rather than
+committing huge fixtures. Record baseline commands and results, and agree on
+latency and memory targets before optimization. Measure opening, editing,
+rendering/scrolling, saving, and peak memory at fixed terminal sizes; verify that
+improvements preserve content, layout, and view-state stability.
+
+- **Documents:** Hundreds of pages and several hundred megabytes of embedded
+  images; measure page navigation, Markdown layout/rendering, image decoding,
+  and memory retained while scrolling.
+- **Presentations:** Hundreds of slides and several hundred megabytes of media;
+  measure slide switching, source editing, preview rendering, and image/cache
+  memory without sacrificing responsive keyboard input.
+- **Spreadsheets:** Hundreds of rows and columns with dense data, formulas, and
+  dependencies; measure bulk edits/paste, dependent recalculation, grid
+  scrolling, and saving, including large update cascades and cycle errors.
 
 ## Development
 

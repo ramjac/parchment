@@ -103,6 +103,134 @@ func TestDocumentEditorHasToolbarAndSavesLayout(t *testing.T) {
 	}
 }
 
+func TestDocumentEditorPaneAndMouseCoordinates(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		width   int
+		outline bool
+	}{
+		{"narrow", 60, false},
+		{"wide", 100, false},
+		{"outline", 100, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newDocumentHarness(t, document.Draft{})
+			h.send(tea.WindowSizeMsg{Width: tc.width, Height: 30})
+			s := h.m.documents
+			if tc.outline {
+				h.key("ctrl+o")
+			}
+			left := 2
+			if tc.outline {
+				outlineWidth, _ := s.readerPaneWidths()
+				left += outlineWidth
+			}
+			width := tc.width - 2 - left
+			if s.body.Width != width {
+				t.Fatalf("editor width = %d, want %d", s.body.Width, width)
+			}
+			s.body.SetValue(strings.Repeat("a", width) + "bcdef")
+			y := toolbarTop + s.toolbarRows() + 1
+			lines := strings.Split(ansi.Strip(h.m.View()), "\n")
+			for row, line := range lines {
+				if got := ansi.StringWidth(line); got > tc.width {
+					t.Fatalf("row %d overflows terminal: width=%d line=%q", row, got, line)
+				}
+			}
+			for row := y - 1; row <= y+2; row++ {
+				if got := ansi.StringWidth(lines[row]); got != tc.width {
+					t.Fatalf("row %d width = %d, want %d: %q", row, got, tc.width, lines[row])
+				}
+			}
+			if !strings.HasPrefix(lines[y], "│") || !strings.HasSuffix(lines[y], "│") ||
+				!strings.Contains(lines[y+1], "bcdef") {
+				t.Fatalf("body not wrapped within the pane:\n%s\n%s", lines[y], lines[y+1])
+			}
+			s.focusToolbar()
+			h.send(tea.MouseMsg{X: left + 2, Y: y + 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+			if s.body.Cursor != (editor.Point{Line: 0, Col: width + 2}) || s.focus != focusBody {
+				t.Fatalf("wrapped click: cursor=%+v focus=%v", s.body.Cursor, s.focus)
+			}
+			h.send(tea.MouseMsg{X: left + 4, Y: y + 1, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+			h.send(tea.MouseMsg{X: left + 4, Y: y + 1, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
+			if got := s.body.SelectedText(); got != "de" {
+				t.Fatalf("drag selected %q, want %q", got, "de")
+			}
+			h.send(tea.MouseMsg{X: tc.width - 1, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+			if s.body.Cursor != (editor.Point{Line: 0, Col: width + 4}) {
+				t.Fatalf("border click moved cursor: %+v", s.body.Cursor)
+			}
+		})
+	}
+}
+
+func TestDocumentEditorFrameAndClickAfterResize(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{})
+	s := h.m.documents
+	body := strings.Repeat("x", 150) + "\n界 CLICKTARGET"
+
+	checkFrame := func(width, height int) []string {
+		t.Helper()
+		lines := strings.Split(ansi.Strip(h.m.View()), "\n")
+		if len(lines) != height {
+			t.Fatalf("view has %d rows, want %d:\n%s", len(lines), height, h.m.View())
+		}
+		top, bottom := -1, -1
+		for i, line := range lines {
+			if ansi.StringWidth(line) > width {
+				t.Fatalf("row %d exceeds terminal width %d: %q", i, width, line)
+			}
+			if strings.HasPrefix(line, "┌") {
+				top = i
+			}
+			if strings.HasPrefix(line, "└") {
+				bottom = i
+			}
+		}
+		if top < 0 || bottom <= top {
+			t.Fatalf("missing pane borders:\n%s", h.m.View())
+		}
+		for row := top; row <= bottom; row++ {
+			line := lines[row]
+			if ansi.StringWidth(line) != width {
+				t.Fatalf("frame row %d has width %d, want %d: %q", row, ansi.StringWidth(line), width, line)
+			}
+			if row > top && row < bottom && (!strings.HasPrefix(line, "│") || !strings.HasSuffix(line, "│")) {
+				t.Fatalf("frame row %d is missing a side border: %q", row, line)
+			}
+		}
+		return lines
+	}
+
+	checkFrame(100, 30)
+	s.body.SetValue("short")
+	checkFrame(100, 30)
+	s.body.SetValue(body)
+	checkFrame(100, 30)
+	h.key("ctrl+o")
+	checkFrame(100, 30)
+	h.send(tea.WindowSizeMsg{Width: 60, Height: 30})
+	checkFrame(60, 30)
+	h.send(tea.WindowSizeMsg{Width: 120, Height: 40})
+	lines := checkFrame(120, 40)
+	if s.body.Value() != body {
+		t.Fatal("resizing or toggling the outline changed the document")
+	}
+
+	for y, line := range lines {
+		if i := strings.Index(line, "CLICKTARGET"); i >= 0 {
+			x := ansi.StringWidth(line[:i]) + 2
+			h.send(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+			h.typeText("!")
+			if got, want := s.body.Value(), strings.Replace(body, "CLICKTARGET", "CL!ICKTARGET", 1); got != want {
+				t.Fatalf("click after resize inserted text at the wrong position: %q", got)
+			}
+			return
+		}
+	}
+	t.Fatalf("click target not visible:\n%s", h.m.View())
+}
+
 func TestDocumentProposeReviewAndAccept(t *testing.T) {
 	ctx := context.Background()
 	h := newDocumentHarness(t, document.Draft{Body: "before", Layout: document.DefaultLayout()})
