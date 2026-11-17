@@ -332,9 +332,17 @@ func (s *documentsScreen) layoutEditor() {
 	if s.width == 0 {
 		return
 	}
-	s.body.SetWidth(max(s.width-4, 1))
-	// Header, state, toolbar, prompt line, status line, and border.
-	s.body.SetHeight(max(s.height-s.toolbarRows()-6, 1))
+	width := s.width - 4
+	if s.outlineVisible && s.wideReader() {
+		outlineWidth, _ := s.readerPaneWidths()
+		width -= outlineWidth
+	}
+	s.body.SetWidth(max(width, 1))
+	height := s.height - s.toolbarRows() - 5
+	if s.prompt != promptNone {
+		height--
+	}
+	s.body.SetHeight(max(height, 1))
 }
 
 func (s *documentsScreen) editorDocument() document.Document {
@@ -502,30 +510,39 @@ func (s *documentsScreen) updateMouse(msg tea.MouseMsg) tea.Cmd {
 		}
 	}
 	editorY := msg.Y - (toolbarTop + s.toolbarRows() + 1)
-	outlineWidth, _ := s.readerPaneWidths()
-	inOutline := s.outlineVisible && s.wideReader() && msg.X < outlineWidth+2
-	editorX := msg.X - 2
-	if s.outlineVisible && s.wideReader() && !inOutline {
-		editorX = msg.X - outlineWidth - 2
-	}
-	if editorY >= 0 && editorX >= 0 {
-		mouseMsg := msg
-		mouseMsg.Y = editorY
-		mouseMsg.X = editorX
-		var cmd tea.Cmd
-		if inOutline {
+	editorLeft := 2
+	if s.outlineVisible && s.wideReader() {
+		outlineWidth, _ := s.readerPaneWidths()
+		editorLeft += outlineWidth
+		if msg.X >= 2 && msg.X < editorLeft && editorY >= 0 && editorY < s.body.Height {
 			if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 				s.clickEditorOutline(msg.X, editorY)
+				return nil
 			}
-		} else {
-			s.body, cmd = s.body.Update(mouseMsg)
+			if msg.Action == tea.MouseActionPress {
+				return nil
+			}
 		}
-		if msg.Action == tea.MouseActionPress && !inOutline {
-			return tea.Batch(cmd, s.focusBody())
-		}
-		return cmd
 	}
-	return nil
+	editorX := msg.X - editorLeft
+	inside := editorX >= 0 && editorX < s.body.Width && editorY >= 0 && editorY < s.body.Height
+	if msg.Action == tea.MouseActionPress && (!inside || msg.Button != tea.MouseButtonLeft) &&
+		msg.Button != tea.MouseButtonWheelUp && msg.Button != tea.MouseButtonWheelDown {
+		return nil
+	}
+	if !inside && msg.Action == tea.MouseActionPress {
+		return nil
+	}
+	mouseMsg := msg
+	mouseMsg.X = min(max(editorX, 0), s.body.Width-1)
+	mouseMsg.Y = min(max(editorY, 0), s.body.Height-1)
+	var focusCmd tea.Cmd
+	if inside && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		focusCmd = s.focusBody()
+	}
+	var cmd tea.Cmd
+	s.body, cmd = s.body.Update(mouseMsg)
+	return tea.Batch(cmd, focusCmd)
 }
 
 func (s *documentsScreen) save() tea.Cmd {
@@ -892,6 +909,7 @@ func (s *documentsScreen) currentLineEmpty() bool {
 }
 
 func (s *documentsScreen) editorView(header string) string {
+	header = ansi.Truncate(header, max(s.width, 1), "…")
 	state := "Editing document"
 	if s.dirty() {
 		state += " • unsaved"
@@ -919,27 +937,35 @@ func (s *documentsScreen) editorView(header string) string {
 	}
 	content.WriteString(s.body.View())
 
-	shortcuts := state + "\n" + s.toolbarView()
+	shortcuts := ansi.Truncate(state, max(s.width, 1), "…") + "\n" + s.toolbarView()
 
 	var renderedPane string
 	if s.outlineVisible && s.wideReader() {
-		outlineWidth, previewWidth := s.readerPaneWidths()
+		outlineWidth, _ := s.readerPaneWidths()
 		lines, _ := s.editorOutlineLines()
+		if len(lines) > s.body.Height {
+			lines = lines[:s.body.Height]
+		}
 		for i, line := range lines {
 			lines[i] = runewidth.Truncate(line, max(outlineWidth-2, 1), "…")
 		}
-
-		paneStyle := lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder()).BorderForeground(s.theme.Border).Padding(0, 1)
-		outlinePane := paneStyle.Width(outlineWidth).Render(strings.Join(lines, "\n"))
-		editorPane := paneStyle.Width(previewWidth).Render(content.String())
-
-		renderedPane = lipgloss.JoinHorizontal(lipgloss.Top, outlinePane, editorPane)
+		outlineHeight := s.body.Height
+		if s.prompt != promptNone {
+			outlineHeight++
+		}
+		outlinePane := lipgloss.NewStyle().
+			Width(outlineWidth-1).
+			Height(outlineHeight).
+			Border(lipgloss.NormalBorder(), false, true, false, false).
+			BorderForeground(s.theme.Border).
+			PaddingRight(1).
+			Render(strings.Join(lines, "\n"))
+		renderedPane = lipgloss.JoinHorizontal(lipgloss.Top, outlinePane, content.String())
 	} else {
-		renderedPane = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder()).BorderForeground(s.theme.Border).Padding(0, 1).Render(content.String())
+		renderedPane = content.String()
 	}
-	return chromeLayout(s.width, s.height, header, shortcuts, renderedPane, s.statusLine(), s.theme.Border)
+	status := ansi.Truncate(s.statusLine(), max(s.width, 1), "…")
+	return chromeLayout(s.width, s.height, header, shortcuts, renderedPane, status, s.theme.Border)
 }
 
 func (s *documentsScreen) editorOutline() []document.Section {

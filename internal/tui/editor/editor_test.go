@@ -7,7 +7,32 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
+
+func TestEditorCursorAtWrapBoundaryAndResize(t *testing.T) {
+	ed := New()
+	ed.SetWidth(5)
+	ed.SetHeight(2)
+	ed.InsertString("abcde")
+	lines := strings.Split(ed.View(), "\n")
+	if len(lines) != 2 || ansi.StringWidth(lines[0]) != 5 || ansi.StringWidth(lines[1]) != 1 {
+		t.Fatalf("cursor should wrap after a full row: %q", ed.View())
+	}
+	ed.SetHeight(1)
+	if ed.TopRowOffset != 1 || ansi.StringWidth(ed.View()) != 1 {
+		t.Fatalf("wrapped cursor not scrolled into view: offset=%d view=%q", ed.TopRowOffset, ed.View())
+	}
+	ed.SetWidth(10)
+	if ed.TopRowOffset != 0 || ansi.StringWidth(ed.View()) != 6 {
+		t.Fatalf("resize did not restore cursor row: offset=%d view=%q", ed.TopRowOffset, ed.View())
+	}
+	ed.SetWidth(5)
+	ed.SetValue("new")
+	if ed.TopRowOffset != 0 || !strings.Contains(ed.View(), "new") {
+		t.Fatalf("loading text retained stale wrap offset: offset=%d view=%q", ed.TopRowOffset, ed.View())
+	}
+}
 
 func TestEditorNew(t *testing.T) {
 	ed := New()
@@ -1920,8 +1945,8 @@ func TestEditorSoftWrapping(t *testing.T) {
 	ed.SetValue("01234567890123456789")
 
 	rows := ed.getVisualRows(0)
-	if len(rows) != 2 {
-		t.Fatalf("Expected 2 visual rows, got %d", len(rows))
+	if len(rows) != 3 {
+		t.Fatalf("Expected 3 visual rows including the trailing cursor row, got %d", len(rows))
 	}
 	if rows[0].startCol != 0 || rows[0].endCol != 10 {
 		t.Errorf("Row 0: %v", rows[0])
