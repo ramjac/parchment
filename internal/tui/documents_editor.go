@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/artifact"
@@ -59,8 +61,9 @@ func (s *documentsScreen) marginName() string {
 // toolbarButtons lists the controls shown above the editor. Labels for page
 // settings show the current value.
 func (s *documentsScreen) toolbarButtons() []toolbarButton {
-	return []toolbarButton{
+	buttons := []toolbarButton{
 		{"File", "Save", "save", "Ctrl+S"},
+		{"File", "PDF", "pdf", "Ctrl+P"},
 		{"File", "Propose", "propose", "F3"},
 		{"File", "Changes", "changes", "F4"},
 		{"File", "Preview", "preview", "F5"},
@@ -88,6 +91,12 @@ func (s *documentsScreen) toolbarButtons() []toolbarButton {
 		{"Page", "Footer", "footer", ""},
 		{"Page", "Page #: " + s.layout.PageNumbers, "numbers-pos", ""},
 	}
+	font := s.layout.Font
+	if font == "" {
+		font = "courier"
+	}
+	buttons = append(buttons, toolbarButton{"Page", "Font: " + font, "font", ""})
+	return buttons
 }
 
 // buttonLayout wraps the toolbar to the available width. It is used for both
@@ -127,7 +136,7 @@ const toolbarTop = 2
 func (s *documentsScreen) toolbarView() string {
 	placed, rows := s.buttonLayout(max(s.width, 20))
 	buttons := s.toolbarButtons()
-	normal := lipgloss.NewStyle().Foreground(primaryColor).Background(lipgloss.AdaptiveColor{Light: "#e7e3f5", Dark: "#2f2b45"})
+	normal := lipgloss.NewStyle().Foreground(s.theme.Primary).Background(s.theme.Selection)
 	active := normal.Reverse(true).Bold(true)
 	lineBuilders := make([]strings.Builder, rows)
 	groupSeen := make([]string, rows)
@@ -297,8 +306,8 @@ func (s *documentsScreen) saveDocumentRecovery(session uint64) tea.Cmd {
 	}
 }
 
-func cloneDocumentImages(source []document.Image) []document.Image {
-	images := make([]document.Image, len(source))
+func cloneDocumentImages(source []artifact.Image) []artifact.Image {
+	images := make([]artifact.Image, len(source))
 	for i, image := range source {
 		images[i] = image
 		images[i].Data = append([]byte(nil), image.Data...)
@@ -316,13 +325,26 @@ func (s *documentsScreen) focusToolbar() {
 	s.body.Blur()
 }
 
+func (s *documentsScreen) focusOutline() {
+	s.focus = focusOutline
+	s.body.Blur()
+}
+
 func (s *documentsScreen) layoutEditor() {
 	if s.width == 0 {
 		return
 	}
-	s.body.SetWidth(max(s.width-4, 1))
-	// Header, state, toolbar, prompt line, status line, and border.
-	s.body.SetHeight(max(s.height-s.toolbarRows()-6, 1))
+	width := s.width - 4
+	if s.outlineVisible && s.wideReader() {
+		outlineWidth, _ := s.readerPaneWidths()
+		width -= outlineWidth
+	}
+	s.body.SetWidth(max(width, 1))
+	height := s.height - s.toolbarRows() - 5
+	if s.prompt != promptNone {
+		height--
+	}
+	s.body.SetHeight(max(height, 1))
 }
 
 func (s *documentsScreen) editorDocument() document.Document {
@@ -347,6 +369,8 @@ func (s *documentsScreen) updatePreviewKey(msg tea.KeyMsg) tea.Cmd {
 		s.editPageLine = 0
 	case "end", "G":
 		s.editPageLine = len(s.previewPage().Lines)
+	case "ctrl+p":
+		return s.openPDFPrompt()
 	}
 	s.clampPreviewLine()
 	return nil
@@ -362,6 +386,14 @@ func (s *documentsScreen) updateEditorShortcuts(msg tea.KeyMsg, key string) (tea
 		return s.loadChanges(), true
 	case "f5":
 		s.openPreview()
+		return nil, true
+	case "ctrl+p":
+		return s.openPDFPrompt(), true
+	case "f6":
+		s.focusOutline()
+		return nil, true
+	case "ctrl+o":
+		s.outlineVisible = !s.outlineVisible
 		return nil, true
 	case "ctrl+z", "ctrl+r", "ctrl+y", "ctrl+shift+z":
 		if key == "ctrl+z" && s.body.CanUndo() {
@@ -386,11 +418,8 @@ func (s *documentsScreen) updateEditorShortcuts(msg tea.KeyMsg, key string) (tea
 		}
 		return s.requestClose("Esc"), true
 	case "tab":
-		if s.focus == focusBody {
-			s.focusToolbar()
-			return nil, true
-		}
-		return s.focusBody(), true
+		// if in body, it falls through to insert spaces
+		return nil, false
 	case "f2":
 		s.focusToolbar()
 		return nil, true
@@ -411,6 +440,19 @@ func (s *documentsScreen) updateEditorKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	if cmd, handled := s.updateEditorShortcuts(msg, key); handled {
 		return cmd
+	}
+	if s.focus == focusOutline {
+		switch key {
+		case "up", "k":
+			s.changeEditorOutlineSelection(-1)
+		case "down", "j":
+			s.changeEditorOutlineSelection(1)
+		case "enter":
+			s.jumpToEditorOutlineSelection()
+		case "tab":
+			return s.focusBody()
+		}
+		return nil
 	}
 	if action, ok := altActions[key]; ok {
 		return s.act(action)
@@ -449,6 +491,9 @@ func (s *documentsScreen) updateToolbarKey(key string) tea.Cmd {
 func (s *documentsScreen) updateMouse(msg tea.MouseMsg) tea.Cmd {
 	if s.previewing && msg.Action == tea.MouseActionPress {
 		switch msg.Button {
+		case tea.MouseButtonLeft:
+			s.clickPreviewLink(msg.X, msg.Y)
+			return nil
 		case tea.MouseButtonWheelDown:
 			s.editPageLine += 3
 		case tea.MouseButtonWheelUp:
@@ -471,19 +516,39 @@ func (s *documentsScreen) updateMouse(msg tea.MouseMsg) tea.Cmd {
 		}
 	}
 	editorY := msg.Y - (toolbarTop + s.toolbarRows() + 1)
-	editorX := msg.X - 2
-	if editorY >= 0 && editorX >= 0 {
-		mouseMsg := msg
-		mouseMsg.Y = editorY
-		mouseMsg.X = editorX
-		var cmd tea.Cmd
-		s.body, cmd = s.body.Update(mouseMsg)
-		if msg.Action == tea.MouseActionPress {
-			return tea.Batch(cmd, s.focusBody())
+	editorLeft := 2
+	if s.outlineVisible && s.wideReader() {
+		outlineWidth, _ := s.readerPaneWidths()
+		editorLeft += outlineWidth
+		if msg.X >= 2 && msg.X < editorLeft && editorY >= 0 && editorY < s.body.Height {
+			if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+				s.clickEditorOutline(msg.X, editorY)
+				return nil
+			}
+			if msg.Action == tea.MouseActionPress {
+				return nil
+			}
 		}
-		return cmd
 	}
-	return nil
+	editorX := msg.X - editorLeft
+	inside := editorX >= 0 && editorX < s.body.Width && editorY >= 0 && editorY < s.body.Height
+	if msg.Action == tea.MouseActionPress && (!inside || msg.Button != tea.MouseButtonLeft) &&
+		msg.Button != tea.MouseButtonWheelUp && msg.Button != tea.MouseButtonWheelDown {
+		return nil
+	}
+	if !inside && msg.Action == tea.MouseActionPress {
+		return nil
+	}
+	mouseMsg := msg
+	mouseMsg.X = min(max(editorX, 0), s.body.Width-1)
+	mouseMsg.Y = min(max(editorY, 0), s.body.Height-1)
+	var focusCmd tea.Cmd
+	if inside && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		focusCmd = s.focusBody()
+	}
+	var cmd tea.Cmd
+	s.body, cmd = s.body.Update(mouseMsg)
+	return tea.Batch(cmd, focusCmd)
 }
 
 func (s *documentsScreen) save() tea.Cmd {
@@ -535,13 +600,58 @@ func (s *documentsScreen) propose() tea.Cmd {
 }
 
 func (s *documentsScreen) openPreview() {
-	pages, err := document.Paginate(s.editorDocument())
+	pages, links, err := s.paginateDocumentWithLinks(s.editorDocument())
 	if err != nil {
 		s.errMessage = err.Error()
 		return
 	}
 	s.errMessage = ""
-	s.editPages, s.editPage, s.editPageLine, s.previewing = pages, 0, 0, true
+	s.outline, _ = document.Outline(s.editorDocument())
+	s.editPages, s.editLinks, s.editPage, s.editPageLine, s.previewing = pages, links, 0, 0, true
+}
+
+func (s *documentsScreen) clickPreviewLink(x, y int) {
+	if s.editPage >= len(s.editPages) {
+		return
+	}
+	pageRow := (y - 2) + s.editPageLine
+	pageCol := x
+	for _, box := range s.editLinks {
+		if box.page == s.editPage && box.row == pageRow && pageCol >= box.startCol && pageCol < box.endCol {
+			s.navigateToTargetPreview(box.target)
+			return
+		}
+	}
+}
+
+func (s *documentsScreen) navigateToTargetPreview(target string) {
+	clean := strings.TrimPrefix(target, "#")
+	if clean == "" {
+		return
+	}
+	targetPage := -1
+	targetTitle := ""
+	for _, sec := range s.outline {
+		if strings.EqualFold(sec.Slug, clean) {
+			targetPage = sec.Page - 1
+			targetTitle = sec.Title
+			break
+		}
+	}
+	if targetPage < 0 || targetPage >= len(s.editPages) {
+		return
+	}
+	s.editPage = targetPage
+	s.editPageLine = 0
+	if targetTitle != "" {
+		for r, line := range s.editPages[targetPage].Lines {
+			if strings.Contains(ansi.Strip(line), targetTitle) {
+				s.editPageLine = max(0, r-1)
+				break
+			}
+		}
+	}
+	s.clampPreviewLine()
 }
 
 func (s *documentsScreen) previewPage() document.Page {
@@ -551,10 +661,10 @@ func (s *documentsScreen) previewPage() document.Page {
 	return s.editPages[s.editPage]
 }
 
-// previewRows is the number of page lines that fit below the one-line
-// application header and the preview's title line.
+// previewRows is the number of page lines that fit below the application
+// header, preview title, and status line.
 func (s *documentsScreen) previewRows() int {
-	return max(s.height-2, 1)
+	return max(s.height-3, 1)
 }
 
 func (s *documentsScreen) clampPreviewLine() {
@@ -588,6 +698,8 @@ func (s *documentsScreen) act(action string) tea.Cmd {
 		} else {
 			s.layout.Orientation = document.Portrait
 		}
+	case "font":
+		s.layout.Font = nextOf([]string{"courier", "helvetica", "times"}, s.layout.Font)
 	case "numbers-pos":
 		s.layout.PageNumbers = nextOf(numberPlacements, s.layout.PageNumbers)
 	case "header":
@@ -651,6 +763,8 @@ func (s *documentsScreen) actDocument(action string) (tea.Cmd, bool) {
 		return s.loadChanges(), true
 	case "image":
 		return s.openPrompt(promptImage, "Image file path (PNG, JPEG, GIF): ", ""), true
+	case "pdf":
+		return s.openPDFPrompt(), true
 	case "preview":
 		s.openPreview()
 		return nil, true
@@ -658,6 +772,15 @@ func (s *documentsScreen) actDocument(action string) (tea.Cmd, bool) {
 		return s.requestClose("Close"), true
 	}
 	return nil, false
+}
+
+func (s *documentsScreen) openPDFPrompt() tea.Cmd {
+	extension := filepath.Ext(s.path)
+	if extension == filepath.Base(s.path) {
+		extension = ""
+	}
+	path := strings.TrimSuffix(s.path, extension) + ".pdf"
+	return s.openPrompt(promptPDF, "PDF output path: ", path)
 }
 
 func textAction(action string) bool {
@@ -726,6 +849,8 @@ func (s *documentsScreen) finishPrompt(kind promptKind, value string) tea.Cmd {
 		}
 		s.pending = true
 		return readImageCommand(s.startOperation(), value)
+	case promptPDF:
+		return s.exportPDF(value)
 	case promptSection:
 		trimmed := strings.TrimSuffix(value, "c")
 		continuous := trimmed != value
@@ -803,11 +928,12 @@ func (s *documentsScreen) currentLineEmpty() bool {
 }
 
 func (s *documentsScreen) editorView(header string) string {
+	header = ansi.Truncate(header, max(s.width, 1), "…")
 	state := "Editing document"
 	if s.dirty() {
 		state += " • unsaved"
 	}
-	state += "  ·  Tab switches Body/Toolbar  ·  F2 toolbar  ·  Ctrl+S saves  ·  F3 proposes  ·  F4 changes  ·  Esc returns to the reader"
+	state += "  ·  Ctrl+P exports PDF  ·  F2 toolbar  ·  F6 outline  ·  Ctrl+S saves  ·  F3 proposes  ·  F4 changes  ·  Esc returns to the reader"
 	if s.previewing {
 		// A printed page is usually taller than the terminal. Show only the
 		// lines that fit; an over-tall view would be clipped from the top,
@@ -821,8 +947,12 @@ func (s *documentsScreen) editorView(header string) string {
 		if len(page.Lines) > rows {
 			position += fmt.Sprintf(", lines %d–%d of %d", first+1, last, len(page.Lines))
 		}
-		title := runewidth.Truncate("Print preview  ·  "+position+"  ·  ↑/↓ scroll  ·  ←/→ pages  ·  Esc returns", max(s.width, 1), "…")
-		return header + "\n" + title + "\n" + pageText(visible, max(s.width, 1))
+		title := runewidth.Truncate("Print preview  ·  "+position+"  ·  Ctrl+P PDF  ·  ↑/↓ scroll  ·  ←/→ pages  ·  Esc returns", max(s.width, 1), "…")
+		if s.prompt != promptNone {
+			title = runewidth.Truncate(s.promptInput.View()+"  ·  Enter export PDF  ·  Esc cancel", max(s.width, 1), "…")
+		}
+		status := ansi.Truncate(s.statusLine(), max(s.width, 1), "…")
+		return header + "\n" + title + "\n" + pageText(visible, max(s.width, 1)) + "\n" + status
 	}
 	var content strings.Builder
 	if s.prompt != promptNone {
@@ -830,9 +960,136 @@ func (s *documentsScreen) editorView(header string) string {
 	}
 	content.WriteString(s.body.View())
 
-	paneHeight := max(s.height-s.toolbarRows()-4, 3)
-	pane := lipgloss.NewStyle().Width(max(s.width, 10)).Height(paneHeight).
-		Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1).Render(content.String())
+	shortcuts := ansi.Truncate(state, max(s.width, 1), "…") + "\n" + s.toolbarView()
 
-	return header + "\n" + state + "\n" + s.toolbarView() + "\n" + pane + s.statusLine()
+	var renderedPane string
+	if s.outlineVisible && s.wideReader() {
+		outlineWidth, _ := s.readerPaneWidths()
+		lines, _ := s.editorOutlineLines()
+		if len(lines) > s.body.Height {
+			lines = lines[:s.body.Height]
+		}
+		for i, line := range lines {
+			lines[i] = runewidth.Truncate(line, max(outlineWidth-2, 1), "…")
+		}
+		outlineHeight := s.body.Height
+		if s.prompt != promptNone {
+			outlineHeight++
+		}
+		outlinePane := lipgloss.NewStyle().
+			Width(outlineWidth-1).
+			Height(outlineHeight).
+			Border(lipgloss.NormalBorder(), false, true, false, false).
+			BorderForeground(s.theme.Border).
+			PaddingRight(1).
+			Render(strings.Join(lines, "\n"))
+		renderedPane = lipgloss.JoinHorizontal(lipgloss.Top, outlinePane, content.String())
+	} else {
+		renderedPane = content.String()
+	}
+	status := ansi.Truncate(s.statusLine(), max(s.width, 1), "…")
+	return chromeLayout(s.width, s.height, header, shortcuts, renderedPane, status, s.theme.Border)
+}
+
+func (s *documentsScreen) editorOutline() []document.Section {
+	outline, _ := document.Outline(s.editorDocument())
+	return outline
+}
+
+func (s *documentsScreen) changeEditorOutlineSelection(step int) {
+	outline := s.editorOutline()
+	if len(outline) == 0 {
+		return
+	}
+	current := s.currentSection()
+	if current < 0 {
+		current = 0
+	}
+	next := current + step
+	if next < 0 {
+		next = 0
+	}
+	if next >= len(outline) {
+		next = len(outline) - 1
+	}
+	s.gotoEditorSection(next)
+}
+
+func (s *documentsScreen) gotoEditorSection(index int) {
+	outline := s.editorOutline()
+	if index < 0 || index >= len(outline) {
+		return
+	}
+	section := outline[index]
+
+	pages, err := document.Paginate(s.editorDocument())
+	if err != nil || section.Page < 1 || section.Page > len(pages) {
+		return
+	}
+
+	// Try to find the heading in the page lines to jump the cursor
+	page := pages[section.Page-1]
+	for idx, line := range page.Lines {
+		if strings.HasPrefix(strings.TrimSpace(line), strings.Repeat("#", section.Level)+" "+section.Title) {
+			s.editPage = section.Page - 1
+			s.editPageLine = idx
+
+			// We can also try to move the cursor. Let's just find the line in the body text
+			bodyLines := strings.Split(s.body.Value(), "\n")
+			for i, bline := range bodyLines {
+				if strings.HasPrefix(strings.TrimSpace(bline), strings.Repeat("#", section.Level)+" "+section.Title) {
+					s.body.Cursor.Line = i
+					s.body.Cursor.Col = 0
+
+					break
+				}
+			}
+			break
+		}
+	}
+}
+
+func (s *documentsScreen) jumpToEditorOutlineSelection() {
+	s.focusBody()
+}
+
+func (s *documentsScreen) clickEditorOutline(x, row int) {
+	if !s.wideReader() {
+		return
+	}
+	outlineWidth, _ := s.readerPaneWidths()
+	if x < 1 || x > outlineWidth+1 {
+		return
+	}
+	_, targets := s.editorOutlineLines()
+	if row >= 0 && row < len(targets) && targets[row] >= 0 {
+		s.gotoEditorSection(targets[row])
+		s.focusOutline()
+	}
+}
+
+func (s *documentsScreen) editorOutlineLines() (lines []string, targets []int) {
+	outline := s.editorOutline()
+	add := func(line string, target int) {
+		lines = append(lines, line)
+		targets = append(targets, target)
+	}
+	add("Outline", -1)
+	if len(outline) == 0 {
+		add("  No headings", -1)
+		return lines, targets
+	}
+	room := max(s.height-5-len(lines), 1)
+	current := -1
+	start := 0
+	for i := start; i < min(start+room, len(outline)); i++ {
+		section := outline[i]
+		marker := "  "
+		if i == current {
+			marker = "› "
+		}
+		indent := strings.Repeat("  ", min(max(section.Level-1, 0), 4))
+		add(marker+indent+sanitizeTerminalLine(section.Title), i)
+	}
+	return lines, targets
 }

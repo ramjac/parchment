@@ -15,18 +15,24 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
+	"example.com/parchment/internal/pdfrender"
 	"example.com/parchment/internal/recovery"
 	"example.com/parchment/internal/tui/editor"
 )
 
 // newDocumentHarness opens the editor on a document file, creating it with
 // draft first when draft has a body.
-func newDocumentHarness(t *testing.T, draft document.Draft) *harness {
+func newDocumentHarness(t *testing.T, draft document.Draft, undoLimits ...int) *harness {
 	t.Helper()
-	h := newHarness(t, "")
+	undoLimit := 10
+	if len(undoLimits) > 0 {
+		undoLimit = undoLimits[0]
+	}
+	h := newHarnessWithUndoLimit(t, "", undoLimit)
 	if draft.Body != "" {
 		if _, err := h.docs.Create(context.Background(), h.path, draft); err != nil {
 			t.Fatal(err)
@@ -75,7 +81,7 @@ func TestDocumentEditModeSeamlessUndoRedo(t *testing.T) {
 func TestDocumentEditorHasToolbarAndSavesLayout(t *testing.T) {
 	h := newDocumentHarness(t, document.Draft{})
 	view := h.m.View()
-	for _, label := range []string{"Save", "Propose", "Changes", "Preview", "B", "H1", "Page break", "Section", "Cols: 1", "Margins: Normal", "Header", "Footer", "Image"} {
+	for _, label := range []string{"Save", "PDF", "Propose", "Changes", "Preview", "B", "H1", "Page break", "Section", "Cols: 1", "Margins: Normal", "Header", "Footer", "Image"} {
 		if !strings.Contains(view, label) {
 			t.Fatalf("editor toolbar is missing %q:\n%s", label, view)
 		}
@@ -100,6 +106,263 @@ func TestDocumentEditorHasToolbarAndSavesLayout(t *testing.T) {
 	if h.m.stage != stageDocument || s.dirty() || h.quit {
 		t.Fatalf("after save: stage=%d dirty=%t quit=%t", h.m.stage, s.dirty(), h.quit)
 	}
+}
+
+func TestDocumentSaveHandsOffUndoAndPreservesHistoryOnFailure(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "left\tright"})
+	s := h.m.documents
+	if got := s.body.Value(); got != "left\tright" {
+		t.Fatalf("document body = %q, want literal tab preserved", got)
+	}
+	h.typeText("!")
+	h.key("ctrl+s")
+	if s.body.CanUndo() || s.body.CanRedo() {
+		t.Fatal("successful document save retained keystroke history")
+	}
+	h.key("ctrl+z")
+	if got := s.body.Value(); got != "left\tright" {
+		t.Fatalf("Ctrl+Z after save = %q, want service-level undo to restore prior body", got)
+	}
+
+	failed := newDocumentHarness(t, document.Draft{Body: "body"})
+	failed.typeText("!")
+	unsaved := failed.m.documents.body.Value()
+	failed.m.documents.documentSaved(documentSavedMsg{err: errors.New("save failed")})
+	if !failed.m.documents.body.CanUndo() || failed.m.documents.body.Value() != unsaved {
+		t.Fatal("failed document save discarded unsaved keystroke history")
+	}
+}
+
+func TestDocumentPDFExportFromEditorPreservesUnsavedDraft(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "Saved body"})
+	s := h.m.documents
+	h.typeText(" with unsaved changes")
+	output := filepath.Join(t.TempDir(), "editor.pdf")
+	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if s.prompt != promptPDF {
+		t.Fatal("Ctrl+P did not open the PDF path prompt")
+	}
+	s.promptInput.SetValue(output)
+	h.key("enter")
+
+	pdf, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(pdf, []byte("%PDF-")) {
+		t.Fatalf("export does not have a PDF signature: %q", pdf[:min(len(pdf), 8)])
+	}
+	info, err := os.Stat(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("export permissions = %v; want 0600", info.Mode().Perm())
+	}
+	var expected bytes.Buffer
+	if err := pdfrender.Render(&expected, s.editorDocument()); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(pdf, expected.Bytes()) {
+		t.Fatal("PDF export did not render the current unsaved editor state")
+	}
+	if !s.dirty() || !strings.Contains(s.body.Value(), "with unsaved changes") {
+		t.Fatalf("PDF export changed the unsaved draft: dirty=%t body=%q", s.dirty(), s.body.Value())
+	}
+	saved, err := h.docs.Get(context.Background(), h.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Body != "Saved body" {
+		t.Fatalf("PDF export saved editor changes: %q", saved.Body)
+	}
+
+	h.key("f5")
+	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	previewOutput := filepath.Join(t.TempDir(), "preview.pdf")
+	s.promptInput.SetValue(previewOutput)
+	if !strings.Contains(h.m.View(), "PDF output path:") {
+		t.Fatal("print preview did not display the PDF path prompt")
+	}
+	h.key("enter")
+	previewPDF, err := os.ReadFile(previewOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(previewPDF, []byte("%PDF-")) {
+		t.Fatalf("preview export does not have a PDF signature: %q", previewPDF[:min(len(previewPDF), 8)])
+	}
+	if !strings.Contains(h.m.View(), "PDF exported to "+previewOutput) {
+		t.Fatal("print preview did not display the PDF export success status")
+	}
+	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	s.promptInput.SetValue(previewOutput)
+	h.key("enter")
+	if !strings.Contains(h.m.View(), "PDF export failed:") {
+		t.Fatal("print preview did not display the PDF export error status")
+	}
+}
+
+func TestDocumentPDFExportFromReaderAndRefusesOverwrite(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "# Reader PDF"})
+	s := h.m.documents
+	s.startReading(s.snapshot)
+	output := filepath.Join(t.TempDir(), "reader.pdf")
+	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if s.prompt != promptPDF {
+		t.Fatal("Ctrl+P did not open the PDF path prompt in the reader")
+	}
+	s.promptInput.SetValue(output)
+	h.key("enter")
+	pdf, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(pdf, []byte("%PDF-")) {
+		t.Fatalf("export does not have a PDF signature: %q", pdf[:min(len(pdf), 8)])
+	}
+
+	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	s.promptInput.SetValue(output)
+	h.key("enter")
+	if !strings.Contains(s.errMessage, "already exists") {
+		t.Fatalf("overwrite error = %q, want already exists", s.errMessage)
+	}
+	after, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, pdf) {
+		t.Fatal("refused overwrite changed the existing PDF")
+	}
+}
+
+func TestDocumentEditorPaneAndMouseCoordinates(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		width   int
+		outline bool
+	}{
+		{"narrow", 60, false},
+		{"wide", 100, false},
+		{"outline", 100, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newDocumentHarness(t, document.Draft{})
+			h.send(tea.WindowSizeMsg{Width: tc.width, Height: 30})
+			s := h.m.documents
+			if tc.outline {
+				h.key("ctrl+o")
+			}
+			left := 2
+			if tc.outline {
+				outlineWidth, _ := s.readerPaneWidths()
+				left += outlineWidth
+			}
+			width := tc.width - 2 - left
+			if s.body.Width != width {
+				t.Fatalf("editor width = %d, want %d", s.body.Width, width)
+			}
+			s.body.SetValue(strings.Repeat("a", width) + "bcdef")
+			y := toolbarTop + s.toolbarRows() + 1
+			lines := strings.Split(ansi.Strip(h.m.View()), "\n")
+			for row, line := range lines {
+				if got := ansi.StringWidth(line); got > tc.width {
+					t.Fatalf("row %d overflows terminal: width=%d line=%q", row, got, line)
+				}
+			}
+			for row := y - 1; row <= y+2; row++ {
+				if got := ansi.StringWidth(lines[row]); got != tc.width {
+					t.Fatalf("row %d width = %d, want %d: %q", row, got, tc.width, lines[row])
+				}
+			}
+			if !strings.HasPrefix(lines[y], "│") || !strings.HasSuffix(lines[y], "│") ||
+				!strings.Contains(lines[y+1], "bcdef") {
+				t.Fatalf("body not wrapped within the pane:\n%s\n%s", lines[y], lines[y+1])
+			}
+			s.focusToolbar()
+			h.send(tea.MouseMsg{X: left + 2, Y: y + 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+			if s.body.Cursor != (editor.Point{Line: 0, Col: width + 2}) || s.focus != focusBody {
+				t.Fatalf("wrapped click: cursor=%+v focus=%v", s.body.Cursor, s.focus)
+			}
+			h.send(tea.MouseMsg{X: left + 4, Y: y + 1, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+			h.send(tea.MouseMsg{X: left + 4, Y: y + 1, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
+			if got := s.body.SelectedText(); got != "de" {
+				t.Fatalf("drag selected %q, want %q", got, "de")
+			}
+			h.send(tea.MouseMsg{X: tc.width - 1, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+			if s.body.Cursor != (editor.Point{Line: 0, Col: width + 4}) {
+				t.Fatalf("border click moved cursor: %+v", s.body.Cursor)
+			}
+		})
+	}
+}
+
+func TestDocumentEditorFrameAndClickAfterResize(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{})
+	s := h.m.documents
+	body := strings.Repeat("x", 150) + "\n界 CLICKTARGET"
+
+	checkFrame := func(width, height int) []string {
+		t.Helper()
+		lines := strings.Split(ansi.Strip(h.m.View()), "\n")
+		if len(lines) != height {
+			t.Fatalf("view has %d rows, want %d:\n%s", len(lines), height, h.m.View())
+		}
+		top, bottom := -1, -1
+		for i, line := range lines {
+			if ansi.StringWidth(line) > width {
+				t.Fatalf("row %d exceeds terminal width %d: %q", i, width, line)
+			}
+			if strings.HasPrefix(line, "┌") {
+				top = i
+			}
+			if strings.HasPrefix(line, "└") {
+				bottom = i
+			}
+		}
+		if top < 0 || bottom <= top {
+			t.Fatalf("missing pane borders:\n%s", h.m.View())
+		}
+		for row := top; row <= bottom; row++ {
+			line := lines[row]
+			if ansi.StringWidth(line) != width {
+				t.Fatalf("frame row %d has width %d, want %d: %q", row, ansi.StringWidth(line), width, line)
+			}
+			if row > top && row < bottom && (!strings.HasPrefix(line, "│") || !strings.HasSuffix(line, "│")) {
+				t.Fatalf("frame row %d is missing a side border: %q", row, line)
+			}
+		}
+		return lines
+	}
+
+	checkFrame(100, 30)
+	s.body.SetValue("short")
+	checkFrame(100, 30)
+	s.body.SetValue(body)
+	checkFrame(100, 30)
+	h.key("ctrl+o")
+	checkFrame(100, 30)
+	h.send(tea.WindowSizeMsg{Width: 60, Height: 30})
+	checkFrame(60, 30)
+	h.send(tea.WindowSizeMsg{Width: 120, Height: 40})
+	lines := checkFrame(120, 40)
+	if s.body.Value() != body {
+		t.Fatal("resizing or toggling the outline changed the document")
+	}
+
+	for y, line := range lines {
+		if i := strings.Index(line, "CLICKTARGET"); i >= 0 {
+			x := ansi.StringWidth(line[:i]) + 2
+			h.send(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+			h.typeText("!")
+			if got, want := s.body.Value(), strings.Replace(body, "CLICKTARGET", "CL!ICKTARGET", 1); got != want {
+				t.Fatalf("click after resize inserted text at the wrong position: %q", got)
+			}
+			return
+		}
+	}
+	t.Fatalf("click target not visible:\n%s", h.m.View())
 }
 
 func TestDocumentProposeReviewAndAccept(t *testing.T) {
@@ -296,9 +559,9 @@ func TestToolbarMouseClickAndUnsavedEscape(t *testing.T) {
 func TestAltFormattingFromToolbarFocusesBody(t *testing.T) {
 	h := newDocumentHarness(t, document.Draft{})
 	s := h.m.documents
-	h.key("tab")
+	h.key("f2")
 	if s.focus != focusToolbar || s.body.Focused {
-		t.Fatal("Tab did not move focus from the body to the toolbar")
+		t.Fatal("F2 did not move focus from the body to the toolbar")
 	}
 	h.send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b"), Alt: true})
 	h.typeText("x")
@@ -507,20 +770,21 @@ func TestDocumentPreviewFitsTerminalAndScrolls(t *testing.T) {
 	if lines := strings.Count(view, "\n") + 1; lines > 24 {
 		t.Fatalf("preview view has %d lines for a 24-line terminal", lines)
 	}
-	if !strings.Contains(view, "HELLO") || !strings.Contains(view, "Some text") || !strings.Contains(view, "lines 1–22 of") {
+	cleanView := ansi.Strip(view)
+	if !strings.Contains(cleanView, "Hello") || !strings.Contains(cleanView, "Some text") || !strings.Contains(cleanView, "lines 1–21 of") {
 		t.Fatalf("preview does not show the top of the page:\n%s", view)
 	}
 	h.send(tea.KeyMsg{Type: tea.KeyDown})
-	if !strings.Contains(h.m.View(), "lines 2–23 of") {
+	if !strings.Contains(h.m.View(), "lines 2–22 of") {
 		t.Fatalf("down did not scroll:\n%s", h.m.View())
 	}
 	h.send(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
-	if !strings.Contains(h.m.View(), "lines 5–26 of") {
+	if !strings.Contains(h.m.View(), "lines 5–25 of") {
 		t.Fatalf("wheel did not scroll:\n%s", h.m.View())
 	}
 	h.send(tea.KeyMsg{Type: tea.KeyEnd})
 	total := len(s.editPages[0].Lines)
-	if !strings.Contains(h.m.View(), fmt.Sprintf("lines %d–%d of %d", total-21, total, total)) {
+	if !strings.Contains(h.m.View(), fmt.Sprintf("lines %d–%d of %d", total-20, total, total)) {
 		t.Fatalf("end did not reach the bottom:\n%s", h.m.View())
 	}
 	h.key("esc")

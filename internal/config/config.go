@@ -14,12 +14,23 @@ import (
 
 const Version = 1
 
+// Theme defines the visual color mode and palette overrides.
+type Theme struct {
+	Mode      string
+	Primary   string
+	Border    string
+	Error     string
+	Selection string
+	Match     string
+}
+
 // Settings is the fully resolved application configuration.
 type Settings struct {
 	UndoLimit   int
 	LogLevel    string
 	LogFormat   string
 	LocalBackup string
+	Theme       Theme
 }
 
 type fileConfig struct {
@@ -34,6 +45,14 @@ type fileConfig struct {
 			Destination *string `toml:"destination"`
 		} `toml:"local"`
 	} `toml:"backup"`
+	Theme struct {
+		Mode      *string `toml:"mode"`
+		Primary   *string `toml:"primary"`
+		Border    *string `toml:"border"`
+		Error     *string `toml:"error"`
+		Selection *string `toml:"selection"`
+		Match     *string `toml:"match"`
+	} `toml:"theme"`
 }
 
 const defaultFile = "version = 1\n"
@@ -41,14 +60,11 @@ const defaultFile = "version = 1\n"
 // Load resolves built-in defaults, the TOML file at path, and environment
 // overrides. A missing file leaves the defaults in place.
 func Load(path string) (Settings, error) {
-	dir, _ := Directory()
 	defaultBackup := ""
-	if dir != "" {
-		defaultBackup = filepath.Join(dir, "backups")
-	}
 	settings := Settings{
 		UndoLimit: 100, LogLevel: "warn", LogFormat: "text",
 		LocalBackup: defaultBackup,
+		Theme:       Theme{Mode: "auto"},
 	}
 	if path != "" {
 		cfg, err := read(path)
@@ -61,7 +77,37 @@ func Load(path string) (Settings, error) {
 	if settings.UndoLimit < 1 || settings.UndoLimit > 10000 {
 		return Settings{}, errors.New("undo_limit must be between 1 and 10000")
 	}
+	if settings.Theme.Mode != "auto" && settings.Theme.Mode != "light" && settings.Theme.Mode != "dark" {
+		return Settings{}, fmt.Errorf("invalid theme mode %q (must be auto, light, or dark)", settings.Theme.Mode)
+	}
+	for _, hex := range []string{settings.Theme.Primary, settings.Theme.Border, settings.Theme.Error, settings.Theme.Selection, settings.Theme.Match} {
+		if hex != "" && !isValidHexColor(hex) {
+			return Settings{}, fmt.Errorf("invalid theme color %q (must be a 6-digit hex code like #RRGGBB)", hex)
+		}
+	}
+	switch settings.LogLevel {
+	case "debug", "info", "warn", "error", "off":
+	default:
+		return Settings{}, fmt.Errorf("invalid logging.level %q (want debug, info, warn, error, off)", settings.LogLevel)
+	}
+	switch settings.LogFormat {
+	case "text", "json":
+	default:
+		return Settings{}, fmt.Errorf("invalid logging.format %q (want text, json)", settings.LogFormat)
+	}
 	return settings, nil
+}
+
+func isValidHexColor(s string) bool {
+	if len(s) != 7 || s[0] != '#' {
+		return false
+	}
+	for _, c := range s[1:] {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 // Directory returns the per-user Parchment directory, ~/.parchment. It holds
@@ -194,9 +240,30 @@ func apply(settings *Settings, cfg fileConfig) {
 	if cfg.Backup.Local.Destination != nil {
 		settings.LocalBackup = *cfg.Backup.Local.Destination
 	}
+	if cfg.Theme.Mode != nil {
+		settings.Theme.Mode = *cfg.Theme.Mode
+	}
+	if cfg.Theme.Primary != nil {
+		settings.Theme.Primary = *cfg.Theme.Primary
+	}
+	if cfg.Theme.Border != nil {
+		settings.Theme.Border = *cfg.Theme.Border
+	}
+	if cfg.Theme.Error != nil {
+		settings.Theme.Error = *cfg.Theme.Error
+	}
+	if cfg.Theme.Selection != nil {
+		settings.Theme.Selection = *cfg.Theme.Selection
+	}
+	if cfg.Theme.Match != nil {
+		settings.Theme.Match = *cfg.Theme.Match
+	}
 }
 
 func applyEnvironment(settings *Settings) {
+	if value, ok := os.LookupEnv("PARCHMENT_BACKUP_DESTINATION"); ok {
+		settings.LocalBackup = value
+	}
 	if value, ok := os.LookupEnv("PARCHMENT_UNDO_LIMIT"); ok {
 		if limit, err := strconv.Atoi(value); err == nil {
 			settings.UndoLimit = limit
@@ -209,5 +276,8 @@ func applyEnvironment(settings *Settings) {
 	}
 	if value, ok := os.LookupEnv("PARCHMENT_LOG_FORMAT"); ok {
 		settings.LogFormat = strings.ToLower(value)
+	}
+	if value, ok := os.LookupEnv("PARCHMENT_THEME"); ok {
+		settings.Theme.Mode = strings.ToLower(value)
 	}
 }

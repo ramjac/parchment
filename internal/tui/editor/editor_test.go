@@ -7,7 +7,72 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
+
+func TestEditorCursorAtWrapBoundaryAndResize(t *testing.T) {
+	ed := New()
+	ed.SetWidth(5)
+	ed.SetHeight(2)
+	ed.InsertString("abcde")
+	lines := strings.Split(ed.View(), "\n")
+	if len(lines) != 2 || ansi.StringWidth(lines[0]) != 5 || ansi.StringWidth(lines[1]) != 1 {
+		t.Fatalf("cursor should wrap after a full row: %q", ed.View())
+	}
+	ed.SetHeight(1)
+	if ed.TopRowOffset != 1 || ansi.StringWidth(ed.View()) != 1 {
+		t.Fatalf("wrapped cursor not scrolled into view: offset=%d view=%q", ed.TopRowOffset, ed.View())
+	}
+	ed.SetWidth(10)
+	if ed.TopRowOffset != 0 || ansi.StringWidth(ed.View()) != 6 {
+		t.Fatalf("resize did not restore cursor row: offset=%d view=%q", ed.TopRowOffset, ed.View())
+	}
+	ed.SetWidth(5)
+	ed.SetValue("new")
+	if ed.TopRowOffset != 0 || !strings.Contains(ed.View(), "new") {
+		t.Fatalf("loading text retained stale wrap offset: offset=%d view=%q", ed.TopRowOffset, ed.View())
+	}
+}
+
+func TestEditorPreservesLiteralTabsAndBoundsUndoHistory(t *testing.T) {
+	ed := NewWithUndoLimit(2)
+	ed.SetValue("a\tb")
+	if got := ed.Value(); got != "a\tb" {
+		t.Fatalf("Value() = %q, want literal tab preserved", got)
+	}
+	ed.Width, ed.Height = 20, 1
+	if got := ansi.Strip(ed.View()); got != "a   b" {
+		t.Fatalf("View() = %q, want tab rendered to its 4-column stop", got)
+	}
+
+	ed.SetValue("")
+	for _, text := range []string{"a", "b", "c", "d"} {
+		ed.InsertString(text)
+	}
+	for range 2 {
+		if !ed.Undo() {
+			t.Fatal("configured undo history ended before its limit")
+		}
+	}
+	if got := ed.Value(); got != "ab" {
+		t.Fatalf("Value() after two undos = %q, want retained history to reach %q", got, "ab")
+	}
+	if ed.Undo() {
+		t.Fatal("undo history exceeded its configured limit")
+	}
+
+	ed.InsertString("\t")
+	if got := ed.Value(); got != "ab\t" {
+		t.Fatalf("pasted literal tab = %q", got)
+	}
+	ed.ResetHistory()
+	if ed.CanUndo() || ed.CanRedo() {
+		t.Fatal("ResetHistory left keystroke history available")
+	}
+	if got := ed.Value(); got != "ab\t" {
+		t.Fatalf("ResetHistory changed the editor buffer to %q", got)
+	}
+}
 
 func TestEditorNew(t *testing.T) {
 	ed := New()
@@ -36,9 +101,10 @@ func TestEditorNew(t *testing.T) {
 	if ed.TopLine != 0 {
 		t.Fatalf("New().TopLine = %d, want 0", ed.TopLine)
 	}
-	if ed.LeftCol != 0 {
-		t.Fatalf("New().LeftCol = %d, want 0", ed.LeftCol)
+	if ed.TopRowOffset != 0 {
+		t.Fatalf("New().TopRowOffset = %d, want 0", ed.TopRowOffset)
 	}
+
 	if ed.StickyCol != 0 {
 		t.Fatalf("New().StickyCol = %d, want 0", ed.StickyCol)
 	}
@@ -1241,7 +1307,6 @@ func TestSetValueResetState(t *testing.T) {
 	ed.StickyCol = 5
 	ed.Selection = Selection{Anchor: Point{Line: 0, Col: 0}, Active: true}
 	ed.TopLine = 1
-	ed.LeftCol = 2
 
 	ed.InsertString(" extra")
 	if !ed.CanUndo() {
@@ -1270,9 +1335,7 @@ func TestSetValueResetState(t *testing.T) {
 	if ed.TopLine != 0 {
 		t.Errorf("TopLine = %d, want 0", ed.TopLine)
 	}
-	if ed.LeftCol != 0 {
-		t.Errorf("LeftCol = %d, want 0", ed.LeftCol)
-	}
+
 	if ed.CanUndo() {
 		t.Errorf("CanUndo() = true, want false after SetValue")
 	}
@@ -1600,24 +1663,19 @@ func TestRedo(t *testing.T) {
 
 		ed.Cursor = Point{Line: 0, Col: 0}
 		ed.InsertString("Prepend ") // moves cursor to Col 8 ("Prepend Hello World Very Long Line")
-		// LeftCol was adjusted during InsertString
-		ed.Undo() // restores cursor to Col 0, resets LeftCol to 0
+		ed.Undo()                   // restores cursor to Col 0, resets LeftCol to 0
 
 		if ed.Cursor.Col != 0 {
 			t.Fatalf("Cursor.Col after Undo = %d, want 0", ed.Cursor.Col)
 		}
 
-		// Reset LeftCol to 0 while restored cursor will be at Col 8
-		ed.LeftCol = 0
 		ed.Cursor = Point{Line: 0, Col: 0}
 
 		ed.Redo() // restores cursor to Col 8
 		if ed.Cursor.Col != 8 {
 			t.Errorf("Cursor.Col after Redo = %d, want 8", ed.Cursor.Col)
 		}
-		if ed.LeftCol != 4 {
-			t.Errorf("LeftCol after Redo = %d, want 4", ed.LeftCol)
-		}
+
 	})
 
 	t.Run("typing batching behavior after Redo due to editNone reset", func(t *testing.T) {
@@ -1764,7 +1822,6 @@ func TestSetValue(t *testing.T) {
 		ed.StickyCol = 5
 		ed.Selection = Selection{Anchor: Point{Line: 0, Col: 2}, Active: true}
 		ed.TopLine = 1
-		ed.LeftCol = 3
 
 		// Push undo and redo stack entries
 		ed.InsertString(" edit")
@@ -1796,9 +1853,7 @@ func TestSetValue(t *testing.T) {
 		if ed.TopLine != 0 {
 			t.Errorf("TopLine = %d, want 0", ed.TopLine)
 		}
-		if ed.LeftCol != 0 {
-			t.Errorf("LeftCol = %d, want 0", ed.LeftCol)
-		}
+
 		if ed.CanUndo() {
 			t.Errorf("CanUndo() = true, want false")
 		}
@@ -1922,4 +1977,51 @@ func TestSetValue(t *testing.T) {
 			t.Errorf("LineCount() = %d, want 1", ed.LineCount())
 		}
 	})
+}
+
+func TestEditorSoftWrapping(t *testing.T) {
+	ed := New()
+	ed.SetWidth(10)
+	ed.SetValue("01234567890123456789")
+
+	rows := ed.getVisualRows(0)
+	if len(rows) != 3 {
+		t.Fatalf("Expected 3 visual rows including the trailing cursor row, got %d", len(rows))
+	}
+	if rows[0].startCol != 0 || rows[0].endCol != 10 {
+		t.Errorf("Row 0: %v", rows[0])
+	}
+	if rows[1].startCol != 10 || rows[1].endCol != 20 {
+		t.Errorf("Row 1: %v", rows[1])
+	}
+
+	ed.SetValue("你好世界你好世界") // each is width 2, so 5 per row
+	rows = ed.getVisualRows(0)
+	if len(rows) != 2 {
+		t.Fatalf("Expected 2 visual rows for wide chars, got %d", len(rows))
+	}
+	if rows[0].endCol != 5 {
+		t.Errorf("Row 0 wide chars: %v, expected end 5", rows[0])
+	}
+}
+
+func TestEditorVisualNavigation(t *testing.T) {
+	ed := New()
+	ed.SetWidth(10)
+	ed.SetValue("012345678901234") // 2 visual rows
+
+	ed.CursorStart()
+	if ed.Cursor.Line != 0 || ed.Cursor.Col != 0 {
+		t.Fatalf("CursorStart failed: %v", ed.Cursor)
+	}
+
+	ed.CursorDown() // Move to next visual row
+	if ed.Cursor.Line != 0 || ed.Cursor.Col != 10 {
+		t.Fatalf("CursorDown failed, expected (0, 10), got %v", ed.Cursor)
+	}
+
+	ed.CursorUp() // Move to previous visual row
+	if ed.Cursor.Line != 0 || ed.Cursor.Col != 0 {
+		t.Fatalf("CursorUp failed, expected (0, 0), got %v", ed.Cursor)
+	}
 }

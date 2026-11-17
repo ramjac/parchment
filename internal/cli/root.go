@@ -8,10 +8,13 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"log/slog"
+
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/filerepo"
+	"example.com/parchment/internal/logging"
 	"example.com/parchment/internal/note"
 	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/spreadsheet"
@@ -51,7 +54,7 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 	create := &cobra.Command{
 		Use: "create <file>", Short: "Create a note file", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, service, err := open(cmd)
+			repo, service, err := open(cmd)
 			if err != nil {
 				return err
 			}
@@ -64,6 +67,7 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			drainWarnings(repo, output{err: cmd.ErrOrStderr()})
 			return finishCreate(cmd, streams, n.Path, artifact.NoteKind)
 		},
 	}
@@ -88,7 +92,7 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 	edit := &cobra.Command{
 		Use: "edit <file>", Short: "Replace a note's Markdown body", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, service, err := open(cmd)
+			repo, service, err := open(cmd)
 			if err != nil {
 				return err
 			}
@@ -97,6 +101,9 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 			}
 			body, _ := cmd.Flags().GetString("body")
 			_, err = service.Update(cmd.Context(), args[0], body)
+			if err == nil {
+				drainWarnings(repo, streams)
+			}
 			return err
 		},
 	}
@@ -106,6 +113,7 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 	addSpreadsheetCommands(root, streams)
 	addPresentationCommands(root, streams)
 
+	root.AddCommand(newConvertCmd(streams))
 	root.AddCommand(tuiCommand())
 	return root
 }
@@ -165,7 +173,20 @@ func openStore() (*filerepo.Repository, config.Settings, error) {
 	if err != nil {
 		return nil, config.Settings{}, err
 	}
-	repo, err := filerepo.New(stateDir)
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return nil, config.Settings{}, fmt.Errorf("ensure state directory: %w", err)
+	}
+	logger, closer, err := logging.Setup(stateDir, settings.LogLevel, settings.LogFormat)
+	if err != nil {
+		return nil, config.Settings{}, err
+	}
+	if globalCloser != nil {
+		_ = globalCloser()
+	}
+	globalCloser = closer
+	slog.SetDefault(logger)
+
+	repo, err := filerepo.New(stateDir, filerepo.Options{LocalBackup: settings.LocalBackup})
 	if err != nil {
 		return nil, config.Settings{}, err
 	}
@@ -178,4 +199,22 @@ func groupCommand(group *cobra.Command) *cobra.Command {
 	group.Args = cobra.NoArgs
 	group.RunE = func(cmd *cobra.Command, _ []string) error { return cmd.Help() }
 	return group
+}
+
+var globalCloser func() error
+
+// Close cleans up resources held by the CLI (like open log files).
+func Close() {
+	if globalCloser != nil {
+		_ = globalCloser()
+	}
+}
+
+func drainWarnings(repo *filerepo.Repository, streams output) {
+	if repo == nil {
+		return
+	}
+	for _, w := range repo.Warnings() {
+		fmt.Fprintf(streams.err, "warning: %v\n", w)
+	}
 }

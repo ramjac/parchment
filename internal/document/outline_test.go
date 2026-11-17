@@ -23,15 +23,24 @@ func TestOutlineListsHeadingsWithPages(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []struct {
-		level int
-		title string
-	}{{1, "Title"}, {2, "Part One"}, {3, "Deep"}, {2, "Last"}}
+		level        int
+		title        string
+		slug         string
+		anchor       bool
+		sectionBreak bool
+		columns      int
+	}{
+		{1, "Title", "title", false, false, 0},
+		{2, "Part One", "part-one", false, false, 0},
+		{3, "Deep", "deep", false, false, 0},
+		{2, "Last", "last", false, false, 0},
+	}
 	if len(sections) != len(want) {
 		t.Fatalf("sections = %+v", sections)
 	}
 	for i, w := range want {
 		s := sections[i]
-		if s.Level != w.level || s.Title != w.title {
+		if s.Level != w.level || s.Title != w.title || s.Slug != w.slug || s.Anchor != w.anchor || s.SectionBreak != w.sectionBreak || s.Columns != w.columns {
 			t.Fatalf("section %d = %+v, want %+v", i, s, w)
 		}
 		if s.Page < 1 || s.Page > len(pages) {
@@ -68,5 +77,42 @@ func TestOutlineIncludesSetextHeadings(t *testing.T) {
 	text := strings.Join(pages[0].Lines, "\n")
 	if !strings.Contains(text, "BIG TITLE") || !strings.Contains(text, "=========") {
 		t.Fatalf("setext heading not rendered as a heading:\n%s", text)
+	}
+}
+
+func TestOutlineSluggingAndAnchors(t *testing.T) {
+	d := Document{
+		Body:   "# Duplicate\n\n## Duplicate\n\n### Duplicate\n\nSome text with <a id=\"explicit-anchor\"></a> in it.\n\n<!-- parchment:section-break columns=2 continuous -->\n\n## Normal",
+		Layout: DefaultLayout(),
+	}
+	sections, err := Outline(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []struct {
+		level        int
+		title        string
+		slug         string
+		anchor       bool
+		sectionBreak bool
+		columns      int
+	}{
+		{1, "Duplicate", "duplicate", false, false, 0},
+		{2, "Duplicate", "duplicate-1", false, false, 0},
+		{3, "Duplicate", "duplicate-2", false, false, 0},
+		{0, "", "explicit-anchor", true, false, 0},
+		{0, "── Section (2 cols)", "", false, true, 2},
+		{2, "Normal", "normal", false, false, 0},
+	}
+
+	if len(sections) != len(want) {
+		t.Fatalf("got %d sections, want %d: %+v", len(sections), len(want), sections)
+	}
+	for i, w := range want {
+		s := sections[i]
+		if s.Level != w.level || s.Title != w.title || s.Slug != w.slug || s.Anchor != w.anchor || s.SectionBreak != w.sectionBreak || (s.SectionBreak && s.Columns != w.columns) {
+			t.Fatalf("section %d:\n got: %+v\nwant: %+v", i, s, w)
+		}
 	}
 }

@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/document"
@@ -29,12 +30,13 @@ func (s *documentsScreen) startReading(d document.Document) {
 // refreshReader paginates the saved document and rebuilds its outline,
 // keeping the current page when it still exists.
 func (s *documentsScreen) refreshReader() {
-	s.readerPages, s.outline = nil, nil
-	pages, err := document.Paginate(s.snapshot)
+	s.readerPages, s.outline, s.readerLinks = nil, nil, nil
+	pages, links, err := s.paginateDocumentWithLinks(s.snapshot)
 	if err != nil {
 		s.errMessage = err.Error()
 	} else {
 		s.readerPages = pages
+		s.readerLinks = links
 		s.outline, _ = document.Outline(s.snapshot)
 	}
 	s.readerPage = min(max(s.readerPage, 0), max(len(s.readerPages)-1, 0))
@@ -102,9 +104,15 @@ func (s *documentsScreen) scrollReader(down bool, msg tea.Msg) {
 }
 
 func (s *documentsScreen) updateReaderKey(msg tea.KeyMsg) tea.Cmd {
+	if s.prompt != promptNone {
+		return s.updatePrompt(msg)
+	}
 	key := msg.String()
 	switch key {
 	case "q", "esc", "ctrl+c":
+		if s.showChanges {
+			return s.updateChangesKey(msg)
+		}
 		return s.close()
 	case "e":
 		cmd, ok := s.startEdit(s.snapshot)
@@ -113,12 +121,16 @@ func (s *documentsScreen) updateReaderKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		s.reading = false
 		return cmd
+	case "ctrl+p":
+		return s.openPDFPrompt()
 	case "v", "f4":
 		return s.loadChanges()
 	case "u", "ctrl+z":
 		return s.history(true)
 	case "ctrl+r":
 		return s.history(false)
+	case "ctrl+o":
+		s.outlineVisible = !s.outlineVisible
 	case "right", "]":
 		s.changeReaderPage(1, key == "]")
 	case "left", "[":
@@ -138,16 +150,70 @@ func (s *documentsScreen) updateReaderKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 func (s *documentsScreen) updateReaderMouse(msg tea.MouseMsg) {
-	if msg.Action != tea.MouseActionPress {
+	if s.prompt != promptNone || msg.Action != tea.MouseActionPress {
 		return
 	}
 	switch msg.Button {
 	case tea.MouseButtonLeft:
-		s.clickOutline(msg.X, msg.Y)
+		if s.wideReader() {
+			outlineWidth, _ := s.readerPaneWidths()
+			if msg.X >= 1 && msg.X <= outlineWidth+1 {
+				s.clickOutline(msg.X, msg.Y)
+				return
+			}
+		}
+		s.clickReaderLink(msg.X, msg.Y)
 	case tea.MouseButtonWheelDown:
 		s.scrollReader(true, msg)
 	case tea.MouseButtonWheelUp:
 		s.scrollReader(false, msg)
+	}
+}
+
+func (s *documentsScreen) clickReaderLink(x, y int) {
+	if s.readerPage >= len(s.readerPages) {
+		return
+	}
+	pageRow := (y - 4) + s.reader.YOffset
+	pageCol := x - 1
+	if s.wideReader() {
+		outlineWidth, _ := s.readerPaneWidths()
+		pageCol = x - (outlineWidth + 2)
+	}
+	for _, box := range s.readerLinks {
+		if box.page == s.readerPage && box.row == pageRow && pageCol >= box.startCol && pageCol < box.endCol {
+			s.navigateToTarget(box.target)
+			return
+		}
+	}
+}
+
+func (s *documentsScreen) navigateToTarget(target string) {
+	clean := strings.TrimPrefix(target, "#")
+	if clean == "" {
+		return
+	}
+	targetPage := -1
+	targetTitle := ""
+	for _, sec := range s.outline {
+		if strings.EqualFold(sec.Slug, clean) {
+			targetPage = sec.Page - 1
+			targetTitle = sec.Title
+			break
+		}
+	}
+	if targetPage < 0 || targetPage >= len(s.readerPages) {
+		return
+	}
+	s.readerPage = targetPage
+	s.showReaderPage()
+	if targetTitle != "" {
+		for r, line := range s.readerPages[targetPage].Lines {
+			if strings.Contains(ansi.Strip(line), targetTitle) {
+				s.reader.SetYOffset(max(0, r-1))
+				break
+			}
+		}
 	}
 }
 
@@ -226,24 +292,50 @@ func (s *documentsScreen) readerPageLabel() string {
 }
 
 func (s *documentsScreen) readerView(header string) string {
-	footer := "e edit  ↑/↓ scroll  ←/→ or [ ] page  { } section  v changes  u undo  Ctrl+R redo  esc/q quit"
+	shortcuts := "e edit  Ctrl+P PDF  ↑/↓ scroll  ←/→ or [ ] page  { } section  v changes  u undo  Ctrl+R redo  esc/q quit"
+	if s.prompt != promptNone {
+		shortcuts = "Enter export PDF  ·  Esc cancel"
+	}
+	readerContent := s.reader.View()
+	if s.prompt != promptNone {
+		readerContent = s.promptInput.View() + "\n" + readerContent
+	}
 	if !s.wideReader() {
-		return header + "\nPage " + s.readerPageLabel() + "\n" + s.reader.View() + "\n" +
-			runewidth.Truncate(footer, max(s.width, 1), "…") + s.statusLine()
+		content := readerContent
+		if s.prompt == promptNone {
+			content = "Page " + s.readerPageLabel() + "\n" + content
+		}
+		shortcuts = runewidth.Truncate(shortcuts, max(s.width, 1), "…")
+		return chromeLayout(s.width, s.height, header, shortcuts, content, s.statusLine(), s.theme.Border)
 	}
 	outlineWidth, previewWidth := s.readerPaneWidths()
 	lines, _ := s.outlineLines()
 	for i, line := range lines {
 		lines[i] = runewidth.Truncate(line, max(outlineWidth-2, 1), "…")
 	}
-	pane := func(width int, content string) string {
-		return lipgloss.NewStyle().Width(width).Height(max(s.height-5, 1)).MaxHeight(max(s.height-3, 1)).
-			Border(lipgloss.NormalBorder()).BorderForeground(borderColor).Padding(0, 1).Render(content)
+
+	left := lipgloss.NewStyle().
+		Width(outlineWidth-2).
+		Border(lipgloss.NormalBorder(), false, true, false, false).
+		BorderForeground(s.theme.Border).
+		PaddingRight(1).
+		Render(strings.Join(lines, "\n"))
+
+	pageContent := readerContent
+	if s.prompt == promptNone {
+		pageContent = "Page " + s.readerPageLabel() + "\n" + pageContent
 	}
-	content := "Page " + s.readerPageLabel() + "\n" + s.reader.View()
-	footer = "click outline to jump  " + footer
-	return header + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, pane(outlineWidth, strings.Join(lines, "\n")), pane(previewWidth, content)) +
-		"\n" + runewidth.Truncate(footer, max(s.width, 1), "…") + s.statusLine()
+	right := lipgloss.NewStyle().
+		Width(previewWidth - 2).
+		PaddingLeft(1).
+		Render(pageContent)
+
+	content := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	if s.prompt == promptNone {
+		shortcuts = "click outline to jump  " + shortcuts
+	}
+	shortcuts = runewidth.Truncate(shortcuts, max(s.width, 1), "…")
+	return chromeLayout(s.width, s.height, header, shortcuts, content, s.statusLine(), s.theme.Border)
 }
 
 // leaveEditor returns from the editor to the reader, discarding unsaved edits

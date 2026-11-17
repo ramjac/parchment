@@ -9,7 +9,9 @@ import (
 
 func main() {
 	root := cli.New(os.Stdout, os.Stderr)
-	if err := root.Execute(); err != nil {
+	err := root.Execute()
+	cli.Close()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

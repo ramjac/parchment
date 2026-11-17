@@ -41,7 +41,11 @@ func TestSingleFileWorkbookEncodesMetadataCellsAndFormulas(t *testing.T) {
 	if book.Version != decoded.Version || book.Body != decoded.Body || !reflect.DeepEqual(book.Sheets, decoded.Sheets) {
 		t.Fatalf("round trip changed persisted workbook content:\noriginal: %+v\ndecoded: %+v", book, decoded)
 	}
-	value, err := Evaluate(&decoded, 0, 2, 3)
+	valueV, err := Evaluate(&decoded, 0, 2, 3)
+	var value float64
+	if err == nil {
+		value, err = valueV.Float64()
+	}
 	if err != nil || value != 125 {
 		t.Fatalf("formula result = %v, %v", value, err)
 	}
@@ -95,14 +99,22 @@ func TestFormulaArithmeticReferencesAndCycles(t *testing.T) {
 		row, column int
 		want        float64
 	}{{1, 3, 10}, {2, 3, 4}, {3, 1, 13}} {
-		got, err := Evaluate(&book, 0, test.row, test.column)
+		gotV, err := Evaluate(&book, 0, test.row, test.column)
+		var got float64
+		if err == nil {
+			got, err = gotV.Float64()
+		}
 		if err != nil || got != test.want {
 			t.Fatalf("cell %s = %v, %v; want %v", CellName(test.row, test.column), got, err, test.want)
 		}
 	}
 	book.Sheets[0].Rows[0][0] = Cell{Formula: "=B1"}
 	book.Sheets[0].Rows[0][1] = Cell{Formula: "=A1"}
-	if _, err := Evaluate(&book, 0, 1, 1); err == nil {
+	valV, err := Evaluate(&book, 0, 1, 1)
+	if err == nil {
+		_, err = valV.Float64()
+	}
+	if err == nil {
 		t.Fatal("circular reference was accepted")
 	}
 	if err := Normalize(&book); err == nil {
@@ -116,7 +128,11 @@ func TestFormulaParserSkipsUnicodeWhitespace(t *testing.T) {
 	if err := Normalize(&book); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Evaluate(&book, 0, 1, 1)
+	gotV, err := Evaluate(&book, 0, 1, 1)
+	var got float64
+	if err == nil {
+		got, err = gotV.Float64()
+	}
 	if err != nil || got != 3 {
 		t.Fatalf("formula with non-breaking space = %v, %v; want 3", got, err)
 	}
@@ -130,7 +146,11 @@ func TestSpreadsheetOperationsFormulaShiftsAndHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	value, err := Evaluate(&book, 0, 1, 3)
+	valueV, err := Evaluate(&book, 0, 1, 3)
+	var value float64
+	if err == nil {
+		value, err = valueV.Float64()
+	}
 	if err != nil || value != 5 {
 		t.Fatalf("initial formula = %v, %v", value, err)
 	}
@@ -179,7 +199,7 @@ func TestCellCoordinates(t *testing.T) {
 
 func TestFormulaReferenceShiftsPreserveDecimalExponents(t *testing.T) {
 	for _, formula := range []string{"=1.e3", "=1.e+3", "=1.E-3"} {
-		if got := shiftCellReferences(formula, 1, 1); got != formula {
+		if got := shiftCellReferences(formula, 1, 1, false); got != formula {
 			t.Errorf("shiftCellReferences(%q) = %q", formula, got)
 		}
 	}
@@ -194,14 +214,21 @@ func TestNormalizeRejectsDeepFormulaChainsRegardlessOfCacheOrder(t *testing.T) {
 
 func TestFormulaDepthBoundaryAgreesBetweenNormalizeAndEvaluate(t *testing.T) {
 	book := formulaChain(maxFormulaDepth)
-	value, err := Evaluate(&book, 0, len(book.Sheets[0].Rows), 1)
+	valueV, err := Evaluate(&book, 0, len(book.Sheets[0].Rows), 1)
+	var value float64
+	if err == nil {
+		value, err = valueV.Float64()
+	}
 	if err != nil || value != 1 {
 		t.Fatalf("Evaluate at the depth limit = %v, %v", value, err)
 	}
 	if err := Normalize(&book); err != nil {
 		t.Fatalf("Normalize rejected a chain at the depth limit: %v", err)
 	}
-	value, err = Evaluate(&book, 0, len(book.Sheets[0].Rows), 1)
+	valueV, err = Evaluate(&book, 0, len(book.Sheets[0].Rows), 1)
+	if err == nil {
+		value, err = valueV.Float64()
+	}
 	if err != nil || value != 1 {
 		t.Fatalf("Evaluate after Normalize = %v, %v", value, err)
 	}
@@ -441,5 +468,50 @@ func TestCellName(t *testing.T) {
 				t.Errorf("CellName(%d, %d) = %q, want %q", test.row, test.column, got, test.want)
 			}
 		})
+	}
+}
+
+func TestSpreadsheetDeletions(t *testing.T) {
+	ctx := context.Background()
+	repository := newMemoryRepository()
+	service := NewService(repository, 10)
+	book, err := service.Create(ctx, "deletions.md", [][]Cell{
+		{{Value: "1"}, {Value: "2"}, {Value: "3"}},
+		{{Value: "4"}, {Value: "5"}, {Formula: "=B1+1"}},
+		{{Value: "7"}, {Value: "8"}, {Formula: "=C2+1"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	book, err = service.DeleteRow(ctx, book.Path, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(book.Sheets[0].Rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(book.Sheets[0].Rows))
+	}
+	if book.Sheets[0].Rows[1][2].Formula != "=#REF!+1" {
+		t.Fatalf("expected formula to shift to #REF!+1, got %q", book.Sheets[0].Rows[1][2].Formula)
+	}
+
+	book, err = service.DeleteColumn(ctx, book.Path, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(book.Sheets[0].Rows[0]) != 2 {
+		t.Fatalf("expected 2 columns, got %d", len(book.Sheets[0].Rows[0]))
+	}
+
+	_, err = service.AddSheet(ctx, book.Path, "Sheet2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	book, err = service.DeleteSheet(ctx, book.Path, "Sheet2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(book.Sheets) != 1 {
+		t.Fatalf("expected 1 sheet, got %d", len(book.Sheets))
 	}
 }

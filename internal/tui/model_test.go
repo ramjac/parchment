@@ -14,6 +14,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
@@ -28,20 +29,25 @@ import (
 // harness wires the editor to real services over files in temporary
 // directories: one for the artifact and one standing in for ~/.parchment.
 type harness struct {
-	t      *testing.T
-	m      *Model
-	repo   *filerepo.Repository
-	notes  *note.Service
-	docs   *document.Service
-	sheets *spreadsheet.Service
-	decks  *presentation.Service
-	path   string
-	quit   bool
+	t         *testing.T
+	m         *Model
+	repo      *filerepo.Repository
+	notes     *note.Service
+	docs      *document.Service
+	sheets    *spreadsheet.Service
+	decks     *presentation.Service
+	path      string
+	undoLimit int
+	quit      bool
 }
 
 func newHarness(t *testing.T, kind artifact.Kind) *harness {
+	return newHarnessWithUndoLimit(t, kind, 10)
+}
+
+func newHarnessWithUndoLimit(t *testing.T, kind artifact.Kind, undoLimit int) *harness {
 	t.Helper()
-	repo, err := filerepo.New(t.TempDir())
+	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +55,7 @@ func newHarness(t *testing.T, kind artifact.Kind) *harness {
 		t: t, repo: repo,
 		notes: note.NewService(repo, 10), docs: document.NewService(repo, 10),
 		sheets: spreadsheet.NewService(repo, 10), decks: presentation.NewService(repo, 10),
-		path: filepath.Join(t.TempDir(), "report.md"),
+		path: filepath.Join(t.TempDir(), "report.md"), undoLimit: undoLimit,
 	}
 	h.open(kind)
 	return h
@@ -67,13 +73,16 @@ func (h *harness) openWith(kind artifact.Kind, edit bool) {
 	h.t.Helper()
 	model := NewModel(Config{
 		Path: h.path, Kind: kind, Edit: edit, Notes: h.notes, Documents: h.docs,
-		Spreadsheets: h.sheets, Presentations: h.decks, Recovery: h.repo,
+		Spreadsheets: h.sheets, Presentations: h.decks, Recovery: h.repo, UndoLimit: h.undoLimit,
 	})
 	h.m, h.quit = &model, false
 	// Blinking cursors return tea.Tick commands, which the harness would run
 	// synchronously.
 	if s := h.m.documents; s != nil {
 		s.promptInput.Cursor.SetMode(cursor.CursorStatic)
+	}
+	if s := h.m.sheet; s != nil {
+		s.input.Cursor.SetMode(cursor.CursorStatic)
 	}
 	h.send(tea.WindowSizeMsg{Width: 100, Height: 30})
 	h.run(h.m.Init())
@@ -87,7 +96,18 @@ func (h *harness) send(message tea.Msg) {
 	if h.m.documents != nil {
 		h.m.documents.autosaveScheduler = nil
 	}
+	if h.m.deck != nil {
+		h.m.deck.autosaveScheduler = nil
+	}
+	if h.m.sheet != nil {
+		h.m.sheet.autosaveScheduler = nil
+		h.m.sheet.input.Cursor.SetMode(cursor.CursorStatic)
+	}
 	_, cmd := h.m.Update(message)
+	if h.m.sheet != nil {
+		h.m.sheet.autosaveScheduler = nil
+		h.m.sheet.input.Cursor.SetMode(cursor.CursorStatic)
+	}
 	h.run(cmd)
 }
 
@@ -345,9 +365,8 @@ func TestViewSanitizesTerminalControlSequences(t *testing.T) {
 	}
 }
 
-func TestEditorRefusesNotesItWouldNormalize(t *testing.T) {
+func TestEditorRefusesUnpreservableNotes(t *testing.T) {
 	cases := []struct{ name, body string }{
-		{"tab in body", "before\tafter"},
 		{"control in body", "before\x1b[2Jafter"},
 		{"oversized body", strings.Repeat("x", 1_000_001)},
 		{"too many body lines", strings.Repeat("x\n", 10_000) + "last"},
@@ -391,19 +410,19 @@ func TestPreviewCanScroll(t *testing.T) {
 	for i := range lines {
 		lines[i] = fmt.Sprintf("Line %02d", i+1)
 	}
-	if _, err := h.notes.Create(context.Background(), h.path, strings.Join(lines, "\n")); err != nil {
+	if _, err := h.notes.Create(context.Background(), h.path, strings.Join(lines, "\n\n")); err != nil {
 		t.Fatal(err)
 	}
 	h.open(artifact.NoteKind)
 	h.send(tea.WindowSizeMsg{Width: 100, Height: 16})
 	h.key("f5")
-	if view := h.m.View(); !strings.Contains(view, "Line 01") || strings.Contains(view, "Line 60") {
+	if view := ansi.Strip(h.m.View()); !strings.Contains(view, "Line 01") || strings.Contains(view, "Line 60") {
 		t.Fatalf("initial preview = %q", view)
 	}
-	for range 3 {
+	for range 6 {
 		h.key("pgdown")
 	}
-	if view := h.m.View(); !strings.Contains(view, "Line 3") {
+	if view := ansi.Strip(h.m.View()); !strings.Contains(view, "Line 3") {
 		t.Fatalf("scrolled preview = %q", view)
 	}
 	h.key("esc")
@@ -482,6 +501,255 @@ func TestRecoveryWarnsWhenFileChangedAfterDraft(t *testing.T) {
 	h.key("r")
 	if !strings.Contains(h.m.status, "saving will report a conflict") {
 		t.Fatalf("status = %q", h.m.status)
+	}
+}
+
+func TestPresentationRecoveryOfferRecoverDiscardQuit(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, artifact.PresentationKind)
+	h.key("e")
+	if !h.m.deck.editing {
+		t.Fatal("not in edit mode")
+	}
+	h.m.deck.editor.SetValue(h.m.deck.item.Source + "\n---\n\n## Recovered Slide\n")
+	h.run(h.m.deck.saveRecovery(h.m.deck.autosaveSession))
+	if !h.hasDraft() {
+		t.Fatal("failed to store recovery draft")
+	}
+
+	// 1. Test 'q' keeps draft
+	h.open(artifact.PresentationKind)
+	if h.m.stage != stageRecovery {
+		t.Fatalf("stage = %d, want stageRecovery", h.m.stage)
+	}
+	h.key("q")
+	if !h.quit || !h.hasDraft() {
+		t.Fatalf("q at offer: quit=%t, hasDraft=%t", h.quit, h.hasDraft())
+	}
+
+	// 2. Test 'd' discards draft and opens saved file
+	h.open(artifact.PresentationKind)
+	if h.m.stage != stageRecovery {
+		t.Fatalf("stage = %d, want stageRecovery", h.m.stage)
+	}
+	h.key("d")
+	if h.m.stage != stagePresentation || h.hasDraft() {
+		t.Fatalf("d at offer: stage=%d, hasDraft=%t", h.m.stage, h.hasDraft())
+	}
+
+	// Recreate draft
+	h.key("e")
+	h.m.deck.editor.SetValue(h.m.deck.item.Source + "\n---\n\n## Recovered Slide\n")
+	h.run(h.m.deck.saveRecovery(h.m.deck.autosaveSession))
+	if !h.hasDraft() {
+		t.Fatal("failed to store recovery draft again")
+	}
+
+	// 3. Test 'r' recovers directly into editor
+	h.open(artifact.PresentationKind)
+	if h.m.stage != stageRecovery {
+		t.Fatalf("stage = %d, want stageRecovery", h.m.stage)
+	}
+	h.key("r")
+	if h.m.stage != stagePresentation || !h.m.deck.editing {
+		t.Fatalf("r at offer: stage=%d, editing=%t", h.m.stage, h.m.deck.editing)
+	}
+	if !strings.Contains(h.m.deck.editor.Value(), "Recovered Slide") {
+		t.Fatalf("editor value = %q, want 'Recovered Slide'", h.m.deck.editor.Value())
+	}
+
+	// Save recovered presentation via ctrl+s
+	h.key("ctrl+s")
+	if h.m.deck.editing {
+		t.Fatalf("editor did not close after successful save (errMessage = %q, status = %q)", h.m.deck.errMessage, h.m.deck.status)
+	}
+	saved, err := h.decks.Get(ctx, h.path)
+	if err != nil || !strings.Contains(saved.Source, "Recovered Slide") {
+		t.Fatalf("saved deck source = %q, err=%v", saved.Source, err)
+	}
+	if h.hasDraft() {
+		t.Fatal("draft was not deleted after successful save")
+	}
+}
+
+func TestPresentationRecoveryWarnsWhenFileChangedAfterDraft(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, artifact.PresentationKind)
+	h.key("e")
+	h.m.deck.editor.SetValue(h.m.deck.item.Source + "\n---\n\n## Draft Content\n")
+	h.run(h.m.deck.saveRecovery(h.m.deck.autosaveSession))
+	if !h.hasDraft() {
+		t.Fatal("draft not stored")
+	}
+
+	// Modify file externally
+	deck, err := h.decks.Get(ctx, h.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.decks.Update(ctx, deck, deck.Source+"\n---\n\n## External Edit\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopen and recover
+	h.open(artifact.PresentationKind)
+	if h.m.stage != stageRecovery {
+		t.Fatalf("stage = %d, want stageRecovery", h.m.stage)
+	}
+	h.key("r")
+	if !strings.Contains(h.m.deck.status, "saving will report a conflict") {
+		t.Fatalf("status = %q, want conflict warning", h.m.deck.status)
+	}
+
+	// Attempting save should fail with conflict and keep editor open
+	h.key("ctrl+s")
+	if !h.m.deck.editing {
+		t.Fatal("editor closed on save failure")
+	}
+	if !strings.Contains(h.m.deck.errMessage, "Save failed:") {
+		t.Fatalf("errMessage = %q, want 'Save failed:'", h.m.deck.errMessage)
+	}
+}
+
+func TestSpreadsheetAutosaveIsOfferedOnReopen(t *testing.T) {
+	ctx := context.Background()
+
+	hSheet := newHarness(t, "")
+	_, err := hSheet.sheets.Create(ctx, hSheet.path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hSheet.open(artifact.SpreadsheetKind)
+
+	err = hSheet.repo.SaveRecovery(ctx, recovery.Draft{
+		Path:      hSheet.path,
+		Kind:      string(artifact.SpreadsheetKind),
+		UpdatedAt: time.Now().UTC(),
+		Data:      json.RawMessage(`{"baseline":{"version":1,"artifact":{"kind":"spreadsheet"},"created_at":"2020-01-01T00:00:00Z","modified_at":"2020-01-01T00:00:00Z","sheets":[{"name":"Sheet1","rows":[[{"value":"original"}]]}]},"dirty":{"version":1,"artifact":{"kind":"spreadsheet"},"created_at":"2020-01-01T00:00:00Z","modified_at":"2020-01-01T00:00:00Z","sheets":[{"name":"Sheet1","rows":[[{"value":"recovered"}]]}]},"active_sheet":0,"cursor_row":0,"cursor_col":0}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hSheet.open(artifact.SpreadsheetKind)
+	if hSheet.m.stage != stageRecovery || !strings.Contains(hSheet.m.View(), "autosaved draft") {
+		t.Fatalf("spreadsheet stage = %d, view:\n%s", hSheet.m.stage, hSheet.m.View())
+	}
+	hSheet.key("r")
+	if hSheet.m.stage != stageSpreadsheet {
+		t.Fatalf("recovered spreadsheet stage = %d", hSheet.m.stage)
+	}
+	if cell := hSheet.m.sheet.book.Sheets[0].Rows[0][0]; cell.Value != "recovered" {
+		t.Fatalf("recovered cell value = %q, want 'recovered'", cell.Value)
+	}
+}
+
+func TestSpreadsheetRecoveryOfferRecoverDiscardQuit(t *testing.T) {
+	ctx := context.Background()
+	hSheet := newHarness(t, "")
+	_, err := hSheet.sheets.Create(ctx, hSheet.path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	saveDraft := func(data string) {
+		err := hSheet.repo.SaveRecovery(ctx, recovery.Draft{
+			Path:      hSheet.path,
+			Kind:      string(artifact.SpreadsheetKind),
+			UpdatedAt: time.Now().UTC(),
+			Data:      json.RawMessage(data),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	validDraft := `{"baseline":{"version":1,"artifact":{"kind":"spreadsheet"},"created_at":"2020-01-01T00:00:00Z","modified_at":"2020-01-01T00:00:00Z","sheets":[{"name":"Sheet1","rows":[[{"value":"1"}]]}]},"dirty":{"version":1,"artifact":{"kind":"spreadsheet"},"created_at":"2020-01-01T00:00:00Z","modified_at":"2020-01-01T00:00:00Z","sheets":[{"name":"Sheet1","rows":[[{"value":"42"}]]}]},"active_sheet":0,"cursor_row":0,"cursor_col":0,"pending_cell_input":"=SUM(A1:A2)"}`
+
+	// 1. 'q' keeps draft
+	saveDraft(validDraft)
+	hSheet.open(artifact.SpreadsheetKind)
+	if hSheet.m.stage != stageRecovery {
+		t.Fatalf("stage = %d, want stageRecovery", hSheet.m.stage)
+	}
+	hSheet.key("q")
+	if !hSheet.quit || !hSheet.hasDraft() {
+		t.Fatalf("q at offer: quit=%t, hasDraft=%t", hSheet.quit, hSheet.hasDraft())
+	}
+
+	// 2. 'd' discards draft and opens saved workbook
+	hSheet.open(artifact.SpreadsheetKind)
+	if hSheet.m.stage != stageRecovery {
+		t.Fatalf("stage = %d, want stageRecovery", hSheet.m.stage)
+	}
+	hSheet.key("d")
+	if hSheet.m.stage != stageSpreadsheet || hSheet.hasDraft() {
+		t.Fatalf("d at offer: stage=%d, hasDraft=%t", hSheet.m.stage, hSheet.hasDraft())
+	}
+
+	// 3. 'r' recovers draft into spreadsheet
+	saveDraft(validDraft)
+	hSheet.open(artifact.SpreadsheetKind)
+	hSheet.key("r")
+	if hSheet.m.stage != stageSpreadsheet {
+		t.Fatalf("r at offer: stage=%d", hSheet.m.stage)
+	}
+	if !hSheet.m.sheet.editing {
+		t.Fatal("expected editing = true due to pending_cell_input")
+	}
+	if hSheet.m.sheet.input.Value() != "=SUM(A1:A2)" {
+		t.Fatalf("input value = %q, want =SUM(A1:A2)", hSheet.m.sheet.input.Value())
+	}
+	if cell := hSheet.m.sheet.book.Sheets[0].Rows[0][0]; cell.Value != "42" {
+		t.Fatalf("dirty cell value = %q, want 42", cell.Value)
+	}
+
+	// 4. Corrupt draft shows error and allows discard
+	saveDraft(`{"baseline": "invalid-type"}`)
+	hSheet.open(artifact.SpreadsheetKind)
+	hSheet.key("r")
+	if !strings.Contains(hSheet.m.errMessage, "Decode autosaved spreadsheet") {
+		t.Fatalf("expected decode error, got %q", hSheet.m.errMessage)
+	}
+	hSheet.key("d")
+	if hSheet.m.stage != stageSpreadsheet || hSheet.hasDraft() {
+		t.Fatalf("discard after corrupt draft: stage=%d, hasDraft=%t", hSheet.m.stage, hSheet.hasDraft())
+	}
+}
+
+func TestSpreadsheetRecoveryWarnsWhenFileChangedAfterDraft(t *testing.T) {
+	ctx := context.Background()
+	hSheet := newHarness(t, "")
+	book, err := hSheet.sheets.Create(ctx, hSheet.path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	draft := fmt.Sprintf(`{"baseline":{"version":1,"artifact":{"kind":"spreadsheet"},"created_at":"2020-01-01T00:00:00Z","modified_at":"2020-01-01T00:00:00Z","sheets":[{"name":"Sheet1","rows":[[{"value":"old"}]]}]},"dirty":{"version":1,"artifact":{"kind":"spreadsheet"},"created_at":"2020-01-01T00:00:00Z","modified_at":"2020-01-01T00:00:00Z","sheets":[{"name":"Sheet1","rows":[[{"value":"draft"}]]}]},"active_sheet":0,"cursor_row":0,"cursor_col":0}`)
+	err = hSheet.repo.SaveRecovery(ctx, recovery.Draft{
+		Path:      hSheet.path,
+		Kind:      string(artifact.SpreadsheetKind),
+		UpdatedAt: time.Now().UTC(),
+		Data:      json.RawMessage(draft),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Modify file externally
+	if _, err := hSheet.sheets.SetCell(ctx, hSheet.path, 1, 1, spreadsheet.Cell{Value: "externally changed"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = book
+
+	// Reopen and recover
+	hSheet.open(artifact.SpreadsheetKind)
+	if hSheet.m.stage != stageRecovery {
+		t.Fatalf("stage = %d, want stageRecovery", hSheet.m.stage)
+	}
+	hSheet.key("r")
+	if !strings.Contains(hSheet.m.sheet.status, "saving will report a conflict") {
+		t.Fatalf("status = %q, want conflict warning", hSheet.m.sheet.status)
 	}
 }
 
@@ -638,7 +906,7 @@ func TestSanitizeTerminalText(t *testing.T) {
 }
 
 func TestRun(t *testing.T) {
-	repo, err := filerepo.New(t.TempDir())
+	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -649,89 +917,28 @@ func TestRun(t *testing.T) {
 		tea.WithoutRenderer(),
 	}
 
-	t.Run("canceled context with note config", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel() // pre-canceled context so program shuts down immediately
+	testCases := []struct {
+		name   string
+		cfg    Config
+		errMsg string
+	}{
+		{"canceled context with note config", Config{Path: path, Kind: artifact.NoteKind, Notes: note.NewService(repo, 10), Recovery: repo}, "unexpected error running program"},
+		{"canceled context with documents config", Config{Path: filepath.Join(t.TempDir(), "doc.md"), Kind: artifact.DocumentKind, Documents: document.NewService(repo, 10), Recovery: repo}, "unexpected error running program with documents config"},
+		{"canceled context with spreadsheet config", Config{Path: filepath.Join(t.TempDir(), "sheet.csv"), Kind: artifact.SpreadsheetKind, Spreadsheets: spreadsheet.NewService(repo, 10), Recovery: repo}, "unexpected error running program with spreadsheet config"},
+		{"canceled context with presentation config", Config{Path: filepath.Join(t.TempDir(), "deck.md"), Kind: artifact.PresentationKind, Presentations: presentation.NewService(repo, 10), Recovery: repo}, "unexpected error running program with presentation config"},
+		{"canceled context with choose kind config", Config{Path: filepath.Join(t.TempDir(), "unknown.md"), Kind: "", Recovery: repo}, "unexpected error running program with choose kind config"},
+	}
 
-		cfg := Config{
-			Path:     path,
-			Kind:     artifact.NoteKind,
-			Notes:    note.NewService(repo, 10),
-			Recovery: repo,
-		}
-
-		err := Run(ctx, cfg, headlessOpts...)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			t.Fatalf("unexpected error running program: %v", err)
-		}
-	})
-
-	t.Run("canceled context with documents config", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		cfg := Config{
-			Path:      filepath.Join(t.TempDir(), "doc.md"),
-			Kind:      artifact.DocumentKind,
-			Documents: document.NewService(repo, 10),
-			Recovery:  repo,
-		}
-
-		err := Run(ctx, cfg, headlessOpts...)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			t.Fatalf("unexpected error running program with documents config: %v", err)
-		}
-	})
-
-	t.Run("canceled context with spreadsheet config", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		cfg := Config{
-			Path:         filepath.Join(t.TempDir(), "sheet.csv"),
-			Kind:         artifact.SpreadsheetKind,
-			Spreadsheets: spreadsheet.NewService(repo, 10),
-			Recovery:     repo,
-		}
-
-		err := Run(ctx, cfg, headlessOpts...)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			t.Fatalf("unexpected error running program with spreadsheet config: %v", err)
-		}
-	})
-
-	t.Run("canceled context with presentation config", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		cfg := Config{
-			Path:          filepath.Join(t.TempDir(), "deck.md"),
-			Kind:          artifact.PresentationKind,
-			Presentations: presentation.NewService(repo, 10),
-			Recovery:      repo,
-		}
-
-		err := Run(ctx, cfg, headlessOpts...)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			t.Fatalf("unexpected error running program with presentation config: %v", err)
-		}
-	})
-
-	t.Run("canceled context with choose kind config", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		cfg := Config{
-			Path:     filepath.Join(t.TempDir(), "unknown.md"),
-			Kind:     "",
-			Recovery: repo,
-		}
-
-		err := Run(ctx, cfg, headlessOpts...)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			t.Fatalf("unexpected error running program with choose kind config: %v", err)
-		}
-	})
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel() // pre-canceled context so program shuts down immediately
+			err := Run(ctx, tc.cfg, headlessOpts...)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				t.Fatalf("%s: %v", tc.errMsg, err)
+			}
+		})
+	}
 }
 
 func TestModelUpdateDocumentMessageWhenDocumentsNil(t *testing.T) {
@@ -1069,6 +1276,91 @@ func TestModelUpdateNoteKeyHandling(t *testing.T) {
 	})
 }
 
+func TestConfiguredUndoLimitAppliesToTextEditors(t *testing.T) {
+	tests := []struct {
+		name string
+		open func(*testing.T, int) (*harness, *editor.Model)
+	}{
+		{
+			name: "note",
+			open: func(t *testing.T, limit int) (*harness, *editor.Model) {
+				h := newHarnessWithUndoLimit(t, artifact.NoteKind, limit)
+				return h, &h.m.bodyInput
+			},
+		},
+		{
+			name: "document",
+			open: func(t *testing.T, limit int) (*harness, *editor.Model) {
+				h := newDocumentHarness(t, document.Draft{}, limit)
+				return h, &h.m.documents.body
+			},
+		},
+		{
+			name: "presentation",
+			open: func(t *testing.T, limit int) (*harness, *editor.Model) {
+				h := newHarnessWithUndoLimit(t, artifact.PresentationKind, limit)
+				return h, &h.m.deck.editor
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, ed := tt.open(t, 2)
+			for _, text := range []string{"a", "b", "c", "d"} {
+				ed.InsertString(text)
+			}
+			for range 2 {
+				if !ed.Undo() {
+					t.Fatal("configured undo history ended before its limit")
+				}
+			}
+			if got := ed.Value(); got != "ab" {
+				t.Fatalf("Value() after two undos = %q, want %q", got, "ab")
+			}
+			if ed.Undo() {
+				t.Fatal("configured undo history exceeded its limit")
+			}
+		})
+	}
+}
+
+func TestNoteEditorAcceptsLiteralTabsAndHandsOffUndoOnSave(t *testing.T) {
+	h := newHarness(t, artifact.NoteKind)
+	initial, err := h.notes.Get(context.Background(), h.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tabbed, err := h.notes.UpdateExpected(context.Background(), initial, "left\tright")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !h.m.startEdit(tabbed) {
+		t.Fatalf("note containing a literal tab was rejected: %q", h.m.errMessage)
+	}
+	if got := h.m.bodyInput.Value(); got != "left\tright" {
+		t.Fatalf("note body = %q, want literal tab preserved", got)
+	}
+
+	h.m.bodyInput.SetValue("")
+	h.typeText("saved")
+	h.key("ctrl+s")
+	if h.m.bodyInput.CanUndo() || h.m.bodyInput.CanRedo() {
+		t.Fatal("successful note save retained keystroke history")
+	}
+	h.key("ctrl+z")
+	if got := h.m.bodyInput.Value(); got != "left\tright" {
+		t.Fatalf("Ctrl+Z after save = %q, want service-level undo to restore the prior body", got)
+	}
+
+	h.typeText("unsaved")
+	unsaved := h.m.bodyInput.Value()
+	h.m.handleNoteSaved(noteSavedMsg{err: errors.New("save failed")})
+	if !h.m.bodyInput.CanUndo() || h.m.bodyInput.Value() != unsaved {
+		t.Fatal("failed note save discarded the unsaved keystroke history")
+	}
+}
+
 func TestModelInit_returns_nil_when_stage_is_stageChooseKind(t *testing.T) {
 	model := NewModel(Config{
 		Path: "test.md",
@@ -1093,7 +1385,7 @@ func TestModelInit_returns_openFile_cmd_for_kinds(t *testing.T) {
 
 	for _, tc := range kinds {
 		t.Run("returns openFile cmd for "+tc.name, func(t *testing.T) {
-			repo, err := filerepo.New(t.TempDir())
+			repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1157,7 +1449,7 @@ func TestModelInit_returns_error_msg_when_opening_unsupported_kind(t *testing.T)
 }
 
 func TestModelInit_loads_existing_files_without_creating(t *testing.T) {
-	repo, err := filerepo.New(t.TempDir())
+	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1231,7 +1523,7 @@ func TestModelInit_loads_existing_files_without_creating(t *testing.T) {
 }
 
 func TestModelInit_detects_recovery_draft_for_note_and_document(t *testing.T) {
-	repo, err := filerepo.New(t.TempDir())
+	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1239,91 +1531,63 @@ func TestModelInit_detects_recovery_draft_for_note_and_document(t *testing.T) {
 	docs := document.NewService(repo, 10)
 	ctx := context.Background()
 
-	// 1. Note draft recovery
 	notePath := filepath.Join(t.TempDir(), "note_with_draft.md")
 	if _, err := notes.Create(ctx, notePath, "original body"); err != nil {
 		t.Fatal(err)
 	}
-
-	noteDraft := recovery.Draft{
-		Path:      notePath,
-		Kind:      string(artifact.NoteKind),
-		Data:      json.RawMessage(`{"body":"unsaved body draft"}`),
-		UpdatedAt: time.Now(),
-	}
-	if err := repo.SaveRecovery(ctx, noteDraft); err != nil {
-		t.Fatal(err)
-	}
-
-	mNote := NewModel(Config{
-		Path:     notePath,
-		Kind:     artifact.NoteKind,
-		Notes:    notes,
-		Recovery: repo,
-	})
-	cmdNote := mNote.Init()
-	if cmdNote == nil {
-		t.Fatal("expected non-nil cmd from Init for note")
-	}
-	msgNote := cmdNote()
-	openedMsgNote, ok := msgNote.(fileOpenedMsg)
-	if !ok {
-		t.Fatalf("expected fileOpenedMsg, got %T", msgNote)
-	}
-	if openedMsgNote.err != nil {
-		t.Fatalf("unexpected error: %v", openedMsgNote.err)
-	}
-	if !openedMsgNote.hasDraft {
-		t.Fatal("expected hasDraft = true when note recovery draft exists")
-	}
-	if openedMsgNote.draft.Path != notePath {
-		t.Fatalf("expected draft path %q, got %q", notePath, openedMsgNote.draft.Path)
-	}
-
-	// 2. Document draft recovery
 	docPath := filepath.Join(t.TempDir(), "doc_with_draft.md")
 	if _, err := docs.Create(ctx, docPath, document.Draft{Layout: document.DefaultLayout()}); err != nil {
 		t.Fatal(err)
 	}
 
-	docDraft := recovery.Draft{
-		Path:      docPath,
-		Kind:      string(artifact.DocumentKind),
-		Data:      json.RawMessage(`{"body":"unsaved doc draft"}`),
-		UpdatedAt: time.Now(),
-	}
-	if err := repo.SaveRecovery(ctx, docDraft); err != nil {
-		t.Fatal(err)
+	testCases := []struct {
+		name string
+		path string
+		kind artifact.Kind
+		data string
+		cfg  Config
+	}{
+		{"note", notePath, artifact.NoteKind, `{"body":"unsaved body draft"}`, Config{Path: notePath, Kind: artifact.NoteKind, Notes: notes, Recovery: repo}},
+		{"document", docPath, artifact.DocumentKind, `{"body":"unsaved doc draft"}`, Config{Path: docPath, Kind: artifact.DocumentKind, Documents: docs, Recovery: repo}},
 	}
 
-	mDoc := NewModel(Config{
-		Path:      docPath,
-		Kind:      artifact.DocumentKind,
-		Documents: docs,
-		Recovery:  repo,
-	})
-	cmdDoc := mDoc.Init()
-	if cmdDoc == nil {
-		t.Fatal("expected non-nil cmd from Init for document")
-	}
-	msgDoc := cmdDoc()
-	openedMsgDoc, ok := msgDoc.(fileOpenedMsg)
-	if !ok {
-		t.Fatalf("expected fileOpenedMsg, got %T", msgDoc)
-	}
-	if openedMsgDoc.err != nil {
-		t.Fatalf("unexpected error: %v", openedMsgDoc.err)
-	}
-	if !openedMsgDoc.hasDraft {
-		t.Fatal("expected hasDraft = true when document recovery draft exists")
-	}
-	if openedMsgDoc.draft.Path != docPath {
-		t.Fatalf("expected draft path %q, got %q", docPath, openedMsgDoc.draft.Path)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			draft := recovery.Draft{
+				Path:      tc.path,
+				Kind:      string(tc.kind),
+				Data:      json.RawMessage(tc.data),
+				UpdatedAt: time.Now(),
+			}
+			if err := repo.SaveRecovery(ctx, draft); err != nil {
+				t.Fatal(err)
+			}
+
+			m := NewModel(tc.cfg)
+			cmd := m.Init()
+			if cmd == nil {
+				t.Fatalf("expected non-nil cmd from Init for %s", tc.name)
+			}
+			msg := cmd()
+			openedMsg, ok := msg.(fileOpenedMsg)
+			if !ok {
+				t.Fatalf("expected fileOpenedMsg, got %T", msg)
+			}
+			if openedMsg.err != nil {
+				t.Fatalf("unexpected error: %v", openedMsg.err)
+			}
+			if !openedMsg.hasDraft {
+				t.Fatalf("expected hasDraft = true when %s recovery draft exists", tc.name)
+			}
+			if openedMsg.draft.Path != tc.path {
+				t.Fatalf("expected draft path %q, got %q", tc.path, openedMsg.draft.Path)
+			}
+		})
 	}
 }
 
 func TestModelInit_returns_error_when_service_is_nil_for_requested_kind(t *testing.T) {
-	repo, err := filerepo.New(t.TempDir())
+	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1350,7 +1614,7 @@ func TestModelInit_returns_error_when_service_is_nil_for_requested_kind(t *testi
 }
 
 func TestModelInit_returns_error_when_file_load_fails_with_filesystem_error(t *testing.T) {
-	repo, err := filerepo.New(t.TempDir())
+	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1554,7 +1818,7 @@ func TestNewModel_ZeroConfigDefaults(t *testing.T) {
 }
 
 func TestNewModel_EmptyKindSetsChooseKindStage(t *testing.T) {
-	repo, err := filerepo.New(t.TempDir())
+	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1600,7 +1864,7 @@ func TestNewModel_SpecifiedKindKeepsDefaultStage(t *testing.T) {
 }
 
 func TestNewModel_NotesServiceUndoRedoState(t *testing.T) {
-	repo, err := filerepo.New(t.TempDir())
+	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1615,7 +1879,7 @@ func TestNewModel_NotesServiceUndoRedoState(t *testing.T) {
 }
 
 func TestNewModel_DocumentsServiceInitializationAndAutosaveScheduler(t *testing.T) {
-	repo, err := filerepo.New(t.TempDir())
+	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

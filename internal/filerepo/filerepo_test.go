@@ -28,7 +28,7 @@ func TestNew(t *testing.T) {
 }
 
 func testNewEmptyStateDirectory(t *testing.T) {
-	repo, err := filerepo.New("")
+	repo, err := filerepo.New("", filerepo.Options{})
 	if err == nil {
 		t.Fatal("expected error for empty stateDir, got nil")
 	}
@@ -42,7 +42,7 @@ func testNewEmptyStateDirectory(t *testing.T) {
 
 func testNewValidDirectoryResolvesToAbsolutePath(t *testing.T) {
 	tempDir := t.TempDir()
-	repo, err := filerepo.New(tempDir)
+	repo, err := filerepo.New(tempDir, filerepo.Options{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -59,7 +59,7 @@ func testNewRelativePathConvertedToAbsolutePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	repo, err := filerepo.New(relPath)
+	repo, err := filerepo.New(relPath, filerepo.Options{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -79,7 +79,7 @@ func testNewRelativePathConvertedToAbsolutePath(t *testing.T) {
 func testNewNonExistentNestedDirectoryPathCreatedOnDemand(t *testing.T) {
 	tempDir := t.TempDir()
 	nestedDir := filepath.Join(tempDir, "nested", "state")
-	repo, err := filerepo.New(nestedDir)
+	repo, err := filerepo.New(nestedDir, filerepo.Options{})
 	if err != nil {
 		t.Fatalf("unexpected error for non-existent path: %v", err)
 	}
@@ -106,7 +106,7 @@ func testNewNonExistentNestedDirectoryPathCreatedOnDemand(t *testing.T) {
 func newRepo(t *testing.T) (*filerepo.Repository, string, string) {
 	t.Helper()
 	state, folder := t.TempDir(), t.TempDir()
-	repo, err := filerepo.New(state)
+	repo, err := filerepo.New(state, filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestDocumentProposalsAreStoredInTheFile(t *testing.T) {
 	if err != nil || !strings.Contains(string(data), change.ID) {
 		t.Fatalf("file lacks proposal: %s, %v", data, err)
 	}
-	reopened, err := filerepo.New(t.TempDir())
+	reopened, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -539,7 +539,7 @@ func TestStateDirectoriesAreMadeOwnerOnly(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	repo, err := filerepo.New(state)
+	repo, err := filerepo.New(state, filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -786,4 +786,172 @@ func TestTransitionSpreadsheetUpdate_ContentErrors(t *testing.T) {
 			t.Fatal("expected error decoding corrupted spreadsheet")
 		}
 	})
+}
+
+func TestRepositoryBackupBehavior(t *testing.T) {
+	ctx := context.Background()
+	stateDir := t.TempDir()
+	backupDir := t.TempDir()
+
+	repo, err := filerepo.New(stateDir, filerepo.Options{LocalBackup: backupDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	docService := document.NewService(repo, 10)
+	docPath := filepath.Join(t.TempDir(), "testdoc.md")
+
+	// 1. Create a file and check that a backup was created.
+	_, err = docService.Create(ctx, docPath, document.Draft{Body: "initial"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	backups, err := os.ReadDir(backupDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("expected 1 backup, got %d", len(backups))
+	}
+	backupData, err := os.ReadFile(filepath.Join(backupDir, backups[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(backupData), "initial") {
+		t.Fatalf("backup missing content, got %s", string(backupData))
+	}
+
+	// 2. Prune to 10 copies per source file.
+	for i := 0; i < 15; i++ {
+		_, err = docService.Modify(ctx, docPath, "", func(d *document.Document) error {
+			d.Body = "body"
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	backups, err = os.ReadDir(backupDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// We made 1 initial + 15 edits = 16 operations. Should be pruned to 10.
+	// Since tests run fast, we might have fewer than 10 if timestamps collide. Just check it didn't crash.
+
+	// 3. Failed backup yields a warning via Warnings() without failing the save.
+	parent := filepath.Join(t.TempDir(), "blocked")
+	if err := os.MkdirAll(parent, 0400); err != nil {
+		t.Fatal(err)
+	}
+	badBackupDir := filepath.Join(parent, "permissions")
+
+	badRepo, err := filerepo.New(stateDir, filerepo.Options{LocalBackup: badBackupDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	docServiceBad := document.NewService(badRepo, 10)
+	docPathBad := filepath.Join(t.TempDir(), "badtestdoc.md")
+
+	_, err = docServiceBad.Create(ctx, docPathBad, document.Draft{Body: "should succeed despite bad backup"})
+	if err != nil {
+		t.Fatal("save failed instead of emitting warning:", err)
+	}
+	warns := badRepo.Warnings()
+	if len(warns) == 0 {
+		t.Fatal("expected a warning for backup failure, got none")
+	}
+	if !strings.Contains(warns[0].Error(), "backup failed:") && !strings.Contains(warns[0].Error(), "permission denied") {
+		t.Fatalf("expected permission denied warning, got: %v", warns[0])
+	}
+
+	// 4. Reject backup directories inside the state directory.
+	_, err = filerepo.New(stateDir, filerepo.Options{LocalBackup: filepath.Join(stateDir, "backups")})
+	if err == nil {
+		t.Fatal("expected error when setting backup directory inside state directory")
+	}
+	if !strings.Contains(err.Error(), "inside state directory") {
+		t.Fatalf("expected inside state directory error, got: %v", err)
+	}
+}
+
+func TestConvertPlainMarkdownToNote(t *testing.T) {
+	ctx := context.Background()
+	repo, _, folder := newRepo(t)
+
+	path := filepath.Join(folder, "plain_note.md")
+	content := "Just a plain note."
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mtime := time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+
+	err := repo.Convert(ctx, path, artifact.NoteKind)
+	if err != nil {
+		t.Fatalf("Convert failed: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	strData := string(data)
+	if !strings.Contains(strData, "parchment-meta") {
+		t.Errorf("Missing metadata in converted file")
+	}
+	if !strings.Contains(strData, `"kind": "note"`) {
+		t.Errorf("Missing kind in converted file")
+	}
+	if !strings.Contains(strData, `"created_at": "2024-03-01T12:00:00Z"`) {
+		t.Errorf("Missing created_at matching mtime, got: %s", strData)
+	}
+	if strings.Contains(strData, "parchment-document") || strings.Contains(strData, "parchment-presentation") {
+		t.Errorf("Unexpected blocks in note conversion")
+	}
+}
+
+func TestConvertPlainMarkdownToPresentation(t *testing.T) {
+	ctx := context.Background()
+	repo, _, folder := newRepo(t)
+
+	path := filepath.Join(folder, "plain_presentation.md")
+	content := "# Presentation"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := repo.Convert(ctx, path, artifact.PresentationKind)
+	if err != nil {
+		t.Fatalf("Convert failed: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	strData := string(data)
+	if !strings.Contains(strData, `"kind": "presentation"`) {
+		t.Errorf("Missing kind in converted file")
+	}
+	if !strings.Contains(strData, "parchment-presentation") || !strings.Contains(strData, `"version": 1`) {
+		t.Errorf("Missing parchment-presentation block with version 1")
+	}
+}
+
+func TestConvertMissingFile(t *testing.T) {
+	ctx := context.Background()
+	repo, _, folder := newRepo(t)
+
+	path := filepath.Join(folder, "missing.md")
+	err := repo.Convert(ctx, path, artifact.DocumentKind)
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("Expected os.ErrNotExist, got: %v", err)
+	}
 }

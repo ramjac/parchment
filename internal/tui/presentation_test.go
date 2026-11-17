@@ -10,7 +10,9 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
+	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/presentation"
 )
 
@@ -35,7 +37,7 @@ func drivePresentation(t *testing.T, m *presentationModel, message tea.Msg) tea.
 		case nil:
 		case tea.QuitMsg:
 			last = result
-		case presentationLoadedMsg, presentationSavedMsg, presentationHistoryMsg:
+		case presentationLoadedMsg, presentationSavedMsg, presentationHistoryMsg, presentationAutosaveFinishedMsg:
 			last = result
 			_, next := m.Update(result)
 			run(next)
@@ -56,7 +58,7 @@ func newPresentationTestModel(t *testing.T) (*presentationModel, *presentation.S
 		t.Fatal(err)
 	}
 	service := presentation.NewService(newTestRepository(t), 10)
-	m := newPresentationModel(service, path)
+	m := newPresentationModel(service, path, Theme{})
 	drivePresentation(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	drivePresentation(t, m, m.Init()())
 	if !m.loaded || m.pending || m.errMessage != "" {
@@ -82,7 +84,7 @@ func TestPresentationViewNavigatesSlidesAndNotes(t *testing.T) {
 	m, _, _ := newPresentationTestModel(t)
 	view := m.View()
 	for _, want := range []string{"Product Update", "deck.md", "Parchment team", "Title page"} {
-		if !strings.Contains(view, want) {
+		if !strings.Contains(ansi.Strip(view), want) {
 			t.Fatalf("title page missing %q:\n%s", want, view)
 		}
 	}
@@ -91,7 +93,7 @@ func TestPresentationViewNavigatesSlidesAndNotes(t *testing.T) {
 	}
 	drivePresentation(t, m, sheetKey("right"))
 	view = m.View()
-	if !strings.Contains(view, "What shipped") || !strings.Contains(view, "Slide 1 of") {
+	if !strings.Contains(ansi.Strip(view), "What shipped") || !strings.Contains(ansi.Strip(view), "Slide 1 of") {
 		t.Fatalf("first slide not shown:\n%s", view)
 	}
 	withNotes := -1
@@ -107,11 +109,11 @@ func TestPresentationViewNavigatesSlidesAndNotes(t *testing.T) {
 	for m.page < withNotes+1 {
 		drivePresentation(t, m, sheetKey("n"))
 	}
-	if strings.Contains(m.View(), m.deck.Slides[withNotes].Notes) {
+	if strings.Contains(ansi.Strip(m.View()), m.deck.Slides[withNotes].Notes) {
 		t.Fatal("speaker notes shown before toggling")
 	}
 	drivePresentation(t, m, sheetKey("s"))
-	if view := m.View(); !strings.Contains(view, "Speaker notes") ||
+	if view := ansi.Strip(m.View()); !strings.Contains(view, "Speaker notes") ||
 		!strings.Contains(view, m.deck.Slides[withNotes].Notes) {
 		t.Fatalf("notes not shown:\n%s", view)
 	}
@@ -184,7 +186,10 @@ func TestPresentationEditSavesSourceAndUndoes(t *testing.T) {
 		!strings.Contains(m.View(), "What shipped q") {
 		t.Fatalf("saved source = %q\nview:\n%s", saved.Source, m.View())
 	}
-	drivePresentation(t, m, sheetKey("u"))
+	if m.editor.CanUndo() || m.editor.CanRedo() {
+		t.Fatal("successful presentation save retained keystroke history")
+	}
+	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyCtrlZ})
 	if m.errMessage != "" || !strings.HasPrefix(m.status, "Undid") {
 		t.Fatalf("undo status %q err %q", m.status, m.errMessage)
 	}
@@ -194,6 +199,17 @@ func TestPresentationEditSavesSourceAndUndoes(t *testing.T) {
 	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyCtrlR})
 	if storedPresentation(t, path).Source != saved.Source || m.item.Source != saved.Source {
 		t.Fatal("redo did not reapply edit")
+	}
+}
+
+func TestPresentationSaveFailureKeepsKeystrokeHistory(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+	drivePresentation(t, m, sheetKey("e"))
+	m.editor.InsertString("draft")
+	unsaved := m.editor.Value()
+	drivePresentation(t, m, presentationSavedMsg{seq: m.seq, err: errors.New("save failed")})
+	if !m.editing || !m.editor.CanUndo() || m.editor.Value() != unsaved {
+		t.Fatal("failed presentation save discarded unsaved keystroke history")
 	}
 }
 
@@ -385,7 +401,7 @@ func TestPageForSourceLineAndSlideSourceLineTrailingNewlines(t *testing.T) {
 func TestPresentationView(t *testing.T) {
 	t.Run("Terminal small size boundary", func(t *testing.T) {
 		service := presentation.NewService(newTestRepository(t), 10)
-		m := newPresentationModel(service, "deck.md")
+		m := newPresentationModel(service, "deck.md", Theme{})
 
 		m.width, m.height = 19, 30
 		if got := m.View(); got != "Terminal too small. Press q to quit." {
@@ -406,7 +422,7 @@ func TestPresentationView(t *testing.T) {
 
 	t.Run("Unloaded model states", func(t *testing.T) {
 		service := presentation.NewService(newTestRepository(t), 10)
-		m := newPresentationModel(service, "deck.md")
+		m := newPresentationModel(service, "deck.md", Theme{})
 		m.width, m.height = 80, 20
 
 		view := m.View()
@@ -420,7 +436,7 @@ func TestPresentationView(t *testing.T) {
 			t.Fatalf("unloaded view missing error message:\n%s", view)
 		}
 
-		mNoPath := newPresentationModel(service, "")
+		mNoPath := newPresentationModel(service, "", Theme{})
 		mNoPath.width, mNoPath.height = 80, 20
 		if viewNoPath := mNoPath.View(); !strings.HasPrefix(viewNoPath, "Presentation\n") {
 			t.Fatalf("unloaded model without path view wrong:\n%s", viewNoPath)
@@ -461,21 +477,21 @@ func TestPresentationView(t *testing.T) {
 		m.width, m.height = 80, 20
 
 		// Set slide source with one slide having notes and another with empty notes
-		src := "# Title\n\n## Slide With Notes\nBody 1\n\n<!-- parchment-notes\nSome speaker notes\n-->\n\n## Slide Empty Notes\nBody 2\n\n<!-- parchment-notes\n-->\n"
+		src := "# Title\n\n## Slide With Notes\nBody 1\n\n: Some speaker notes\n\n## Slide Empty Notes\nBody 2\n"
 		m.setItem(presentation.Presentation{Source: src})
 
 		// Slide 1 with notes
 		m.goToPage(1)
 		m.showNotes = true
 		view := m.View()
-		if !strings.Contains(view, "── Speaker notes ──") || !strings.Contains(view, "Some speaker notes") {
+		if !strings.Contains(ansi.Strip(view), "── Speaker notes ──") || !strings.Contains(ansi.Strip(view), "Some speaker notes") {
 			t.Fatalf("slide 1 notes not rendered:\n%s", view)
 		}
 
 		// Slide 2 with empty notes
 		m.goToPage(2)
 		view = m.View()
-		if !strings.Contains(view, "── Speaker notes ──") || !strings.Contains(view, "(none)") {
+		if !strings.Contains(ansi.Strip(view), "── Speaker notes ──") || !strings.Contains(ansi.Strip(view), "(none)") {
 			t.Fatalf("slide 2 empty notes not rendered as '(none)':\n%s", view)
 		}
 	})
@@ -530,7 +546,7 @@ func TestPresentationView(t *testing.T) {
 
 func TestPresentationViewSmallTerminal(t *testing.T) {
 	service := presentation.NewService(newTestRepository(t), 10)
-	m := newPresentationModel(service, "deck.md")
+	m := newPresentationModel(service, "deck.md", Theme{})
 
 	m.width, m.height = 19, 30
 	if got := m.View(); got != "Terminal too small. Press q to quit." {
@@ -545,7 +561,7 @@ func TestPresentationViewSmallTerminal(t *testing.T) {
 
 func TestPresentationViewUnloadedAndErrorStates(t *testing.T) {
 	service := presentation.NewService(newTestRepository(t), 10)
-	m := newPresentationModel(service, "deck.md")
+	m := newPresentationModel(service, "deck.md", Theme{})
 	m.width, m.height = 80, 20
 
 	view := m.View()
@@ -560,7 +576,7 @@ func TestPresentationViewUnloadedAndErrorStates(t *testing.T) {
 	}
 
 	// Model without path
-	mNoPath := newPresentationModel(service, "")
+	mNoPath := newPresentationModel(service, "", Theme{})
 	mNoPath.width, mNoPath.height = 80, 20
 	if viewNoPath := mNoPath.View(); !strings.HasPrefix(viewNoPath, "Presentation\n") {
 		t.Fatalf("unloaded model without path view wrong:\n%s", viewNoPath)
@@ -1082,5 +1098,91 @@ func TestPresentationSetErrorVariants(t *testing.T) {
 	m.setError("Action failed", errors.New("network failure"))
 	if m.errMessage != "Action failed: network failure" || m.status != "" {
 		t.Fatalf("Generic error state: status=%q, errMessage=%q", m.status, m.errMessage)
+	}
+}
+
+func TestPresentationAutosaveAndRecoveryLifecycle(t *testing.T) {
+	repo := newTestRepository(t)
+	service := presentation.NewService(repo, 10)
+	sample, err := os.ReadFile("../../examples/presentation.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "deck.md")
+	if err := os.WriteFile(path, sample, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m := newPresentationModel(service, path, Theme{})
+	m.recoveryStore = repo
+	drivePresentation(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	drivePresentation(t, m, m.Init()())
+
+	// Initially not editing, not dirty
+	if m.dirty() {
+		t.Fatal("expected dirty = false initially")
+	}
+
+	// Begin edit
+	m.beginEdit()
+	if !m.editing {
+		t.Fatal("expected editing = true")
+	}
+	if m.dirty() {
+		t.Fatal("expected dirty = false before changes")
+	}
+
+	// Modify editor content
+	m.editor.SetValue(m.item.Source + "\n---\n\n## Extra Slide\n")
+	if !m.dirty() {
+		t.Fatal("expected dirty = true after change")
+	}
+
+	// Trigger autosave
+	cmd := m.saveRecovery(m.autosaveSession)
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd from saveRecovery")
+	}
+	msg := cmd()
+	finMsg, ok := msg.(presentationAutosaveFinishedMsg)
+	if !ok || finMsg.err != nil {
+		t.Fatalf("unexpected autosave msg: %+v", msg)
+	}
+	m.Update(finMsg)
+	if !m.draftStored {
+		t.Fatal("expected draftStored = true")
+	}
+
+	// Check recovery draft exists in repo
+	draft, hasDraft, err := repo.LoadRecovery(context.Background(), path)
+	if err != nil || !hasDraft {
+		t.Fatalf("draft not saved in store: err=%v, hasDraft=%t", err, hasDraft)
+	}
+	if draft.Kind != string(artifact.PresentationKind) {
+		t.Fatalf("draft kind = %q, want presentation", draft.Kind)
+	}
+
+	// Clean edits revert and autosave clears draft
+	m.editor.SetValue(m.item.Source)
+	if m.dirty() {
+		t.Fatal("expected dirty = false after reverting")
+	}
+	cmdClear := m.saveRecovery(m.autosaveSession)
+	if cmdClear == nil {
+		t.Fatal("expected non-nil cmdClear")
+	}
+	finClear := cmdClear().(presentationAutosaveFinishedMsg)
+	if !finClear.cleared {
+		t.Fatal("expected cleared = true")
+	}
+	m.Update(finClear)
+	if m.draftStored {
+		t.Fatal("expected draftStored = false after clearing")
+	}
+
+	// Verify draft deleted from store
+	_, hasDraft, err = repo.LoadRecovery(context.Background(), path)
+	if err != nil || hasDraft {
+		t.Fatalf("draft still in store after clear: err=%v, hasDraft=%t", err, hasDraft)
 	}
 }
