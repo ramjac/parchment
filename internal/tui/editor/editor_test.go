@@ -34,6 +34,46 @@ func TestEditorCursorAtWrapBoundaryAndResize(t *testing.T) {
 	}
 }
 
+func TestEditorPreservesLiteralTabsAndBoundsUndoHistory(t *testing.T) {
+	ed := NewWithUndoLimit(2)
+	ed.SetValue("a\tb")
+	if got := ed.Value(); got != "a\tb" {
+		t.Fatalf("Value() = %q, want literal tab preserved", got)
+	}
+	ed.Width, ed.Height = 20, 1
+	if got := ansi.Strip(ed.View()); got != "a   b" {
+		t.Fatalf("View() = %q, want tab rendered to its 4-column stop", got)
+	}
+
+	ed.SetValue("")
+	for _, text := range []string{"a", "b", "c", "d"} {
+		ed.InsertString(text)
+	}
+	for range 2 {
+		if !ed.Undo() {
+			t.Fatal("configured undo history ended before its limit")
+		}
+	}
+	if got := ed.Value(); got != "ab" {
+		t.Fatalf("Value() after two undos = %q, want retained history to reach %q", got, "ab")
+	}
+	if ed.Undo() {
+		t.Fatal("undo history exceeded its configured limit")
+	}
+
+	ed.InsertString("\t")
+	if got := ed.Value(); got != "ab\t" {
+		t.Fatalf("pasted literal tab = %q", got)
+	}
+	ed.ResetHistory()
+	if ed.CanUndo() || ed.CanRedo() {
+		t.Fatal("ResetHistory left keystroke history available")
+	}
+	if got := ed.Value(); got != "ab\t" {
+		t.Fatalf("ResetHistory changed the editor buffer to %q", got)
+	}
+}
+
 func TestEditorNew(t *testing.T) {
 	ed := New()
 

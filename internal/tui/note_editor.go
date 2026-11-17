@@ -30,8 +30,8 @@ type noteEditor struct {
 	autosaveScheduler func(uint64) tea.Cmd
 }
 
-func newNoteEditor() noteEditor {
-	body := editor.New()
+func newNoteEditor(undoLimit int) noteEditor {
+	body := editor.NewWithUndoLimit(undoLimit)
 	body.Placeholder = "Write Markdown…"
 	return noteEditor{
 		bodyInput: body,

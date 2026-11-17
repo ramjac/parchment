@@ -186,7 +186,10 @@ func TestPresentationEditSavesSourceAndUndoes(t *testing.T) {
 		!strings.Contains(m.View(), "What shipped q") {
 		t.Fatalf("saved source = %q\nview:\n%s", saved.Source, m.View())
 	}
-	drivePresentation(t, m, sheetKey("u"))
+	if m.editor.CanUndo() || m.editor.CanRedo() {
+		t.Fatal("successful presentation save retained keystroke history")
+	}
+	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyCtrlZ})
 	if m.errMessage != "" || !strings.HasPrefix(m.status, "Undid") {
 		t.Fatalf("undo status %q err %q", m.status, m.errMessage)
 	}
@@ -196,6 +199,17 @@ func TestPresentationEditSavesSourceAndUndoes(t *testing.T) {
 	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyCtrlR})
 	if storedPresentation(t, path).Source != saved.Source || m.item.Source != saved.Source {
 		t.Fatal("redo did not reapply edit")
+	}
+}
+
+func TestPresentationSaveFailureKeepsKeystrokeHistory(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+	drivePresentation(t, m, sheetKey("e"))
+	m.editor.InsertString("draft")
+	unsaved := m.editor.Value()
+	drivePresentation(t, m, presentationSavedMsg{seq: m.seq, err: errors.New("save failed")})
+	if !m.editing || !m.editor.CanUndo() || m.editor.Value() != unsaved {
+		t.Fatal("failed presentation save discarded unsaved keystroke history")
 	}
 }
 

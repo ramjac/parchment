@@ -29,18 +29,23 @@ import (
 // harness wires the editor to real services over files in temporary
 // directories: one for the artifact and one standing in for ~/.parchment.
 type harness struct {
-	t      *testing.T
-	m      *Model
-	repo   *filerepo.Repository
-	notes  *note.Service
-	docs   *document.Service
-	sheets *spreadsheet.Service
-	decks  *presentation.Service
-	path   string
-	quit   bool
+	t         *testing.T
+	m         *Model
+	repo      *filerepo.Repository
+	notes     *note.Service
+	docs      *document.Service
+	sheets    *spreadsheet.Service
+	decks     *presentation.Service
+	path      string
+	undoLimit int
+	quit      bool
 }
 
 func newHarness(t *testing.T, kind artifact.Kind) *harness {
+	return newHarnessWithUndoLimit(t, kind, 10)
+}
+
+func newHarnessWithUndoLimit(t *testing.T, kind artifact.Kind, undoLimit int) *harness {
 	t.Helper()
 	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
@@ -50,7 +55,7 @@ func newHarness(t *testing.T, kind artifact.Kind) *harness {
 		t: t, repo: repo,
 		notes: note.NewService(repo, 10), docs: document.NewService(repo, 10),
 		sheets: spreadsheet.NewService(repo, 10), decks: presentation.NewService(repo, 10),
-		path: filepath.Join(t.TempDir(), "report.md"),
+		path: filepath.Join(t.TempDir(), "report.md"), undoLimit: undoLimit,
 	}
 	h.open(kind)
 	return h
@@ -68,7 +73,7 @@ func (h *harness) openWith(kind artifact.Kind, edit bool) {
 	h.t.Helper()
 	model := NewModel(Config{
 		Path: h.path, Kind: kind, Edit: edit, Notes: h.notes, Documents: h.docs,
-		Spreadsheets: h.sheets, Presentations: h.decks, Recovery: h.repo,
+		Spreadsheets: h.sheets, Presentations: h.decks, Recovery: h.repo, UndoLimit: h.undoLimit,
 	})
 	h.m, h.quit = &model, false
 	// Blinking cursors return tea.Tick commands, which the harness would run
@@ -360,9 +365,8 @@ func TestViewSanitizesTerminalControlSequences(t *testing.T) {
 	}
 }
 
-func TestEditorRefusesNotesItWouldNormalize(t *testing.T) {
+func TestEditorRefusesUnpreservableNotes(t *testing.T) {
 	cases := []struct{ name, body string }{
-		{"tab in body", "before\tafter"},
 		{"control in body", "before\x1b[2Jafter"},
 		{"oversized body", strings.Repeat("x", 1_000_001)},
 		{"too many body lines", strings.Repeat("x\n", 10_000) + "last"},
@@ -1270,6 +1274,91 @@ func TestModelUpdateNoteKeyHandling(t *testing.T) {
 			t.Errorf("Ctrl+Y did not redo input, value=%q", h.m.bodyInput.Value())
 		}
 	})
+}
+
+func TestConfiguredUndoLimitAppliesToTextEditors(t *testing.T) {
+	tests := []struct {
+		name string
+		open func(*testing.T, int) (*harness, *editor.Model)
+	}{
+		{
+			name: "note",
+			open: func(t *testing.T, limit int) (*harness, *editor.Model) {
+				h := newHarnessWithUndoLimit(t, artifact.NoteKind, limit)
+				return h, &h.m.bodyInput
+			},
+		},
+		{
+			name: "document",
+			open: func(t *testing.T, limit int) (*harness, *editor.Model) {
+				h := newDocumentHarness(t, document.Draft{}, limit)
+				return h, &h.m.documents.body
+			},
+		},
+		{
+			name: "presentation",
+			open: func(t *testing.T, limit int) (*harness, *editor.Model) {
+				h := newHarnessWithUndoLimit(t, artifact.PresentationKind, limit)
+				return h, &h.m.deck.editor
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, ed := tt.open(t, 2)
+			for _, text := range []string{"a", "b", "c", "d"} {
+				ed.InsertString(text)
+			}
+			for range 2 {
+				if !ed.Undo() {
+					t.Fatal("configured undo history ended before its limit")
+				}
+			}
+			if got := ed.Value(); got != "ab" {
+				t.Fatalf("Value() after two undos = %q, want %q", got, "ab")
+			}
+			if ed.Undo() {
+				t.Fatal("configured undo history exceeded its limit")
+			}
+		})
+	}
+}
+
+func TestNoteEditorAcceptsLiteralTabsAndHandsOffUndoOnSave(t *testing.T) {
+	h := newHarness(t, artifact.NoteKind)
+	initial, err := h.notes.Get(context.Background(), h.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tabbed, err := h.notes.UpdateExpected(context.Background(), initial, "left\tright")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !h.m.startEdit(tabbed) {
+		t.Fatalf("note containing a literal tab was rejected: %q", h.m.errMessage)
+	}
+	if got := h.m.bodyInput.Value(); got != "left\tright" {
+		t.Fatalf("note body = %q, want literal tab preserved", got)
+	}
+
+	h.m.bodyInput.SetValue("")
+	h.typeText("saved")
+	h.key("ctrl+s")
+	if h.m.bodyInput.CanUndo() || h.m.bodyInput.CanRedo() {
+		t.Fatal("successful note save retained keystroke history")
+	}
+	h.key("ctrl+z")
+	if got := h.m.bodyInput.Value(); got != "left\tright" {
+		t.Fatalf("Ctrl+Z after save = %q, want service-level undo to restore the prior body", got)
+	}
+
+	h.typeText("unsaved")
+	unsaved := h.m.bodyInput.Value()
+	h.m.handleNoteSaved(noteSavedMsg{err: errors.New("save failed")})
+	if !h.m.bodyInput.CanUndo() || h.m.bodyInput.Value() != unsaved {
+		t.Fatal("failed note save discarded the unsaved keystroke history")
+	}
 }
 
 func TestModelInit_returns_nil_when_stage_is_stageChooseKind(t *testing.T) {

@@ -35,6 +35,7 @@ type Config struct {
 	Presentations *presentation.Service
 	Recovery      recovery.Store
 	Theme         config.Theme
+	UndoLimit     int
 }
 
 // Theme holds the resolved Lip Gloss colors for the TUI.
@@ -143,6 +144,7 @@ type Model struct {
 	presentations *presentation.Service
 	recoveryStore recovery.Store
 	theme         Theme
+	undoLimit     int
 	stage         stage
 	width         int
 	height        int
@@ -166,12 +168,17 @@ type Model struct {
 
 // NewModel creates the interactive editor for config.Path.
 func NewModel(config Config) Model {
+	undoLimit := config.UndoLimit
+	if undoLimit < 1 {
+		undoLimit = 100
+	}
 	m := Model{
 		path: config.Path, kind: config.Kind, edit: config.Edit,
 		service: config.Notes, spreadsheets: config.Spreadsheets, presentations: config.Presentations,
 		recoveryStore: config.Recovery,
 		theme:         resolveTheme(config.Theme),
-		noteEditor:    newNoteEditor(),
+		undoLimit:     undoLimit,
+		noteEditor:    newNoteEditor(undoLimit),
 		newOperationContext: func() (context.Context, context.CancelFunc) {
 			return context.WithCancel(context.Background())
 		},
@@ -180,7 +187,7 @@ func NewModel(config Config) Model {
 		m.canUndo, m.canRedo = m.service.CanUndo(), m.service.CanRedo()
 	}
 	if config.Documents != nil {
-		m.documents = newDocumentsScreen(config.Documents, config.Path, m.newOperationContext, m.theme)
+		m.documents = newDocumentsScreen(config.Documents, config.Path, m.newOperationContext, m.theme, undoLimit)
 		m.documents.recoveryStore = config.Recovery
 		m.documents.autosaveScheduler = func(session uint64) tea.Cmd {
 			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
@@ -369,6 +376,7 @@ func (m *Model) handleNoteSaved(msg noteSavedMsg) (tea.Model, tea.Cmd) {
 		m.startAutosaveSession()
 		return m, m.scheduleAutosave(m.autosaveSession)
 	}
+	m.bodyInput.ResetHistory()
 	m.loadNote(msg.note)
 	m.errMessage, m.status = "", "Saved “"+msg.note.Title+"”"
 	if msg.cleanupErr != nil {
@@ -430,7 +438,7 @@ func (m *Model) enterEditor() tea.Cmd {
 		m.sheet.startAutosaveSession()
 		return tea.Batch(cmd, m.sheet.scheduleAutosave(m.sheet.autosaveSession))
 	case artifact.PresentationKind:
-		m.deck = newPresentationModel(m.presentations, m.path, m.theme)
+		m.deck = newPresentationModel(m.presentations, m.path, m.theme, m.undoLimit)
 		m.deck.recoveryStore = m.recoveryStore
 		m.deck.autosaveScheduler = func(session uint64) tea.Cmd {
 			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
@@ -767,7 +775,7 @@ func isUnpreservableText(text string) bool {
 		return true
 	}
 	for _, r := range text {
-		if r == '\t' || (unicode.IsControl(r) && r != '\n') {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
 			return true
 		}
 	}

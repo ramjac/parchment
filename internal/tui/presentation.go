@@ -93,8 +93,12 @@ type presentationModel struct {
 	presentationEditorState
 }
 
-func newPresentationModel(service *presentation.Service, path string, theme Theme) *presentationModel {
-	body := editor.New()
+func newPresentationModel(service *presentation.Service, path string, theme Theme, undoLimits ...int) *presentationModel {
+	undoLimit := 100
+	if len(undoLimits) > 0 {
+		undoLimit = undoLimits[0]
+	}
+	body := editor.NewWithUndoLimit(undoLimit)
 	return &presentationModel{
 		service: service,
 		path:    path,
@@ -144,6 +148,7 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.scheduleAutosave(m.autosaveSession)
 		}
 		if m.editing {
+			m.editor.ResetHistory()
 			m.leaveEditor()
 		}
 		m.setItem(msg.item)
