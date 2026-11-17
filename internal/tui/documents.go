@@ -267,8 +267,8 @@ type editorDraft struct {
 	layout       document.Layout
 }
 
-func newDocumentEditorState() documentEditorState {
-	body := editor.New()
+func newDocumentEditorState(undoLimit int) documentEditorState {
+	body := editor.NewWithUndoLimit(undoLimit)
 	body.Placeholder = "Write Markdown…"
 	prompt := textinput.New()
 	prompt.CharLimit = document.MaxRunningTextLength * 2
@@ -291,12 +291,12 @@ func newDocumentReaderState() documentReaderState {
 	}
 }
 
-func newDocumentsScreen(service *document.Service, path string, newContext func() (context.Context, context.CancelFunc), theme Theme) *documentsScreen {
+func newDocumentsScreen(service *document.Service, path string, newContext func() (context.Context, context.CancelFunc), theme Theme, undoLimit int) *documentsScreen {
 	return &documentsScreen{
 		theme:                theme,
 		service:              service,
 		path:                 path,
-		documentEditorState:  newDocumentEditorState(),
+		documentEditorState:  newDocumentEditorState(undoLimit),
 		documentChangesState: newDocumentChangesState(),
 		documentReaderState:  newDocumentReaderState(),
 		newOperationContext:  newContext,
@@ -394,6 +394,7 @@ func (s *documentsScreen) documentSaved(msg documentSavedMsg) tea.Cmd {
 		}
 		return s.resumeAutosave()
 	}
+	s.body.ResetHistory()
 	s.loadDocument(msg.document)
 	s.errMessage, s.status = "", "Saved “"+msg.document.Title+"”"
 	if msg.cleanupErr != nil {

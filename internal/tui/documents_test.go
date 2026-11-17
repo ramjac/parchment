@@ -26,9 +26,13 @@ import (
 
 // newDocumentHarness opens the editor on a document file, creating it with
 // draft first when draft has a body.
-func newDocumentHarness(t *testing.T, draft document.Draft) *harness {
+func newDocumentHarness(t *testing.T, draft document.Draft, undoLimits ...int) *harness {
 	t.Helper()
-	h := newHarness(t, "")
+	undoLimit := 10
+	if len(undoLimits) > 0 {
+		undoLimit = undoLimits[0]
+	}
+	h := newHarnessWithUndoLimit(t, "", undoLimit)
 	if draft.Body != "" {
 		if _, err := h.docs.Create(context.Background(), h.path, draft); err != nil {
 			t.Fatal(err)
@@ -101,6 +105,31 @@ func TestDocumentEditorHasToolbarAndSavesLayout(t *testing.T) {
 	}
 	if h.m.stage != stageDocument || s.dirty() || h.quit {
 		t.Fatalf("after save: stage=%d dirty=%t quit=%t", h.m.stage, s.dirty(), h.quit)
+	}
+}
+
+func TestDocumentSaveHandsOffUndoAndPreservesHistoryOnFailure(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "left\tright"})
+	s := h.m.documents
+	if got := s.body.Value(); got != "left\tright" {
+		t.Fatalf("document body = %q, want literal tab preserved", got)
+	}
+	h.typeText("!")
+	h.key("ctrl+s")
+	if s.body.CanUndo() || s.body.CanRedo() {
+		t.Fatal("successful document save retained keystroke history")
+	}
+	h.key("ctrl+z")
+	if got := s.body.Value(); got != "left\tright" {
+		t.Fatalf("Ctrl+Z after save = %q, want service-level undo to restore prior body", got)
+	}
+
+	failed := newDocumentHarness(t, document.Draft{Body: "body"})
+	failed.typeText("!")
+	unsaved := failed.m.documents.body.Value()
+	failed.m.documents.documentSaved(documentSavedMsg{err: errors.New("save failed")})
+	if !failed.m.documents.body.CanUndo() || failed.m.documents.body.Value() != unsaved {
+		t.Fatal("failed document save discarded unsaved keystroke history")
 	}
 }
 

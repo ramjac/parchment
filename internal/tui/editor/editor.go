@@ -56,6 +56,7 @@ type Model struct {
 	// Undo/Redo history
 	undoStack    []editorSnapshot
 	redoStack    []editorSnapshot
+	undoLimit    int
 	lastEditType editKind
 
 	// Mouse click tracking for double/triple click detection
@@ -64,6 +65,8 @@ type Model struct {
 	clickCount    int
 	isDragging    bool
 }
+
+const defaultUndoLimit = 200
 
 var internalClipboard string
 
@@ -194,6 +197,14 @@ func (m Model) pointFromVisual(x, y int) Point {
 
 // New creates a new Model with default settings.
 func New() Model {
+	return NewWithUndoLimit(defaultUndoLimit)
+}
+
+// NewWithUndoLimit creates a new Model with a configured keystroke history cap.
+func NewWithUndoLimit(limit int) Model {
+	if limit < 1 {
+		limit = defaultUndoLimit
+	}
 	return Model{
 		Lines:       [][]rune{{}},
 		Width:       80,
@@ -201,6 +212,7 @@ func New() Model {
 		Focused:     true,
 		SelectStyle: lipgloss.NewStyle().Reverse(true),
 		CursorStyle: lipgloss.NewStyle().Reverse(true),
+		undoLimit:   limit,
 	}
 }
 
@@ -217,10 +229,17 @@ func (m *Model) saveSnapshot() {
 		Lines:  cloneLines(m.Lines),
 		Cursor: m.Cursor,
 	})
-	if len(m.undoStack) > 200 {
-		m.undoStack = append([]editorSnapshot(nil), m.undoStack[len(m.undoStack)-200:]...)
+	if len(m.undoStack) > m.undoLimit {
+		m.undoStack = append([]editorSnapshot(nil), m.undoStack[len(m.undoStack)-m.undoLimit:]...)
 	}
 	m.redoStack = nil
+}
+
+// ResetHistory clears keystroke undo and redo history without changing the buffer.
+func (m *Model) ResetHistory() {
+	m.undoStack = nil
+	m.redoStack = nil
+	m.lastEditType = editNone
 }
 
 // CanUndo reports whether an undo operation is available.

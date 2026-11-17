@@ -161,7 +161,7 @@ func (m *Model) recoverDraft() tea.Cmd {
 			return nil
 		}
 		data.Baseline.Path = m.path
-		m.deck = newPresentationModel(m.presentations, m.path, m.theme)
+		m.deck = newPresentationModel(m.presentations, m.path, m.theme, m.undoLimit)
 		m.deck.recoveryStore = m.recoveryStore
 		m.deck.autosaveScheduler = func(session uint64) tea.Cmd {
 			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
