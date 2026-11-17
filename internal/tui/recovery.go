@@ -188,7 +188,7 @@ func (m *Model) recoverDraft() tea.Cmd {
 		}
 		data.Baseline.Path = m.path
 		data.Dirty.Path = m.path
-		m.sheet = newSpreadsheetModel(m.spreadsheets, m.path, m.theme)
+		m.sheet = newSpreadsheetModel(m.spreadsheets, m.path, m.theme, m.undoLimit)
 		m.sheet.recoveryStore = m.recoveryStore
 		m.sheet.autosaveScheduler = func(session uint64) tea.Cmd {
 			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
@@ -199,6 +199,7 @@ func (m *Model) recoverDraft() tea.Cmd {
 		m.sheet.width, m.sheet.height = m.width, m.height
 		spreadsheet.Normalize(&data.Dirty)
 		m.sheet.setBook(data.Dirty)
+		m.sheet.baseline = cloneSpreadsheetState(data.Baseline)
 		m.sheet.sheet = data.ActiveSheet
 		m.sheet.row = data.CursorRow
 		m.sheet.column = data.CursorCol
@@ -219,8 +220,7 @@ func (m *Model) recoverDraft() tea.Cmd {
 		if m.sheet.editing {
 			initCmd = m.sheet.input.Focus()
 		}
-		m.sheet.startAutosaveSession()
-		return tea.Batch(sizeCmd, initCmd, m.sheet.scheduleAutosave(m.sheet.autosaveSession))
+		return tea.Batch(sizeCmd, initCmd, m.sheet.syncAutosave())
 	}
 	return nil
 }

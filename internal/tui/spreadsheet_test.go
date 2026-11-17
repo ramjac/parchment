@@ -2,15 +2,18 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/filerepo"
+	"example.com/parchment/internal/recovery"
 	"example.com/parchment/internal/spreadsheet"
 )
 
@@ -64,6 +67,12 @@ func sheetKey(name string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyDelete}
 	case "ctrl+c":
 		return tea.KeyMsg{Type: tea.KeyCtrlC}
+	case "ctrl+s":
+		return tea.KeyMsg{Type: tea.KeyCtrlS}
+	case "ctrl+z":
+		return tea.KeyMsg{Type: tea.KeyCtrlZ}
+	case "ctrl+r":
+		return tea.KeyMsg{Type: tea.KeyCtrlR}
 	case "ctrl+u":
 		return tea.KeyMsg{Type: tea.KeyCtrlU}
 	}
@@ -88,7 +97,7 @@ func newSheetModel(t *testing.T, rows [][]spreadsheet.Cell) (*spreadsheetModel, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := newSpreadsheetModel(service, book.Path, Theme{})
+	m := newSpreadsheetModel(service, book.Path, Theme{}, 10)
 	driveSheet(t, m, tea.WindowSizeMsg{Width: 100, Height: 20})
 	if msg := m.Init()(); msg != nil {
 		driveSheet(t, m, msg)
@@ -97,6 +106,86 @@ func newSheetModel(t *testing.T, rows [][]spreadsheet.Cell) (*spreadsheetModel, 
 		t.Fatalf("model not loaded: loaded %t pending %t err %q", m.loaded, m.pending, m.errMessage)
 	}
 	return m, service, repository, book.Path
+}
+
+func TestSpreadsheetAutosavesWorkbookAndActiveCellInput(t *testing.T) {
+	m, _, repository, path := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "original"}}})
+	m.recoveryStore = repository
+	m.autosaveScheduler = func(session uint64) tea.Cmd {
+		return func() tea.Msg { return spreadsheetAutosaveTickMsg{session: session} }
+	}
+	if cmd := m.syncAutosave(); cmd != nil || m.autosaveActive {
+		t.Fatal("clean workbook started an autosave timer")
+	}
+
+	if !m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+		return spreadsheet.SetCellInBook(book, spreadsheet.SetCellOptions{
+			Sheet: "Sheet1", Row: 1, Column: 1, Cell: spreadsheet.Cell{Value: "buffered"},
+		})
+	}) {
+		t.Fatalf("buffered edit failed: %s", m.errMessage)
+	}
+	m.column = 1
+	m.editing = true
+	m.input.SetValue("pending cell input")
+	tickCmd := m.syncAutosave()
+	if tickCmd == nil || !m.autosaveActive {
+		t.Fatal("dirty workbook did not start an autosave timer")
+	}
+	session := m.autosaveSession
+	if _, ok := tickCmd().(spreadsheetAutosaveTickMsg); !ok {
+		t.Fatal("autosave scheduler returned the wrong tick")
+	}
+	_, saveCmd := m.Update(spreadsheetAutosaveTickMsg{session: session})
+	if saveCmd == nil {
+		t.Fatal("autosave tick did not save a recovery draft")
+	}
+	finished, ok := saveCmd().(spreadsheetAutosaveFinishedMsg)
+	if !ok || finished.err != nil {
+		t.Fatalf("autosave result = %#v", finished)
+	}
+	_, nextTick := m.Update(finished)
+	if nextTick == nil {
+		t.Fatal("dirty workbook did not schedule its next autosave")
+	}
+
+	draft, found, err := repository.LoadRecovery(context.Background(), path)
+	if err != nil || !found {
+		t.Fatalf("LoadRecovery = found %t, err %v", found, err)
+	}
+	if draft.Kind != string(artifact.SpreadsheetKind) {
+		t.Fatalf("draft kind = %q", draft.Kind)
+	}
+	var data spreadsheetRecoveryData
+	if err := json.Unmarshal(draft.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if data.Baseline.Sheets[0].Rows[0][0].Value != "original" ||
+		data.Dirty.Sheets[0].Rows[0][0].Value != "buffered" ||
+		data.PendingCellInput != "pending cell input" ||
+		data.ActiveSheet != 0 || data.CursorRow != 0 || data.CursorCol != 1 {
+		t.Fatalf("recovery data = %#v", data)
+	}
+
+	m.editing = false
+	m.book = cloneSpreadsheetState(m.baseline)
+	m.computeValues()
+	oldSession := m.autosaveSession
+	clearCmd := m.syncAutosave()
+	if clearCmd == nil || m.autosaveActive {
+		t.Fatal("reverting to the baseline did not stop autosaving and remove the draft")
+	}
+	if _, cmd := m.Update(spreadsheetAutosaveTickMsg{session: oldSession}); cmd != nil {
+		t.Fatal("stale autosave tick was not ignored")
+	}
+	cleared, ok := clearCmd().(spreadsheetAutosaveFinishedMsg)
+	if !ok || cleared.err != nil || !cleared.cleared {
+		t.Fatalf("draft cleanup result = %#v", cleared)
+	}
+	m.Update(cleared)
+	if _, found, err := repository.LoadRecovery(context.Background(), path); err != nil || found {
+		t.Fatalf("draft remained after returning clean: found %t, err %v", found, err)
+	}
 }
 
 func storedCell(t *testing.T, service *spreadsheet.Service, path string, row, column int) spreadsheet.Cell {
@@ -147,15 +236,15 @@ func TestSpreadsheetEditDistinguishesFormulasAndLiterals(t *testing.T) {
 		driveSheet(t, m, sheetKey("ctrl+u"))
 		driveSheet(t, m, sheetKey(text))
 		driveSheet(t, m, sheetKey("enter"))
-		if m.editing || m.pending || m.errMessage != "" {
+		if m.editing || m.pending || m.errMessage != "" || !m.dirty() {
 			t.Fatalf("edit %q state: editing %t pending %t err %q", text, m.editing, m.pending, m.errMessage)
 		}
 	}
 
 	driveSheet(t, m, sheetKey("right"))
 	edit("=A1*3")
-	if got := storedCell(t, service, id, 1, 2); got != (spreadsheet.Cell{Formula: "=A1*3"}) {
-		t.Fatalf("formula cell = %#v", got)
+	if got := storedCell(t, service, id, 1, 2); got != (spreadsheet.Cell{}) {
+		t.Fatalf("formula was persisted before Ctrl+S: %#v", got)
 	}
 	if !strings.Contains(m.View(), "6") {
 		t.Fatalf("evaluated formula missing:\n%s", m.View())
@@ -163,8 +252,8 @@ func TestSpreadsheetEditDistinguishesFormulasAndLiterals(t *testing.T) {
 
 	driveSheet(t, m, sheetKey("down"))
 	edit("'=not a formula")
-	if got := storedCell(t, service, id, 2, 2); got != (spreadsheet.Cell{Value: "=not a formula"}) {
-		t.Fatalf("escaped literal cell = %#v", got)
+	if got := storedCell(t, service, id, 2, 2); got != (spreadsheet.Cell{}) {
+		t.Fatalf("literal was persisted before Ctrl+S: %#v", got)
 	}
 	driveSheet(t, m, sheetKey("enter"))
 	if m.input.Value() != "'=not a formula" {
@@ -174,21 +263,40 @@ func TestSpreadsheetEditDistinguishesFormulasAndLiterals(t *testing.T) {
 
 	driveSheet(t, m, sheetKey("left"))
 	edit("hello")
+	if got := storedCell(t, service, id, 2, 1); got != (spreadsheet.Cell{}) {
+		t.Fatalf("literal was persisted before Ctrl+S: %#v", got)
+	}
+
+	driveSheet(t, m, sheetKey("ctrl+s"))
+	if m.dirty() || m.pending {
+		t.Fatalf("save did not clear dirty state: dirty %t pending %t", m.dirty(), m.pending)
+	}
+	if got := storedCell(t, service, id, 1, 2); got != (spreadsheet.Cell{Formula: "=A1*3"}) {
+		t.Fatalf("saved formula cell = %#v", got)
+	}
+	if got := storedCell(t, service, id, 2, 2); got != (spreadsheet.Cell{Value: "=not a formula"}) {
+		t.Fatalf("saved escaped literal cell = %#v", got)
+	}
 	if got := storedCell(t, service, id, 2, 1); got != (spreadsheet.Cell{Value: "hello"}) {
-		t.Fatalf("literal cell = %#v", got)
+		t.Fatalf("saved literal cell = %#v", got)
 	}
 
 	driveSheet(t, m, sheetKey("delete"))
-	if got := storedCell(t, service, id, 2, 1); got != (spreadsheet.Cell{}) {
-		t.Fatalf("cleared cell = %#v", got)
+	if got := storedCell(t, service, id, 2, 1); got != (spreadsheet.Cell{Value: "hello"}) {
+		t.Fatalf("clear was persisted before Ctrl+S: %#v", got)
 	}
 	driveSheet(t, m, sheetKey("u"))
-	if got := storedCell(t, service, id, 2, 1); got != (spreadsheet.Cell{Value: "hello"}) {
-		t.Fatalf("undone cell = %#v", got)
+	if got := m.cell(1, 0); got != (spreadsheet.Cell{Value: "hello"}) {
+		t.Fatalf("buffer undo cell = %#v", got)
 	}
 	if !strings.Contains(m.View(), "hello") || !strings.Contains(m.status, "Undid") {
 		t.Fatalf("undo not reflected: status %q\n%s", m.status, m.View())
 	}
+	driveSheet(t, m, sheetKey("ctrl+r"))
+	if got := m.cell(1, 0); got != (spreadsheet.Cell{}) {
+		t.Fatalf("buffer redo cell = %#v", got)
+	}
+	driveSheet(t, m, sheetKey("u"))
 }
 
 func TestSpreadsheetInvalidFormulaKeepsDraft(t *testing.T) {
@@ -197,8 +305,8 @@ func TestSpreadsheetInvalidFormulaKeepsDraft(t *testing.T) {
 	driveSheet(t, m, sheetKey("enter"))
 	driveSheet(t, m, sheetKey("=B1+"))
 	driveSheet(t, m, sheetKey("enter"))
-	if !m.editing || m.input.Value() != "=B1+" || !strings.Contains(m.errMessage, "Save failed") {
-		t.Fatalf("state after invalid formula: editing %t draft %q err %q", m.editing, m.input.Value(), m.errMessage)
+	if !m.editing || m.input.Value() != "=B1+" || !m.dirty() || !strings.Contains(m.errMessage, "Edit failed") {
+		t.Fatalf("state after invalid formula: editing %t dirty %t draft %q err %q", m.editing, m.dirty(), m.input.Value(), m.errMessage)
 	}
 	if got := storedCell(t, service, id, 1, 2); got != (spreadsheet.Cell{}) {
 		t.Fatalf("invalid formula was stored: %#v", got)
@@ -219,12 +327,169 @@ func TestSpreadsheetTypingQWhileEditingDoesNotQuit(t *testing.T) {
 	if msg := driveSheet(t, m, sheetKey("q")); msg != nil {
 		t.Fatalf("q while editing produced %#v", msg)
 	}
-	driveSheet(t, m, sheetKey("enter"))
+	if !m.dirty() {
+		t.Fatal("active cell input was not considered dirty")
+	}
+	driveSheet(t, m, sheetKey("ctrl+s"))
+	if m.editing || m.dirty() {
+		t.Fatalf("Ctrl+S did not commit pending cell input: editing=%t dirty=%t", m.editing, m.dirty())
+	}
 	if got := storedCell(t, service, id, 1, 1); got != (spreadsheet.Cell{Value: "q"}) {
-		t.Fatalf("cell = %#v", got)
+		t.Fatalf("saved cell = %#v", got)
 	}
 	if _, ok := driveSheet(t, m, sheetKey("esc")).(tea.QuitMsg); !ok {
 		t.Fatal("esc while browsing did not quit")
+	}
+}
+
+func TestSpreadsheetDirtyCloseRequiresConfirmation(t *testing.T) {
+	m, service, _, path := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "saved"}}})
+	driveSheet(t, m, sheetKey("enter"))
+	driveSheet(t, m, sheetKey("ctrl+u"))
+	driveSheet(t, m, sheetKey("unsaved"))
+	if !m.dirty() {
+		t.Fatal("active cell input was not considered dirty")
+	}
+	driveSheet(t, m, sheetKey("enter"))
+	if !m.dirty() {
+		t.Fatal("staged edit was not dirty")
+	}
+	if msg := driveSheet(t, m, sheetKey("esc")); msg != nil {
+		t.Fatalf("first esc unexpectedly quit: %#v", msg)
+	}
+	if !m.closeWarning || !strings.Contains(m.status, "Unsaved changes") {
+		t.Fatalf("dirty close warning missing: warning=%t status=%q", m.closeWarning, m.status)
+	}
+	stored, err := service.Get(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Sheets[0].Rows[0][0].Value != "saved" {
+		t.Fatalf("unsaved cell was persisted: %#v", stored.Sheets[0].Rows[0][0])
+	}
+	if _, ok := driveSheet(t, m, sheetKey("q")).(tea.QuitMsg); !ok {
+		t.Fatal("second q did not confirm discard and quit")
+	}
+}
+
+func TestSpreadsheetSaveAndCloseDeleteRecoveryDraft(t *testing.T) {
+	m, _, repository, path := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "original"}}})
+	m.recoveryStore = repository
+	draft := recovery.Draft{
+		Path: path, Kind: string(artifact.SpreadsheetKind),
+		UpdatedAt: time.Now().UTC(), Data: json.RawMessage(`{"dirty":true}`),
+	}
+	if err := repository.SaveRecovery(context.Background(), draft); err != nil {
+		t.Fatal(err)
+	}
+	m.draftStored = true
+	if !m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+		return spreadsheet.SetCellInBook(book, spreadsheet.SetCellOptions{
+			Sheet: "Sheet1", Row: 1, Column: 1, Cell: spreadsheet.Cell{Value: "saved"},
+		})
+	}) {
+		t.Fatalf("buffered edit failed: %s", m.errMessage)
+	}
+	driveSheet(t, m, sheetKey("ctrl+s"))
+	if _, found, err := repository.LoadRecovery(context.Background(), path); err != nil || found {
+		t.Fatalf("draft remained after save: found %t, err %v", found, err)
+	}
+
+	if err := repository.SaveRecovery(context.Background(), draft); err != nil {
+		t.Fatal(err)
+	}
+	m.draftStored = true
+	if !m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+		return spreadsheet.SetCellInBook(book, spreadsheet.SetCellOptions{
+			Sheet: "Sheet1", Row: 1, Column: 1, Cell: spreadsheet.Cell{Value: "closing"},
+		})
+	}) {
+		t.Fatalf("second buffered edit failed: %s", m.errMessage)
+	}
+	if msg := driveSheet(t, m, sheetKey("q")); msg != nil {
+		t.Fatalf("dirty spreadsheet closed without confirmation: %#v", msg)
+	}
+	if _, ok := driveSheet(t, m, sheetKey("q")).(tea.QuitMsg); !ok {
+		t.Fatal("confirmed close did not quit")
+	}
+	if _, found, err := repository.LoadRecovery(context.Background(), path); err != nil || found {
+		t.Fatalf("draft remained after normal close: found %t, err %v", found, err)
+	}
+}
+
+func TestSpreadsheetCloseReportsRecoveryCleanupFailure(t *testing.T) {
+	m, _, repository, path := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "original"}}})
+	m.recoveryStore = failingDeleteStore{Store: repository}
+	m.draftStored = true
+	msg := driveSheet(t, m, sheetKey("q"))
+	if _, ok := msg.(tea.QuitMsg); ok {
+		t.Fatal("spreadsheet quit despite recovery cleanup failure")
+	}
+	if !strings.Contains(m.errMessage, "disk is read-only") {
+		t.Fatalf("cleanup error was not shown: %q", m.errMessage)
+	}
+	if _, found, err := repository.LoadRecovery(context.Background(), path); err != nil || found {
+		t.Fatalf("unexpected recovery draft state: found %t, err %v", found, err)
+	}
+}
+
+func TestSpreadsheetCleanUndoRedoUsesServiceHistory(t *testing.T) {
+	m, service, _, path := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "before"}}})
+	driveSheet(t, m, sheetKey("enter"))
+	driveSheet(t, m, sheetKey("ctrl+u"))
+	driveSheet(t, m, sheetKey("3"))
+	driveSheet(t, m, sheetKey("enter"))
+	driveSheet(t, m, sheetKey("right"))
+	driveSheet(t, m, sheetKey("enter"))
+	driveSheet(t, m, sheetKey("ctrl+u"))
+	driveSheet(t, m, sheetKey("=A1*2"))
+	driveSheet(t, m, sheetKey("enter"))
+	driveSheet(t, m, sheetKey("ctrl+s"))
+	if m.dirty() || m.pending || len(m.bufferUndo) != 0 || len(m.bufferRedo) != 0 {
+		t.Fatalf("successful save did not clear the local buffer history: dirty=%t pending=%t undo=%d redo=%d err=%q",
+			m.dirty(), m.pending, len(m.bufferUndo), len(m.bufferRedo), m.errMessage)
+	}
+
+	driveSheet(t, m, sheetKey("u"))
+	stored, err := service.Get(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Sheets[0].Rows[0][0].Value != "before" || len(stored.Sheets[0].Rows[0]) != 1 {
+		t.Fatalf("service undo did not revert the complete save: %#v", stored.Sheets)
+	}
+	driveSheet(t, m, sheetKey("ctrl+r"))
+	stored, err = service.Get(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Sheets[0].Rows[0][0].Value != "3" || stored.Sheets[0].Rows[0][1].Formula != "=A1*2" {
+		t.Fatalf("service redo did not restore the complete save: %#v", stored.Sheets)
+	}
+}
+
+func TestSpreadsheetBufferUndoRespectsLimit(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{}}, {{}}})
+	m.undoLimit = 1
+	for row, value := range []string{"one", "two"} {
+		if row > 0 {
+			driveSheet(t, m, sheetKey("down"))
+		}
+		driveSheet(t, m, sheetKey("enter"))
+		driveSheet(t, m, sheetKey("ctrl+u"))
+		driveSheet(t, m, sheetKey(value))
+		driveSheet(t, m, sheetKey("enter"))
+	}
+	if len(m.bufferUndo) != 1 {
+		t.Fatalf("buffer undo depth = %d, want 1", len(m.bufferUndo))
+	}
+	driveSheet(t, m, sheetKey("u"))
+	if m.cell(1, 0).Value != "" || m.cell(0, 0).Value != "one" {
+		t.Fatalf("undo did not restore most recent retained state: %#v", m.book.Sheets[0].Rows)
+	}
+	driveSheet(t, m, sheetKey("u"))
+	if m.cell(0, 0).Value != "one" {
+		t.Fatalf("undo crossed the configured limit: %#v", m.book.Sheets[0].Rows)
 	}
 }
 
@@ -294,7 +559,7 @@ func TestSpreadsheetCancelledContextReportsCancelled(t *testing.T) {
 
 func TestSpreadsheetLoadErrorAllowsRetryAndQuit(t *testing.T) {
 	repository := newTestRepository(t)
-	m := newSpreadsheetModel(spreadsheet.NewService(repository, 10), filepath.Join(t.TempDir(), "missing.md"), Theme{})
+	m := newSpreadsheetModel(spreadsheet.NewService(repository, 10), filepath.Join(t.TempDir(), "missing.md"), Theme{}, 10)
 	driveSheet(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
 	driveSheet(t, m, m.Init()())
 	if m.loaded || m.errMessage == "" || !strings.Contains(m.View(), "Error:") {
@@ -321,6 +586,7 @@ func TestSpreadsheetTabSwitchesSheets(t *testing.T) {
 	driveSheet(t, m, sheetKey("enter"))
 	driveSheet(t, m, sheetKey("second"))
 	driveSheet(t, m, sheetKey("enter"))
+	driveSheet(t, m, sheetKey("ctrl+s"))
 	book, err := service.Get(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
@@ -365,28 +631,21 @@ func TestSpreadsheetUpdateAsyncMessages(t *testing.T) {
 		t.Fatalf("expected spreadsheetLoadedMsg with mismatched seq to be ignored, got model=%v, cmd=%v", model, cmd)
 	}
 
-	// 2. spreadsheetCellSavedMsg seq mismatch
-	model, cmd = m.Update(spreadsheetCellSavedMsg{seq: 5, draft: "test"})
+	// 2. spreadsheetSavedMsg seq mismatch
+	model, cmd = m.Update(spreadsheetSavedMsg{seq: 5})
 	if cmd != nil {
-		t.Fatalf("expected spreadsheetCellSavedMsg with mismatched seq to be ignored, got cmd=%v", cmd)
+		t.Fatalf("expected spreadsheetSavedMsg with mismatched seq to be ignored, got cmd=%v", cmd)
 	}
 
-	// 3. spreadsheetCellSavedMsg with error
+	// 3. spreadsheetSavedMsg with error
 	m.seq = 11
-	m.editing = false
-	saveErrMsg := spreadsheetCellSavedMsg{
-		seq:    11,
-		row:    2,
-		column: 3,
-		draft:  "invalid draft",
-		err:    errors.New("disk write failure"),
-	}
+	m.pending = true
+	saveErrMsg := spreadsheetSavedMsg{seq: 11, err: errors.New("disk write failure")}
 	model, cmd = m.Update(saveErrMsg)
-	if cmd == nil || !m.editing || m.row != 2 || m.column != 3 || !strings.Contains(m.errMessage, "disk write failure") {
-		t.Fatalf("spreadsheetCellSavedMsg error handled incorrectly: editing=%t, row=%d, col=%d, errMessage=%q",
-			m.editing, m.row, m.column, m.errMessage)
+	if cmd != nil || m.pending || !strings.Contains(m.errMessage, "disk write failure") {
+		t.Fatalf("spreadsheetSavedMsg error handled incorrectly: pending=%t, errMessage=%q",
+			m.pending, m.errMessage)
 	}
-	m.editing = false
 
 	// 4. spreadsheetHistoryMsg seq mismatch
 	m.seq = 12
@@ -497,17 +756,15 @@ func TestSpreadsheetUpdateFallbackAndEditShortcuts(t *testing.T) {
 	// Empty formula
 	m.editing = true
 	m.input.SetValue("=")
-	cmd = m.save()
-	if cmd != nil || m.errMessage != "formula is empty" {
-		t.Fatalf("expected 'formula is empty' error, got cmd=%v, errMessage=%q", cmd, m.errMessage)
+	if m.commitCell() || m.errMessage != "formula is empty" {
+		t.Fatalf("expected 'formula is empty' error, got errMessage=%q", m.errMessage)
 	}
 
 	// Oversized formula
 	m.editing = true
 	longFormula := "=" + strings.Repeat("A1+", 1400)
 	m.input.SetValue(longFormula)
-	cmd = m.save()
-	if cmd != nil || !strings.Contains(m.errMessage, "formula is longer than") {
+	if m.commitCell() || !strings.Contains(m.errMessage, "formula is longer than") {
 		t.Fatalf("expected formula length error, got errMessage=%q", m.errMessage)
 	}
 	m.editing = false
@@ -592,14 +849,14 @@ func TestSpreadsheetViewEditingAndHelp(t *testing.T) {
 	if !strings.Contains(view, "A1 >") {
 		t.Fatalf("editing formula bar missing prompt:\n%s", view)
 	}
-	if !strings.Contains(view, "enter save • esc cancel • =formula • 'literal") {
+	if !strings.Contains(view, "enter stage • ctrl+s save • esc cancel • =formula • 'literal") {
 		t.Fatalf("editing help string missing:\n%s", view)
 	}
 }
 
 func TestSpreadsheetViewUnloadedAndError(t *testing.T) {
 	repository := newTestRepository(t)
-	m := newSpreadsheetModel(spreadsheet.NewService(repository, 10), "", Theme{})
+	m := newSpreadsheetModel(spreadsheet.NewService(repository, 10), "", Theme{}, 10)
 	m.width, m.height = 80, 20
 	view := m.View()
 	if !strings.Contains(view, "Spreadsheet") {
@@ -693,22 +950,23 @@ func TestSpreadsheetUpdateLoadedMsg(t *testing.T) {
 	}
 }
 
-func TestSpreadsheetUpdateCellSavedMsgSuccess(t *testing.T) {
+func TestSpreadsheetUpdateSavedMsgSuccess(t *testing.T) {
 	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "A1"}}})
 
 	m.seq = 7
 	m.pending = true
 	m.row, m.column = 0, 1
-	book := m.book
-	model, cmd := m.Update(spreadsheetCellSavedMsg{seq: 7, book: book, row: 0, column: 1})
+	book := cloneSpreadsheetState(m.book)
+	book.Sheets[0].Rows[0] = append(book.Sheets[0].Rows[0], spreadsheet.Cell{Value: "saved"})
+	model, cmd := m.Update(spreadsheetSavedMsg{seq: 7, book: book})
 	if model != m || cmd != nil {
 		t.Fatalf("expected (m, nil), got model=%v, cmd=%v", model, cmd)
 	}
-	if m.status != "Saved B1" {
-		t.Fatalf("expected status 'Saved B1', got %q", m.status)
+	if m.status != "Saved spreadsheet" {
+		t.Fatalf("expected status 'Saved spreadsheet', got %q", m.status)
 	}
-	if m.pending {
-		t.Fatalf("expected pending false")
+	if m.pending || m.dirty() || m.book.Sheets[0].Rows[0][1].Value != "saved" {
+		t.Fatalf("save did not update clean workbook state")
 	}
 }
 
@@ -811,7 +1069,7 @@ func TestSpreadsheetView_EditingAndHelp(t *testing.T) {
 
 	// Browsing help message
 	viewBrowsing := m.View()
-	if !strings.Contains(viewBrowsing, "arrows move • enter edit • del clear • f formulas") {
+	if !strings.Contains(viewBrowsing, "arrows move • enter edit • ctrl+s save • del clear") {
 		t.Fatalf("expected browsing help text, got:\n%s", viewBrowsing)
 	}
 
@@ -824,14 +1082,14 @@ func TestSpreadsheetView_EditingAndHelp(t *testing.T) {
 	if !strings.Contains(viewEditing, "A1 >") {
 		t.Fatalf("expected editing formula bar prompt 'A1 >', got:\n%s", viewEditing)
 	}
-	if !strings.Contains(viewEditing, "enter save • esc cancel • =formula • 'literal") {
+	if !strings.Contains(viewEditing, "enter stage • ctrl+s save • esc cancel • =formula • 'literal") {
 		t.Fatalf("expected editing help text, got:\n%s", viewEditing)
 	}
 	driveSheet(t, m, sheetKey("esc"))
 
 	// Unloaded help message
 	repo := newTestRepository(t)
-	mUnloaded := newSpreadsheetModel(spreadsheet.NewService(repo, 10), "missing.md", Theme{})
+	mUnloaded := newSpreadsheetModel(spreadsheet.NewService(repo, 10), "missing.md", Theme{}, 10)
 	mUnloaded.width, mUnloaded.height = 80, 20
 	viewUnloaded := mUnloaded.View()
 	if !strings.Contains(viewUnloaded, "r retry • esc/q quit") {
@@ -893,6 +1151,13 @@ func TestSpreadsheetTUI_DeleteShortcuts(t *testing.T) {
 	if len(m.book.Sheets) != 1 {
 		t.Fatalf("expected 1 sheet, got %d", len(m.book.Sheets))
 	}
+	storedBook, err := service.Get(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(storedBook.Sheets) != 2 {
+		t.Fatalf("sheet deletion was persisted before Ctrl+S: %d sheets", len(storedBook.Sheets))
+	}
 
 	if len(m.book.Sheets[0].Rows) != 2 {
 		t.Fatalf("expected 2 rows before delete, got %d", len(m.book.Sheets[0].Rows))
@@ -916,5 +1181,42 @@ func TestSpreadsheetTUI_DeleteShortcuts(t *testing.T) {
 
 	if len(m.book.Sheets[0].Rows[0]) != 1 {
 		t.Fatalf("expected 1 column, got %d", len(m.book.Sheets[0].Rows[0]))
+	}
+	driveSheet(t, m, sheetKey("ctrl+s"))
+	storedBook, err = service.Get(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(storedBook.Sheets) != 1 || len(storedBook.Sheets[0].Rows) != 1 || len(storedBook.Sheets[0].Rows[0]) != 1 {
+		t.Fatalf("saved workbook did not include buffered deletions: %#v", storedBook.Sheets)
+	}
+}
+
+func TestSpreadsheetTUI_InsertShortcutsAreBuffered(t *testing.T) {
+	m, service, _, path := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "A1"}}, {{Value: "A2"}}})
+	driveSheet(t, m, sheetKey("i"))
+	driveSheet(t, m, sheetKey("r"))
+	if len(m.book.Sheets[0].Rows) != 3 {
+		t.Fatalf("buffered row count = %d, want 3", len(m.book.Sheets[0].Rows))
+	}
+	driveSheet(t, m, sheetKey("i"))
+	driveSheet(t, m, sheetKey("c"))
+	if len(m.book.Sheets[0].Rows[0]) != 2 {
+		t.Fatalf("buffered column count = %d, want 2", len(m.book.Sheets[0].Rows[0]))
+	}
+	stored, err := service.Get(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Sheets[0].Rows) != 2 || len(stored.Sheets[0].Rows[0]) != 1 {
+		t.Fatalf("insertions were persisted before Ctrl+S: %#v", stored.Sheets[0].Rows)
+	}
+	driveSheet(t, m, sheetKey("ctrl+s"))
+	stored, err = service.Get(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Sheets[0].Rows) != 3 || len(stored.Sheets[0].Rows[0]) != 2 {
+		t.Fatalf("saved workbook missed buffered insertions: %#v", stored.Sheets[0].Rows)
 	}
 }

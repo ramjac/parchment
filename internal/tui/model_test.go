@@ -720,12 +720,23 @@ func TestSpreadsheetRecoveryOfferRecoverDiscardQuit(t *testing.T) {
 func TestSpreadsheetRecoveryWarnsWhenFileChangedAfterDraft(t *testing.T) {
 	ctx := context.Background()
 	hSheet := newHarness(t, "")
-	book, err := hSheet.sheets.Create(ctx, hSheet.path, nil)
+	baseline, err := hSheet.sheets.Create(ctx, hSheet.path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	draft := fmt.Sprintf(`{"baseline":{"version":1,"artifact":{"kind":"spreadsheet"},"created_at":"2020-01-01T00:00:00Z","modified_at":"2020-01-01T00:00:00Z","sheets":[{"name":"Sheet1","rows":[[{"value":"old"}]]}]},"dirty":{"version":1,"artifact":{"kind":"spreadsheet"},"created_at":"2020-01-01T00:00:00Z","modified_at":"2020-01-01T00:00:00Z","sheets":[{"name":"Sheet1","rows":[[{"value":"draft"}]]}]},"active_sheet":0,"cursor_row":0,"cursor_col":0}`)
+	dirty := cloneSpreadsheetState(baseline)
+	if err := spreadsheet.SetCellInBook(&dirty, spreadsheet.SetCellOptions{
+		Sheet: "Sheet1", Row: 1, Column: 1, Cell: spreadsheet.Cell{Value: "draft"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	draft, err := json.Marshal(spreadsheetRecoveryData{
+		Baseline: baseline, Dirty: dirty,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	err = hSheet.repo.SaveRecovery(ctx, recovery.Draft{
 		Path:      hSheet.path,
 		Kind:      string(artifact.SpreadsheetKind),
@@ -740,7 +751,6 @@ func TestSpreadsheetRecoveryWarnsWhenFileChangedAfterDraft(t *testing.T) {
 	if _, err := hSheet.sheets.SetCell(ctx, hSheet.path, 1, 1, spreadsheet.Cell{Value: "externally changed"}); err != nil {
 		t.Fatal(err)
 	}
-	_ = book
 
 	// Reopen and recover
 	hSheet.open(artifact.SpreadsheetKind)
@@ -750,6 +760,17 @@ func TestSpreadsheetRecoveryWarnsWhenFileChangedAfterDraft(t *testing.T) {
 	hSheet.key("r")
 	if !strings.Contains(hSheet.m.sheet.status, "saving will report a conflict") {
 		t.Fatalf("status = %q, want conflict warning", hSheet.m.sheet.status)
+	}
+	hSheet.key("ctrl+s")
+	if !strings.Contains(hSheet.m.sheet.errMessage, "changed since it was loaded") {
+		t.Fatalf("save error = %q, want external-edit conflict", hSheet.m.sheet.errMessage)
+	}
+	stored, err := hSheet.sheets.Get(ctx, hSheet.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stored.Sheets[0].Rows[0][0].Value; got != "externally changed" {
+		t.Fatalf("external edit was overwritten: cell = %q", got)
 	}
 }
 

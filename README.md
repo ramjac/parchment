@@ -140,10 +140,11 @@ referenced cells evaluate to zero; formula errors such as `#REF!` can be
 persisted. Rows, columns, and sheets can be deleted, with formula references
 shifted or changed to `#REF!` as appropriate. Use
 `spreadsheet export <file> --csv` to export a sheet as CSV. Spreadsheet edits
-can be undone and redone through the service API while its process is running;
-the CLI is stateless across invocations. The Markdown file with its JSON data
-block is Parchment's canonical format, not a CSV file that third-party
-spreadsheet applications can open directly.
+are buffered in the TUI until `Ctrl+S`; `u`/`Ctrl+Z` and `Ctrl+R` undo and redo
+buffered edits before using service history for committed changes. The CLI is
+stateless across invocations. The Markdown file with its JSON data block is
+Parchment's canonical format, not a CSV file that third-party spreadsheet
+applications can open directly.
 
 ### Presentations
 
@@ -241,9 +242,13 @@ lists proposals, `u`/`Ctrl+R` undo and redo, and `Esc` or `q` quits. Press `e` t
 `Esc` in the editor returns to the reader, asking first when there are unsaved
 changes. New documents and restored drafts open directly in the editor.
 
-Spreadsheets open as a grid: use arrow keys to select a cell, `Enter` to edit,
-`=` to enter a formula, and `u`/`Ctrl+R` for undo/redo. Presentations open as
-slides with an editable Markdown source. Press `Esc` or `q` to quit either viewer.
+Spreadsheets open as a grid: use arrow keys to select a cell, `Enter` to edit
+and stage a cell, and `Ctrl+S` to save the workbook. Use `i` then `r`/`c` to
+insert a row/column before the selection, and `d` then `r`/`c`/`s` to delete a
+row/column/sheet. `u`/`Ctrl+Z` and `Ctrl+R` undo/redo buffered edits before
+committed service history. `Esc` or `q` asks before discarding unsaved changes.
+Presentations open as slides with an editable Markdown source. Press `Esc` or
+`q` to quit either viewer.
 
 While editing a note or document, Parchment autosaves recovery drafts every couple of seconds to
 `~/.parchment/recovery/`, never next to the artifact. Saving, proposing, or
@@ -254,9 +259,11 @@ recovers it into the editor, `d` discards it, and `q` quits and keeps it for
 later. If the file changed after the draft was written, saving the recovered
 draft reports a conflict instead of overwriting those changes.
 
-Presentation edits are autosaved as recovery drafts. Spreadsheet recovery
-drafts are not yet saved: the merged recovery scaffolding awaits buffered
-spreadsheet editing before it can capture unsaved workbook changes.
+Presentation and spreadsheet edits are autosaved as recovery drafts.
+Spreadsheet drafts include buffered workbook changes and pending cell input;
+reopening offers recovery, and saving a recovered draft reports a conflict if
+the file changed externally. Saving or normally closing the spreadsheet
+removes its recovery draft.
 
 Undo and redo cover edits made in the running process; creating a file is not undoable. The bounded history is in memory and
 does not survive a restart.
@@ -283,7 +290,7 @@ does not yet meet its acceptance criteria remains unchecked.
 - **PRs 5–6:** Complete the native text editor widget (`internal/tui/editor`) with literal `\t` preservation (4-space visual tab stops while `Tab` inserts 2 spaces, removing `\t` rejection from `isUnpreservableText`), `UndoLimit`-bounded keystroke history, keystroke-undo reset on `Ctrl+S` save (**PR 5**), and `go-runewidth` soft line wrapping with CJK/emoji-aware visual row navigation and mouse/selection coordinate mapping (**PR 6**)
 
 ### Phase 2: State Safety & CLI Core (PRs 7–13)
-- **PRs 7–9:** Buffered `Ctrl+S` saving and autosave recovery drafts for spreadsheets (switching the spreadsheet TUI from immediate per-cell disk writes to buffered workbook editing with dirty-close confirmation in **PR 7**, autosaving the dirty workbook + active cell input in **PR 8**) and presentations (opening recovered drafts directly into the Markdown source editor in **PR 9**). PR 9 is complete; spreadsheet PR 7 is pending, and merged PR 8 scaffolding cannot save drafts until PR 7 is implemented.
+- **PRs 7–9:** Buffered `Ctrl+S` saving and autosave recovery drafts for spreadsheets (switching the spreadsheet TUI from immediate per-cell disk writes to buffered workbook editing with dirty-close confirmation in **PR 7**, autosaving the dirty workbook + active cell input in **PR 8**) and presentations (opening recovered drafts directly into the Markdown source editor in **PR 9**). PR 9 is complete; PRs 7 and 8 are implemented in the current branch and pending merge.
 - **PR 10:** Explicit CLI-only conversion of plain Markdown files (`parchment convert <file> [--kind document|note|presentation] [--yes]`, defaulting `--kind` to `document`, prompting `[y/N]` on a TTY and requiring `--yes` when non-interactive, setting `created_at` from file `mtime` UTC and `modified_at` to current UTC)
 - **PRs 11–12:** Spreadsheet deletion & CSV export: 1-based `delete-row`, `delete-column`, and `delete-sheet` (CLI + TUI shortcuts) with formula reference shifting, `#REF!` token support, and relaxed save-time validation allowing formula error values to persist while rejecting invalid syntax (**PR 11**); `spreadsheet export <file> --csv [--sheet <name>] [-o <output>] [--force]` defaulting to the first sheet and `stdout` when omitted and refusing overwrite without `--force` (**PR 12**)
 - **PR 13:** Document embedded image management: `document images <file>` (`<name>\t<format>\t<WxH>\t<bytes>\t<referenced|unreferenced>`), `document image-extract <file> <image-name> -o <output> [--force]` (`0600`), and `document image-remove <file> <image-name> [--strip-references]` (refusing removal when referenced in `Body` without `--strip-references` or when referenced by a pending proposal)
