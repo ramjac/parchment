@@ -661,10 +661,10 @@ func (s *documentsScreen) previewPage() document.Page {
 	return s.editPages[s.editPage]
 }
 
-// previewRows is the number of page lines that fit below the one-line
-// application header and the preview's title line.
+// previewRows is the number of page lines that fit below the application
+// header, preview title, and status line.
 func (s *documentsScreen) previewRows() int {
-	return max(s.height-2, 1)
+	return max(s.height-3, 1)
 }
 
 func (s *documentsScreen) clampPreviewLine() {
@@ -951,7 +951,8 @@ func (s *documentsScreen) editorView(header string) string {
 		if s.prompt != promptNone {
 			title = runewidth.Truncate(s.promptInput.View()+"  ·  Enter export PDF  ·  Esc cancel", max(s.width, 1), "…")
 		}
-		return header + "\n" + title + "\n" + pageText(visible, max(s.width, 1))
+		status := ansi.Truncate(s.statusLine(), max(s.width, 1), "…")
+		return header + "\n" + title + "\n" + pageText(visible, max(s.width, 1)) + "\n" + status
 	}
 	var content strings.Builder
 	if s.prompt != promptNone {

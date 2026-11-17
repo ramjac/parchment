@@ -110,7 +110,8 @@ func Write(w io.Writer, file File) error {
 					fpdf.ImageOptions{ImageType: img.Format}, 0, "",
 				)
 			} else {
-				if err := validateWinAnsi(element.Text); err != nil {
+				text, err := encodeWinAnsi(element.Text)
+				if err != nil {
 					return err
 				}
 				size := element.FontSize
@@ -127,11 +128,11 @@ func Write(w io.Writer, file File) error {
 				} else {
 					pdf.SetTextColor(0, 0, 0)
 				}
-				pdf.Text(element.X, element.Y, element.Text)
+				pdf.Text(element.X, element.Y, text)
 				if element.Strikethrough {
 					pdf.SetDrawColor(0, 0, 0)
 					lineY := element.Y - size*0.09
-					pdf.Line(element.X, lineY, element.X+pdf.GetStringWidth(element.Text), lineY)
+					pdf.Line(element.X, lineY, element.X+pdf.GetStringWidth(text), lineY)
 				}
 			}
 			if err := pdf.Error(); err != nil {

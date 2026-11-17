@@ -489,7 +489,7 @@ func (s *documentsScreen) exportPDF(path string) tea.Cmd {
 		if err := ctx.Err(); err != nil {
 			return documentPDFExportedMsg{err: err}
 		}
-		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
 			if os.IsExist(err) {
 				err = fmt.Errorf("PDF file %q already exists", path)

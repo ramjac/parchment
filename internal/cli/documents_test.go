@@ -67,13 +67,27 @@ func TestDocumentPrintPDFCLI(t *testing.T) {
 	}
 
 	c.must("document", "print", "pdf.md", "--format", "pdf", "-o", "output.pdf")
+	info, err := os.Stat("output.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("new PDF permissions = %v; want 0600", info.Mode().Perm())
+	}
 	if _, err := c.run("document", "print", "pdf.md", "--format", "pdf", "-o", "output.pdf"); err == nil {
 		t.Fatal("existing output was overwritten without --force")
+	}
+	if err := os.Chmod("output.pdf", 0o640); err != nil {
+		t.Fatal(err)
 	}
 	c.must("document", "print", "pdf.md", "--format", "pdf", "-o", "output.pdf", "--force")
 	data, err := os.ReadFile("output.pdf")
 	if err != nil || !strings.HasPrefix(string(data), "%PDF-") {
 		t.Fatalf("PDF output file is invalid: %v", err)
+	}
+	info, err = os.Stat("output.pdf")
+	if err != nil || info.Mode().Perm() != 0o640 {
+		t.Fatalf("overwritten PDF permissions = %v, %v; want 0640", info, err)
 	}
 
 	if err := os.WriteFile("text.out", []byte("old"), 0o600); err != nil {

@@ -491,7 +491,7 @@ func newDocumentPrintCmd(streams output) *cobra.Command {
 				} else {
 					flags |= os.O_EXCL
 				}
-				f, err := os.OpenFile(path, flags, 0o644)
+				f, err := os.OpenFile(path, flags, 0o600)
 				if err != nil {
 					if os.IsExist(err) {
 						return fmt.Errorf("file %q already exists (use --force to overwrite)", path)

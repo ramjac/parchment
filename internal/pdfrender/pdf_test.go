@@ -3,6 +3,8 @@ package pdfrender
 import (
 	"bytes"
 	"compress/zlib"
+	"encoding/binary"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/gif"
@@ -85,6 +87,37 @@ func TestRenderEmbedsJPEGAndTransparentPNG(t *testing.T) {
 	}
 	if countImageDraws(pdf) < 2 {
 		t.Fatal("inline and reference-style images were not drawn into the PDF")
+	}
+}
+
+func TestRenderResolvesImageReferencesAcrossPageBreaks(t *testing.T) {
+	pngImage, err := artifact.NewImage(encodePNG(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := document.Document{
+		Body:   "![pixel][pixel-ref]\n\n" + document.PageBreakMarkup + "\n\n[pixel-ref]: " + pngImage.Name,
+		Layout: document.DefaultLayout(),
+		Images: []artifact.Image{pngImage},
+	}
+	var out bytes.Buffer
+	if err := Render(&out, d); err != nil {
+		t.Fatal(err)
+	}
+	if countImageDraws(out.String()) == 0 {
+		t.Fatal("reference-style image before a page break was not resolved using the later definition")
+	}
+}
+
+func TestPrepareImageRejectsOversizedDecodedDimensionsBeforeDecode(t *testing.T) {
+	data := pngConfigOnly(uint32(maxImagePixels+1), 1)
+	if _, err := prepareImage(data); err == nil || !strings.Contains(err.Error(), "exceed the PDF limit") {
+		t.Fatalf("prepareImage error = %v, want decoded-pixel budget error", err)
+	}
+	if _, err := documentImages(document.Document{
+		Images: []artifact.Image{{Name: "unreferenced", Data: data}},
+	}); err == nil || !strings.Contains(err.Error(), "exceed the PDF limit") {
+		t.Fatalf("unreferenced image error = %v, want decoded-pixel budget error", err)
 	}
 }
 
@@ -254,4 +287,17 @@ func encodePNG(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return out.Bytes()
+}
+
+func pngConfigOnly(width, height uint32) []byte {
+	data := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	chunk := make([]byte, 25)
+	binary.BigEndian.PutUint32(chunk[:4], 13)
+	copy(chunk[4:8], "IHDR")
+	binary.BigEndian.PutUint32(chunk[8:12], width)
+	binary.BigEndian.PutUint32(chunk[12:16], height)
+	chunk[16] = 8
+	chunk[17] = 6
+	binary.BigEndian.PutUint32(chunk[21:], crc32.ChecksumIEEE(chunk[4:21]))
+	return append(data, chunk...)
 }

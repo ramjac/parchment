@@ -123,6 +123,13 @@ func TestDocumentPDFExportFromEditorPreservesUnsavedDraft(t *testing.T) {
 	if !bytes.HasPrefix(pdf, []byte("%PDF-")) {
 		t.Fatalf("export does not have a PDF signature: %q", pdf[:min(len(pdf), 8)])
 	}
+	info, err := os.Stat(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("export permissions = %v; want 0600", info.Mode().Perm())
+	}
 	var expected bytes.Buffer
 	if err := pdfrender.Render(&expected, s.editorDocument()); err != nil {
 		t.Fatal(err)
@@ -155,6 +162,15 @@ func TestDocumentPDFExportFromEditorPreservesUnsavedDraft(t *testing.T) {
 	}
 	if !bytes.HasPrefix(previewPDF, []byte("%PDF-")) {
 		t.Fatalf("preview export does not have a PDF signature: %q", previewPDF[:min(len(previewPDF), 8)])
+	}
+	if !strings.Contains(h.m.View(), "PDF exported to "+previewOutput) {
+		t.Fatal("print preview did not display the PDF export success status")
+	}
+	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	s.promptInput.SetValue(previewOutput)
+	h.key("enter")
+	if !strings.Contains(h.m.View(), "PDF export failed:") {
+		t.Fatal("print preview did not display the PDF export error status")
 	}
 }
 
@@ -726,20 +742,20 @@ func TestDocumentPreviewFitsTerminalAndScrolls(t *testing.T) {
 		t.Fatalf("preview view has %d lines for a 24-line terminal", lines)
 	}
 	cleanView := ansi.Strip(view)
-	if !strings.Contains(cleanView, "Hello") || !strings.Contains(cleanView, "Some text") || !strings.Contains(cleanView, "lines 1–22 of") {
+	if !strings.Contains(cleanView, "Hello") || !strings.Contains(cleanView, "Some text") || !strings.Contains(cleanView, "lines 1–21 of") {
 		t.Fatalf("preview does not show the top of the page:\n%s", view)
 	}
 	h.send(tea.KeyMsg{Type: tea.KeyDown})
-	if !strings.Contains(h.m.View(), "lines 2–23 of") {
+	if !strings.Contains(h.m.View(), "lines 2–22 of") {
 		t.Fatalf("down did not scroll:\n%s", h.m.View())
 	}
 	h.send(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
-	if !strings.Contains(h.m.View(), "lines 5–26 of") {
+	if !strings.Contains(h.m.View(), "lines 5–25 of") {
 		t.Fatalf("wheel did not scroll:\n%s", h.m.View())
 	}
 	h.send(tea.KeyMsg{Type: tea.KeyEnd})
 	total := len(s.editPages[0].Lines)
-	if !strings.Contains(h.m.View(), fmt.Sprintf("lines %d–%d of %d", total-21, total, total)) {
+	if !strings.Contains(h.m.View(), fmt.Sprintf("lines %d–%d of %d", total-20, total, total)) {
 		t.Fatalf("end did not reach the bottom:\n%s", h.m.View())
 	}
 	h.key("esc")

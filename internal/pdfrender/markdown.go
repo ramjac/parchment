@@ -12,10 +12,13 @@ import (
 
 	"github.com/go-pdf/fpdf"
 	"github.com/mattn/go-runewidth"
+	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/extension"
 	east "github.com/yuin/goldmark/extension/ast"
+	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/text"
 
-	"example.com/parchment/internal/docinterop"
 	"example.com/parchment/internal/document"
 )
 
@@ -48,30 +51,56 @@ type markdownRun struct {
 }
 
 type markdownWord struct {
-	runs  []markdownRun
-	width int
-	image bool
+	runs          []markdownRun
+	widthMM       float64
+	image         bool
+	spaceBefore   bool
+	preserveSpace bool
 }
 
 type markdownPrinter struct {
-	source []byte
-	width  int
-	assets map[string]imageAsset
-	refs   *[]imageRef
-	lines  []string
+	source       []byte
+	width        int
+	widthMM      float64
+	font         string
+	measure      *fpdf.Fpdf
+	spaceWidthMM float64
+	assets       map[string]imageAsset
+	refs         *[]imageRef
+	lines        []string
 }
 
-func markdownFormatter(assets map[string]imageAsset, refs *[]imageRef) document.Formatter {
-	return func(lines []string, width int) []string {
-		body := strings.Join(lines, "\n")
-		source := []byte(body)
-		printer := markdownPrinter{
-			source: source,
-			width:  max(width, 1),
-			assets: assets,
-			refs:   refs,
+func markdownFormatter(assets map[string]imageAsset, refs *[]imageRef, measure *fpdf.Fpdf, font string, textWidthMM float64) document.Formatter {
+	md := goldmark.New(goldmark.WithExtensions(extension.GFM))
+	var references []parser.Reference
+	referencesReady := false
+	return func(lines []string, width, columns int, fullBody string) []string {
+		if !referencesReady {
+			context := parser.NewContext()
+			md.Parser().Parse(text.NewReader([]byte(fullBody)), parser.WithContext(context))
+			references = context.References()
+			referencesReady = true
 		}
-		root := docinterop.ParseMarkdown(body)
+		runBody := strings.Join(lines, "\n")
+		source := []byte(runBody)
+		context := parser.NewContext()
+		for _, reference := range references {
+			context.AddReference(reference)
+		}
+		measure.SetFont(pdfFont(font), "", printerFontSize)
+		gutterWidth := measure.GetStringWidth(strings.Repeat(" ", document.ColumnGutter))
+		columnWidthMM := (textWidthMM - float64(columns-1)*gutterWidth) / float64(columns)
+		printer := markdownPrinter{
+			source:       source,
+			width:        max(width, 1),
+			widthMM:      columnWidthMM,
+			font:         font,
+			measure:      measure,
+			spaceWidthMM: measure.GetStringWidth(" "),
+			assets:       assets,
+			refs:         refs,
+		}
+		root := md.Parser().Parse(text.NewReader(source), parser.WithContext(context))
 		for node := root.FirstChild(); node != nil; node = node.NextSibling() {
 			printer.block(node, "", "")
 		}
@@ -83,6 +112,8 @@ func (p *markdownPrinter) block(node ast.Node, firstPrefix, restPrefix string) {
 	switch n := node.(type) {
 	case *ast.Paragraph:
 		p.paragraph(n, firstPrefix, restPrefix, 0)
+	case *ast.TextBlock:
+		p.paragraph(n, firstPrefix, restPrefix, 0)
 	case *ast.Heading:
 		p.blank()
 		style := styleBold | n.Level<<headingShift
@@ -90,6 +121,8 @@ func (p *markdownPrinter) block(node ast.Node, firstPrefix, restPrefix string) {
 		p.blank()
 	case *ast.List:
 		p.list(n, 0, firstPrefix, restPrefix)
+	case *east.Table:
+		p.table(n, firstPrefix, restPrefix)
 	case *ast.Blockquote:
 		prefix := firstPrefix + "> "
 		rest := restPrefix + "> "
@@ -112,6 +145,21 @@ func (p *markdownPrinter) block(node ast.Node, firstPrefix, restPrefix string) {
 			p.block(child, firstPrefix, restPrefix)
 		}
 	}
+}
+
+func (p *markdownPrinter) table(table *east.Table, firstPrefix, restPrefix string) {
+	p.blank()
+	for row := table.FirstChild(); row != nil; row = row.NextSibling() {
+		var parts []markdownPart
+		for cell := row.FirstChild(); cell != nil; cell = cell.NextSibling() {
+			if len(parts) > 0 {
+				parts = append(parts, markdownPart{text: " | "})
+			}
+			parts = append(parts, p.inline(cell, 0)...)
+		}
+		p.writeParts(parts, firstPrefix, restPrefix)
+	}
+	p.blank()
 }
 
 func (p *markdownPrinter) list(list *ast.List, depth int, baseFirst, baseRest string) {
@@ -154,7 +202,7 @@ func (p *markdownPrinter) paragraph(node ast.Node, firstPrefix, restPrefix strin
 			(*p.refs)[refIndex].block = true
 			p.lines = append(p.lines, encodeImage(refIndex))
 			asset := p.assets[(*p.refs)[refIndex].name]
-			_, height := blockImageSize(asset, maxBlockImageMM)
+			_, height := blockImageSize(asset, p.widthMM, maxBlockImageMM)
 			for i := 0; i < int((height+lineHeightMM-1)/lineHeightMM)+1; i++ {
 				p.lines = append(p.lines, "")
 			}
@@ -231,13 +279,59 @@ func (p *markdownPrinter) inline(node ast.Node, style int) []markdownPart {
 
 func (p *markdownPrinter) codeBlock(content []byte, firstPrefix, restPrefix string) {
 	lines := strings.Split(strings.TrimSuffix(string(content), "\n"), "\n")
-	for i, line := range lines {
-		p.writeParts([]markdownPart{{text: line, style: styleCode}}, firstPrefix, restPrefix)
-		if i < len(lines)-1 {
-			p.lines = append(p.lines, "")
-		}
+	for _, line := range lines {
+		p.codeLine(expandCodeTabs(line), firstPrefix, restPrefix)
 	}
 	p.blank()
+}
+
+func expandCodeTabs(line string) string {
+	var out strings.Builder
+	column := 0
+	for _, r := range line {
+		if r == '\t' {
+			spaces := 4 - column%4
+			out.WriteString(strings.Repeat(" ", spaces))
+			column += spaces
+			continue
+		}
+		out.WriteRune(r)
+		column += max(runewidth.RuneWidth(r), 0)
+	}
+	return out.String()
+}
+
+func (p *markdownPrinter) codeLine(line, firstPrefix, restPrefix string) {
+	runes := []rune(line)
+	first := true
+	for start := 0; start < len(runes); {
+		prefix := restPrefix
+		if first {
+			prefix = firstPrefix
+			first = false
+		}
+		prefixWidth := p.textWidthMM(prefix, 0)
+		available := max(p.widthMM-prefixWidth, p.spaceWidthMM)
+		end, width := start, 0.0
+		for end < len(runes) {
+			nextWidth := p.textWidthMM(string(runes[end]), styleCode)
+			if end > start && width+nextWidth > available {
+				break
+			}
+			width += nextWidth
+			end++
+		}
+		if end == start {
+			end++
+		}
+		runs := appendMarkdownRun(nil, prefix, 0)
+		runs = appendMarkdownRun(runs, string(runes[start:end]), styleCode)
+		p.lines = append(p.lines, encodeRuns(runs))
+		start = end
+	}
+	if len(runes) == 0 {
+		p.lines = append(p.lines, encodeRuns(appendMarkdownRun(nil, firstPrefix, 0)))
+	}
 }
 
 func (p *markdownPrinter) writeText(text, firstPrefix, restPrefix string, style int) {
@@ -248,6 +342,7 @@ func (p *markdownPrinter) writeText(text, firstPrefix, restPrefix string, style 
 func (p *markdownPrinter) writeParts(parts []markdownPart, firstPrefix, restPrefix string) {
 	var words []markdownWord
 	var word markdownWord
+	pendingSpace := false
 	flushWord := func() {
 		if len(word.runs) > 0 {
 			words = append(words, word)
@@ -258,6 +353,7 @@ func (p *markdownPrinter) writeParts(parts []markdownPart, firstPrefix, restPref
 	for _, part := range parts {
 		if part.hardBreak {
 			flushWord()
+			pendingSpace = false
 			hardBreaks[len(words)] = true
 			continue
 		}
@@ -265,39 +361,62 @@ func (p *markdownPrinter) writeParts(parts []markdownPart, firstPrefix, restPref
 			flushWord()
 			ref := (*p.refs)[part.imageRef]
 			if ref.name != "" {
+				width, _ := inlineImageSize(p.assets[ref.name])
 				word = markdownWord{
-					runs:  []markdownRun{{text: encodeImageWithSpace(part.imageRef), style: part.style}},
-					width: 10,
-					image: true,
+					runs:        []markdownRun{{text: encodeImageWithSpace(part.imageRef), style: part.style}},
+					widthMM:     width,
+					image:       true,
+					spaceBefore: pendingSpace,
 				}
 			} else {
 				word = markdownWord{
-					runs:  []markdownRun{{text: encodeImage(part.imageRef) + part.text, style: part.style}},
-					width: runewidth.StringWidth(part.text),
-					image: true,
+					runs:        []markdownRun{{text: encodeImage(part.imageRef) + part.text, style: part.style}},
+					widthMM:     p.textWidthMM(part.text, part.style),
+					image:       true,
+					spaceBefore: pendingSpace,
 				}
 			}
+			pendingSpace = false
 			flushWord()
 			continue
 		}
-		for _, r := range part.text {
+		partText := part.text
+		if part.style&styleCode != 0 && strings.ContainsRune(partText, '\t') {
+			partText = expandCodeTabs(partText)
+		}
+		for _, r := range partText {
 			if unicode.IsSpace(r) {
 				flushWord()
+				if part.style&styleCode != 0 {
+					words = append(words, markdownWord{
+						runs:          []markdownRun{{text: string(r), style: part.style}},
+						widthMM:       p.textWidthMM(string(r), part.style),
+						spaceBefore:   pendingSpace,
+						preserveSpace: true,
+					})
+					pendingSpace = false
+				} else {
+					pendingSpace = true
+				}
 				continue
 			}
 			text := string(r)
 			if strings.ContainsRune(text, rune(markByte)) {
 				text = " "
 			}
+			if len(word.runs) == 0 {
+				word.spaceBefore = pendingSpace
+				pendingSpace = false
+			}
 			word.runs = appendMarkdownRun(word.runs, text, part.style)
-			word.width += runewidth.RuneWidth(r)
+			word.widthMM += p.textWidthMM(text, part.style)
 		}
 	}
 	flushWord()
 
 	first := true
 	var line []markdownRun
-	lineWidth := 0
+	lineWidthMM := 0.0
 	hasWord := false
 	startLine := func() {
 		prefix := restPrefix
@@ -309,7 +428,7 @@ func (p *markdownPrinter) writeParts(parts []markdownPart, firstPrefix, restPref
 		if prefix != "" {
 			line = appendMarkdownRun(line, prefix, 0)
 		}
-		lineWidth = runewidth.StringWidth(prefix)
+		lineWidthMM = p.textWidthMM(prefix, 0)
 		hasWord = false
 	}
 	flushLine := func() {
@@ -321,53 +440,81 @@ func (p *markdownPrinter) writeParts(parts []markdownPart, firstPrefix, restPref
 		if hardBreaks[i] && hasWord {
 			flushLine()
 		}
-		if next.width > p.width-lineWidth {
+		separatorWidth := 0.0
+		if next.spaceBefore && hasWord {
+			separatorWidth = p.spaceWidthMM
+		}
+		if next.preserveSpace {
+			spaceWidth := 0.0
+			if next.spaceBefore && hasWord {
+				spaceWidth = p.spaceWidthMM
+			}
+			if lineWidthMM+spaceWidth+next.widthMM > p.widthMM && hasWord {
+				flushLine()
+				spaceWidth = 0
+			}
+			if spaceWidth > 0 {
+				line = appendMarkdownRun(line, " ", 0)
+				lineWidthMM += spaceWidth
+			}
+			line = append(line, next.runs...)
+			lineWidthMM += next.widthMM
+			continue
+		}
+		if next.widthMM+separatorWidth > p.widthMM-lineWidthMM {
 			if hasWord {
 				flushLine()
 			}
-			if next.width > p.width-lineWidth && !next.image {
-				pieces := splitMarkdownWord(next, max(p.width-lineWidth, 1))
+			if next.widthMM > p.widthMM-lineWidthMM && !next.image {
+				pieces := splitMarkdownWord(next, max(p.widthMM-lineWidthMM, p.spaceWidthMM), p)
 				for _, piece := range pieces {
-					if hasWord && lineWidth+1+piece.width > p.width {
+					spaceWidth := 0.0
+					if piece.spaceBefore && hasWord {
+						spaceWidth = p.spaceWidthMM
+					}
+					if hasWord && lineWidthMM+spaceWidth+piece.widthMM > p.widthMM {
 						flushLine()
 					}
-					if hasWord {
+					if spaceWidth > 0 && hasWord {
 						line = appendMarkdownRun(line, " ", 0)
-						lineWidth++
+						lineWidthMM += p.spaceWidthMM
 					}
 					line = append(line, piece.runs...)
-					lineWidth += piece.width
+					lineWidthMM += piece.widthMM
 					hasWord = true
+					piece.spaceBefore = false
 				}
 				continue
 			}
 		}
-		if hasWord {
+		if separatorWidth > 0 && hasWord {
 			line = appendMarkdownRun(line, " ", 0)
-			lineWidth++
+			lineWidthMM += p.spaceWidthMM
 		}
 		line = append(line, next.runs...)
-		lineWidth += next.width
-		hasWord = true
+		lineWidthMM += next.widthMM
+		if next.widthMM > 0 {
+			hasWord = true
+		}
 	}
 	if len(line) > 0 && (hasWord || firstPrefix != "" || restPrefix != "") {
 		p.lines = append(p.lines, encodeRuns(line))
 	}
 }
 
-func splitMarkdownWord(word markdownWord, width int) []markdownWord {
+func splitMarkdownWord(word markdownWord, widthMM float64, p *markdownPrinter) []markdownWord {
 	var result []markdownWord
 	part := markdownWord{}
 	for _, run := range word.runs {
 		for _, r := range run.text {
 			runeText := string(r)
-			runeWidth := runewidth.RuneWidth(r)
-			if part.width+runeWidth > width && part.width > 0 {
+			runeWidth := p.textWidthMM(runeText, run.style)
+			if part.widthMM+runeWidth > widthMM && part.widthMM > 0 {
 				result = append(result, part)
 				part = markdownWord{}
 			}
 			part.runs = appendMarkdownRun(part.runs, runeText, run.style)
-			part.width += runeWidth
+			part.widthMM += runeWidth
 		}
 	}
 	if len(part.runs) > 0 {
@@ -376,7 +523,18 @@ func splitMarkdownWord(word markdownWord, width int) []markdownWord {
 	if len(result) == 0 {
 		return []markdownWord{word}
 	}
+	result[0].spaceBefore = word.spaceBefore
 	return result
+}
+
+func (p *markdownPrinter) textWidthMM(text string, style int) float64 {
+	font, fontStyle, size := richFont(p.font, style)
+	p.measure.SetFont(font, fontStyle, size)
+	encoded, err := encodeWinAnsi(text)
+	if err == nil {
+		return p.measure.GetStringWidth(encoded)
+	}
+	return float64(runewidth.StringWidth(text)) * p.spaceWidthMM
 }
 
 func appendMarkdownRun(runs []markdownRun, text string, style int) []markdownRun {
@@ -442,7 +600,7 @@ func encodeImageWithSpace(index int) string {
 	return encodeImage(index)
 }
 
-func renderRichLine(pdf *fpdf.Fpdf, line string, left, baseline float64, font string, refs []imageRef, assets map[string]imageAsset, pageHeight, bottomMargin float64) ([]Element, error) {
+func renderRichLine(pdf *fpdf.Fpdf, line string, left, baseline, maxWidthMM float64, font string, refs []imageRef, assets map[string]imageAsset, pageHeight, bottomMargin float64) ([]Element, error) {
 	var elements []Element
 	x := left
 	style := 0
@@ -470,10 +628,13 @@ func renderRichLine(pdf *fpdf.Fpdf, line string, left, baseline float64, font st
 				}
 				if ref.name != "" {
 					width, height := inlineImageSize(asset)
+					if available := max(maxWidthMM-(x-left), 0); width > available {
+						scale := available / width
+						width, height = width*scale, height*scale
+					}
 					y := baseline - height
 					if ref.block {
-						width, height = blockImageSize(asset, max(pageHeight-bottomMargin-baseline+lineHeightMM, lineHeightMM))
-						x = left
+						width, height = blockImageSize(asset, maxWidthMM, max(pageHeight-bottomMargin-baseline+lineHeightMM, lineHeightMM))
 						y = baseline - lineHeightMM
 					}
 					elements = append(elements, Element{
@@ -514,35 +675,10 @@ func renderRichLine(pdf *fpdf.Fpdf, line string, left, baseline float64, font st
 			return nil, err
 		}
 		code := style
-		fontName := pdfFont(font)
-		if code&styleCode != 0 {
-			fontName = "Courier"
-		}
-		fontStyle := ""
-		if code&styleBold != 0 {
-			fontStyle += "B"
-		}
-		if code&styleItalic != 0 {
-			fontStyle += "I"
-		}
-		if code&styleLink != 0 {
-			fontStyle += "U"
-		}
-		sizePt := printerFontSize
-		switch (code & headingMask) >> headingShift {
-		case 1:
-			sizePt = 16
-		case 2:
-			sizePt = 14
-		case 3:
-			sizePt = 13
-		case 5:
-			sizePt = 11
-		case 6:
-			sizePt = 10
-		}
-		if code&styleCode != 0 {
-			sizePt = 10
+		fontName, fontStyle, sizePt := richFont(font, code)
+		encoded, err := encodeWinAnsi(text)
+		if err != nil {
+			return nil, err
 		}
 		pdf.SetFont(fontName, fontStyle, sizePt)
 		if code&styleLink != 0 {
@@ -555,16 +691,50 @@ func renderRichLine(pdf *fpdf.Fpdf, line string, left, baseline float64, font st
 			Color: [3]uint8{0, 76, 153}, HasColor: code&styleLink != 0,
 			Strikethrough: code&styleStrike != 0, X: x, Y: baseline,
 		})
-		x += pdf.GetStringWidth(text)
+		x += pdf.GetStringWidth(encoded)
 	}
 	return elements, nil
 }
 
-func blockImageSize(asset imageAsset, maxHeight float64) (float64, float64) {
+func richFont(font string, code int) (string, string, float64) {
+	fontName := pdfFont(font)
+	if code&styleCode != 0 {
+		fontName = "Courier"
+	}
+	fontStyle := ""
+	if code&styleBold != 0 {
+		fontStyle += "B"
+	}
+	if code&styleItalic != 0 {
+		fontStyle += "I"
+	}
+	if code&styleLink != 0 {
+		fontStyle += "U"
+	}
+	sizePt := printerFontSize
+	switch (code & headingMask) >> headingShift {
+	case 1:
+		sizePt = 16
+	case 2:
+		sizePt = 14
+	case 3:
+		sizePt = 13
+	case 5:
+		sizePt = 11
+	case 6:
+		sizePt = 10
+	}
+	if code&styleCode != 0 {
+		sizePt = 10
+	}
+	return fontName, fontStyle, sizePt
+}
+
+func blockImageSize(asset imageAsset, maxWidth, maxHeight float64) (float64, float64) {
 	if asset.width <= 0 || asset.height <= 0 {
 		return 0, 0
 	}
-	scale := min(maxBlockImageMM/float64(asset.width), maxBlockImageMM/float64(asset.height), maxHeight/float64(asset.height))
+	scale := min(maxWidth/float64(asset.width), maxBlockImageMM/float64(asset.height), maxHeight/float64(asset.height))
 	if scale > 1 {
 		scale = 1
 	}

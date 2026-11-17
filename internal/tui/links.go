@@ -63,7 +63,7 @@ func extractAndRewriteLinks(lines []string) ([]string, []linkRef) {
 func (s *documentsScreen) paginateDocumentWithLinks(doc document.Document) ([]document.Page, []linkHitBox, error) {
 	_, allLinks := extractAndRewriteLinks(strings.Split(doc.Body, "\n"))
 
-	pages, err := document.PaginateWithFormatter(doc, func(lines []string, width int) []string {
+	pages, err := document.PaginateWithFormatter(doc, func(lines []string, width, _ int, _ string) []string {
 		rewritten, _ := extractAndRewriteLinks(lines)
 		return strings.Split(renderMarkdown(strings.Join(rewritten, "\n"), width), "\n")
 	})
