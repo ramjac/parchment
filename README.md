@@ -50,8 +50,9 @@ Metadata timestamps are UTC RFC 3339 values. Back up, copy, move, or version
 artifacts with the same tools you use for any other file.
 
 Initial artifact metadata recognizes the `note`, `document`, `spreadsheet`,
-`presentation`, and `image` kinds. Notes, documents, spreadsheets, and basic
-presentations have application behavior; image editing is not yet implemented.
+`presentation`, and `image` kinds. Notes, documents, spreadsheets, and
+presentations have application behavior; standalone image editing is not yet
+implemented.
 
 ### Documents
 
@@ -73,15 +74,17 @@ parchment document create report.md --body-file draft.md --columns 2 --footer "{
 parchment document print report.md | lpr
 ```
 
-Document font selection, when implemented, applies to the whole document, not
-individual sections, and only to printer-oriented rendering. It cannot change
-the font used by the TUI or terminal previews, which use the font configured
-in the user's terminal emulator.
+Documents store a document-wide core-font choice (`courier`, `helvetica`, or
+`times`) in their layout; it does not change the font used by the TUI or
+terminal previews, which use the font configured in the user's terminal
+emulator. Text printing remains plain text; PDF printing is not yet implemented.
 
 Document commands (`parchment document`, alias `doc`): `create`, `show`,
 `edit`, `layout`, `page-break`,
-`section-break`, `image`, `print`, `propose`, `changes`, `review`, `accept`,
-and `reject`. `propose` records a Markdown or layout edit without changing the live document; `review` displays the
+`section-break`, `image`, `print`, `import`, `export`, `propose`, `changes`,
+`review`, `accept`, and `reject`. Import/export supports ODF (`.odt`) and DOCX
+(`.docx`) for the documented subset, with lossy-conversion warnings.
+`propose` records a Markdown or layout edit without changing the live document; `review` displays the
 current and proposed Markdown, and `accept` or `reject` resolves the pending
 proposal. Only one proposal may be pending per document, and a proposal cannot
 be accepted if the live document has changed since it was recorded. For
@@ -107,7 +110,7 @@ strikethrough, code, headings, lists, quote, link, rule, image) and page setup
 footer, page numbers). Click a button, press `F2` and use the arrow keys with
 `Enter`, or use the `Alt` shortcuts (`B` bold, `I` italic, `C` code, `1`–`3`
 headings, `L`/`N` lists, `Q` quote, `K` link, `M` image, `P` page break, `S`
-section break). `F5` previews the printed pages and `Ctrl+S` saves. Document
+section break). `F5` previews rendered Markdown pages and `Ctrl+S` saves. Document
 changes, including images, support undo and redo like notes.
 
 ### Spreadsheets
@@ -128,17 +131,16 @@ parchment spreadsheet cell budget.md C2
 parchment spreadsheet show budget.md
 ```
 
-Formula evaluation currently supports numeric constants, same-sheet A1 cell
+Formula evaluation supports numeric constants, same-sheet and cross-sheet A1
 references, parentheses, unary signs, and `+`, `-`, `*`, and `/`. Empty
-referenced cells evaluate to zero. Cycles, non-numeric references, and
-division by zero are rejected. Formulas are limited to 4096 bytes and 512
-nested dependencies or parentheses. Rows and columns can be inserted with
-`spreadsheet insert-row` and `spreadsheet insert-column`; formula references
-shift with inserted rows and columns. Spreadsheet edits can be undone and
-redone through the service API while its process is running; the CLI is
-stateless across invocations. The Markdown file with its JSON data block is
-Parchment's canonical format, not a CSV file that third-party spreadsheet
-applications can open directly.
+referenced cells evaluate to zero; formula errors such as `#REF!` can be
+persisted. Rows, columns, and sheets can be deleted, with formula references
+shifted or changed to `#REF!` as appropriate. Use
+`spreadsheet export <file> --csv` to export a sheet as CSV. Spreadsheet edits
+can be undone and redone through the service API while its process is running;
+the CLI is stateless across invocations. The Markdown file with its JSON data
+block is Parchment's canonical format, not a CSV file that third-party
+spreadsheet applications can open directly.
 
 ### Presentations
 
@@ -166,15 +168,15 @@ Presenter Name
 Thank you.
 ```
 
-Use `presentation create talk.md --body-file slides.md` to create a deck, `presentation show talk.md` to
-inspect its source, and `presentation preview talk.md` for a slide-separated
-plain-text preview. `presentation edit talk.md --body-file slides.md` replaces
-the Markdown source.
-The parser preserves Markdown for later rendering but does not yet render it;
-embedded media and Go present command directives are not implemented.
-Presentation font selection, when implemented, applies to the whole
-presentation, not individual sections. It applies only to rendered output,
-never to terminal previews.
+Use `presentation create talk.md --body-file slides.md` to create a deck,
+`presentation show talk.md` to inspect its source, and
+`presentation preview talk.md` for a slide-separated preview.
+`presentation edit talk.md --body-file slides.md` replaces the Markdown
+source. The TUI renders slide Markdown and supports embedded images; CLI
+commands can add, list, extract, and remove presentation images. Go present
+`.image` and `.code` directives are not implemented. Presentations store a
+document-wide core-font choice (`courier`, `helvetica`, or `times`); it never
+changes terminal output.
 
 ## Examples
 
@@ -204,9 +206,11 @@ destination = ""
 ```
 
 Settings are merged from built-in defaults, the configuration file, then
-environment overrides. `PARCHMENT_UNDO_LIMIT` overrides the configured undo limit. Theme,
-logging, and backup settings are not yet connected to runtime
-behavior, and their environment variables currently have no effect.
+environment overrides. `PARCHMENT_UNDO_LIMIT`, `PARCHMENT_THEME`,
+`PARCHMENT_LOG_LEVEL`, `PARCHMENT_LOG_FORMAT`, and
+`PARCHMENT_BACKUP_DESTINATION` override their corresponding settings. Theme,
+file logging, and opt-in local backup snapshots are connected to runtime
+behavior.
 
 ## Interactive editor
 
@@ -218,13 +222,13 @@ without creating anything). Mouse clicks position the text cursor in the note
 and document editors and select cells and slides.
 
 In the note editor, `Ctrl+S` saves
-and keeps editing, `F5` toggles a plain-text preview (`↑`/`↓` scroll), and
+and keeps editing, `F5` toggles a rendered Markdown preview (`↑`/`↓` scroll), and
 `Ctrl+Z`/`Ctrl+R` undo and redo edits seamlessly.
 `Esc` or `Ctrl+C` closes the editor, asking for confirmation when there are
 unsaved changes. `Ctrl+C` during a save cancels the save and keeps the editor
 open. Very small terminals show a minimum-size message; `q` then quits only
-when there are no unsaved changes. Preview is plain text rather than rendered
-Markdown, so canonical Markdown is never confused with presentation.
+when there are no unsaved changes. The preview renders Markdown without
+changing the canonical source.
 
 An existing document opens in a reader: an outline of its headings sits beside
 the rendered printed pages (only the pages on narrow terminals). `↑`/`↓` scroll
@@ -247,7 +251,9 @@ recovers it into the editor, `d` discards it, and `q` quits and keeps it for
 later. If the file changed after the draft was written, saving the recovered
 draft reports a conflict instead of overwriting those changes.
 
-Spreadsheet and presentation edits are not yet autosaved as recovery drafts.
+Presentation edits are autosaved as recovery drafts. Spreadsheet recovery
+drafts are not yet saved: the merged recovery scaffolding awaits buffered
+spreadsheet editing before it can capture unsaved workbook changes.
 
 Undo and redo cover edits made in the running process; creating a file is not undoable. The bounded history is in memory and
 does not survive a restart.
@@ -258,8 +264,12 @@ Parchment supports notes, documents, basic spreadsheets, and Markdown
 presentations. Detailed PR-by-PR implementation plans are in
 [`FutureWork.md`](FutureWork.md), [`docs/ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md),
 and [`docs/Persistent_Undo_Redo_Plan.md`](docs/Persistent_Undo_Redo_Plan.md).
-Planned work is organized into five sequential implementation phases broken down
-into **38 reviewable Pull Requests (`PR 1`–`PR 38`)**:
+Work is organized into five sequential implementation phases broken down into
+**38 reviewable Pull Requests (`PR 1`–`PR 38`)**. The main branch has completed
+milestones **1–4, 6, 9–14, 15a, 16–19, 22, 24a–b, 26, and 31–35**. The
+[`FutureWork.md`](FutureWork.md) checklist is the progress source of truth:
+only fully implemented, merged milestones are checked; merged scaffolding that
+does not yet meet its acceptance criteria remains unchecked.
 
 ### Phase 1: Foundations & Bug Fixes (PRs 1–6)
 - **PR 1:** Fix bordered content sizing in the note editor (and Lip Gloss outer border dimensions `width-2` / `height-chrome-2` so borders never overflow terminal bounds)
@@ -270,7 +280,7 @@ into **38 reviewable Pull Requests (`PR 1`–`PR 38`)**:
 - **PRs 5–6:** Complete the native text editor widget (`internal/tui/editor`) with literal `\t` preservation (4-space visual tab stops while `Tab` inserts 2 spaces, removing `\t` rejection from `isUnpreservableText`), `UndoLimit`-bounded keystroke history, keystroke-undo reset on `Ctrl+S` save (**PR 5**), and `go-runewidth` soft line wrapping with CJK/emoji-aware visual row navigation and mouse/selection coordinate mapping (**PR 6**)
 
 ### Phase 2: State Safety & CLI Core (PRs 7–13)
-- **PRs 7–9:** Buffered `Ctrl+S` saving and autosave recovery drafts for spreadsheets (switching the spreadsheet TUI from immediate per-cell disk writes to buffered workbook editing with dirty-close confirmation in **PR 7**, autosaving the dirty workbook + active cell input in **PR 8**) and presentations (opening recovered drafts directly into the Markdown source editor in **PR 9**)
+- **PRs 7–9:** Buffered `Ctrl+S` saving and autosave recovery drafts for spreadsheets (switching the spreadsheet TUI from immediate per-cell disk writes to buffered workbook editing with dirty-close confirmation in **PR 7**, autosaving the dirty workbook + active cell input in **PR 8**) and presentations (opening recovered drafts directly into the Markdown source editor in **PR 9**). PR 9 is complete; spreadsheet PR 7 is pending, and merged PR 8 scaffolding cannot save drafts until PR 7 is implemented.
 - **PR 10:** Explicit CLI-only conversion of plain Markdown files (`parchment convert <file> [--kind document|note|presentation] [--yes]`, defaulting `--kind` to `document`, prompting `[y/N]` on a TTY and requiring `--yes` when non-interactive, setting `created_at` from file `mtime` UTC and `modified_at` to current UTC)
 - **PRs 11–12:** Spreadsheet deletion & CSV export: 1-based `delete-row`, `delete-column`, and `delete-sheet` (CLI + TUI shortcuts) with formula reference shifting, `#REF!` token support, and relaxed save-time validation allowing formula error values to persist while rejecting invalid syntax (**PR 11**); `spreadsheet export <file> --csv [--sheet <name>] [-o <output>] [--force]` defaulting to the first sheet and `stdout` when omitted and refusing overwrite without `--force` (**PR 12**)
 - **PR 13:** Document embedded image management: `document images <file>` (`<name>\t<format>\t<WxH>\t<bytes>\t<referenced|unreferenced>`), `document image-extract <file> <image-name> -o <output> [--force]` (`0600`), and `document image-remove <file> <image-name> [--strip-references]` (refusing removal when referenced in `Body` without `--strip-references` or when referenced by a pending proposal)
