@@ -104,6 +104,9 @@ func (s *documentsScreen) scrollReader(down bool, msg tea.Msg) {
 }
 
 func (s *documentsScreen) updateReaderKey(msg tea.KeyMsg) tea.Cmd {
+	if s.prompt != promptNone {
+		return s.updatePrompt(msg)
+	}
 	key := msg.String()
 	switch key {
 	case "q", "esc", "ctrl+c":
@@ -118,6 +121,8 @@ func (s *documentsScreen) updateReaderKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		s.reading = false
 		return cmd
+	case "ctrl+p":
+		return s.openPDFPrompt()
 	case "v", "f4":
 		return s.loadChanges()
 	case "u", "ctrl+z":
@@ -145,7 +150,7 @@ func (s *documentsScreen) updateReaderKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 func (s *documentsScreen) updateReaderMouse(msg tea.MouseMsg) {
-	if msg.Action != tea.MouseActionPress {
+	if s.prompt != promptNone || msg.Action != tea.MouseActionPress {
 		return
 	}
 	switch msg.Button {
@@ -287,9 +292,19 @@ func (s *documentsScreen) readerPageLabel() string {
 }
 
 func (s *documentsScreen) readerView(header string) string {
-	shortcuts := "e edit  ↑/↓ scroll  ←/→ or [ ] page  { } section  v changes  u undo  Ctrl+R redo  esc/q quit"
+	shortcuts := "e edit  Ctrl+P PDF  ↑/↓ scroll  ←/→ or [ ] page  { } section  v changes  u undo  Ctrl+R redo  esc/q quit"
+	if s.prompt != promptNone {
+		shortcuts = "Enter export PDF  ·  Esc cancel"
+	}
+	readerContent := s.reader.View()
+	if s.prompt != promptNone {
+		readerContent = s.promptInput.View() + "\n" + readerContent
+	}
 	if !s.wideReader() {
-		content := "Page " + s.readerPageLabel() + "\n" + s.reader.View()
+		content := readerContent
+		if s.prompt == promptNone {
+			content = "Page " + s.readerPageLabel() + "\n" + content
+		}
 		shortcuts = runewidth.Truncate(shortcuts, max(s.width, 1), "…")
 		return chromeLayout(s.width, s.height, header, shortcuts, content, s.statusLine(), s.theme.Border)
 	}
@@ -306,13 +321,20 @@ func (s *documentsScreen) readerView(header string) string {
 		PaddingRight(1).
 		Render(strings.Join(lines, "\n"))
 
+	pageContent := readerContent
+	if s.prompt == promptNone {
+		pageContent = "Page " + s.readerPageLabel() + "\n" + pageContent
+	}
 	right := lipgloss.NewStyle().
 		Width(previewWidth - 2).
 		PaddingLeft(1).
-		Render("Page " + s.readerPageLabel() + "\n" + s.reader.View())
+		Render(pageContent)
 
 	content := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
-	shortcuts = runewidth.Truncate("click outline to jump  "+shortcuts, max(s.width, 1), "…")
+	if s.prompt == promptNone {
+		shortcuts = "click outline to jump  " + shortcuts
+	}
+	shortcuts = runewidth.Truncate(shortcuts, max(s.width, 1), "…")
 	return chromeLayout(s.width, s.height, header, shortcuts, content, s.statusLine(), s.theme.Border)
 }
 

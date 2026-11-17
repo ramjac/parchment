@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -62,6 +63,7 @@ func (s *documentsScreen) marginName() string {
 func (s *documentsScreen) toolbarButtons() []toolbarButton {
 	buttons := []toolbarButton{
 		{"File", "Save", "save", "Ctrl+S"},
+		{"File", "PDF", "pdf", "Ctrl+P"},
 		{"File", "Propose", "propose", "F3"},
 		{"File", "Changes", "changes", "F4"},
 		{"File", "Preview", "preview", "F5"},
@@ -367,6 +369,8 @@ func (s *documentsScreen) updatePreviewKey(msg tea.KeyMsg) tea.Cmd {
 		s.editPageLine = 0
 	case "end", "G":
 		s.editPageLine = len(s.previewPage().Lines)
+	case "ctrl+p":
+		return s.openPDFPrompt()
 	}
 	s.clampPreviewLine()
 	return nil
@@ -383,6 +387,8 @@ func (s *documentsScreen) updateEditorShortcuts(msg tea.KeyMsg, key string) (tea
 	case "f5":
 		s.openPreview()
 		return nil, true
+	case "ctrl+p":
+		return s.openPDFPrompt(), true
 	case "f6":
 		s.focusOutline()
 		return nil, true
@@ -655,10 +661,10 @@ func (s *documentsScreen) previewPage() document.Page {
 	return s.editPages[s.editPage]
 }
 
-// previewRows is the number of page lines that fit below the one-line
-// application header and the preview's title line.
+// previewRows is the number of page lines that fit below the application
+// header, preview title, and status line.
 func (s *documentsScreen) previewRows() int {
-	return max(s.height-2, 1)
+	return max(s.height-3, 1)
 }
 
 func (s *documentsScreen) clampPreviewLine() {
@@ -757,6 +763,8 @@ func (s *documentsScreen) actDocument(action string) (tea.Cmd, bool) {
 		return s.loadChanges(), true
 	case "image":
 		return s.openPrompt(promptImage, "Image file path (PNG, JPEG, GIF): ", ""), true
+	case "pdf":
+		return s.openPDFPrompt(), true
 	case "preview":
 		s.openPreview()
 		return nil, true
@@ -764,6 +772,15 @@ func (s *documentsScreen) actDocument(action string) (tea.Cmd, bool) {
 		return s.requestClose("Close"), true
 	}
 	return nil, false
+}
+
+func (s *documentsScreen) openPDFPrompt() tea.Cmd {
+	extension := filepath.Ext(s.path)
+	if extension == filepath.Base(s.path) {
+		extension = ""
+	}
+	path := strings.TrimSuffix(s.path, extension) + ".pdf"
+	return s.openPrompt(promptPDF, "PDF output path: ", path)
 }
 
 func textAction(action string) bool {
@@ -832,6 +849,8 @@ func (s *documentsScreen) finishPrompt(kind promptKind, value string) tea.Cmd {
 		}
 		s.pending = true
 		return readImageCommand(s.startOperation(), value)
+	case promptPDF:
+		return s.exportPDF(value)
 	case promptSection:
 		trimmed := strings.TrimSuffix(value, "c")
 		continuous := trimmed != value
@@ -914,7 +933,7 @@ func (s *documentsScreen) editorView(header string) string {
 	if s.dirty() {
 		state += " • unsaved"
 	}
-	state += "  ·  F2 toolbar  ·  F6 outline  ·  Ctrl+S saves  ·  F3 proposes  ·  F4 changes  ·  Esc returns to the reader"
+	state += "  ·  Ctrl+P exports PDF  ·  F2 toolbar  ·  F6 outline  ·  Ctrl+S saves  ·  F3 proposes  ·  F4 changes  ·  Esc returns to the reader"
 	if s.previewing {
 		// A printed page is usually taller than the terminal. Show only the
 		// lines that fit; an over-tall view would be clipped from the top,
@@ -928,8 +947,12 @@ func (s *documentsScreen) editorView(header string) string {
 		if len(page.Lines) > rows {
 			position += fmt.Sprintf(", lines %d–%d of %d", first+1, last, len(page.Lines))
 		}
-		title := runewidth.Truncate("Print preview  ·  "+position+"  ·  ↑/↓ scroll  ·  ←/→ pages  ·  Esc returns", max(s.width, 1), "…")
-		return header + "\n" + title + "\n" + pageText(visible, max(s.width, 1))
+		title := runewidth.Truncate("Print preview  ·  "+position+"  ·  Ctrl+P PDF  ·  ↑/↓ scroll  ·  ←/→ pages  ·  Esc returns", max(s.width, 1), "…")
+		if s.prompt != promptNone {
+			title = runewidth.Truncate(s.promptInput.View()+"  ·  Enter export PDF  ·  Esc cancel", max(s.width, 1), "…")
+		}
+		status := ansi.Truncate(s.statusLine(), max(s.width, 1), "…")
+		return header + "\n" + title + "\n" + pageText(visible, max(s.width, 1)) + "\n" + status
 	}
 	var content strings.Builder
 	if s.prompt != promptNone {

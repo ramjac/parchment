@@ -21,6 +21,7 @@ import (
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/document"
+	"example.com/parchment/internal/pdfrender"
 	"example.com/parchment/internal/recovery"
 )
 
@@ -47,6 +48,10 @@ type documentReloadedMsg struct {
 type documentChangesLoadedMsg struct {
 	changes []document.Change
 	err     error
+}
+type documentPDFExportedMsg struct {
+	path string
+	err  error
 }
 type imageLoadedMsg struct {
 	image artifact.Image
@@ -161,6 +166,7 @@ func (d documentRecoveryData) expand() (document.Document, document.Draft, error
 func (documentSavedMsg) isDocumentMessage()            {}
 func (documentReloadedMsg) isDocumentMessage()         {}
 func (documentChangesLoadedMsg) isDocumentMessage()    {}
+func (documentPDFExportedMsg) isDocumentMessage()      {}
 func (imageLoadedMsg) isDocumentMessage()              {}
 func (documentAutosaveTickMsg) isDocumentMessage()     {}
 func (documentAutosaveFinishedMsg) isDocumentMessage() {}
@@ -183,6 +189,7 @@ const (
 	promptHeader
 	promptFooter
 	promptSection
+	promptPDF
 )
 
 // documentChangesState holds state for reviewing proposed document changes.
@@ -333,6 +340,8 @@ func (s *documentsScreen) update(message tea.Msg) tea.Cmd {
 	case documentChangesLoadedMsg:
 		s.documentChangesLoaded(msg)
 		return nil
+	case documentPDFExportedMsg:
+		return s.documentPDFExported(msg)
 	case imageLoadedMsg:
 		return s.imageLoaded(msg)
 	case tea.KeyMsg:
@@ -457,6 +466,57 @@ func (s *documentsScreen) imageLoaded(msg imageLoadedMsg) tea.Cmd {
 	cmd := s.focusBody()
 	s.layoutEditor()
 	return cmd
+}
+
+func (s *documentsScreen) exportPDF(path string) tea.Cmd {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		s.errMessage = "PDF output path is required"
+		return nil
+	}
+	d := s.snapshot
+	if !s.reading {
+		d = s.editorDocument()
+	}
+	ctx := s.startOperation()
+	s.pending = true
+	s.status, s.errMessage = "Exporting PDF…", ""
+	return func() tea.Msg {
+		var rendered bytes.Buffer
+		if err := pdfrender.Render(&rendered, d); err != nil {
+			return documentPDFExportedMsg{err: err}
+		}
+		if err := ctx.Err(); err != nil {
+			return documentPDFExportedMsg{err: err}
+		}
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			if os.IsExist(err) {
+				err = fmt.Errorf("PDF file %q already exists", path)
+			}
+			return documentPDFExportedMsg{err: err}
+		}
+		_, writeErr := file.Write(rendered.Bytes())
+		closeErr := file.Close()
+		if err := errors.Join(writeErr, closeErr); err != nil {
+			return documentPDFExportedMsg{err: errors.Join(err, os.Remove(path))}
+		}
+		return documentPDFExportedMsg{path: path}
+	}
+}
+
+func (s *documentsScreen) documentPDFExported(msg documentPDFExportedMsg) tea.Cmd {
+	s.finishOperation()
+	s.pending = false
+	switch {
+	case errors.Is(msg.err, context.Canceled):
+		s.errMessage, s.status = "", "PDF export cancelled"
+	case msg.err != nil:
+		s.errMessage, s.status = "PDF export failed: "+msg.err.Error(), ""
+	default:
+		s.errMessage, s.status = "", "PDF exported to "+msg.path
+	}
+	return s.resumeAutosave()
 }
 
 func (s *documentsScreen) updateKey(msg tea.KeyMsg) tea.Cmd {

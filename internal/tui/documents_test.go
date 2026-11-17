@@ -19,6 +19,7 @@ import (
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
+	"example.com/parchment/internal/pdfrender"
 	"example.com/parchment/internal/recovery"
 	"example.com/parchment/internal/tui/editor"
 )
@@ -76,7 +77,7 @@ func TestDocumentEditModeSeamlessUndoRedo(t *testing.T) {
 func TestDocumentEditorHasToolbarAndSavesLayout(t *testing.T) {
 	h := newDocumentHarness(t, document.Draft{})
 	view := h.m.View()
-	for _, label := range []string{"Save", "Propose", "Changes", "Preview", "B", "H1", "Page break", "Section", "Cols: 1", "Margins: Normal", "Header", "Footer", "Image"} {
+	for _, label := range []string{"Save", "PDF", "Propose", "Changes", "Preview", "B", "H1", "Page break", "Section", "Cols: 1", "Margins: Normal", "Header", "Footer", "Image"} {
 		if !strings.Contains(view, label) {
 			t.Fatalf("editor toolbar is missing %q:\n%s", label, view)
 		}
@@ -100,6 +101,110 @@ func TestDocumentEditorHasToolbarAndSavesLayout(t *testing.T) {
 	}
 	if h.m.stage != stageDocument || s.dirty() || h.quit {
 		t.Fatalf("after save: stage=%d dirty=%t quit=%t", h.m.stage, s.dirty(), h.quit)
+	}
+}
+
+func TestDocumentPDFExportFromEditorPreservesUnsavedDraft(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "Saved body"})
+	s := h.m.documents
+	h.typeText(" with unsaved changes")
+	output := filepath.Join(t.TempDir(), "editor.pdf")
+	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if s.prompt != promptPDF {
+		t.Fatal("Ctrl+P did not open the PDF path prompt")
+	}
+	s.promptInput.SetValue(output)
+	h.key("enter")
+
+	pdf, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(pdf, []byte("%PDF-")) {
+		t.Fatalf("export does not have a PDF signature: %q", pdf[:min(len(pdf), 8)])
+	}
+	info, err := os.Stat(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("export permissions = %v; want 0600", info.Mode().Perm())
+	}
+	var expected bytes.Buffer
+	if err := pdfrender.Render(&expected, s.editorDocument()); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(pdf, expected.Bytes()) {
+		t.Fatal("PDF export did not render the current unsaved editor state")
+	}
+	if !s.dirty() || !strings.Contains(s.body.Value(), "with unsaved changes") {
+		t.Fatalf("PDF export changed the unsaved draft: dirty=%t body=%q", s.dirty(), s.body.Value())
+	}
+	saved, err := h.docs.Get(context.Background(), h.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Body != "Saved body" {
+		t.Fatalf("PDF export saved editor changes: %q", saved.Body)
+	}
+
+	h.key("f5")
+	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	previewOutput := filepath.Join(t.TempDir(), "preview.pdf")
+	s.promptInput.SetValue(previewOutput)
+	if !strings.Contains(h.m.View(), "PDF output path:") {
+		t.Fatal("print preview did not display the PDF path prompt")
+	}
+	h.key("enter")
+	previewPDF, err := os.ReadFile(previewOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(previewPDF, []byte("%PDF-")) {
+		t.Fatalf("preview export does not have a PDF signature: %q", previewPDF[:min(len(previewPDF), 8)])
+	}
+	if !strings.Contains(h.m.View(), "PDF exported to "+previewOutput) {
+		t.Fatal("print preview did not display the PDF export success status")
+	}
+	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	s.promptInput.SetValue(previewOutput)
+	h.key("enter")
+	if !strings.Contains(h.m.View(), "PDF export failed:") {
+		t.Fatal("print preview did not display the PDF export error status")
+	}
+}
+
+func TestDocumentPDFExportFromReaderAndRefusesOverwrite(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "# Reader PDF"})
+	s := h.m.documents
+	s.startReading(s.snapshot)
+	output := filepath.Join(t.TempDir(), "reader.pdf")
+	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if s.prompt != promptPDF {
+		t.Fatal("Ctrl+P did not open the PDF path prompt in the reader")
+	}
+	s.promptInput.SetValue(output)
+	h.key("enter")
+	pdf, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(pdf, []byte("%PDF-")) {
+		t.Fatalf("export does not have a PDF signature: %q", pdf[:min(len(pdf), 8)])
+	}
+
+	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	s.promptInput.SetValue(output)
+	h.key("enter")
+	if !strings.Contains(s.errMessage, "already exists") {
+		t.Fatalf("overwrite error = %q, want already exists", s.errMessage)
+	}
+	after, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, pdf) {
+		t.Fatal("refused overwrite changed the existing PDF")
 	}
 }
 
@@ -637,20 +742,20 @@ func TestDocumentPreviewFitsTerminalAndScrolls(t *testing.T) {
 		t.Fatalf("preview view has %d lines for a 24-line terminal", lines)
 	}
 	cleanView := ansi.Strip(view)
-	if !strings.Contains(cleanView, "Hello") || !strings.Contains(cleanView, "Some text") || !strings.Contains(cleanView, "lines 1–22 of") {
+	if !strings.Contains(cleanView, "Hello") || !strings.Contains(cleanView, "Some text") || !strings.Contains(cleanView, "lines 1–21 of") {
 		t.Fatalf("preview does not show the top of the page:\n%s", view)
 	}
 	h.send(tea.KeyMsg{Type: tea.KeyDown})
-	if !strings.Contains(h.m.View(), "lines 2–23 of") {
+	if !strings.Contains(h.m.View(), "lines 2–22 of") {
 		t.Fatalf("down did not scroll:\n%s", h.m.View())
 	}
 	h.send(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
-	if !strings.Contains(h.m.View(), "lines 5–26 of") {
+	if !strings.Contains(h.m.View(), "lines 5–25 of") {
 		t.Fatalf("wheel did not scroll:\n%s", h.m.View())
 	}
 	h.send(tea.KeyMsg{Type: tea.KeyEnd})
 	total := len(s.editPages[0].Lines)
-	if !strings.Contains(h.m.View(), fmt.Sprintf("lines %d–%d of %d", total-21, total, total)) {
+	if !strings.Contains(h.m.View(), fmt.Sprintf("lines %d–%d of %d", total-20, total, total)) {
 		t.Fatalf("end did not reach the bottom:\n%s", h.m.View())
 	}
 	h.key("esc")

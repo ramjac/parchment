@@ -19,6 +19,7 @@ import (
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/docinterop"
 	"example.com/parchment/internal/document"
+	"example.com/parchment/internal/pdfrender"
 )
 
 func addDocumentCommands(root *cobra.Command, streams output) {
@@ -448,10 +449,9 @@ func newDocumentImageRemoveCmd() *cobra.Command {
 
 func newDocumentPrintCmd(streams output) *cobra.Command {
 	cmd := &cobra.Command{
-		Use: "print <file>", Short: "Render printer-ready paginated text", Args: cobra.ExactArgs(1),
-		Long: "Render the document as monospaced pages with margins, columns, headers, footers,\n" +
-			"and page numbers. Pages are separated by form feeds, so the output can be sent\n" +
-			"directly to a printer, for example `parchment document print <file> | lpr`.",
+		Use: "print <file>", Short: "Render printer-ready text or PDF", Args: cobra.ExactArgs(1),
+		Long: "Render a document as paginated text or PDF. Text pages are separated by form feeds\n" +
+			"and can be sent directly to a printer, for example `parchment document print <file> | lpr`.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
 			if err != nil {
@@ -461,18 +461,55 @@ func newDocumentPrintCmd(streams output) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			text, err := document.Print(d)
-			if err != nil {
-				return err
+			format, _ := cmd.Flags().GetString("format")
+			var data []byte
+			switch format {
+			case "text":
+				text, err := document.Print(d)
+				if err != nil {
+					return err
+				}
+				data = []byte(text)
+			case "pdf":
+				var rendered bytes.Buffer
+				if err := pdfrender.Render(&rendered, d); err != nil {
+					return err
+				}
+				data = rendered.Bytes()
+			default:
+				return fmt.Errorf("unsupported print format %q (use text or pdf)", format)
 			}
-			if path, _ := cmd.Flags().GetString("output"); path != "" {
-				return os.WriteFile(path, []byte(text), 0o644)
+			path, _ := cmd.Flags().GetString("output")
+			if path != "" {
+				if format == "text" {
+					return os.WriteFile(path, data, 0o644)
+				}
+				force, _ := cmd.Flags().GetBool("force")
+				flags := os.O_WRONLY | os.O_CREATE
+				if force {
+					flags |= os.O_TRUNC
+				} else {
+					flags |= os.O_EXCL
+				}
+				f, err := os.OpenFile(path, flags, 0o600)
+				if err != nil {
+					if os.IsExist(err) {
+						return fmt.Errorf("file %q already exists (use --force to overwrite)", path)
+					}
+					return err
+				}
+				if _, err := f.Write(data); err != nil {
+					return errors.Join(err, f.Close())
+				}
+				return f.Close()
 			}
-			_, err = io.WriteString(streams.out, text)
+			_, err = streams.out.Write(data)
 			return err
 		},
 	}
+	cmd.Flags().String("format", "text", "output format: text or pdf")
 	cmd.Flags().StringP("output", "o", "", "write to a file instead of standard output")
+	cmd.Flags().Bool("force", false, "overwrite output file if it exists")
 	return cmd
 }
 
