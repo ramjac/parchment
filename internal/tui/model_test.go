@@ -14,6 +14,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
@@ -28,18 +29,23 @@ import (
 // harness wires the editor to real services over files in temporary
 // directories: one for the artifact and one standing in for ~/.parchment.
 type harness struct {
-	t      *testing.T
-	m      *Model
-	repo   *filerepo.Repository
-	notes  *note.Service
-	docs   *document.Service
-	sheets *spreadsheet.Service
-	decks  *presentation.Service
-	path   string
-	quit   bool
+	t         *testing.T
+	m         *Model
+	repo      *filerepo.Repository
+	notes     *note.Service
+	docs      *document.Service
+	sheets    *spreadsheet.Service
+	decks     *presentation.Service
+	path      string
+	undoLimit int
+	quit      bool
 }
 
 func newHarness(t *testing.T, kind artifact.Kind) *harness {
+	return newHarnessWithUndoLimit(t, kind, 10)
+}
+
+func newHarnessWithUndoLimit(t *testing.T, kind artifact.Kind, undoLimit int) *harness {
 	t.Helper()
 	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
@@ -49,7 +55,7 @@ func newHarness(t *testing.T, kind artifact.Kind) *harness {
 		t: t, repo: repo,
 		notes: note.NewService(repo, 10), docs: document.NewService(repo, 10),
 		sheets: spreadsheet.NewService(repo, 10), decks: presentation.NewService(repo, 10),
-		path: filepath.Join(t.TempDir(), "report.md"),
+		path: filepath.Join(t.TempDir(), "report.md"), undoLimit: undoLimit,
 	}
 	h.open(kind)
 	return h
@@ -67,13 +73,16 @@ func (h *harness) openWith(kind artifact.Kind, edit bool) {
 	h.t.Helper()
 	model := NewModel(Config{
 		Path: h.path, Kind: kind, Edit: edit, Notes: h.notes, Documents: h.docs,
-		Spreadsheets: h.sheets, Presentations: h.decks, Recovery: h.repo,
+		Spreadsheets: h.sheets, Presentations: h.decks, Recovery: h.repo, UndoLimit: h.undoLimit,
 	})
 	h.m, h.quit = &model, false
 	// Blinking cursors return tea.Tick commands, which the harness would run
 	// synchronously.
 	if s := h.m.documents; s != nil {
 		s.promptInput.Cursor.SetMode(cursor.CursorStatic)
+	}
+	if s := h.m.sheet; s != nil {
+		s.input.Cursor.SetMode(cursor.CursorStatic)
 	}
 	h.send(tea.WindowSizeMsg{Width: 100, Height: 30})
 	h.run(h.m.Init())
@@ -87,7 +96,18 @@ func (h *harness) send(message tea.Msg) {
 	if h.m.documents != nil {
 		h.m.documents.autosaveScheduler = nil
 	}
+	if h.m.deck != nil {
+		h.m.deck.autosaveScheduler = nil
+	}
+	if h.m.sheet != nil {
+		h.m.sheet.autosaveScheduler = nil
+		h.m.sheet.input.Cursor.SetMode(cursor.CursorStatic)
+	}
 	_, cmd := h.m.Update(message)
+	if h.m.sheet != nil {
+		h.m.sheet.autosaveScheduler = nil
+		h.m.sheet.input.Cursor.SetMode(cursor.CursorStatic)
+	}
 	h.run(cmd)
 }
 
@@ -345,9 +365,8 @@ func TestViewSanitizesTerminalControlSequences(t *testing.T) {
 	}
 }
 
-func TestEditorRefusesNotesItWouldNormalize(t *testing.T) {
+func TestEditorRefusesUnpreservableNotes(t *testing.T) {
 	cases := []struct{ name, body string }{
-		{"tab in body", "before\tafter"},
 		{"control in body", "before\x1b[2Jafter"},
 		{"oversized body", strings.Repeat("x", 1_000_001)},
 		{"too many body lines", strings.Repeat("x\n", 10_000) + "last"},
@@ -391,19 +410,19 @@ func TestPreviewCanScroll(t *testing.T) {
 	for i := range lines {
 		lines[i] = fmt.Sprintf("Line %02d", i+1)
 	}
-	if _, err := h.notes.Create(context.Background(), h.path, strings.Join(lines, "\n")); err != nil {
+	if _, err := h.notes.Create(context.Background(), h.path, strings.Join(lines, "\n\n")); err != nil {
 		t.Fatal(err)
 	}
 	h.open(artifact.NoteKind)
 	h.send(tea.WindowSizeMsg{Width: 100, Height: 16})
 	h.key("f5")
-	if view := h.m.View(); !strings.Contains(view, "Line 01") || strings.Contains(view, "Line 60") {
+	if view := ansi.Strip(h.m.View()); !strings.Contains(view, "Line 01") || strings.Contains(view, "Line 60") {
 		t.Fatalf("initial preview = %q", view)
 	}
-	for range 3 {
+	for range 6 {
 		h.key("pgdown")
 	}
-	if view := h.m.View(); !strings.Contains(view, "Line 3") {
+	if view := ansi.Strip(h.m.View()); !strings.Contains(view, "Line 3") {
 		t.Fatalf("scrolled preview = %q", view)
 	}
 	h.key("esc")
@@ -482,6 +501,255 @@ func TestRecoveryWarnsWhenFileChangedAfterDraft(t *testing.T) {
 	h.key("r")
 	if !strings.Contains(h.m.status, "saving will report a conflict") {
 		t.Fatalf("status = %q", h.m.status)
+	}
+}
+
+func TestPresentationRecoveryOfferRecoverDiscardQuit(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, artifact.PresentationKind)
+	h.key("e")
+	if !h.m.deck.editing {
+		t.Fatal("not in edit mode")
+	}
+	h.m.deck.editor.SetValue(h.m.deck.item.Source + "\n---\n\n## Recovered Slide\n")
+	h.run(h.m.deck.saveRecovery(h.m.deck.autosaveSession))
+	if !h.hasDraft() {
+		t.Fatal("failed to store recovery draft")
+	}
+
+	// 1. Test 'q' keeps draft
+	h.open(artifact.PresentationKind)
+	if h.m.stage != stageRecovery {
+		t.Fatalf("stage = %d, want stageRecovery", h.m.stage)
+	}
+	h.key("q")
+	if !h.quit || !h.hasDraft() {
+		t.Fatalf("q at offer: quit=%t, hasDraft=%t", h.quit, h.hasDraft())
+	}
+
+	// 2. Test 'd' discards draft and opens saved file
+	h.open(artifact.PresentationKind)
+	if h.m.stage != stageRecovery {
+		t.Fatalf("stage = %d, want stageRecovery", h.m.stage)
+	}
+	h.key("d")
+	if h.m.stage != stagePresentation || h.hasDraft() {
+		t.Fatalf("d at offer: stage=%d, hasDraft=%t", h.m.stage, h.hasDraft())
+	}
+
+	// Recreate draft
+	h.key("e")
+	h.m.deck.editor.SetValue(h.m.deck.item.Source + "\n---\n\n## Recovered Slide\n")
+	h.run(h.m.deck.saveRecovery(h.m.deck.autosaveSession))
+	if !h.hasDraft() {
+		t.Fatal("failed to store recovery draft again")
+	}
+
+	// 3. Test 'r' recovers directly into editor
+	h.open(artifact.PresentationKind)
+	if h.m.stage != stageRecovery {
+		t.Fatalf("stage = %d, want stageRecovery", h.m.stage)
+	}
+	h.key("r")
+	if h.m.stage != stagePresentation || !h.m.deck.editing {
+		t.Fatalf("r at offer: stage=%d, editing=%t", h.m.stage, h.m.deck.editing)
+	}
+	if !strings.Contains(h.m.deck.editor.Value(), "Recovered Slide") {
+		t.Fatalf("editor value = %q, want 'Recovered Slide'", h.m.deck.editor.Value())
+	}
+
+	// Save recovered presentation via ctrl+s
+	h.key("ctrl+s")
+	if h.m.deck.editing {
+		t.Fatalf("editor did not close after successful save (errMessage = %q, status = %q)", h.m.deck.errMessage, h.m.deck.status)
+	}
+	saved, err := h.decks.Get(ctx, h.path)
+	if err != nil || !strings.Contains(saved.Source, "Recovered Slide") {
+		t.Fatalf("saved deck source = %q, err=%v", saved.Source, err)
+	}
+	if h.hasDraft() {
+		t.Fatal("draft was not deleted after successful save")
+	}
+}
+
+func TestPresentationRecoveryWarnsWhenFileChangedAfterDraft(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, artifact.PresentationKind)
+	h.key("e")
+	h.m.deck.editor.SetValue(h.m.deck.item.Source + "\n---\n\n## Draft Content\n")
+	h.run(h.m.deck.saveRecovery(h.m.deck.autosaveSession))
+	if !h.hasDraft() {
+		t.Fatal("draft not stored")
+	}
+
+	// Modify file externally
+	deck, err := h.decks.Get(ctx, h.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.decks.Update(ctx, deck, deck.Source+"\n---\n\n## External Edit\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopen and recover
+	h.open(artifact.PresentationKind)
+	if h.m.stage != stageRecovery {
+		t.Fatalf("stage = %d, want stageRecovery", h.m.stage)
+	}
+	h.key("r")
+	if !strings.Contains(h.m.deck.status, "saving will report a conflict") {
+		t.Fatalf("status = %q, want conflict warning", h.m.deck.status)
+	}
+
+	// Attempting save should fail with conflict and keep editor open
+	h.key("ctrl+s")
+	if !h.m.deck.editing {
+		t.Fatal("editor closed on save failure")
+	}
+	if !strings.Contains(h.m.deck.errMessage, "Save failed:") {
+		t.Fatalf("errMessage = %q, want 'Save failed:'", h.m.deck.errMessage)
+	}
+}
+
+func TestSpreadsheetAutosaveIsOfferedOnReopen(t *testing.T) {
+	ctx := context.Background()
+
+	hSheet := newHarness(t, "")
+	_, err := hSheet.sheets.Create(ctx, hSheet.path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hSheet.open(artifact.SpreadsheetKind)
+
+	err = hSheet.repo.SaveRecovery(ctx, recovery.Draft{
+		Path:      hSheet.path,
+		Kind:      string(artifact.SpreadsheetKind),
+		UpdatedAt: time.Now().UTC(),
+		Data:      json.RawMessage(`{"baseline":{"version":1,"artifact":{"kind":"spreadsheet"},"created_at":"2020-01-01T00:00:00Z","modified_at":"2020-01-01T00:00:00Z","sheets":[{"name":"Sheet1","rows":[[{"value":"original"}]]}]},"dirty":{"version":1,"artifact":{"kind":"spreadsheet"},"created_at":"2020-01-01T00:00:00Z","modified_at":"2020-01-01T00:00:00Z","sheets":[{"name":"Sheet1","rows":[[{"value":"recovered"}]]}]},"active_sheet":0,"cursor_row":0,"cursor_col":0}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hSheet.open(artifact.SpreadsheetKind)
+	if hSheet.m.stage != stageRecovery || !strings.Contains(hSheet.m.View(), "autosaved draft") {
+		t.Fatalf("spreadsheet stage = %d, view:\n%s", hSheet.m.stage, hSheet.m.View())
+	}
+	hSheet.key("r")
+	if hSheet.m.stage != stageSpreadsheet {
+		t.Fatalf("recovered spreadsheet stage = %d", hSheet.m.stage)
+	}
+	if cell := hSheet.m.sheet.book.Sheets[0].Rows[0][0]; cell.Value != "recovered" {
+		t.Fatalf("recovered cell value = %q, want 'recovered'", cell.Value)
+	}
+}
+
+func TestSpreadsheetRecoveryOfferRecoverDiscardQuit(t *testing.T) {
+	ctx := context.Background()
+	hSheet := newHarness(t, "")
+	_, err := hSheet.sheets.Create(ctx, hSheet.path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	saveDraft := func(data string) {
+		err := hSheet.repo.SaveRecovery(ctx, recovery.Draft{
+			Path:      hSheet.path,
+			Kind:      string(artifact.SpreadsheetKind),
+			UpdatedAt: time.Now().UTC(),
+			Data:      json.RawMessage(data),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	validDraft := `{"baseline":{"version":1,"artifact":{"kind":"spreadsheet"},"created_at":"2020-01-01T00:00:00Z","modified_at":"2020-01-01T00:00:00Z","sheets":[{"name":"Sheet1","rows":[[{"value":"1"}]]}]},"dirty":{"version":1,"artifact":{"kind":"spreadsheet"},"created_at":"2020-01-01T00:00:00Z","modified_at":"2020-01-01T00:00:00Z","sheets":[{"name":"Sheet1","rows":[[{"value":"42"}]]}]},"active_sheet":0,"cursor_row":0,"cursor_col":0,"pending_cell_input":"=SUM(A1:A2)"}`
+
+	// 1. 'q' keeps draft
+	saveDraft(validDraft)
+	hSheet.open(artifact.SpreadsheetKind)
+	if hSheet.m.stage != stageRecovery {
+		t.Fatalf("stage = %d, want stageRecovery", hSheet.m.stage)
+	}
+	hSheet.key("q")
+	if !hSheet.quit || !hSheet.hasDraft() {
+		t.Fatalf("q at offer: quit=%t, hasDraft=%t", hSheet.quit, hSheet.hasDraft())
+	}
+
+	// 2. 'd' discards draft and opens saved workbook
+	hSheet.open(artifact.SpreadsheetKind)
+	if hSheet.m.stage != stageRecovery {
+		t.Fatalf("stage = %d, want stageRecovery", hSheet.m.stage)
+	}
+	hSheet.key("d")
+	if hSheet.m.stage != stageSpreadsheet || hSheet.hasDraft() {
+		t.Fatalf("d at offer: stage=%d, hasDraft=%t", hSheet.m.stage, hSheet.hasDraft())
+	}
+
+	// 3. 'r' recovers draft into spreadsheet
+	saveDraft(validDraft)
+	hSheet.open(artifact.SpreadsheetKind)
+	hSheet.key("r")
+	if hSheet.m.stage != stageSpreadsheet {
+		t.Fatalf("r at offer: stage=%d", hSheet.m.stage)
+	}
+	if !hSheet.m.sheet.editing {
+		t.Fatal("expected editing = true due to pending_cell_input")
+	}
+	if hSheet.m.sheet.input.Value() != "=SUM(A1:A2)" {
+		t.Fatalf("input value = %q, want =SUM(A1:A2)", hSheet.m.sheet.input.Value())
+	}
+	if cell := hSheet.m.sheet.book.Sheets[0].Rows[0][0]; cell.Value != "42" {
+		t.Fatalf("dirty cell value = %q, want 42", cell.Value)
+	}
+
+	// 4. Corrupt draft shows error and allows discard
+	saveDraft(`{"baseline": "invalid-type"}`)
+	hSheet.open(artifact.SpreadsheetKind)
+	hSheet.key("r")
+	if !strings.Contains(hSheet.m.errMessage, "Decode autosaved spreadsheet") {
+		t.Fatalf("expected decode error, got %q", hSheet.m.errMessage)
+	}
+	hSheet.key("d")
+	if hSheet.m.stage != stageSpreadsheet || hSheet.hasDraft() {
+		t.Fatalf("discard after corrupt draft: stage=%d, hasDraft=%t", hSheet.m.stage, hSheet.hasDraft())
+	}
+}
+
+func TestSpreadsheetRecoveryWarnsWhenFileChangedAfterDraft(t *testing.T) {
+	ctx := context.Background()
+	hSheet := newHarness(t, "")
+	book, err := hSheet.sheets.Create(ctx, hSheet.path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	draft := fmt.Sprintf(`{"baseline":{"version":1,"artifact":{"kind":"spreadsheet"},"created_at":"2020-01-01T00:00:00Z","modified_at":"2020-01-01T00:00:00Z","sheets":[{"name":"Sheet1","rows":[[{"value":"old"}]]}]},"dirty":{"version":1,"artifact":{"kind":"spreadsheet"},"created_at":"2020-01-01T00:00:00Z","modified_at":"2020-01-01T00:00:00Z","sheets":[{"name":"Sheet1","rows":[[{"value":"draft"}]]}]},"active_sheet":0,"cursor_row":0,"cursor_col":0}`)
+	err = hSheet.repo.SaveRecovery(ctx, recovery.Draft{
+		Path:      hSheet.path,
+		Kind:      string(artifact.SpreadsheetKind),
+		UpdatedAt: time.Now().UTC(),
+		Data:      json.RawMessage(draft),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Modify file externally
+	if _, err := hSheet.sheets.SetCell(ctx, hSheet.path, 1, 1, spreadsheet.Cell{Value: "externally changed"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = book
+
+	// Reopen and recover
+	hSheet.open(artifact.SpreadsheetKind)
+	if hSheet.m.stage != stageRecovery {
+		t.Fatalf("stage = %d, want stageRecovery", hSheet.m.stage)
+	}
+	hSheet.key("r")
+	if !strings.Contains(hSheet.m.sheet.status, "saving will report a conflict") {
+		t.Fatalf("status = %q, want conflict warning", hSheet.m.sheet.status)
 	}
 }
 
@@ -1006,6 +1274,91 @@ func TestModelUpdateNoteKeyHandling(t *testing.T) {
 			t.Errorf("Ctrl+Y did not redo input, value=%q", h.m.bodyInput.Value())
 		}
 	})
+}
+
+func TestConfiguredUndoLimitAppliesToTextEditors(t *testing.T) {
+	tests := []struct {
+		name string
+		open func(*testing.T, int) (*harness, *editor.Model)
+	}{
+		{
+			name: "note",
+			open: func(t *testing.T, limit int) (*harness, *editor.Model) {
+				h := newHarnessWithUndoLimit(t, artifact.NoteKind, limit)
+				return h, &h.m.bodyInput
+			},
+		},
+		{
+			name: "document",
+			open: func(t *testing.T, limit int) (*harness, *editor.Model) {
+				h := newDocumentHarness(t, document.Draft{}, limit)
+				return h, &h.m.documents.body
+			},
+		},
+		{
+			name: "presentation",
+			open: func(t *testing.T, limit int) (*harness, *editor.Model) {
+				h := newHarnessWithUndoLimit(t, artifact.PresentationKind, limit)
+				return h, &h.m.deck.editor
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, ed := tt.open(t, 2)
+			for _, text := range []string{"a", "b", "c", "d"} {
+				ed.InsertString(text)
+			}
+			for range 2 {
+				if !ed.Undo() {
+					t.Fatal("configured undo history ended before its limit")
+				}
+			}
+			if got := ed.Value(); got != "ab" {
+				t.Fatalf("Value() after two undos = %q, want %q", got, "ab")
+			}
+			if ed.Undo() {
+				t.Fatal("configured undo history exceeded its limit")
+			}
+		})
+	}
+}
+
+func TestNoteEditorAcceptsLiteralTabsAndHandsOffUndoOnSave(t *testing.T) {
+	h := newHarness(t, artifact.NoteKind)
+	initial, err := h.notes.Get(context.Background(), h.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tabbed, err := h.notes.UpdateExpected(context.Background(), initial, "left\tright")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !h.m.startEdit(tabbed) {
+		t.Fatalf("note containing a literal tab was rejected: %q", h.m.errMessage)
+	}
+	if got := h.m.bodyInput.Value(); got != "left\tright" {
+		t.Fatalf("note body = %q, want literal tab preserved", got)
+	}
+
+	h.m.bodyInput.SetValue("")
+	h.typeText("saved")
+	h.key("ctrl+s")
+	if h.m.bodyInput.CanUndo() || h.m.bodyInput.CanRedo() {
+		t.Fatal("successful note save retained keystroke history")
+	}
+	h.key("ctrl+z")
+	if got := h.m.bodyInput.Value(); got != "left\tright" {
+		t.Fatalf("Ctrl+Z after save = %q, want service-level undo to restore the prior body", got)
+	}
+
+	h.typeText("unsaved")
+	unsaved := h.m.bodyInput.Value()
+	h.m.handleNoteSaved(noteSavedMsg{err: errors.New("save failed")})
+	if !h.m.bodyInput.CanUndo() || h.m.bodyInput.Value() != unsaved {
+		t.Fatal("failed note save discarded the unsaved keystroke history")
+	}
 }
 
 func TestModelInit_returns_nil_when_stage_is_stageChooseKind(t *testing.T) {

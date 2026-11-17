@@ -61,6 +61,7 @@ func runTUI(cmd *cobra.Command, arg string, requested artifact.Kind, edit bool) 
 		Presentations: presentation.NewService(repo, settings.UndoLimit),
 		Recovery:      repo,
 		Theme:         settings.Theme,
+		UndoLimit:     settings.UndoLimit,
 	})
 	for _, w := range repo.Warnings() {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", w)

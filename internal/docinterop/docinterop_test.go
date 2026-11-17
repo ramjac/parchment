@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"example.com/parchment/internal/document"
+	"github.com/yuin/goldmark/ast"
+	east "github.com/yuin/goldmark/extension/ast"
 )
 
 func TestReadZipLimits(t *testing.T) {
@@ -102,6 +104,57 @@ func TestMapPageSize(t *testing.T) {
 	}
 	if s != document.PageA4 || o != document.Landscape {
 		t.Errorf("Expected A4 Landscape, got %s %s", s, o)
+	}
+}
+
+func TestGoldmarkAnchor(t *testing.T) {
+	md := "<a id=\"explicit-anchor\"></a>\n"
+	root := ParseMarkdown(md)
+	source := []byte(md)
+	ast.Walk(root, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if entering {
+			t.Logf("Node: %T", n)
+			if raw, ok := n.(*ast.RawHTML); ok {
+				t.Logf("RawHTML Segments.Len=%d", raw.Segments.Len())
+				for i := 0; i < raw.Segments.Len(); i++ {
+					seg := raw.Segments.At(i)
+					t.Logf("seg %d: %q", i, string((&seg).Value(source)))
+				}
+			}
+			if html, ok := n.(*ast.HTMLBlock); ok {
+				t.Logf("HTMLBlock Lines.Len=%d", html.Lines().Len())
+				for i := 0; i < html.Lines().Len(); i++ {
+					seg := html.Lines().At(i)
+					t.Logf("line %d: %q", i, string((&seg).Value(source)))
+				}
+			}
+		}
+		return ast.WalkContinue, nil
+	})
+}
+
+func TestGoldmarkASTInspection(t *testing.T) {
+	md := "# Title\n\nParagraph with **bold**, *italic*, ~~strikethrough~~, `code`, and [link](https://example.com).\n\n- Item 1\n- Item 2\n\n| Col 1 | Col 2 |\n|---|---|\n| A | B |\n"
+	root := ParseMarkdown(md)
+	if root == nil {
+		t.Fatal("expected non-nil root")
+	}
+	foundTable := false
+	foundStrike := false
+	ast.Walk(root, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if _, ok := n.(*east.Table); ok {
+			foundTable = true
+		}
+		if _, ok := n.(*east.Strikethrough); ok {
+			foundStrike = true
+		}
+		return ast.WalkContinue, nil
+	})
+	if !foundTable {
+		t.Error("expected to find east.Table")
+	}
+	if !foundStrike {
+		t.Error("expected to find east.Strikethrough")
 	}
 }
 

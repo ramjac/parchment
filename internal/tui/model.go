@@ -35,6 +35,7 @@ type Config struct {
 	Presentations *presentation.Service
 	Recovery      recovery.Store
 	Theme         config.Theme
+	UndoLimit     int
 }
 
 // Theme holds the resolved Lip Gloss colors for the TUI.
@@ -143,6 +144,7 @@ type Model struct {
 	presentations *presentation.Service
 	recoveryStore recovery.Store
 	theme         Theme
+	undoLimit     int
 	stage         stage
 	width         int
 	height        int
@@ -166,12 +168,17 @@ type Model struct {
 
 // NewModel creates the interactive editor for config.Path.
 func NewModel(config Config) Model {
+	undoLimit := config.UndoLimit
+	if undoLimit < 1 {
+		undoLimit = 100
+	}
 	m := Model{
 		path: config.Path, kind: config.Kind, edit: config.Edit,
 		service: config.Notes, spreadsheets: config.Spreadsheets, presentations: config.Presentations,
 		recoveryStore: config.Recovery,
 		theme:         resolveTheme(config.Theme),
-		noteEditor:    newNoteEditor(),
+		undoLimit:     undoLimit,
+		noteEditor:    newNoteEditor(undoLimit),
 		newOperationContext: func() (context.Context, context.CancelFunc) {
 			return context.WithCancel(context.Background())
 		},
@@ -180,7 +187,7 @@ func NewModel(config Config) Model {
 		m.canUndo, m.canRedo = m.service.CanUndo(), m.service.CanRedo()
 	}
 	if config.Documents != nil {
-		m.documents = newDocumentsScreen(config.Documents, config.Path, m.newOperationContext, m.theme)
+		m.documents = newDocumentsScreen(config.Documents, config.Path, m.newOperationContext, m.theme, undoLimit)
 		m.documents.recoveryStore = config.Recovery
 		m.documents.autosaveScheduler = func(session uint64) tea.Cmd {
 			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
@@ -234,14 +241,12 @@ func (m *Model) openFile(kind artifact.Kind) tea.Cmd {
 				msg.book, msg.err = sheets.Create(ctx, path, nil)
 				msg.created = true
 			}
-			return msg
 		case kind == artifact.PresentationKind && decks != nil:
 			msg.deck, msg.err = decks.Get(ctx, path)
 			if errors.Is(msg.err, presentation.ErrNotFound) {
 				msg.deck, msg.err = decks.Create(ctx, path, "")
 				msg.created = true
 			}
-			return msg
 		default:
 			msg.err = fmt.Errorf("the interactive editor cannot open %s artifacts", kind)
 		}
@@ -371,6 +376,7 @@ func (m *Model) handleNoteSaved(msg noteSavedMsg) (tea.Model, tea.Cmd) {
 		m.startAutosaveSession()
 		return m, m.scheduleAutosave(m.autosaveSession)
 	}
+	m.bodyInput.ResetHistory()
 	m.loadNote(msg.note)
 	m.errMessage, m.status = "", "Saved “"+msg.note.Title+"”"
 	if msg.cleanupErr != nil {
@@ -417,15 +423,28 @@ func (m *Model) enterEditor() tea.Cmd {
 		return tea.Batch(m.bodyInput.Focus(), m.scheduleAutosave(m.autosaveSession))
 	case artifact.SpreadsheetKind:
 		m.sheet = newSpreadsheetModel(m.spreadsheets, m.path, m.theme)
+		m.sheet.recoveryStore = m.recoveryStore
+		m.sheet.autosaveScheduler = func(session uint64) tea.Cmd {
+			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
+				return spreadsheetAutosaveTickMsg{session: session}
+			})
+		}
 		m.sheet.newOperationContext = m.newOperationContext
 		m.sheet.width, m.sheet.height = m.width, m.height
 		m.sheet.setBook(m.opened.book)
 		m.sheet.status = m.status
 		m.stage = stageSpreadsheet
 		_, cmd := m.sheet.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-		return cmd
+		m.sheet.startAutosaveSession()
+		return tea.Batch(cmd, m.sheet.scheduleAutosave(m.sheet.autosaveSession))
 	case artifact.PresentationKind:
-		m.deck = newPresentationModel(m.presentations, m.path, m.theme)
+		m.deck = newPresentationModel(m.presentations, m.path, m.theme, m.undoLimit)
+		m.deck.recoveryStore = m.recoveryStore
+		m.deck.autosaveScheduler = func(session uint64) tea.Cmd {
+			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
+				return presentationAutosaveTickMsg{session: session}
+			})
+		}
 		m.deck.newOperationContext = m.newOperationContext
 		m.deck.width, m.deck.height = m.width, m.height
 		m.deck.setItem(m.opened.deck)
@@ -756,7 +775,7 @@ func isUnpreservableText(text string) bool {
 		return true
 	}
 	for _, r := range text {
-		if r == '\t' || (unicode.IsControl(r) && r != '\n') {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
 			return true
 		}
 	}

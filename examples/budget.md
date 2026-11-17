@@ -2,9 +2,9 @@
 {
   "parchment_format": "parchment-single-file-v2",
   "kind": "spreadsheet",
+  "format_version": 2,
   "created_at": "2026-01-15T09:00:00Z",
-  "modified_at": "2026-01-15T09:00:00Z",
-  "format_version": 2
+  "modified_at": "2026-11-17T18:55:46.614930751Z"
 }
 ```
 
@@ -24,34 +24,80 @@ The variance column is calculated from planned and actual spending.
       "name": "Sheet1",
       "rows": [
         [
-          { "value": "Category" },
-          { "value": "Planned" },
-          { "value": "Actual" },
-          { "value": "Variance" }
+          {
+            "value": "Category"
+          },
+          {
+            "value": "Planned"
+          },
+          {
+            "value": "Actual"
+          },
+          {
+            "value": "Variance"
+          }
         ],
         [
-          { "value": "Seeds" },
-          { "value": "180" },
-          { "value": "162" },
-          { "formula": "=B2-C2" }
+          {
+            "value": "Seeds"
+          },
+          {
+            "value": "180"
+          },
+          {
+            "value": "162"
+          },
+          {
+            "formula": "=B2-C2"
+          }
         ],
         [
-          { "value": "Soil" },
-          { "value": "240" },
-          { "value": "255" },
-          { "formula": "=B3-C3" }
+          {
+            "value": "Soil"
+          },
+          {
+            "value": "240"
+          },
+          {
+            "value": "255"
+          },
+          {
+            "formula": "=B3-C3"
+          }
         ],
         [
-          { "value": "Tools" },
-          { "value": "125" },
-          { "value": "90" },
-          { "formula": "=B4-C4" }
+          {
+            "value": "Tools"
+          },
+          {
+            "value": "125"
+          },
+          {
+            "value": "90"
+          },
+          {
+            "formula": "=B4-C4"
+          }
         ],
         [
-          { "value": "Water" },
-          { "value": "80" },
-          { "value": "74" },
-          { "formula": "=B5-C5" }
+          {
+            "value": "Water"
+          },
+          {
+            "value": "80"
+          },
+          {
+            "value": "74"
+          },
+          {
+            "formula": "=B5-C5"
+          }
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
         ]
       ]
     }

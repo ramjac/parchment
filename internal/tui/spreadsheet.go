@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 
+	"example.com/parchment/internal/recovery"
 	"example.com/parchment/internal/spreadsheet"
 )
 
@@ -41,6 +42,14 @@ type spreadsheetHistoryMsg struct {
 	seq         int
 	description string
 	err         error
+}
+
+type spreadsheetAutosaveTickMsg struct{ session uint64 }
+
+type spreadsheetAutosaveFinishedMsg struct {
+	session uint64
+	err     error
+	cleared bool
 }
 
 // spreadsheetGrid holds viewport navigation, selection, and value display state.
@@ -77,6 +86,12 @@ type spreadsheetModel struct {
 	editing bool
 	input   textinput.Model
 
+	recoveryStore     recovery.Store
+	autosaveSession   uint64
+	autosaveCancel    context.CancelFunc
+	draftStored       bool
+	autosaveScheduler func(uint64) tea.Cmd
+
 	spreadsheetGrid
 	spreadsheetAsync
 }
@@ -88,12 +103,35 @@ func newSpreadsheetModel(service *spreadsheet.Service, path string, theme Theme)
 	m := &spreadsheetModel{
 		service: service,
 		path:    path,
+		theme:   theme,
 		input:   input,
 	}
 	m.newOperationContext = func() (context.Context, context.CancelFunc) {
 		return context.WithCancel(context.Background())
 	}
 	return m
+}
+
+func (m *spreadsheetModel) startAutosaveSession() {
+	m.autosaveSession++
+	if m.autosaveCancel != nil {
+		m.autosaveCancel()
+		m.autosaveCancel = nil
+	}
+}
+
+func (m *spreadsheetModel) scheduleAutosave(session uint64) tea.Cmd {
+	if m.recoveryStore == nil || m.autosaveScheduler == nil {
+		return nil
+	}
+	return m.autosaveScheduler(session)
+}
+
+func (m *spreadsheetModel) stopAutosave() { m.startAutosaveSession() }
+
+func (m *spreadsheetModel) saveRecovery(session uint64) tea.Cmd {
+	// Stub for PR 8 autosave logic (will be fully implemented when PR 7 is merged)
+	return nil
 }
 
 func (m *spreadsheetModel) Init() tea.Cmd { return m.load() }
@@ -143,6 +181,26 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := m.load()
 		m.loadedStatus = msg.description
 		return m, cmd
+	case spreadsheetAutosaveTickMsg:
+		if msg.session == m.autosaveSession {
+			return m, m.saveRecovery(msg.session)
+		}
+		return m, nil
+	case spreadsheetAutosaveFinishedMsg:
+		if msg.session != m.autosaveSession {
+			return m, nil
+		}
+		if m.autosaveCancel != nil {
+			m.autosaveCancel()
+			m.autosaveCancel = nil
+		}
+		if msg.cleared {
+			m.draftStored = false
+		}
+		if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
+			m.errMessage = "Autosave failed: " + msg.err.Error()
+		}
+		return m, m.scheduleAutosave(msg.session)
 	case tea.KeyMsg:
 		if m.editing {
 			return m, m.updateEditKey(msg)
@@ -419,7 +477,11 @@ func (m *spreadsheetModel) computeValues() {
 			if cell.Formula == "" {
 				continue
 			}
-			value, err := spreadsheet.Evaluate(&m.book, m.sheet, row+1, column+1)
+			valueV, err := spreadsheet.Evaluate(&m.book, m.sheet, row+1, column+1)
+			var value float64
+			if err == nil {
+				value, err = valueV.Float64()
+			}
 			if err != nil {
 				m.values[[2]int{row, column}] = "#ERR"
 				continue

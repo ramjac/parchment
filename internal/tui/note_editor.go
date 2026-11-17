@@ -30,8 +30,8 @@ type noteEditor struct {
 	autosaveScheduler func(uint64) tea.Cmd
 }
 
-func newNoteEditor() noteEditor {
-	body := editor.New()
+func newNoteEditor(undoLimit int) noteEditor {
+	body := editor.NewWithUndoLimit(undoLimit)
 	body.Placeholder = "Write Markdown…"
 	return noteEditor{
 		bodyInput: body,
@@ -66,7 +66,7 @@ func (n *noteEditor) resizePreview(width, height int) {
 	n.preview.Width, n.preview.Height = max(width-4, 1), max(height-6, 1)
 	saved := n.snapshot
 	saved.Body = n.bodyInput.Value()
-	n.preview.SetContent(preview(saved))
+	n.preview.SetContent(preview(saved, n.preview.Width))
 	n.preview.GotoTop()
 }
 
@@ -79,9 +79,9 @@ func (n *noteEditor) resizeEditors(width, height int) {
 	}
 }
 
-func preview(n note.Note) string {
+func preview(n note.Note, width int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\n", sanitizeTerminalLine(n.Title))
 	fmt.Fprintf(&b, "\n%s", sanitizeTerminalText(artifactfile.StripPrivateBlocks(n.Body)))
-	return b.String()
+	return renderMarkdown(b.String(), width)
 }

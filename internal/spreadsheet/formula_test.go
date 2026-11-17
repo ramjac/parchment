@@ -1,8 +1,6 @@
 package spreadsheet
 
 import (
-	"errors"
-
 	"math"
 	"strings"
 	"testing"
@@ -70,7 +68,11 @@ func TestEvaluate(t *testing.T) {
 				c = tt.col
 			}
 
-			got, err := Evaluate(book, 0, r, c)
+			gotV, err := Evaluate(book, 0, r, c)
+			var got float64
+			if err == nil {
+				got, err = gotV.Float64()
+			}
 
 			if tt.wantError != "" {
 				if err == nil {
@@ -105,7 +107,10 @@ func TestEvaluateCircularReference(t *testing.T) {
 		},
 	}
 
-	_, err := Evaluate(book, 0, 1, 1)
+	valV, err := Evaluate(book, 0, 1, 1)
+	if err == nil {
+		_, err = valV.Float64()
+	}
 	if err == nil {
 		t.Fatal("Evaluate() expected error for circular reference, got nil")
 	}
@@ -126,7 +131,10 @@ func TestEvaluateUnknownCharacter(t *testing.T) {
 		},
 	}
 
-	_, err := Evaluate(book, 0, 1, 1)
+	valV, err := Evaluate(book, 0, 1, 1)
+	if err == nil {
+		_, err = valV.Float64()
+	}
 	if err == nil {
 		t.Fatal("Evaluate() expected error for unexpected character, got nil")
 	}
@@ -147,19 +155,28 @@ func TestEvaluateOutOfBounds(t *testing.T) {
 	}
 
 	// Negative sheet index
-	_, err := Evaluate(book, -1, 1, 1)
+	valV, err := Evaluate(book, -1, 1, 1)
+	if err == nil {
+		_, err = valV.Float64()
+	}
 	if err == nil || !strings.Contains(err.Error(), "cell coordinates are outside the workbook") {
 		t.Errorf("Expected out of bounds error, got %v", err)
 	}
 
 	// Row 0
-	_, err = Evaluate(book, 0, 0, 1)
+	valV, err = Evaluate(book, 0, 0, 1)
+	if err == nil {
+		_, err = valV.Float64()
+	}
 	if err == nil || !strings.Contains(err.Error(), "cell coordinates are outside the workbook") {
 		t.Errorf("Expected out of bounds error, got %v", err)
 	}
 
 	// Column 0
-	_, err = Evaluate(book, 0, 1, 0)
+	valV, err = Evaluate(book, 0, 1, 0)
+	if err == nil {
+		_, err = valV.Float64()
+	}
 	if err == nil || !strings.Contains(err.Error(), "cell coordinates are outside the workbook") {
 		t.Errorf("Expected out of bounds error, got %v", err)
 	}
@@ -176,7 +193,10 @@ func TestEvaluateExceedsMaxNesting(t *testing.T) {
 		},
 	}
 
-	_, err := Evaluate(book, 0, 1, 1)
+	valV, err := Evaluate(book, 0, 1, 1)
+	if err == nil {
+		_, err = valV.Float64()
+	}
 	if err == nil || !strings.Contains(err.Error(), "formula nesting exceeds") {
 		t.Errorf("Expected nesting exceeds error, got %v", err)
 	}
@@ -195,7 +215,10 @@ func TestEvaluateExceedsMaxDependency(t *testing.T) {
 	}
 	book.Sheets[0].Rows[513] = []Cell{{Value: "1"}}
 
-	_, err := Evaluate(book, 0, 1, 1)
+	valV, err := Evaluate(book, 0, 1, 1)
+	if err == nil {
+		_, err = valV.Float64()
+	}
 	if err == nil || !strings.Contains(err.Error(), "formula dependency depth exceeds") {
 		t.Errorf("Expected dependency depth exceeds error, got %v", err)
 	}
@@ -214,7 +237,11 @@ func TestEvaluateCellOutsideSheetDimension(t *testing.T) {
 
 	// Reference a cell that is within workbook max limits but beyond the allocated grid slice.
 	// Empty referenced cells evaluate to zero.
-	val, err := Evaluate(book, 0, 2, 2)
+	valV, err := Evaluate(book, 0, 2, 2)
+	var val float64
+	if err == nil {
+		val, err = valV.Float64()
+	}
 	if err != nil {
 		t.Errorf("Expected nil error for empty cell outside allocated grid, got %v", err)
 	}
@@ -265,43 +292,177 @@ func TestRecordDependencyDepth_EmptyDepths(t *testing.T) {
 	e.recordDependencyDepth(5)
 }
 
-func TestParsePrimary_EmptyInput(t *testing.T) {
-	parser := formulaParser{input: "   ", position: 0}
-	_, err := parser.parsePrimary()
-	if err == nil {
-		t.Fatal("Expected error for empty input in parsePrimary, got nil")
+func TestAggregatesAndRanges(t *testing.T) {
+	book := &Spreadsheet{
+		Sheets: []Sheet{
+			{
+				Name: "Sheet1",
+				Rows: [][]Cell{
+					{{Value: "10"}, {Value: "20"}},            // A1, B1
+					{{Value: "text"}, {Value: ""}},            // A2, B2
+					{{Value: "30"}, {Formula: "=SUM(A1:B2)"}}, // A3, B3
+				},
+			},
+			{
+				Name: "Sheet Two",
+				Rows: [][]Cell{
+					{{Value: "100"}, {Value: "200"}},
+				},
+			},
+		},
 	}
-	if !strings.Contains(err.Error(), "expected a number, cell reference, or '('") {
-		t.Errorf("Unexpected error message: %v", err)
+
+	// SUM ignores non-numeric text ("text") and empty cells inside ranges
+	val, err := Evaluate(book, 0, 3, 2)
+	if err != nil {
+		t.Fatalf("Evaluate SUM(A1:B2) failed: %v", err)
+	}
+	if val.Kind != NumKind || val.Num != 30 {
+		t.Fatalf("expected SUM(A1:B2) = 30, got %+v", val)
+	}
+
+	// AVERAGE
+	book.Sheets[0].Rows[2][1] = Cell{Formula: "=AVERAGE(A1:B1)"}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != NumKind || val.Num != 15 {
+		t.Fatalf("expected AVERAGE(A1:B1) = 15, got %+v (err: %v)", val, err)
+	}
+
+	// COUNT
+	book.Sheets[0].Rows[2][1] = Cell{Formula: "=COUNT(A1:B2)"}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != NumKind || val.Num != 2 {
+		t.Fatalf("expected COUNT(A1:B2) = 2, got %+v (err: %v)", val, err)
+	}
+
+	// MIN and MAX
+	book.Sheets[0].Rows[2][1] = Cell{Formula: "=MIN(A1:B2)"}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != NumKind || val.Num != 10 {
+		t.Fatalf("expected MIN(A1:B2) = 10, got %+v (err: %v)", val, err)
+	}
+	book.Sheets[0].Rows[2][1] = Cell{Formula: "=MAX(A1:B2)"}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != NumKind || val.Num != 20 {
+		t.Fatalf("expected MAX(A1:B2) = 20, got %+v (err: %v)", val, err)
+	}
+
+	// Direct scalar string coercion: numeric string parses
+	book.Sheets[0].Rows[2][1] = Cell{Formula: `=SUM(A1, "50")`}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != NumKind || val.Num != 60 {
+		t.Fatalf("expected SUM(A1, \"50\") = 60, got %+v (err: %v)", val, err)
+	}
+
+	// Direct non-numeric scalar string returns #VALUE!
+	book.Sheets[0].Rows[2][1] = Cell{Formula: `=SUM(A1, "invalid")`}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != ErrKind || val.Err != ErrValue {
+		t.Fatalf("expected SUM(A1, \"invalid\") = #VALUE!, got %+v (err: %v)", val, err)
+	}
+
+	// AVERAGE of empty range returns #DIV/0!
+	book.Sheets[0].Rows[2][1] = Cell{Formula: "=AVERAGE(B2)"}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != ErrKind || val.Err != ErrDiv0 {
+		t.Fatalf("expected AVERAGE(B2) = #DIV/0!, got %+v (err: %v)", val, err)
+	}
+
+	// MIN / MAX of empty range returns #VALUE!
+	book.Sheets[0].Rows[2][1] = Cell{Formula: "=MIN(B2)"}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != ErrKind || val.Err != ErrValue {
+		t.Fatalf("expected MIN(B2) = #VALUE!, got %+v (err: %v)", val, err)
+	}
+
+	// Unknown function name returns #NAME?
+	book.Sheets[0].Rows[2][1] = Cell{Formula: "=UNKNOWN(A1)"}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != ErrKind || val.Err != ErrName {
+		t.Fatalf("expected UNKNOWN(A1) = #NAME?, got %+v (err: %v)", val, err)
+	}
+
+	// Nested function calls
+	book.Sheets[0].Rows[2][1] = Cell{Formula: "=SUM(AVERAGE(A1:B1), MAX(A1:A1))"}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != NumKind || val.Num != 25 {
+		t.Fatalf("expected nested SUM = 25, got %+v (err: %v)", val, err)
+	}
+
+	// Cross-sheet range references
+	book.Sheets[0].Rows[2][1] = Cell{Formula: `='Sheet Two'!A1:B1`}
+	// A standalone range in scalar context returns #VALUE!
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != ErrKind || val.Err != ErrValue {
+		t.Fatalf("expected standalone range = #VALUE!, got %+v (err: %v)", val, err)
+	}
+
+	book.Sheets[0].Rows[2][1] = Cell{Formula: `=SUM('Sheet Two'!A1:B1)`}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != NumKind || val.Num != 300 {
+		t.Fatalf("expected SUM('Sheet Two'!A1:B1) = 300, got %+v (err: %v)", val, err)
+	}
+
+	// Escaped string literal: "foo""bar" -> foo"bar
+	book.Sheets[0].Rows[2][1] = Cell{Formula: `="foo""bar"`}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != StrKind || val.Str != `foo"bar` {
+		t.Fatalf("expected escaped string foo\"bar, got %+v (err: %v)", val, err)
+	}
+
+	// Error literal propagation
+	book.Sheets[0].Rows[2][1] = Cell{Formula: `=#REF!`}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != ErrKind || val.Err != ErrRef {
+		t.Fatalf("expected #REF! literal, got %+v (err: %v)", val, err)
+	}
+	book.Sheets[0].Rows[2][1] = Cell{Formula: `=1 + #DIV/0!`}
+	val, err = Evaluate(book, 0, 3, 2)
+	if err != nil || val.Kind != ErrKind || val.Err != ErrDiv0 {
+		t.Fatalf("expected #DIV/0! propagation, got %+v (err: %v)", val, err)
 	}
 }
 
-func TestErrorValueParsing(t *testing.T) {
-	parser := formulaParser{input: "#REF!"}
-	val, err := parser.parsePrimary()
-	if val != 0 {
-		t.Errorf("expected 0, got %v", val)
+func TestRangeShifting(t *testing.T) {
+	// Row deletion shrinking range
+	got := shiftCellReferences("=SUM(A1:A5)", 3, 0, true)
+	if got != "=SUM(A1:A4)" {
+		t.Errorf("delete row 3 from A1:A5 = %q, want =SUM(A1:A4)", got)
 	}
-	var errVal ErrorValue
-	if !errors.As(err, &errVal) || errVal != "#REF!" {
-		t.Errorf("expected ErrorValue(\"#REF!\"), got %v", err)
-	}
-}
 
-func TestShiftCellReferencesDeletion(t *testing.T) {
-	for _, test := range []struct {
-		formula    string
-		fromRow    int
-		fromColumn int
-		want       string
-	}{
-		{"=A1+B2", 1, 0, "=#REF!+B1"},
-		{"=A2+B2", 0, 1, "=#REF!+A2"},
-		{"=C3", 2, 0, "=C2"},
-		{"=C3", 0, 2, "=B3"},
-	} {
-		if got := shiftCellReferences(test.formula, test.fromRow, test.fromColumn, true); got != test.want {
-			t.Errorf("shiftCellReferences(%q, %d, %d, true) = %q, want %q", test.formula, test.fromRow, test.fromColumn, got, test.want)
-		}
+	// Row deletion at top boundary
+	got = shiftCellReferences("=SUM(A1:A5)", 1, 0, true)
+	if got != "=SUM(A1:A4)" {
+		t.Errorf("delete row 1 from A1:A5 = %q, want =SUM(A1:A4)", got)
+	}
+
+	// Row deletion collapsing 1-row range
+	got = shiftCellReferences("=SUM(A3:B3)", 3, 0, true)
+	if got != "=SUM(#REF!)" {
+		t.Errorf("delete row 3 from A3:B3 = %q, want =SUM(#REF!)", got)
+	}
+
+	// Col deletion shrinking range
+	got = shiftCellReferences("=SUM(A1:E1)", 0, 2, true)
+	if got != "=SUM(A1:D1)" {
+		t.Errorf("delete col 2 from A1:E1 = %q, want =SUM(A1:D1)", got)
+	}
+
+	// Col deletion collapsing 1-col range
+	got = shiftCellReferences("=SUM(B1:B5)", 0, 2, true)
+	if got != "=SUM(#REF!)" {
+		t.Errorf("delete col 2 from B1:B5 = %q, want =SUM(#REF!)", got)
+	}
+
+	// Row insertion expanding range
+	got = shiftCellReferences("=SUM(A1:A5)", 3, 0, false)
+	if got != "=SUM(A1:A6)" {
+		t.Errorf("insert row 3 into A1:A5 = %q, want =SUM(A1:A6)", got)
+	}
+
+	// Col insertion expanding range
+	got = shiftCellReferences("=SUM(A1:E1)", 0, 2, false)
+	if got != "=SUM(A1:F1)" {
+		t.Errorf("insert col 2 into A1:E1 = %q, want =SUM(A1:F1)", got)
 	}
 }

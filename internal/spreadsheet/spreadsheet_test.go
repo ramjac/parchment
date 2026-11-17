@@ -41,7 +41,11 @@ func TestSingleFileWorkbookEncodesMetadataCellsAndFormulas(t *testing.T) {
 	if book.Version != decoded.Version || book.Body != decoded.Body || !reflect.DeepEqual(book.Sheets, decoded.Sheets) {
 		t.Fatalf("round trip changed persisted workbook content:\noriginal: %+v\ndecoded: %+v", book, decoded)
 	}
-	value, err := Evaluate(&decoded, 0, 2, 3)
+	valueV, err := Evaluate(&decoded, 0, 2, 3)
+	var value float64
+	if err == nil {
+		value, err = valueV.Float64()
+	}
 	if err != nil || value != 125 {
 		t.Fatalf("formula result = %v, %v", value, err)
 	}
@@ -95,14 +99,22 @@ func TestFormulaArithmeticReferencesAndCycles(t *testing.T) {
 		row, column int
 		want        float64
 	}{{1, 3, 10}, {2, 3, 4}, {3, 1, 13}} {
-		got, err := Evaluate(&book, 0, test.row, test.column)
+		gotV, err := Evaluate(&book, 0, test.row, test.column)
+		var got float64
+		if err == nil {
+			got, err = gotV.Float64()
+		}
 		if err != nil || got != test.want {
 			t.Fatalf("cell %s = %v, %v; want %v", CellName(test.row, test.column), got, err, test.want)
 		}
 	}
 	book.Sheets[0].Rows[0][0] = Cell{Formula: "=B1"}
 	book.Sheets[0].Rows[0][1] = Cell{Formula: "=A1"}
-	if _, err := Evaluate(&book, 0, 1, 1); err == nil {
+	valV, err := Evaluate(&book, 0, 1, 1)
+	if err == nil {
+		_, err = valV.Float64()
+	}
+	if err == nil {
 		t.Fatal("circular reference was accepted")
 	}
 	if err := Normalize(&book); err == nil {
@@ -116,7 +128,11 @@ func TestFormulaParserSkipsUnicodeWhitespace(t *testing.T) {
 	if err := Normalize(&book); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Evaluate(&book, 0, 1, 1)
+	gotV, err := Evaluate(&book, 0, 1, 1)
+	var got float64
+	if err == nil {
+		got, err = gotV.Float64()
+	}
 	if err != nil || got != 3 {
 		t.Fatalf("formula with non-breaking space = %v, %v; want 3", got, err)
 	}
@@ -130,7 +146,11 @@ func TestSpreadsheetOperationsFormulaShiftsAndHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	value, err := Evaluate(&book, 0, 1, 3)
+	valueV, err := Evaluate(&book, 0, 1, 3)
+	var value float64
+	if err == nil {
+		value, err = valueV.Float64()
+	}
 	if err != nil || value != 5 {
 		t.Fatalf("initial formula = %v, %v", value, err)
 	}
@@ -194,14 +214,21 @@ func TestNormalizeRejectsDeepFormulaChainsRegardlessOfCacheOrder(t *testing.T) {
 
 func TestFormulaDepthBoundaryAgreesBetweenNormalizeAndEvaluate(t *testing.T) {
 	book := formulaChain(maxFormulaDepth)
-	value, err := Evaluate(&book, 0, len(book.Sheets[0].Rows), 1)
+	valueV, err := Evaluate(&book, 0, len(book.Sheets[0].Rows), 1)
+	var value float64
+	if err == nil {
+		value, err = valueV.Float64()
+	}
 	if err != nil || value != 1 {
 		t.Fatalf("Evaluate at the depth limit = %v, %v", value, err)
 	}
 	if err := Normalize(&book); err != nil {
 		t.Fatalf("Normalize rejected a chain at the depth limit: %v", err)
 	}
-	value, err = Evaluate(&book, 0, len(book.Sheets[0].Rows), 1)
+	valueV, err = Evaluate(&book, 0, len(book.Sheets[0].Rows), 1)
+	if err == nil {
+		value, err = valueV.Float64()
+	}
 	if err != nil || value != 1 {
 		t.Fatalf("Evaluate after Normalize = %v, %v", value, err)
 	}

@@ -321,7 +321,7 @@ func normalizeSheetGrid(sheet *Sheet) error {
 func validateFormulas(book *Spreadsheet) error {
 	evaluator := evaluator{
 		book: book, visiting: make(map[cellCoordinate]bool),
-		cache: make(map[cellCoordinate]float64), depth: make(map[cellCoordinate]int),
+		cache: make(map[cellCoordinate]Value), depth: make(map[cellCoordinate]int),
 	}
 	for sheetIndex := range book.Sheets {
 		for row := range book.Sheets[sheetIndex].Rows {
@@ -329,13 +329,11 @@ func validateFormulas(book *Spreadsheet) error {
 				if cell.Formula == "" {
 					continue
 				}
-				if _, err := evaluator.cell(sheetIndex, row+1, column+1); err != nil {
-					var errVal ErrorValue
-					if errors.As(err, &errVal) {
-						continue
-					}
+				if val, err := evaluator.cell(sheetIndex, row+1, column+1); err != nil {
 					return fmt.Errorf("sheet %q cell %s formula: %w", book.Sheets[sheetIndex].Name,
 						CellName(row+1, column+1), err)
+				} else if val.Kind == ErrKind {
+					continue
 				}
 			}
 		}
