@@ -72,12 +72,15 @@ margins, columns, headers, footers, and page numbers, separated by form feeds:
 ```sh
 parchment document create report.md --body-file draft.md --columns 2 --footer "{title}|{page}/{pages}"
 parchment document print report.md | lpr
+parchment document print report.md --format pdf -o report.pdf
 ```
 
 Documents store a document-wide core-font choice (`courier`, `helvetica`, or
 `times`) in their layout; it does not change the font used by the TUI or
 terminal previews, which use the font configured in the user's terminal
-emulator. Text printing remains plain text; PDF printing is not yet implemented.
+emulator. Text printing remains plain text, while `document print --format pdf`
+exports paginated PDFs with Markdown headings, emphasis, links, code styling,
+embedded inline and reference-style images, and the selected core font.
 
 Document commands (`parchment document`, alias `doc`): `create`, `show`,
 `edit`, `layout`, `page-break`,
@@ -293,7 +296,7 @@ does not yet meet its acceptance criteria remains unchecked.
   - **PRs 17–18:** Heading slugging (`-1`/`-2` suffixes) and `#id` anchor parsing (**PR 17**), plus a left-side outline pane in the Document editor and reader (`Ctrl+O` toggles visibility; `F6` focuses the editor outline pane, freeing `Tab` in the body to insert 2 spaces while `F2` focuses the toolbar), displaying H1–H6 headings, untitled section breaks (`── Section (N cols)`), and `#id` anchors (**PR 18**)
   - **PR 19:** Pre-render rewritten and coordinate-mapped clickable internal links in Document preview and reader views (suppressing raw destination URLs in Glamour and tracking ordered post-render ANSI line spans)
 - **PRs 20–21:** In-editor search and find across all artifact viewers and editors (`Ctrl+F` everywhere plus `/` in read-only/grid browse views; modal bottom find bar + text-editor match highlighting in **PR 20**, extended with `n`/`N`, smart-case matching, ANSI stripping, and full multi-sheet + auto-revealed presentation speaker-note search in **PR 21**)
-- **PRs 22–23:** Document and presentation printer font selection (`"courier"` default, `"helvetica"`, `"times"` in `document.Layout` at `LayoutVersion = 1` and a new `font` field in the existing `parchment-presentation` v1 block in **PR 22**), adding a pure-Go core-font PDF renderer (`internal/pdfrender`) and `document print --format text|pdf` (default `text`) without affecting terminal fonts (**PR 23**)
+- **PRs 22–23:** Document and presentation printer font selection (`"courier"` default, `"helvetica"`, `"times"` in `document.Layout` at `LayoutVersion = 1` and a new `font` field in the existing `parchment-presentation` v1 block in **PR 22**), plus a pure-Go core-font PDF renderer (`internal/pdfrender`) and `document print --format text|pdf` (default `text`) with page layout and embedded images (**PR 23**); terminal fonts remain unchanged
 
 ### Phase 4: Extended Domain Engines (PRs 24–30)
 - **PRs 24–25:** Zero-dependency recursive-descent spreadsheet formula Lexer, AST, span rewriter, and cross-sheet references (`Sheet2!A1`) in `internal/spreadsheet/formula` (**PR 24**), followed by rectangular ranges (`A1:B10`), `""`-escaped `StringLiteral`s with Excel/Calc coercion, `SUM`, `AVERAGE`, `COUNT`, `MIN`, `MAX`, nested calls, and persisted runtime error propagation (`#REF!`, `#DIV/0!`, `#NAME?`, `#VALUE!`, `#CIRCULAR!`) (**PR 25**)

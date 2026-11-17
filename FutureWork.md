@@ -708,9 +708,10 @@ Glamour views bound strictly to the user's terminal emulator font.
     - `--format pdf` renders paginated pages (respecting page size, orientation,
       margins, columns, headers, footers, page numbers, embedded images, and the
       selected PostScript/PDF core font family `Courier`, `Helvetica`, or
-      `Times-Roman`) via a pure-Go PDF writer in `internal/pdfrender` (shared
-      with Phase 4 `presentation export --format pdf`), writing to `-o` (refusing
-      overwrite without `--force`) or `stdout`.
+      `Times-Roman`), with Markdown heading/inline styles and embedded
+      inline/reference-style images, via a pure-Go PDF writer in
+      `internal/pdfrender` (shared with Phase 4 `presentation export --format
+      pdf`), writing to `-o` (refusing overwrite without `--force`) or `stdout`.
 
 ### PR Breakdown
 - **PR 22:** Add validated `Font` (`courier`|`helvetica`|`times`) to
@@ -725,12 +726,15 @@ Glamour views bound strictly to the user's terminal emulator font.
 - **PR 23b:** Add multi-column page layout, running headers/footers with dynamic
   page numbers, and page breaks to `internal/pdfrender`.
 - **PR 23c:** Add embedded image rendering to `internal/pdfrender` (`DCTDecode`
-  for JPEG; `FlateDecode` RGB with `SMask` alpha for PNG/GIF).
+  for JPEG; `FlateDecode` RGB with `SMask` alpha for PNG/GIF), including
+  reference-style images; preserve Markdown headings, emphasis, links, and code
+  styling in PDF output.
 
 **Acceptance:** Documents and presentations persist validated core font
 selections (`courier`, `helvetica`, `times`), `document print --format pdf`
-renders pages in the selected font while `--format text` preserves `lpr` text
-output, and terminal views never alter terminal fonts.
+renders Markdown-styled pages with embedded images in the selected font while
+`--format text` preserves `lpr` text output, and terminal views never alter
+terminal fonts.
 
 ## Implementation Order (PR-by-PR Execution Checklist)
 
@@ -827,9 +831,9 @@ flowchart TD
 - [ ] **PR 20 — Smart-Case Find Bar & Editor Match Highlighting (Section 10):** Build the shared `Ctrl+F` bottom find bar and `editor.Model` match-span highlighter across Note, Document, and Presentation text editors.
 - [ ] **PR 21 — Reader, Multi-Sheet Grid & Slide/Notes Search (Section 10):** Extend `Ctrl+F`, `/`, and `n`/`N` smart-case search to Document reader/preview (ANSI stripping + `charmbracelet/x/ansi` re-styling), Note `F5` preview, all Spreadsheet sheets/formulas, and Presentation slides + auto-revealed speaker notes.
 - [x] **PR 22 — Core Font Schema, `parchment-presentation` & Font Controls (Section 14):** Add validated `Font` (`courier`|`helvetica`|`times`) to `document.Layout` v1 and the existing `parchment-presentation` v1 block, and add CLI `--font` flags and Document/Presentation TUI controls.
-- [ ] **PR 23a — Core Pure-Go PDF Writer with AFM Metrics (Section 14):** Implement `internal/pdfrender` with embedded standard-14 AFM width tables (Courier, Helvetica, Times-Roman), point-based single-column text layout, and `document print [--format text|pdf] [-o] [--force]`.
-- [ ] **PR 23b — PDF Multi-Column Layout & Running Headers/Footers (Section 14):** Add multi-column sections, running headers/footers with dynamic `{page}`/`{pages}` fields, and explicit page breaks to `internal/pdfrender`.
-- [ ] **PR 23c — PDF Embedded Image Rendering (Section 14):** Add embedded image support to `internal/pdfrender` (`DCTDecode` JPEG + `FlateDecode` RGB/SMask PNG).
+- [x] **PR 23a — Core Pure-Go PDF Writer with AFM Metrics (Section 14):** Implement `internal/pdfrender` with standard-14 AFM metrics (Courier, Helvetica, Times-Roman), point-based page output, and `document print [--format text|pdf] [-o] [--force]`.
+- [x] **PR 23b — PDF Multi-Column Layout & Running Headers/Footers (Section 14):** Render multi-column sections, running headers/footers with dynamic `{page}`/`{pages}` fields, and explicit page breaks through the shared document paginator.
+- [x] **PR 23c — PDF Markdown Styling & Embedded Images (Section 14):** Preserve Markdown heading/inline styles and embed inline/reference-style JPEG, PNG, and GIF images in PDF output.
 
 ### Phase 4: Extended Domain Engines (PRs 24–30)
 - [x] **PR 24a — Tagged `Value` Union & Evaluator Migration (Section 11):** Define `type Value struct { Kind ValueKind; Num float64; Str string; Err ErrorCode }`, migrate `Evaluate` return type and callers across CLI, TUI, and CSV export, providing `Value.Float64()`.

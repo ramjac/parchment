@@ -54,6 +54,38 @@ func TestDocumentCLI(t *testing.T) {
 	}
 }
 
+func TestDocumentPrintPDFCLI(t *testing.T) {
+	c := newCLI(t)
+	c.must("document", "create", "pdf.md", "--body", "# Printable\n\nPDF output.")
+
+	pdf := c.must("document", "print", "pdf.md", "--format", "pdf")
+	if !strings.HasPrefix(pdf, "%PDF-") {
+		t.Fatal("PDF print output is missing the PDF signature")
+	}
+	if _, err := c.run("document", "print", "pdf.md", "--format", "invalid"); err == nil {
+		t.Fatal("unsupported print format was accepted")
+	}
+
+	c.must("document", "print", "pdf.md", "--format", "pdf", "-o", "output.pdf")
+	if _, err := c.run("document", "print", "pdf.md", "--format", "pdf", "-o", "output.pdf"); err == nil {
+		t.Fatal("existing output was overwritten without --force")
+	}
+	c.must("document", "print", "pdf.md", "--format", "pdf", "-o", "output.pdf", "--force")
+	data, err := os.ReadFile("output.pdf")
+	if err != nil || !strings.HasPrefix(string(data), "%PDF-") {
+		t.Fatalf("PDF output file is invalid: %v", err)
+	}
+
+	if err := os.WriteFile("text.out", []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c.must("document", "print", "pdf.md", "-o", "text.out")
+	data, err = os.ReadFile("text.out")
+	if err != nil || string(data) == "old" {
+		t.Fatalf("text output did not preserve its existing overwrite behavior: %v", err)
+	}
+}
+
 func TestDocumentProposalKeepsEmbeddedImages(t *testing.T) {
 	c := newCLI(t)
 	png := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\xff\xff?\x00\x05\xfe\x02\xfe\xa7\x35\x81\x84\x00\x00\x00\x00IEND\xaeB`\x82")
