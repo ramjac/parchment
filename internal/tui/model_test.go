@@ -720,12 +720,23 @@ func TestSpreadsheetRecoveryOfferRecoverDiscardQuit(t *testing.T) {
 func TestSpreadsheetRecoveryWarnsWhenFileChangedAfterDraft(t *testing.T) {
 	ctx := context.Background()
 	hSheet := newHarness(t, "")
-	book, err := hSheet.sheets.Create(ctx, hSheet.path, nil)
+	baseline, err := hSheet.sheets.Create(ctx, hSheet.path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	draft := fmt.Sprintf(`{"baseline":{"version":1,"artifact":{"kind":"spreadsheet"},"created_at":"2020-01-01T00:00:00Z","modified_at":"2020-01-01T00:00:00Z","sheets":[{"name":"Sheet1","rows":[[{"value":"old"}]]}]},"dirty":{"version":1,"artifact":{"kind":"spreadsheet"},"created_at":"2020-01-01T00:00:00Z","modified_at":"2020-01-01T00:00:00Z","sheets":[{"name":"Sheet1","rows":[[{"value":"draft"}]]}]},"active_sheet":0,"cursor_row":0,"cursor_col":0}`)
+	dirty := cloneSpreadsheetState(baseline)
+	if err := spreadsheet.SetCellInBook(&dirty, spreadsheet.SetCellOptions{
+		Sheet: "Sheet1", Row: 1, Column: 1, Cell: spreadsheet.Cell{Value: "draft"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	draft, err := json.Marshal(spreadsheetRecoveryData{
+		Baseline: baseline, Dirty: dirty,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	err = hSheet.repo.SaveRecovery(ctx, recovery.Draft{
 		Path:      hSheet.path,
 		Kind:      string(artifact.SpreadsheetKind),
@@ -740,7 +751,6 @@ func TestSpreadsheetRecoveryWarnsWhenFileChangedAfterDraft(t *testing.T) {
 	if _, err := hSheet.sheets.SetCell(ctx, hSheet.path, 1, 1, spreadsheet.Cell{Value: "externally changed"}); err != nil {
 		t.Fatal(err)
 	}
-	_ = book
 
 	// Reopen and recover
 	hSheet.open(artifact.SpreadsheetKind)
@@ -750,6 +760,112 @@ func TestSpreadsheetRecoveryWarnsWhenFileChangedAfterDraft(t *testing.T) {
 	hSheet.key("r")
 	if !strings.Contains(hSheet.m.sheet.status, "saving will report a conflict") {
 		t.Fatalf("status = %q, want conflict warning", hSheet.m.sheet.status)
+	}
+	hSheet.key("ctrl+s")
+	if !strings.Contains(hSheet.m.sheet.errMessage, "changed since it was loaded") {
+		t.Fatalf("save error = %q, want external-edit conflict", hSheet.m.sheet.errMessage)
+	}
+	stored, err := hSheet.sheets.Get(ctx, hSheet.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stored.Sheets[0].Rows[0][0].Value; got != "externally changed" {
+		t.Fatalf("external edit was overwritten: cell = %q", got)
+	}
+}
+
+func TestSpreadsheetRecoveryPreservesWorkbookMetadataAndPendingClear(t *testing.T) {
+	ctx := context.Background()
+	hSheet := newHarness(t, "")
+	_, err := hSheet.sheets.Create(ctx, hSheet.path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	twoSheets, err := hSheet.sheets.AddSheet(ctx, hSheet.path, "Sheet2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := cloneSpreadsheetState(twoSheets)
+	updated.Body = "Workbook notes"
+	updated.Blocks = map[string]json.RawMessage{
+		"parchment-custom": json.RawMessage(`{"value":"kept"}`),
+	}
+	if err := spreadsheet.SetCellInBook(&updated, spreadsheet.SetCellOptions{
+		Sheet: "Sheet1", Row: 1, Column: 1, Cell: spreadsheet.Cell{Value: "original"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := spreadsheet.SetCellInBook(&updated, spreadsheet.SetCellOptions{
+		Sheet: "Sheet2", Row: 1, Column: 1, Cell: spreadsheet.Cell{Formula: "=1+3"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := hSheet.repo.TransitionSpreadsheet(ctx, hSheet.path, &twoSheets, &updated); err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := hSheet.sheets.Get(ctx, hSheet.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dirty := cloneSpreadsheetState(baseline)
+	if err := spreadsheet.SetCellInBook(&dirty, spreadsheet.SetCellOptions{
+		Sheet: "Sheet1", Row: 1, Column: 1, Cell: spreadsheet.Cell{Value: "recovered"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	draftData, err := json.Marshal(spreadsheetRecoveryData{
+		Baseline: baseline, BaselineBody: baseline.Body, BaselineBlocks: baseline.Blocks,
+		Dirty: dirty, DirtyBody: dirty.Body, DirtyBlocks: dirty.Blocks,
+		ActiveSheet: 1, Editing: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hSheet.repo.SaveRecovery(ctx, recovery.Draft{
+		Path: hSheet.path, Kind: string(artifact.SpreadsheetKind),
+		UpdatedAt: time.Now().UTC(), Data: draftData,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	hSheet.open(artifact.SpreadsheetKind)
+	if hSheet.m.stage != stageRecovery {
+		t.Fatalf("stage = %d, want stageRecovery", hSheet.m.stage)
+	}
+	hSheet.key("r")
+	if hSheet.m.sheet.sheet != 1 || !hSheet.m.sheet.editing || hSheet.m.sheet.input.Value() != "" {
+		t.Fatalf("restored sheet/editor/input = %d/%t/%q", hSheet.m.sheet.sheet,
+			hSheet.m.sheet.editing, hSheet.m.sheet.input.Value())
+	}
+	if got := hSheet.m.sheet.displayValue(0, 0); got != "4" {
+		t.Fatalf("formula value on recovered active sheet = %q, want 4", got)
+	}
+	if hSheet.m.sheet.baseline.Body != "Workbook notes" ||
+		string(hSheet.m.sheet.baseline.Blocks["parchment-custom"]) != `{"value":"kept"}` ||
+		hSheet.m.sheet.book.Body != "Workbook notes" ||
+		string(hSheet.m.sheet.book.Blocks["parchment-custom"]) != `{"value":"kept"}` {
+		t.Fatalf("workbook metadata was not restored: baseline=%#v dirty=%#v",
+			hSheet.m.sheet.baseline, hSheet.m.sheet.book)
+	}
+
+	hSheet.key("ctrl+s")
+	if hSheet.m.sheet.errMessage != "" || hSheet.m.sheet.dirty() {
+		t.Fatalf("save of recovered workbook failed: dirty=%t error=%q",
+			hSheet.m.sheet.dirty(), hSheet.m.sheet.errMessage)
+	}
+	saved, err := hSheet.sheets.Get(ctx, hSheet.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Body != "Workbook notes" ||
+		string(saved.Blocks["parchment-custom"]) != `{"value":"kept"}` ||
+		saved.Sheets[0].Rows[0][0].Value != "recovered" ||
+		saved.Sheets[1].Rows[0][0] != (spreadsheet.Cell{}) {
+		t.Fatalf("saved recovered workbook lost content: %#v", saved)
+	}
+	if hSheet.hasDraft() {
+		t.Fatal("successful recovery save did not remove the draft")
 	}
 }
 

@@ -287,6 +287,99 @@ func (r *memoryRepository) TransitionSpreadsheet(_ context.Context, id string, e
 	return nil
 }
 
+func TestUpdateSavesWorkbookAsSingleHistoryEntry(t *testing.T) {
+	ctx := context.Background()
+	repository := newMemoryRepository()
+	service := NewService(repository, 10)
+	before, err := service.Create(ctx, "budget.md", [][]Cell{{{Value: "Rent"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated := cloneSpreadsheet(before)
+	for _, edit := range []SetCellOptions{
+		{Sheet: "Sheet1", Row: 1, Column: 2, Cell: Cell{Value: "1200"}},
+		{Sheet: "Sheet1", Row: 2, Column: 1, Cell: Cell{Formula: "=B1*2"}},
+	} {
+		if err := SetCellInBook(&updated, edit); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Normalize(&updated); err != nil {
+		t.Fatal(err)
+	}
+	got, err := service.Update(ctx, before, updated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Sheets, updated.Sheets) || !service.CanUndo() {
+		t.Fatalf("updated workbook = %#v; CanUndo = %t", got.Sheets, service.CanUndo())
+	}
+	stored, err := service.Get(ctx, before.Path)
+	if err != nil || !reflect.DeepEqual(stored.Sheets, updated.Sheets) {
+		t.Fatalf("stored workbook = %#v, %v", stored.Sheets, err)
+	}
+
+	description, err := service.Undo(ctx)
+	if err != nil || description != "Update spreadsheet" {
+		t.Fatalf("Undo = %q, %v", description, err)
+	}
+	stored, err = service.Get(ctx, before.Path)
+	if err != nil || !Equal(stored, before) {
+		t.Fatalf("undo did not restore baseline: %#v, %v", stored, err)
+	}
+	description, err = service.Redo(ctx)
+	if err != nil || description != "Update spreadsheet" {
+		t.Fatalf("Redo = %q, %v", description, err)
+	}
+	stored, err = service.Get(ctx, before.Path)
+	if err != nil || !reflect.DeepEqual(stored.Sheets, updated.Sheets) {
+		t.Fatalf("redo did not restore saved workbook: %#v, %v", stored.Sheets, err)
+	}
+}
+
+func TestUpdateNoopDoesNotCreateHistoryEntry(t *testing.T) {
+	ctx := context.Background()
+	repository := newMemoryRepository()
+	service := NewService(repository, 10)
+	before, err := service.Create(ctx, "budget.md", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Update(ctx, before, before); err != nil {
+		t.Fatal(err)
+	}
+	if service.CanUndo() {
+		t.Fatal("no-op update created a history entry")
+	}
+}
+
+func TestUpdateRejectsStaleBaseline(t *testing.T) {
+	ctx := context.Background()
+	repository := newMemoryRepository()
+	service := NewService(repository, 10)
+	before, err := service.Create(ctx, "budget.md", [][]Cell{{{Value: "baseline"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := cloneSpreadsheet(before)
+	if err := SetCellInBook(&updated, SetCellOptions{
+		Sheet: "Sheet1", Row: 1, Column: 1, Cell: Cell{Value: "buffered"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SetCell(ctx, before.Path, 1, 1, Cell{Value: "external"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Update(ctx, before, updated); err == nil {
+		t.Fatal("stale buffered update overwrote an external change")
+	}
+	stored, err := service.Get(ctx, before.Path)
+	if err != nil || stored.Sheets[0].Rows[0][0].Value != "external" {
+		t.Fatalf("external change was not preserved: %#v, %v", stored.Sheets, err)
+	}
+}
+
 func TestDecode(t *testing.T) {
 	validItem := Spreadsheet{
 		Artifact: artifact.Artifact{

@@ -422,7 +422,7 @@ func (m *Model) enterEditor() tea.Cmd {
 		m.stage = stageNote
 		return tea.Batch(m.bodyInput.Focus(), m.scheduleAutosave(m.autosaveSession))
 	case artifact.SpreadsheetKind:
-		m.sheet = newSpreadsheetModel(m.spreadsheets, m.path, m.theme)
+		m.sheet = newSpreadsheetModel(m.spreadsheets, m.path, m.theme, m.undoLimit)
 		m.sheet.recoveryStore = m.recoveryStore
 		m.sheet.autosaveScheduler = func(session uint64) tea.Cmd {
 			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
@@ -435,8 +435,7 @@ func (m *Model) enterEditor() tea.Cmd {
 		m.sheet.status = m.status
 		m.stage = stageSpreadsheet
 		_, cmd := m.sheet.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-		m.sheet.startAutosaveSession()
-		return tea.Batch(cmd, m.sheet.scheduleAutosave(m.sheet.autosaveSession))
+		return cmd
 	case artifact.PresentationKind:
 		m.deck = newPresentationModel(m.presentations, m.path, m.theme, m.undoLimit)
 		m.deck.recoveryStore = m.recoveryStore
