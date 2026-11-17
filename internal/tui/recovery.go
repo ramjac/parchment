@@ -19,12 +19,17 @@ import (
 // spreadsheetRecoveryData is the autosaved spreadsheet editor state: the saved
 // workbook the edits started from, dirty sheet state, and cursor/cell input positions.
 type spreadsheetRecoveryData struct {
-	Baseline         spreadsheet.Spreadsheet `json:"baseline"`
-	Dirty            spreadsheet.Spreadsheet `json:"dirty"`
-	ActiveSheet      int                     `json:"active_sheet"`
-	CursorRow        int                     `json:"cursor_row"`
-	CursorCol        int                     `json:"cursor_col"`
-	PendingCellInput string                  `json:"pending_cell_input,omitempty"`
+	Baseline         spreadsheet.Spreadsheet    `json:"baseline"`
+	BaselineBody     string                     `json:"baseline_body,omitempty"`
+	BaselineBlocks   map[string]json.RawMessage `json:"baseline_blocks,omitempty"`
+	Dirty            spreadsheet.Spreadsheet    `json:"dirty"`
+	DirtyBody        string                     `json:"dirty_body,omitempty"`
+	DirtyBlocks      map[string]json.RawMessage `json:"dirty_blocks,omitempty"`
+	ActiveSheet      int                        `json:"active_sheet"`
+	CursorRow        int                        `json:"cursor_row"`
+	CursorCol        int                        `json:"cursor_col"`
+	Editing          bool                       `json:"editing,omitempty"`
+	PendingCellInput string                     `json:"pending_cell_input,omitempty"`
 }
 
 // presentationRecoveryData is the autosaved presentation editor state: the saved
@@ -186,6 +191,8 @@ func (m *Model) recoverDraft() tea.Cmd {
 			m.errMessage = "Decode autosaved spreadsheet: " + err.Error() + "; press d to discard it"
 			return nil
 		}
+		data.Baseline.Body, data.Baseline.Blocks = data.BaselineBody, data.BaselineBlocks
+		data.Dirty.Body, data.Dirty.Blocks = data.DirtyBody, data.DirtyBlocks
 		data.Baseline.Path = m.path
 		data.Dirty.Path = m.path
 		m.sheet = newSpreadsheetModel(m.spreadsheets, m.path, m.theme, m.undoLimit)
@@ -200,15 +207,16 @@ func (m *Model) recoverDraft() tea.Cmd {
 		spreadsheet.Normalize(&data.Dirty)
 		m.sheet.setBook(data.Dirty)
 		m.sheet.baseline = cloneSpreadsheetState(data.Baseline)
-		m.sheet.sheet = data.ActiveSheet
+		m.sheet.sheet = min(max(data.ActiveSheet, 0), len(m.sheet.book.Sheets)-1)
 		m.sheet.row = data.CursorRow
 		m.sheet.column = data.CursorCol
 		m.sheet.scrollToSelection()
-		if data.PendingCellInput != "" {
+		if data.Editing || data.PendingCellInput != "" {
 			m.sheet.editing = true
 			m.sheet.input.SetValue(data.PendingCellInput)
 			m.sheet.input.CursorEnd()
 		}
+		m.sheet.computeValues()
 		m.sheet.draftStored = true
 		m.sheet.status = "Recovered unsaved spreadsheet draft"
 		if !spreadsheet.Equal(data.Baseline, opened.book) {

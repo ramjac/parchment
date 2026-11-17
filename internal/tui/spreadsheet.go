@@ -178,12 +178,18 @@ func (m *spreadsheetModel) saveRecovery(session uint64) tea.Cmd {
 	if m.editing {
 		pendingInput = m.input.Value()
 	}
+	baseline, dirty := cloneSpreadsheetState(m.baseline), cloneSpreadsheetState(m.book)
 	data := spreadsheetRecoveryData{
-		Baseline:         cloneSpreadsheetState(m.baseline),
-		Dirty:            cloneSpreadsheetState(m.book),
+		Baseline:         baseline,
+		BaselineBody:     m.baseline.Body,
+		BaselineBlocks:   baseline.Blocks,
+		Dirty:            dirty,
+		DirtyBody:        m.book.Body,
+		DirtyBlocks:      dirty.Blocks,
 		ActiveSheet:      m.sheet,
 		CursorRow:        m.row,
 		CursorCol:        m.column,
+		Editing:          m.editing,
 		PendingCellInput: pendingInput,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -762,6 +768,7 @@ func (m *spreadsheetModel) redo() tea.Cmd {
 		m.book = m.bufferRedo[len(m.bufferRedo)-1]
 		m.bufferRedo = m.bufferRedo[:len(m.bufferRedo)-1]
 		m.status, m.errMessage = "Redid spreadsheet edit", ""
+		m.sheet = min(max(m.sheet, 0), len(m.book.Sheets)-1)
 		m.computeValues()
 		m.scrollToSelection()
 		return m.syncAutosave()

@@ -111,6 +111,11 @@ func newSheetModel(t *testing.T, rows [][]spreadsheet.Cell) (*spreadsheetModel, 
 func TestSpreadsheetAutosavesWorkbookAndActiveCellInput(t *testing.T) {
 	m, _, repository, path := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "original"}}})
 	m.recoveryStore = repository
+	m.baseline.Body = "Workbook notes"
+	m.baseline.Blocks = map[string]json.RawMessage{
+		"parchment-custom": json.RawMessage(`{"value":"kept"}`),
+	}
+	m.book = cloneSpreadsheetState(m.baseline)
 	m.autosaveScheduler = func(session uint64) tea.Cmd {
 		return func() tea.Msg { return spreadsheetAutosaveTickMsg{session: session} }
 	}
@@ -163,6 +168,11 @@ func TestSpreadsheetAutosavesWorkbookAndActiveCellInput(t *testing.T) {
 	if data.Baseline.Sheets[0].Rows[0][0].Value != "original" ||
 		data.Dirty.Sheets[0].Rows[0][0].Value != "buffered" ||
 		data.PendingCellInput != "pending cell input" ||
+		!data.Editing ||
+		data.BaselineBody != "Workbook notes" ||
+		string(data.BaselineBlocks["parchment-custom"]) != `{"value":"kept"}` ||
+		data.DirtyBody != "Workbook notes" ||
+		string(data.DirtyBlocks["parchment-custom"]) != `{"value":"kept"}` ||
 		data.ActiveSheet != 0 || data.CursorRow != 0 || data.CursorCol != 1 {
 		t.Fatalf("recovery data = %#v", data)
 	}
@@ -837,6 +847,34 @@ func TestSpreadsheetUpdateNavigationAndSheetSwitch(t *testing.T) {
 		t.Fatalf("'e' key expected to start editing mode")
 	}
 	driveSheet(t, m, sheetKey("esc"))
+}
+
+func TestSpreadsheetRedoClampsSelectionAfterSheetDeletion(t *testing.T) {
+	m, service, _, path := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "first"}}})
+	if _, err := service.AddSheet(context.Background(), path, "Sheet2"); err != nil {
+		t.Fatal(err)
+	}
+	book, err := service.Get(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.setBook(book)
+
+	driveSheet(t, m, sheetKey("tab"))
+	if m.sheet != 1 {
+		t.Fatalf("active sheet = %d, want 1", m.sheet)
+	}
+	driveSheet(t, m, sheetKey("d"))
+	driveSheet(t, m, sheetKey("s"))
+	driveSheet(t, m, sheetKey("u"))
+	driveSheet(t, m, sheetKey("tab"))
+	if m.sheet != 1 {
+		t.Fatalf("active sheet after undo = %d, want 1", m.sheet)
+	}
+	driveSheet(t, m, sheetKey("ctrl+r"))
+	if m.sheet != 0 || len(m.book.Sheets) != 1 {
+		t.Fatalf("redo selection = %d with %d sheets, want sheet 0 with one sheet", m.sheet, len(m.book.Sheets))
+	}
 }
 
 func TestSpreadsheetViewEditingAndHelp(t *testing.T) {
