@@ -272,7 +272,15 @@ lists proposals, `u`/`Ctrl+R` undo and redo, and `Esc` or `q` quits. Press `e` t
 changes. New documents and restored drafts open directly in the editor.
 
 Spreadsheets open as a grid: use arrow keys to select a cell, `Enter` to edit
-and stage a cell, and `Ctrl+S` to save the workbook. Use `i` then `r`/`c` to
+and stage a cell, and `Ctrl+S` to save the workbook. While editing, `Shift+Enter`
+stages the cell and starts editing the cell directly below in the same column.
+Parchment enables modified-key reporting for supported terminals. If your terminal
+or multiplexer still sends `Shift+Enter` as ordinary `Enter`, use `Alt+Enter`
+for the same stage-and-move action.
+Windows Terminal normally reserves `Alt+Enter` for fullscreen; that fallback
+requires unbinding the terminal action. Windows Terminal 1.25 and newer support
+the modified-key reporting used for `Shift+Enter`.
+Use `i` then `r`/`c` to
 insert a row/column before the selection, and `d` then `r`/`c`/`s` to delete a
 row/column/sheet. `u`/`Ctrl+Z` and `Ctrl+R` undo/redo buffered edits before
 committed service history. `Esc` or `q` asks before discarding unsaved changes.
@@ -305,10 +313,12 @@ presentations. Detailed PR-by-PR implementation plans are in
 and [`docs/Persistent_Undo_Redo_Plan.md`](docs/Persistent_Undo_Redo_Plan.md).
 Work is organized into five sequential implementation phases broken down into
 **38 reviewable Pull Requests (`PR 1`–`PR 38`)**. The main branch has completed
-milestones **1–4, 6, 9–14, 15a, 16–19, 22, 24a–b, 26, and 31–35**. The
-[`FutureWork.md`](FutureWork.md) checklist is the progress source of truth:
-only fully implemented, merged milestones are checked; merged scaffolding that
-does not yet meet its acceptance criteria remains unchecked.
+milestones **1–4, 6–14, 15a, 16–19, 22, 24a–b, 26, and 31–35**. Detailed
+acceptance criteria and an accompanying progress checklist are in
+[`FutureWork.md`](FutureWork.md). The Phase 2 status below includes the merged
+spreadsheet editing and recovery work; its PR 7–8 checklist entries there are
+outdated. Only fully implemented, merged milestones count as complete; merged
+scaffolding that does not yet meet its acceptance criteria remains incomplete.
 
 ### Phase 1: Foundations & Bug Fixes (PRs 1–6)
 - **PR 1:** Fix bordered content sizing in the note editor (and Lip Gloss outer border dimensions `width-2` / `height-chrome-2` so borders never overflow terminal bounds)
@@ -319,10 +329,16 @@ does not yet meet its acceptance criteria remains unchecked.
 - **PRs 5–6:** Complete the native text editor widget (`internal/tui/editor`) with literal `\t` preservation (4-space visual tab stops while `Tab` inserts 2 spaces, removing `\t` rejection from `isUnpreservableText`), `UndoLimit`-bounded keystroke history, keystroke-undo reset on `Ctrl+S` save (**PR 5**), and `go-runewidth` soft line wrapping with CJK/emoji-aware visual row navigation and mouse/selection coordinate mapping (**PR 6**)
 
 ### Phase 2: State Safety & CLI Core (PRs 7–13)
-- **PRs 7–9:** Buffered `Ctrl+S` saving and autosave recovery drafts for spreadsheets (switching the spreadsheet TUI from immediate per-cell disk writes to buffered workbook editing with dirty-close confirmation in **PR 7**, autosaving the dirty workbook + active cell input in **PR 8**) and presentations (opening recovered drafts directly into the Markdown source editor in **PR 9**). PR 9 is complete; PRs 7 and 8 are implemented in the current branch and pending merge.
-- **PR 10:** Explicit CLI-only conversion of plain Markdown files (`parchment convert <file> [--kind document|note|presentation] [--yes]`, defaulting `--kind` to `document`, prompting `[y/N]` on a TTY and requiring `--yes` when non-interactive, setting `created_at` from file `mtime` UTC and `modified_at` to current UTC)
-- **PRs 11–12:** Spreadsheet deletion & CSV export: 1-based `delete-row`, `delete-column`, and `delete-sheet` (CLI + TUI shortcuts) with formula reference shifting, `#REF!` token support, and relaxed save-time validation allowing formula error values to persist while rejecting invalid syntax (**PR 11**); `spreadsheet export <file> --csv [--sheet <name>] [-o <output>] [--force]` defaulting to the first sheet and `stdout` when omitted and refusing overwrite without `--force` (**PR 12**)
-- **PR 13:** Document embedded image management: `document images <file>` (`<name>\t<format>\t<WxH>\t<bytes>\t<referenced|unreferenced>`), `document image-extract <file> <image-name> -o <output> [--force]` (`0600`), and `document image-remove <file> <image-name> [--strip-references]` (refusing removal when referenced in `Body` without `--strip-references` or when referenced by a pending proposal)
+
+**Complete: PRs 7–13. No outstanding Phase 2 PRs.**
+
+- [x] **PR 7 — Complete:** Buffered spreadsheet TUI editing with `Ctrl+S` saving, in-session undo/redo, and dirty-close confirmation instead of immediate per-cell disk writes.
+- [x] **PR 8 — Complete:** Spreadsheet autosave recovery drafts preserving the dirty workbook and active cell input, with reopen prompts and external-edit conflict checks.
+- [x] **PR 9 — Complete:** Presentation autosave recovery drafts, opening recovered drafts directly into the Markdown source editor.
+- [x] **PR 10 — Complete:** Explicit CLI-only conversion of plain Markdown files (`parchment convert <file> [--kind document|note|presentation] [--yes]`, defaulting `--kind` to `document`, prompting `[y/N]` on a TTY and requiring `--yes` when non-interactive, setting `created_at` from file `mtime` UTC and `modified_at` to current UTC).
+- [x] **PR 11 — Complete:** Spreadsheet deletion: 1-based row/column indices for `delete-row` and `delete-column`, and named `delete-sheet` (CLI + TUI shortcuts), with formula reference shifting, `#REF!` token support, and save-time validation allowing formula error values to persist while rejecting invalid syntax.
+- [x] **PR 12 — Complete:** Spreadsheet CSV export: `spreadsheet export <file> --csv [--sheet <name>] [-o <output>] [--force]`, defaulting to the first sheet and `stdout` when omitted and refusing overwrite without `--force`.
+- [x] **PR 13 — Complete:** Document embedded image management: `document images <file>` (`<name>\t<format>\t<WxH>\t<bytes>\t<referenced|unreferenced>`), `document image-extract <file> <image-name> -o <output> [--force]` (`0600`), and `document image-remove <file> <image-name> [--strip-references]` (refusing removal when referenced in `Body` without `--strip-references` or when referenced by a pending proposal).
 
 ### Phase 3: Rendering & TUI Features (PRs 14–23)
 - **PRs 14–16:** Overall visual improvements

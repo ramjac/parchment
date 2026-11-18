@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 	"unicode"
@@ -272,6 +273,7 @@ func (m *Model) openFile(kind artifact.Kind) tea.Cmd {
 
 // Update applies a terminal message to the editor.
 func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	message = normalizeTerminalKey(message)
 	// Record the size before delegating: the file may open before the first
 	// size arrives, and the shell's view checks the size too.
 	size, resized := message.(tea.WindowSizeMsg)
@@ -881,7 +883,10 @@ func Run(ctx context.Context, config Config, opts ...tea.ProgramOption) error {
 	if model.documents != nil {
 		model.documents.newOperationContext = model.newOperationContext
 	}
-	options := append([]tea.ProgramOption{tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx)}, opts...)
+	options := append([]tea.ProgramOption{
+		tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx),
+		tea.WithOutput(keyboardTerminalOutput{os.Stdout}),
+	}, opts...)
 	program := tea.NewProgram(&model, options...)
 	_, err := program.Run()
 	return err

@@ -232,6 +232,7 @@ func (m *spreadsheetModel) deleteRecoveryDraft() tea.Cmd {
 func (m *spreadsheetModel) Init() tea.Cmd { return m.load() }
 
 func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	message = normalizeTerminalKey(message)
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -394,8 +395,12 @@ func (m *spreadsheetModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
 		m.input.Blur()
 		m.status, m.errMessage = "Cell edit cancelled", ""
 		return m.syncAutosave()
-	case "enter":
+	case "enter", "shift+enter", "alt+enter":
 		if m.commitCell() {
+			if key != "enter" {
+				m.move(1, 0)
+				return tea.Batch(m.beginEdit(cellDraft(m.cell(m.row, m.column))), m.syncAutosave())
+			}
 			return m.syncAutosave()
 		}
 		return nil
@@ -1044,7 +1049,7 @@ func (m *spreadsheetModel) renderHelp() string {
 	muted := lipgloss.NewStyle().Foreground(m.theme.Border)
 	help := "arrows move • enter edit • ctrl+s save • del clear • ctrl+p PDF • f formulas • tab sheet • u/ctrl+z undo • ctrl+r redo • d delete • i insert • r reload • esc/q quit"
 	if m.editing {
-		help = "enter stage • ctrl+s save • esc cancel • =formula • 'literal • ctrl+p PDF"
+		help = "enter stage • ctrl+s save • esc cancel • =formula • 'literal • shift+enter/alt+enter down • ctrl+p PDF"
 	} else if !m.loaded {
 		help = "r retry • esc/q quit"
 	}
