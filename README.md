@@ -160,7 +160,8 @@ applications can open directly.
 
 `spreadsheet print` prints all worksheets as text or PDF, paging across columns
 before continuing to the next group of rows. Cell contents wrap within columns;
-formulas print their calculated values (or `#ERR` for evaluation errors). In the
+PDF pages include thin, light gridlines around cells and headers.
+Formulas print their calculated values (or `#ERR` for evaluation errors). In the
 TUI, `Ctrl+P` exports the workbook, including unsaved edits, to PDF.
 
 ### Presentations
