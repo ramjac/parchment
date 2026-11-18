@@ -439,6 +439,8 @@ func (m *Model) enterEditor() tea.Cmd {
 	case artifact.SpreadsheetKind:
 		m.sheet = newSpreadsheetModel(m.spreadsheets, m.path, m.theme, m.undoLimit)
 		m.sheet.recoveryStore = m.recoveryStore
+		m.sheet.pdfStore = m.noteEditor.pdfStore
+		m.sheet.lastPDFPath = m.noteEditor.lastPDFPath
 		m.sheet.autosaveScheduler = func(session uint64) tea.Cmd {
 			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
 				return spreadsheetAutosaveTickMsg{session: session}

@@ -25,6 +25,7 @@ import (
 	"example.com/parchment/internal/pdfrender"
 	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/printing"
+	"example.com/parchment/internal/spreadsheet"
 )
 
 func addDocumentCommands(root *cobra.Command, streams output) {
@@ -468,6 +469,7 @@ func newPrintCmd(kind artifact.Kind, streams output) *cobra.Command {
 			}
 			var d document.Document
 			var deck presentation.Presentation
+			var book spreadsheet.Spreadsheet
 			switch kind {
 			case artifact.NoteKind:
 				n, getErr := note.NewService(repo, settings.UndoLimit).Get(cmd.Context(), args[0])
@@ -482,6 +484,11 @@ func newPrintCmd(kind artifact.Kind, streams output) *cobra.Command {
 				}
 			case artifact.PresentationKind:
 				deck, err = presentation.NewService(repo, settings.UndoLimit).Get(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+			case artifact.SpreadsheetKind:
+				book, err = spreadsheet.NewService(repo, settings.UndoLimit).Get(cmd.Context(), args[0])
 				if err != nil {
 					return err
 				}
@@ -500,7 +507,9 @@ func newPrintCmd(kind artifact.Kind, streams output) *cobra.Command {
 			switch format {
 			case "text":
 				var text string
-				if kind == artifact.PresentationKind && slidesPerPage == 2 {
+				if kind == artifact.SpreadsheetKind {
+					text, err = printing.PrintSpreadsheet(book)
+				} else if kind == artifact.PresentationKind && slidesPerPage == 2 {
 					text, err = printing.PrintPresentationTwoUp(deck)
 				} else if kind == artifact.PresentationKind {
 					text, err = printing.PrintPresentation(deck)
@@ -513,7 +522,9 @@ func newPrintCmd(kind artifact.Kind, streams output) *cobra.Command {
 				data = []byte(text)
 			case "pdf":
 				var rendered bytes.Buffer
-				if kind == artifact.PresentationKind && slidesPerPage == 2 {
+				if kind == artifact.SpreadsheetKind {
+					err = pdfrender.RenderSpreadsheet(&rendered, book)
+				} else if kind == artifact.PresentationKind && slidesPerPage == 2 {
 					err = pdfrender.RenderPresentationTwoUp(&rendered, deck)
 				} else if kind == artifact.PresentationKind {
 					err = pdfrender.RenderPresentation(&rendered, deck)

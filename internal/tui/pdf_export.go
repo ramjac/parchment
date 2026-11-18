@@ -10,12 +10,19 @@ import (
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/pdfrender"
 	"example.com/parchment/internal/presentation"
+	"example.com/parchment/internal/spreadsheet"
 )
 
 type pdfExportResult struct {
 	path    string
 	err     error
 	warning error
+}
+
+func writeSpreadsheetPDF(ctx context.Context, store PDFExportStore, path, source string, book spreadsheet.Spreadsheet, overwrite bool) pdfExportResult {
+	return writeRenderedPDF(ctx, store, path, source, overwrite, func(w io.Writer) error {
+		return pdfrender.RenderSpreadsheet(w, book)
+	})
 }
 
 func pdfDefaultPath(source, lastPath string) string {

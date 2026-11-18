@@ -143,6 +143,7 @@ parchment spreadsheet cell budget.md B2 12
 parchment spreadsheet cell budget.md C2 '=B2*2' --formula
 parchment spreadsheet cell budget.md C2
 parchment spreadsheet show budget.md
+parchment spreadsheet print budget.md --format pdf -o budget.pdf
 ```
 
 Formula evaluation supports numeric constants, same-sheet and cross-sheet A1
@@ -156,6 +157,11 @@ buffered edits before using service history for committed changes. The CLI is
 stateless across invocations. The Markdown file with its JSON data block is
 Parchment's canonical format, not a CSV file that third-party spreadsheet
 applications can open directly.
+
+`spreadsheet print` prints all worksheets as text or PDF, paging across columns
+before continuing to the next group of rows. Cell contents wrap within columns;
+formulas print their calculated values (or `#ERR` for evaluation errors). In the
+TUI, `Ctrl+P` exports the workbook, including unsaved edits, to PDF.
 
 ### Presentations
 

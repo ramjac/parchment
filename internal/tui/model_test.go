@@ -109,11 +109,13 @@ func (h *harness) send(message tea.Msg) {
 	if h.m.sheet != nil {
 		h.m.sheet.autosaveScheduler = nil
 		h.m.sheet.input.Cursor.SetMode(cursor.CursorStatic)
+		h.m.sheet.pdfInput.Cursor.SetMode(cursor.CursorStatic)
 	}
 	_, cmd := h.m.Update(message)
 	if h.m.sheet != nil {
 		h.m.sheet.autosaveScheduler = nil
 		h.m.sheet.input.Cursor.SetMode(cursor.CursorStatic)
+		h.m.sheet.pdfInput.Cursor.SetMode(cursor.CursorStatic)
 	}
 	h.run(cmd)
 }
