@@ -26,9 +26,14 @@ name; titles and IDs are not stored in the file. The first run creates
 `~/.parchment/parchment.toml`. Use `parchment --help` and
 `parchment note --help` for the complete command tree.
 
-Note operations are `note create`, `show`, and `edit`. Plain Markdown files
+Note operations are `note create`, `show`, `edit`, and `print`. Plain Markdown files
 without Parchment metadata can be shown, edited, and opened as notes, and stay
-plain Markdown when saved. Parchment does not list, search, or delete files: use your
+plain Markdown when saved. `parchment note print <file>` prints paginated text;
+add `--format pdf -o <output>` to export a PDF. In the note editor or preview,
+`Ctrl+P` exports the current text, including unsaved edits, to PDF using the
+same remembered destination and overwrite confirmation as documents. Notes
+use the default page layout and do not interpret document page or section breaks.
+Parchment does not list, search, or delete files: use your
 file manager, shell, or tools such as `ls`, `grep`, and `rm` for that, as
 with any other file.
 

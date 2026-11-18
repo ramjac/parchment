@@ -45,7 +45,7 @@ func (r *Repository) SavePDFPath(ctx context.Context, path string) error {
 }
 
 // WritePDFExport writes a PDF without replacing an existing file unless
-// overwrite is true. It never replaces the source document.
+// overwrite is true. It never replaces the source artifact.
 func (r *Repository) WritePDFExport(ctx context.Context, path, source string, data []byte, overwrite bool) error {
 	return r.withLock(ctx, func() error {
 		target, err := resolve(path)
@@ -70,10 +70,10 @@ func (r *Repository) WritePDFExport(ctx context.Context, path, source string, da
 		}
 		sourceInfo, err := os.Stat(source)
 		if err != nil {
-			return fmt.Errorf("inspect source document: %w", err)
+			return fmt.Errorf("inspect source file: %w", err)
 		}
 		if os.SameFile(info, sourceInfo) {
-			return errors.New("PDF output cannot overwrite the source document")
+			return errors.New("PDF output cannot overwrite the source file")
 		}
 		return writeAtomic(ctx, target, data, info.Mode().Perm())
 	})

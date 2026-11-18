@@ -21,7 +21,9 @@ import (
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/docinterop"
 	"example.com/parchment/internal/document"
+	"example.com/parchment/internal/note"
 	"example.com/parchment/internal/pdfrender"
+	"example.com/parchment/internal/printing"
 )
 
 func addDocumentCommands(root *cobra.Command, streams output) {
@@ -450,18 +452,32 @@ func newDocumentImageRemoveCmd() *cobra.Command {
 }
 
 func newDocumentPrintCmd(streams output) *cobra.Command {
+	return newPrintCmd(artifact.DocumentKind, streams)
+}
+
+func newPrintCmd(kind artifact.Kind, streams output) *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "print <file>", Short: "Render printer-ready text or PDF", Args: cobra.ExactArgs(1),
-		Long: "Render a document as paginated text or PDF. Text pages are separated by form feeds\n" +
-			"and can be sent directly to a printer, for example `parchment document print <file> | lpr`.",
+		Long: fmt.Sprintf("Render a %s as paginated text or PDF. Text pages are separated by form feeds\n"+
+			"and can be sent directly to a printer, for example `parchment %s print <file> | lpr`.", kind, kind),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repo, service, err := openDocuments(cmd)
+			repo, settings, err := openStore()
 			if err != nil {
 				return err
 			}
-			d, err := service.Get(cmd.Context(), args[0])
-			if err != nil {
-				return err
+			var d document.Document
+			switch kind {
+			case artifact.NoteKind:
+				n, getErr := note.NewService(repo, settings.UndoLimit).Get(cmd.Context(), args[0])
+				if getErr != nil {
+					return getErr
+				}
+				d = printing.NoteDocument(n)
+			case artifact.DocumentKind:
+				d, err = document.NewService(repo, settings.UndoLimit).Get(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
 			}
 			format, _ := cmd.Flags().GetString("format")
 			var data []byte
@@ -484,6 +500,17 @@ func newDocumentPrintCmd(streams output) *cobra.Command {
 			path, _ := cmd.Flags().GetString("output")
 			if path != "" {
 				if format == "text" {
+					sourceInfo, err := os.Stat(args[0])
+					if err != nil {
+						return fmt.Errorf("inspect source file: %w", err)
+					}
+					targetInfo, err := os.Stat(path)
+					if err != nil && !errors.Is(err, fs.ErrNotExist) {
+						return fmt.Errorf("inspect print output: %w", err)
+					}
+					if err == nil && os.SameFile(sourceInfo, targetInfo) {
+						return errors.New("print output cannot overwrite the source file")
+					}
 					return os.WriteFile(path, data, 0o644)
 				}
 				err := repo.WritePDFExport(cmd.Context(), path, args[0], data, false)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -775,15 +774,7 @@ func (s *documentsScreen) actDocument(action string) (tea.Cmd, bool) {
 }
 
 func (s *documentsScreen) openPDFPrompt() tea.Cmd {
-	if s.lastPDFPath != "" {
-		return s.openPrompt(promptPDF, "PDF output path: ", s.lastPDFPath)
-	}
-	extension := filepath.Ext(s.path)
-	if extension == filepath.Base(s.path) {
-		extension = ""
-	}
-	path := strings.TrimSuffix(s.path, extension) + ".pdf"
-	return s.openPrompt(promptPDF, "PDF output path: ", path)
+	return s.openPrompt(promptPDF, "PDF output path: ", pdfDefaultPath(s.path, s.lastPDFPath))
 }
 
 func textAction(action string) bool {

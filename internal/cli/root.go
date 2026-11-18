@@ -109,6 +109,7 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 	}
 	edit.Flags().String("body", "", "new Markdown content")
 	notes.AddCommand(edit)
+	notes.AddCommand(newPrintCmd(artifact.NoteKind, streams))
 	addDocumentCommands(root, streams)
 	addSpreadsheetCommands(root, streams)
 	addPresentationCommands(root, streams)

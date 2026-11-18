@@ -86,6 +86,7 @@ func (h *harness) openWith(kind artifact.Kind, edit bool) {
 	if s := h.m.documents; s != nil {
 		s.promptInput.Cursor.SetMode(cursor.CursorStatic)
 	}
+	h.m.pdfInput.Cursor.SetMode(cursor.CursorStatic)
 	if s := h.m.sheet; s != nil {
 		s.input.Cursor.SetMode(cursor.CursorStatic)
 	}

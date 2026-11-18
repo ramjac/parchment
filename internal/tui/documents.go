@@ -22,7 +22,6 @@ import (
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/pdfrender"
 	"example.com/parchment/internal/recovery"
 )
 
@@ -51,9 +50,7 @@ type documentChangesLoadedMsg struct {
 	err     error
 }
 type documentPDFExportedMsg struct {
-	path    string
-	err     error
-	warning error
+	pdfExportResult
 }
 type imageLoadedMsg struct {
 	image artifact.Image
@@ -497,19 +494,9 @@ func (s *documentsScreen) exportPDF(path string, overwrite bool) tea.Cmd {
 	ctx := s.startOperation()
 	s.pending = true
 	s.status, s.errMessage = "Exporting PDF…", ""
+	store, source := s.pdfStore, s.path
 	return func() tea.Msg {
-		var rendered bytes.Buffer
-		if err := pdfrender.Render(&rendered, d); err != nil {
-			return documentPDFExportedMsg{err: err}
-		}
-		if err := ctx.Err(); err != nil {
-			return documentPDFExportedMsg{err: err}
-		}
-		if err := s.pdfStore.WritePDFExport(ctx, path, s.path, rendered.Bytes(), overwrite); err != nil {
-			return documentPDFExportedMsg{path: path, err: err}
-		}
-		warning := s.pdfStore.SavePDFPath(ctx, path)
-		return documentPDFExportedMsg{path: path, warning: warning}
+		return documentPDFExportedMsg{writePDF(ctx, store, path, source, d, overwrite)}
 	}
 }
 

@@ -283,7 +283,7 @@ func TestDocumentPDFExportCannotOverwriteSource(t *testing.T) {
 	if err != nil || !bytes.Equal(after, before) {
 		t.Fatalf("source document was changed: %v", err)
 	}
-	if !strings.Contains(s.errMessage, "cannot overwrite the source document") {
+	if !strings.Contains(s.errMessage, "cannot overwrite the source file") {
 		t.Fatalf("error = %q", s.errMessage)
 	}
 }

@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/config"
@@ -191,6 +192,8 @@ func NewModel(config Config) Model {
 			return context.WithCancel(context.Background())
 		},
 	}
+	m.noteEditor.pdfStore = config.PDFStore
+	m.noteEditor.lastPDFPath = config.LastPDFPath
 	if m.service != nil {
 		m.canUndo, m.canRedo = m.service.CanUndo(), m.service.CanRedo()
 	}
@@ -310,6 +313,8 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleAutosaveFinished(msg)
 	case noteSavedMsg:
 		return m.handleNoteSaved(msg)
+	case notePDFExportedMsg:
+		return m, m.notePDFExported(msg)
 	case historyChangedMsg:
 		return m.handleHistoryChanged(msg)
 	case tea.MouseMsg:
@@ -410,7 +415,7 @@ func (m *Model) handleHistoryChanged(msg historyChangedMsg) (tea.Model, tea.Cmd)
 }
 
 func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	if m.stage == stageNote && !m.pending && !m.previewing {
+	if m.stage == stageNote && !m.pending && !m.previewing && m.pdfPrompt == promptNone {
 		mouseMsg := msg
 		mouseMsg.Y = msg.Y - 3
 		mouseMsg.X = msg.X - 2
@@ -524,7 +529,7 @@ func (m *Model) updatePendingKey(key string) tea.Cmd {
 			m.cancelOperation()
 		}
 		if m.stage == stageNote {
-			m.status = "Cancelling save…"
+			m.status = "Cancelling…"
 			return nil
 		}
 		return tea.Quit
@@ -561,11 +566,16 @@ func (m *Model) updateNoteKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		return nil
 	}
+	if m.pdfPrompt != promptNone {
+		return m.updateNotePDFPrompt(msg)
+	}
 	if key != "esc" && key != "ctrl+c" {
 		m.discardWarning = false
 	}
 	if m.previewing {
 		switch key {
+		case "ctrl+p":
+			return m.openNotePDFPrompt()
 		case "esc", "f5", "q":
 			m.previewing = false
 		case "ctrl+c":
@@ -576,6 +586,8 @@ func (m *Model) updateNoteKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	switch key {
+	case "ctrl+p":
+		return m.openNotePDFPrompt()
 	case "ctrl+c":
 		if m.bodyInput.Selection.Active {
 			var cmd tea.Cmd
@@ -698,11 +710,19 @@ func (m Model) View() string {
 		state += " • unsaved"
 	}
 	if m.previewing {
-		shortcuts := "Preview  ·  ↑/↓ scroll  ·  Esc returns to the editor"
-		return chromeLayout(m.width, m.height, header, shortcuts, m.preview.View(), m.statusLine(), m.theme.Border)
+		shortcuts := ansi.Truncate("Preview  ·  Ctrl+P PDF  ·  ↑/↓ scroll  ·  Esc returns to the editor", m.width, "…")
+		content := m.preview.View()
+		if m.pdfPrompt != promptNone {
+			content = m.pdfInput.View() + "\n" + content
+		}
+		return chromeLayout(m.width, m.height, header, shortcuts, content, m.statusLine(), m.theme.Border)
 	}
-	shortcuts := state + "  ·  Ctrl+S saves  ·  F5 preview  ·  Ctrl+Z/Ctrl+R undo/redo  ·  Esc quits"
-	return chromeLayout(m.width, m.height, header, shortcuts, m.bodyInput.View(), m.statusLine(), m.theme.Border)
+	shortcuts := ansi.Truncate(state+"  ·  Ctrl+S saves  ·  Ctrl+P PDF  ·  F5 preview  ·  Ctrl+Z/Ctrl+R undo/redo  ·  Esc quits", m.width, "…")
+	content := m.bodyInput.View()
+	if m.pdfPrompt != promptNone {
+		content = m.pdfInput.View() + "\n" + content
+	}
+	return chromeLayout(m.width, m.height, header, shortcuts, content, m.statusLine(), m.theme.Border)
 }
 
 func (m Model) tooSmall() bool { return m.width < 40 || m.height < 10 }

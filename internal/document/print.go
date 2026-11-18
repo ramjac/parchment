@@ -9,6 +9,7 @@ import (
 
 	"github.com/mattn/go-runewidth"
 
+	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/artifactfile"
 )
 
@@ -42,7 +43,7 @@ func PaginateWithFormatter(d Document, formatter Formatter) ([]Page, error) {
 		return nil, err
 	}
 	var bodyCells [][][]string
-	bodies := paginateBody(d.Body, d.Layout.Columns, g.TextCols, g.BodyRows(), nil, formatter, &bodyCells)
+	bodies := paginateBody(d.Body, d.Layout.Columns, g.TextCols, g.BodyRows(), nil, formatter, &bodyCells, d.Kind != artifact.NoteKind)
 	pages := make([]Page, len(bodies))
 	for i, rows := range bodies {
 		var cells [][]string
@@ -76,7 +77,7 @@ func Outline(d Document) ([]Section, error) {
 		return nil, err
 	}
 	var sections []Section
-	paginateBody(d.Body, d.Layout.Columns, g.TextCols, g.BodyRows(), &sections, nil, nil)
+	paginateBody(d.Body, d.Layout.Columns, g.TextCols, g.BodyRows(), &sections, nil, nil, true)
 	return sections, nil
 }
 
@@ -126,7 +127,7 @@ type bodyPaginator struct {
 	sourceBody    string
 }
 
-func paginateBody(body string, defaultColumns, textCols, bodyRows int, sections *[]Section, formatter Formatter, cells *[][][]string) [][]string {
+func paginateBody(body string, defaultColumns, textCols, bodyRows int, sections *[]Section, formatter Formatter, cells *[][][]string, directives bool) [][]string {
 	p := bodyPaginator{
 		textCols:   textCols,
 		bodyRows:   bodyRows,
@@ -135,16 +136,20 @@ func paginateBody(body string, defaultColumns, textCols, bodyRows int, sections 
 		formatter:  formatter,
 		sourceBody: strings.ReplaceAll(artifactfile.StripPrivateBlocks(body), "\r\n", "\n"),
 	}
-	pages := p.paginate(body, defaultColumns)
+	pages := p.paginate(body, defaultColumns, directives)
 	if cells != nil {
 		*cells = p.pageCells
 	}
 	return pages
 }
 
-func (p *bodyPaginator) paginate(body string, defaultColumns int) [][]string {
+func (p *bodyPaginator) paginate(body string, defaultColumns int, directives bool) [][]string {
 	wasSectionBreak := false
-	for _, r := range splitRuns(body, defaultColumns) {
+	runs := []run{{columns: defaultColumns, lines: strings.Split(p.sourceBody, "\n")}}
+	if directives {
+		runs = splitRuns(body, defaultColumns)
+	}
+	for _, r := range runs {
 		if wasSectionBreak && p.sections != nil {
 			*p.sections = append(*p.sections, Section{
 				Title:        fmt.Sprintf("── Section (%d cols)", clampColumns(r.columns, p.textCols)),
@@ -179,7 +184,11 @@ func (p *bodyPaginator) processRun(r run) {
 	if p.formatter != nil {
 		raw = p.formatter(r.lines, width, columns, p.sourceBody)
 	} else {
-		raw = formatBlocks(r.lines, width, &marks, p.seenSlugs)
+		var headings *[]headMark
+		if p.sections != nil {
+			headings = &marks
+		}
+		raw = formatBlocks(r.lines, width, headings, p.seenSlugs)
 	}
 	flat := trimBlankEnds(raw)
 
