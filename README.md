@@ -81,6 +81,12 @@ terminal previews, which use the font configured in the user's terminal
 emulator. Text printing remains plain text, while `document print --format pdf`
 exports paginated PDFs with Markdown headings, emphasis, links, code styling,
 embedded inline and reference-style images, and the selected core font.
+In the document reader or editor, `Ctrl+P` exports a PDF. The output prompt
+defaults to the most recently successful PDF destination, remembered in
+`~/.parchment/last-pdf-path`; an existing file requires confirmation before
+replacement. CLI PDF exports also remember their destination. On an interactive
+terminal the CLI asks before replacing an existing PDF; non-interactive use
+requires `--force`.
 
 Document commands (`parchment document`, alias `doc`): `create`, `show`,
 `edit`, `layout`, `page-break`,

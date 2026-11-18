@@ -71,9 +71,14 @@ func (h *harness) open(kind artifact.Kind) {
 // openWith starts a session; edit opens an existing document in its editor.
 func (h *harness) openWith(kind artifact.Kind, edit bool) {
 	h.t.Helper()
+	lastPDFPath, err := h.repo.LastPDFPath(context.Background())
+	if err != nil {
+		h.t.Fatal(err)
+	}
 	model := NewModel(Config{
 		Path: h.path, Kind: kind, Edit: edit, Notes: h.notes, Documents: h.docs,
 		Spreadsheets: h.sheets, Presentations: h.decks, Recovery: h.repo, UndoLimit: h.undoLimit,
+		PDFStore: h.repo, LastPDFPath: lastPDFPath,
 	})
 	h.m, h.quit = &model, false
 	// Blinking cursors return tea.Tick commands, which the harness would run

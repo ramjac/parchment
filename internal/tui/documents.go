@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,8 +51,9 @@ type documentChangesLoadedMsg struct {
 	err     error
 }
 type documentPDFExportedMsg struct {
-	path string
-	err  error
+	path    string
+	err     error
+	warning error
 }
 type imageLoadedMsg struct {
 	image artifact.Image
@@ -190,6 +192,7 @@ const (
 	promptFooter
 	promptSection
 	promptPDF
+	promptPDFOverwrite
 )
 
 // documentChangesState holds state for reviewing proposed document changes.
@@ -249,6 +252,9 @@ type documentsScreen struct {
 	newOperationContext func() (context.Context, context.CancelFunc)
 	cancelOperation     context.CancelFunc
 	recoveryStore       recovery.Store
+	pdfStore            PDFExportStore
+	lastPDFPath         string
+	pdfOverwritePath    string
 	autosaveSession     uint64
 	autosaveCancel      context.CancelFunc
 	// draftStored reports that a recovery draft for this file may exist.
@@ -469,10 +475,19 @@ func (s *documentsScreen) imageLoaded(msg imageLoadedMsg) tea.Cmd {
 	return cmd
 }
 
-func (s *documentsScreen) exportPDF(path string) tea.Cmd {
+func (s *documentsScreen) exportPDF(path string, overwrite bool) tea.Cmd {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		s.errMessage = "PDF output path is required"
+		return nil
+	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		s.errMessage = "PDF output path: " + err.Error()
+		return nil
+	}
+	if s.pdfStore == nil {
+		s.errMessage = "PDF export storage is unavailable"
 		return nil
 	}
 	d := s.snapshot
@@ -490,19 +505,11 @@ func (s *documentsScreen) exportPDF(path string) tea.Cmd {
 		if err := ctx.Err(); err != nil {
 			return documentPDFExportedMsg{err: err}
 		}
-		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err != nil {
-			if os.IsExist(err) {
-				err = fmt.Errorf("PDF file %q already exists", path)
-			}
-			return documentPDFExportedMsg{err: err}
+		if err := s.pdfStore.WritePDFExport(ctx, path, s.path, rendered.Bytes(), overwrite); err != nil {
+			return documentPDFExportedMsg{path: path, err: err}
 		}
-		_, writeErr := file.Write(rendered.Bytes())
-		closeErr := file.Close()
-		if err := errors.Join(writeErr, closeErr); err != nil {
-			return documentPDFExportedMsg{err: errors.Join(err, os.Remove(path))}
-		}
-		return documentPDFExportedMsg{path: path}
+		warning := s.pdfStore.SavePDFPath(ctx, path)
+		return documentPDFExportedMsg{path: path, warning: warning}
 	}
 }
 
@@ -512,10 +519,18 @@ func (s *documentsScreen) documentPDFExported(msg documentPDFExportedMsg) tea.Cm
 	switch {
 	case errors.Is(msg.err, context.Canceled):
 		s.errMessage, s.status = "", "PDF export cancelled"
+	case errors.Is(msg.err, fs.ErrExist):
+		s.errMessage, s.status = "", ""
+		s.pdfOverwritePath = msg.path
+		return s.openPrompt(promptPDFOverwrite, "PDF exists. Overwrite? [y/N] ", "")
 	case msg.err != nil:
 		s.errMessage, s.status = "PDF export failed: "+msg.err.Error(), ""
 	default:
+		s.lastPDFPath = msg.path
 		s.errMessage, s.status = "", "PDF exported to "+msg.path
+		if msg.warning != nil {
+			s.status += " (could not remember PDF path: " + msg.warning.Error() + ")"
+		}
 	}
 	return s.resumeAutosave()
 }

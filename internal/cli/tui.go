@@ -52,6 +52,10 @@ func runTUI(cmd *cobra.Command, arg string, requested artifact.Kind, edit bool) 
 	if err != nil {
 		return err
 	}
+	lastPDFPath, err := repo.LastPDFPath(cmd.Context())
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", err)
+	}
 	err = tui.Run(cmd.Context(), tui.Config{
 		Path:          path,
 		Kind:          kind,
@@ -63,6 +67,8 @@ func runTUI(cmd *cobra.Command, arg string, requested artifact.Kind, edit bool) 
 		Recovery:      repo,
 		Theme:         settings.Theme,
 		UndoLimit:     settings.UndoLimit,
+		LastPDFPath:   lastPDFPath,
+		PDFStore:      repo,
 	})
 	for _, w := range repo.Warnings() {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", w)

@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"example.com/parchment/internal/filerepo"
 )
 
 func TestDocumentCLI(t *testing.T) {
@@ -68,12 +71,22 @@ func TestDocumentPrintPDFCLI(t *testing.T) {
 	}
 
 	c.must("document", "print", "pdf.md", "--format", "pdf", "-o", "output.pdf")
+	repo, err := filerepo.New(filepath.Join(c.home, ".parchment"), filerepo.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path, err := repo.LastPDFPath(t.Context()); err != nil || path != filepath.Join(c.dir, "output.pdf") {
+		t.Fatalf("remembered PDF path = %q, %v", path, err)
+	}
 	info, err := os.Stat("output.pdf")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("new PDF permissions = %v; want 0600", info.Mode().Perm())
+	}
+	if _, err := c.run("document", "print", "pdf.md", "--format", "pdf", "-o", "pdf.md", "--force"); err == nil {
+		t.Fatal("PDF export overwrote the source document")
 	}
 	if _, err := c.run("document", "print", "pdf.md", "--format", "pdf", "-o", "output.pdf"); err == nil {
 		t.Fatal("existing output was overwritten without --force")
@@ -98,6 +111,25 @@ func TestDocumentPrintPDFCLI(t *testing.T) {
 	data, err = os.ReadFile("text.out")
 	if err != nil || string(data) == "old" {
 		t.Fatalf("text output did not preserve its existing overwrite behavior: %v", err)
+	}
+}
+
+func TestConfirmPDFOverwrite(t *testing.T) {
+	for _, tt := range []struct {
+		input string
+		want  bool
+	}{
+		{"y\n", true},
+		{" YES \n", true},
+		{"n\n", false},
+		{"\n", false},
+		{"", false},
+	} {
+		var output bytes.Buffer
+		got, err := confirmPDFOverwrite(strings.NewReader(tt.input), &output, "report.pdf")
+		if err != nil || got != tt.want || !strings.Contains(output.String(), "[y/N]") {
+			t.Fatalf("confirmation for %q = %t, %v, prompt %q", tt.input, got, err, output.String())
+		}
 	}
 }
 

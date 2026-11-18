@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -453,7 +455,7 @@ func newDocumentPrintCmd(streams output) *cobra.Command {
 		Long: "Render a document as paginated text or PDF. Text pages are separated by form feeds\n" +
 			"and can be sent directly to a printer, for example `parchment document print <file> | lpr`.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, service, err := openDocuments(cmd)
+			repo, service, err := openDocuments(cmd)
 			if err != nil {
 				return err
 			}
@@ -484,24 +486,30 @@ func newDocumentPrintCmd(streams output) *cobra.Command {
 				if format == "text" {
 					return os.WriteFile(path, data, 0o644)
 				}
-				force, _ := cmd.Flags().GetBool("force")
-				flags := os.O_WRONLY | os.O_CREATE
-				if force {
-					flags |= os.O_TRUNC
-				} else {
-					flags |= os.O_EXCL
-				}
-				f, err := os.OpenFile(path, flags, 0o600)
-				if err != nil {
-					if os.IsExist(err) {
-						return fmt.Errorf("file %q already exists (use --force to overwrite)", path)
+				err := repo.WritePDFExport(cmd.Context(), path, args[0], data, false)
+				if errors.Is(err, fs.ErrExist) {
+					force, _ := cmd.Flags().GetBool("force")
+					if !force {
+						if !streamsInteractive(cmd.InOrStdin(), cmd.ErrOrStderr()) {
+							return fmt.Errorf("file %q already exists (use --force to overwrite)", path)
+						}
+						confirmed, promptErr := confirmPDFOverwrite(cmd.InOrStdin(), cmd.ErrOrStderr(), path)
+						if promptErr != nil {
+							return promptErr
+						}
+						if !confirmed {
+							return nil
+						}
 					}
+					err = repo.WritePDFExport(cmd.Context(), path, args[0], data, true)
+				}
+				if err != nil {
 					return err
 				}
-				if _, err := f.Write(data); err != nil {
-					return errors.Join(err, f.Close())
+				if err := repo.SavePDFPath(cmd.Context(), path); err != nil {
+					fmt.Fprintf(streams.err, "warning: could not remember PDF path: %v\n", err)
 				}
-				return f.Close()
+				return nil
 			}
 			_, err = streams.out.Write(data)
 			return err
@@ -511,6 +519,18 @@ func newDocumentPrintCmd(streams output) *cobra.Command {
 	cmd.Flags().StringP("output", "o", "", "write to a file instead of standard output")
 	cmd.Flags().Bool("force", false, "overwrite output file if it exists")
 	return cmd
+}
+
+func confirmPDFOverwrite(in io.Reader, out io.Writer, path string) (bool, error) {
+	if _, err := fmt.Fprintf(out, "PDF file %q already exists. Overwrite? [y/N] ", path); err != nil {
+		return false, err
+	}
+	response, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	response = strings.TrimSpace(strings.ToLower(response))
+	return response == "y" || response == "yes", nil
 }
 
 func addBodyFlags(cmd *cobra.Command) {

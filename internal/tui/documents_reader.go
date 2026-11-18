@@ -295,6 +295,9 @@ func (s *documentsScreen) readerView(header string) string {
 	shortcuts := "e edit  Ctrl+P PDF  ↑/↓ scroll  ←/→ or [ ] page  { } section  v changes  u undo  Ctrl+R redo  esc/q quit"
 	if s.prompt != promptNone {
 		shortcuts = "Enter export PDF  ·  Esc cancel"
+		if s.prompt == promptPDFOverwrite {
+			shortcuts = "y overwrite  ·  n/Esc cancel"
+		}
 	}
 	readerContent := s.reader.View()
 	if s.prompt != promptNone {

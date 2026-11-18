@@ -36,6 +36,14 @@ type Config struct {
 	Recovery      recovery.Store
 	Theme         config.Theme
 	UndoLimit     int
+	LastPDFPath   string
+	PDFStore      PDFExportStore
+}
+
+// PDFExportStore persists PDF output and the last destination path.
+type PDFExportStore interface {
+	WritePDFExport(context.Context, string, string, []byte, bool) error
+	SavePDFPath(context.Context, string) error
 }
 
 // Theme holds the resolved Lip Gloss colors for the TUI.
@@ -189,6 +197,8 @@ func NewModel(config Config) Model {
 	if config.Documents != nil {
 		m.documents = newDocumentsScreen(config.Documents, config.Path, m.newOperationContext, m.theme, undoLimit)
 		m.documents.recoveryStore = config.Recovery
+		m.documents.pdfStore = config.PDFStore
+		m.documents.lastPDFPath = config.LastPDFPath
 		m.documents.autosaveScheduler = func(session uint64) tea.Cmd {
 			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
 				return documentAutosaveTickMsg{session: session}
