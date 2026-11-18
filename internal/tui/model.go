@@ -454,6 +454,8 @@ func (m *Model) enterEditor() tea.Cmd {
 	case artifact.PresentationKind:
 		m.deck = newPresentationModel(m.presentations, m.path, m.theme, m.undoLimit)
 		m.deck.recoveryStore = m.recoveryStore
+		m.deck.pdfStore = m.noteEditor.pdfStore
+		m.deck.lastPDFPath = m.noteEditor.lastPDFPath
 		m.deck.autosaveScheduler = func(session uint64) tea.Cmd {
 			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
 				return presentationAutosaveTickMsg{session: session}

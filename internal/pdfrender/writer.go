@@ -19,9 +19,17 @@ type File struct {
 // PDFPage contains drawing elements positioned from the top-left in
 // millimeters.
 type PDFPage struct {
-	WidthMM  float64
-	HeightMM float64
-	Elements []Element
+	WidthMM    float64
+	HeightMM   float64
+	Rectangles []Rectangle
+	Elements   []Element
+}
+
+// Rectangle is a stroked rectangle positioned in millimeters.
+type Rectangle struct {
+	X, Y, WidthMM, HeightMM float64
+	Color                   [3]uint8
+	LineWidthMM             float64
 }
 
 // Element is either positioned text or an embedded image. FontSize is in
@@ -59,6 +67,12 @@ func Write(w io.Writer, file File) error {
 	for _, page := range file.Pages {
 		if !validDimension(page.WidthMM) || !validDimension(page.HeightMM) {
 			return fmt.Errorf("PDF page dimensions must be positive and finite")
+		}
+		for _, rect := range page.Rectangles {
+			if !finite(rect.X) || !finite(rect.Y) || !validDimension(rect.WidthMM) ||
+				!validDimension(rect.HeightMM) || !validDimension(rect.LineWidthMM) {
+				return fmt.Errorf("PDF rectangle dimensions and coordinates must be finite and positive")
+			}
 		}
 		for _, element := range page.Elements {
 			if !finite(element.X) || !finite(element.Y) {
@@ -99,6 +113,11 @@ func Write(w io.Writer, file File) error {
 			return err
 		}
 
+		for _, rect := range page.Rectangles {
+			pdf.SetDrawColor(int(rect.Color[0]), int(rect.Color[1]), int(rect.Color[2]))
+			pdf.SetLineWidth(rect.LineWidthMM)
+			pdf.Rect(rect.X, rect.Y, rect.WidthMM, rect.HeightMM, "D")
+		}
 		for _, element := range page.Elements {
 			if element.ImageName != "" {
 				img, ok := file.Images[element.ImageName]

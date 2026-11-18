@@ -187,9 +187,20 @@ Use `presentation create talk.md --body-file slides.md` to create a deck,
 `presentation show talk.md` to inspect its source, and
 `presentation preview talk.md` for a slide-separated preview.
 `presentation edit talk.md --body-file slides.md` replaces the Markdown
-source. The TUI renders slide Markdown and supports embedded images; CLI
-commands can add, list, extract, and remove presentation images. Go present
-`.image` and `.code` directives are not implemented. Presentations store a
+source. `presentation print talk.md` prints landscape text pages, and
+`presentation print talk.md --format pdf -o talk.pdf` exports a landscape PDF.
+By default, both print the title page followed by one page per slide, with
+speaker notes at the bottom of the corresponding page. Use `--slides-per-page 2`
+for portrait pages with two boxed slides and their notes below each box. The
+title page occupies the first slot; an odd final slide occupies one slot.
+Slides or notes that cannot fit return an error instead of losing content. In
+the presentation viewer or source editor, `Ctrl+P` exports to PDF, including
+unsaved edits; press `Tab` at the path prompt to switch layouts. It remembers
+the last PDF path and asks before overwriting an existing file.
+
+The TUI renders slide Markdown and supports embedded images; CLI
+commands can add, list, extract, and remove presentation images. The TUI and
+printing support Go present `.image` and `.code` directives. Presentations store a
 document-wide core-font choice (`courier`, `helvetica`, or `times`); it never
 changes terminal output.
 

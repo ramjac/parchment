@@ -104,6 +104,7 @@ func (h *harness) send(message tea.Msg) {
 	}
 	if h.m.deck != nil {
 		h.m.deck.autosaveScheduler = nil
+		h.m.deck.pdfInput.Cursor.SetMode(cursor.CursorStatic)
 	}
 	if h.m.sheet != nil {
 		h.m.sheet.autosaveScheduler = nil

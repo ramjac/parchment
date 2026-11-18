@@ -23,6 +23,7 @@ import (
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/note"
 	"example.com/parchment/internal/pdfrender"
+	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/printing"
 )
 
@@ -466,6 +467,7 @@ func newPrintCmd(kind artifact.Kind, streams output) *cobra.Command {
 				return err
 			}
 			var d document.Document
+			var deck presentation.Presentation
 			switch kind {
 			case artifact.NoteKind:
 				n, getErr := note.NewService(repo, settings.UndoLimit).Get(cmd.Context(), args[0])
@@ -478,19 +480,47 @@ func newPrintCmd(kind artifact.Kind, streams output) *cobra.Command {
 				if err != nil {
 					return err
 				}
+			case artifact.PresentationKind:
+				deck, err = presentation.NewService(repo, settings.UndoLimit).Get(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+			default:
+				return fmt.Errorf("unsupported print kind %q", kind)
 			}
 			format, _ := cmd.Flags().GetString("format")
+			slidesPerPage := 1
+			if kind == artifact.PresentationKind {
+				slidesPerPage, _ = cmd.Flags().GetInt("slides-per-page")
+				if slidesPerPage != 1 && slidesPerPage != 2 {
+					return fmt.Errorf("slides-per-page must be 1 or 2")
+				}
+			}
 			var data []byte
 			switch format {
 			case "text":
-				text, err := document.Print(d)
+				var text string
+				if kind == artifact.PresentationKind && slidesPerPage == 2 {
+					text, err = printing.PrintPresentationTwoUp(deck)
+				} else if kind == artifact.PresentationKind {
+					text, err = printing.PrintPresentation(deck)
+				} else {
+					text, err = document.Print(d)
+				}
 				if err != nil {
 					return err
 				}
 				data = []byte(text)
 			case "pdf":
 				var rendered bytes.Buffer
-				if err := pdfrender.Render(&rendered, d); err != nil {
+				if kind == artifact.PresentationKind && slidesPerPage == 2 {
+					err = pdfrender.RenderPresentationTwoUp(&rendered, deck)
+				} else if kind == artifact.PresentationKind {
+					err = pdfrender.RenderPresentation(&rendered, deck)
+				} else {
+					err = pdfrender.Render(&rendered, d)
+				}
+				if err != nil {
 					return err
 				}
 				data = rendered.Bytes()
@@ -545,6 +575,9 @@ func newPrintCmd(kind artifact.Kind, streams output) *cobra.Command {
 	cmd.Flags().String("format", "text", "output format: text or pdf")
 	cmd.Flags().StringP("output", "o", "", "write to a file instead of standard output")
 	cmd.Flags().Bool("force", false, "overwrite output file if it exists")
+	if kind == artifact.PresentationKind {
+		cmd.Flags().Int("slides-per-page", 1, "slides per page: 1 (landscape) or 2 (portrait)")
+	}
 	return cmd
 }
 

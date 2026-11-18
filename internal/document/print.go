@@ -43,7 +43,8 @@ func PaginateWithFormatter(d Document, formatter Formatter) ([]Page, error) {
 		return nil, err
 	}
 	var bodyCells [][][]string
-	bodies := paginateBody(d.Body, d.Layout.Columns, g.TextCols, g.BodyRows(), nil, formatter, &bodyCells, d.Kind != artifact.NoteKind)
+	directives := d.Kind != artifact.NoteKind && d.Kind != artifact.PresentationKind
+	bodies := paginateBody(d.Body, d.Layout.Columns, g.TextCols, g.BodyRows(), nil, formatter, &bodyCells, directives)
 	pages := make([]Page, len(bodies))
 	for i, rows := range bodies {
 		var cells [][]string

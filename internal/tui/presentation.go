@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
@@ -87,6 +88,13 @@ type presentationModel struct {
 	autosaveSession   uint64
 	autosaveCancel    context.CancelFunc
 	draftStored       bool
+	pdfStore          PDFExportStore
+	lastPDFPath       string
+	pdfPrompt         promptKind
+	pdfInput          textinput.Model
+	pdfOverwritePath  string
+	pdfPending        bool
+	pdfTwoUp          bool
 
 	presentationOpState
 	presentationViewState
@@ -99,10 +107,13 @@ func newPresentationModel(service *presentation.Service, path string, theme Them
 		undoLimit = undoLimits[0]
 	}
 	body := editor.NewWithUndoLimit(undoLimit)
+	pdfInput := textinput.New()
+	pdfInput.CharLimit = 64 << 10
 	return &presentationModel{
-		service: service,
-		path:    path,
-		theme:   theme,
+		service:  service,
+		path:     path,
+		theme:    theme,
+		pdfInput: pdfInput,
 		presentationEditorState: presentationEditorState{
 			editor: body,
 		},
@@ -121,9 +132,11 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.editor.SetWidth(max(1, m.width-4))
-		m.editor.SetHeight(max(1, m.height-5))
+		m.resizePDFPrompt()
 		m.clampScroll()
 		return m, nil
+	case presentationPDFExportedMsg:
+		return m, m.presentationPDFExported(msg)
 	case presentationLoadedMsg:
 		if msg.seq != m.seq {
 			return m, nil
@@ -195,12 +208,15 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.loadedStatus = msg.description
 		return m, cmd
 	case tea.KeyMsg:
+		if m.pdfPrompt != promptNone {
+			return m, m.updatePDFPrompt(msg)
+		}
 		if m.editing {
 			return m, m.updateEditKey(msg)
 		}
 		return m, m.updateBrowseKey(msg)
 	case tea.MouseMsg:
-		if m.editing && !m.pending {
+		if m.editing && !m.pending && m.pdfPrompt == promptNone {
 			mouseMsg := msg
 			mouseMsg.Y = msg.Y - 2
 			mouseMsg.X = msg.X - 2
@@ -231,14 +247,23 @@ func (m *presentationModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	if m.pending {
 		if key == "esc" {
+			pdfPending := m.pdfPending
 			m.cancelPending()
 			m.status, m.errMessage = "Save cancelled", ""
+			if pdfPending {
+				m.status = "PDF export cancelled"
+			}
 		} else {
 			m.status = "Saving… (esc cancels)"
+			if m.pdfPending {
+				m.status = "Exporting PDF… (esc cancels)"
+			}
 		}
 		return nil
 	}
 	switch key {
+	case "ctrl+p":
+		return m.openPDFPrompt()
 	case "ctrl+s":
 		return m.save()
 	case "ctrl+z", "ctrl+r", "ctrl+y", "ctrl+shift+z":
@@ -281,8 +306,12 @@ func (m *presentationModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		return m.close()
 	case "esc":
 		if m.pending {
+			pdfPending := m.pdfPending
 			m.cancelPending()
 			m.status, m.errMessage = "Cancelled", ""
+			if pdfPending {
+				m.status = "PDF export cancelled"
+			}
 			return nil
 		}
 		m.cancelPending()
@@ -299,6 +328,8 @@ func (m *presentationModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	switch key {
+	case "ctrl+p":
+		return m.openPDFPrompt()
 	case "right", "l", "n", " ", "pgdown":
 		m.goToPage(m.page + 1)
 	case "left", "h", "p", "pgup":
@@ -629,6 +660,7 @@ func (m *presentationModel) cancelPending() {
 		m.seq++
 	}
 	m.finishOperation()
+	m.pdfPending = false
 }
 
 func (m *presentationModel) setError(prefix string, err error) {
@@ -697,7 +729,11 @@ func (m *presentationModel) pageLines() []string {
 }
 
 func (m *presentationModel) visibleLines() int {
-	return max(1, m.height-5)
+	promptRows := 0
+	if m.pdfPrompt != promptNone {
+		promptRows = 1
+	}
+	return max(1, m.height-5-promptRows)
 }
 
 func (m *presentationModel) clampScroll() {
@@ -716,6 +752,9 @@ func (m *presentationModel) View() string {
 		content = m.editor.View()
 	} else {
 		content = m.renderSlideContent()
+	}
+	if m.pdfPrompt != promptNone {
+		content = m.pdfInput.View() + "\n" + content
 	}
 	return chromeLayout(m.width, m.height, m.renderHeader(accent), m.renderHelp(muted), content, m.renderStatus(), m.theme.Border)
 }
@@ -765,9 +804,9 @@ func (m *presentationModel) renderStatus() string {
 }
 
 func (m *presentationModel) renderHelp(muted lipgloss.Style) string {
-	help := "←/→ slide • ↑/↓ scroll • e edit • s notes • f font • u undo • ctrl+r redo • r reload • esc/q quit"
+	help := "ctrl+p PDF • ←/→ slide • ↑/↓ scroll • e edit • s notes • f font • u undo • ctrl+r redo • r reload • esc/q quit"
 	if m.editing {
-		help = "ctrl+s save • esc cancel • ctrl+c quit"
+		help = "ctrl+p PDF • ctrl+s save • esc cancel • ctrl+c quit"
 	} else if !m.loaded {
 		help = "r retry • esc/q quit"
 	}
