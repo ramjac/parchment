@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -130,8 +131,13 @@ func finishCreate(cmd *cobra.Command, streams output, path string, kind artifact
 // interactive reports whether standard input and the command's output are
 // both terminals.
 func (s output) interactive() bool {
-	out, ok := s.out.(*os.File)
-	return ok && isTerminal(out) && isTerminal(os.Stdin)
+	return streamsInteractive(os.Stdin, s.out)
+}
+
+func streamsInteractive(in io.Reader, out io.Writer) bool {
+	input, inputOK := in.(*os.File)
+	output, outputOK := out.(*os.File)
+	return inputOK && outputOK && isTerminal(input) && isTerminal(output)
 }
 
 func isTerminal(file *os.File) bool {

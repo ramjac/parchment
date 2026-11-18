@@ -385,6 +385,9 @@ func (p *markdownPrinter) writeParts(parts []markdownPart, firstPrefix, restPref
 			partText = expandCodeTabs(partText)
 		}
 		for _, r := range partText {
+			if part.style&styleCode != 0 && (r == '\n' || r == '\r') {
+				r = ' '
+			}
 			if unicode.IsSpace(r) {
 				flushWord()
 				if part.style&styleCode != 0 {

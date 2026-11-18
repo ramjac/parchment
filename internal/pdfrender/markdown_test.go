@@ -34,6 +34,22 @@ func TestMarkdownPrinterPreservesCodeWhitespace(t *testing.T) {
 	}
 }
 
+func TestRenderMultilineCodeSpan(t *testing.T) {
+	for _, lineEnding := range []string{"\n", "\r\n"} {
+		t.Run(fmt.Sprintf("%q", lineEnding), func(t *testing.T) {
+			body := "Use `inline" + lineEnding + "code` here."
+			lines := formattedTextLines(t, body)
+			if text := strings.Join(lines, "\n"); !strings.Contains(text, "inline code") {
+				t.Fatalf("formatted code span = %q, want normalized space", text)
+			}
+			var out bytes.Buffer
+			if err := Render(&out, document.Document{Body: body, Layout: document.DefaultLayout()}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestMarkdownWrapUsesSelectedFontMetrics(t *testing.T) {
 	layout := document.DefaultLayout()
 	layout.Font = "courier"

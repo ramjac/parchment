@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -97,6 +98,18 @@ func TestDocumentPrintPDFCLI(t *testing.T) {
 	data, err = os.ReadFile("text.out")
 	if err != nil || string(data) == "old" {
 		t.Fatalf("text output did not preserve its existing overwrite behavior: %v", err)
+	}
+}
+
+func TestPrintExampleDocumentPDF(t *testing.T) {
+	example, err := filepath.Abs("../../examples/document.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := newCLI(t)
+	pdf := c.must("document", "print", example, "--format", "pdf")
+	if !strings.HasPrefix(pdf, "%PDF-") {
+		t.Fatal("example document output is missing the PDF signature")
 	}
 }
 
