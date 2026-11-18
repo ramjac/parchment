@@ -313,7 +313,7 @@ presentations. Detailed PR-by-PR implementation plans are in
 and [`docs/Persistent_Undo_Redo_Plan.md`](docs/Persistent_Undo_Redo_Plan.md).
 Work is organized into five sequential implementation phases broken down into
 **38 reviewable Pull Requests (`PR 1`–`PR 38`)**. The main branch has completed
-milestones **1–4, 6–14, 15a, 16–19, 22, 24a–b, 26, and 31–35**. Detailed
+milestones **1–14, 15a, 16–19, 22, 24a–b, 26, and 31–35**. Detailed
 acceptance criteria and an accompanying progress checklist are in
 [`FutureWork.md`](FutureWork.md). The Phase 2 status below includes the merged
 spreadsheet editing and recovery work; its PR 7–8 checklist entries there are
@@ -321,12 +321,15 @@ outdated. Only fully implemented, merged milestones count as complete; merged
 scaffolding that does not yet meet its acceptance criteria remains incomplete.
 
 ### Phase 1: Foundations & Bug Fixes (PRs 1–6)
-- **PR 1:** Fix bordered content sizing in the note editor (and Lip Gloss outer border dimensions `width-2` / `height-chrome-2` so borders never overflow terminal bounds)
-- **PRs 2–4:** Connect configuration settings (`version = 1`) to runtime behavior, rejecting invalid configuration values on load
-  - **PR 2:** Implement `log/slog` file logging for `logging.level` (`debug`, `info`, `warn`, `error`, `off`) and `logging.format` (`text`, `json`) via `PARCHMENT_LOG_LEVEL` and `PARCHMENT_LOG_FORMAT` at `~/.parchment/parchment.log` (`0600`, capped at `5 MiB` with single-file rotation to `parchment.log.1`)
-  - **PR 3:** Respect configured `[theme]` (`mode = "auto"|"light"|"dark"` overridden by `PARCHMENT_THEME`, plus optional hex overrides `primary`, `border`, `error`, `selection`, `match`) across all TUI screens instead of hardcoding colors
-  - **PR 4:** Implement local backup snapshots (`backup.local.destination`, defaulting to `""` disabled, overridden by `PARCHMENT_BACKUP_DESTINATION`, rejecting paths inside `~/.parchment/`), naming snapshots `<stem>-<8char-path-hash>-<YYYYMMDDTHHMMSSZ><ext>`, keeping the last 10 per source file, and logging/warning without failing a successful save if backup creation fails
-- **PRs 5–6:** Complete the native text editor widget (`internal/tui/editor`) with literal `\t` preservation (4-space visual tab stops while `Tab` inserts 2 spaces, removing `\t` rejection from `isUnpreservableText`), `UndoLimit`-bounded keystroke history, keystroke-undo reset on `Ctrl+S` save (**PR 5**), and `go-runewidth` soft line wrapping with CJK/emoji-aware visual row navigation and mouse/selection coordinate mapping (**PR 6**)
+
+**Complete: PRs 1–6. No outstanding Phase 1 PRs.**
+
+- [x] **PR 1 — Complete:** Fixed bordered content sizing in the note editor (and Lip Gloss outer border dimensions `width-2` / `height-chrome-2` so borders never overflow terminal bounds).
+- [x] **PR 2 — Complete:** Configuration validation and `log/slog` file logging for `logging.level` (`debug`, `info`, `warn`, `error`, `off`) and `logging.format` (`text`, `json`) via `PARCHMENT_LOG_LEVEL` and `PARCHMENT_LOG_FORMAT` at `~/.parchment/parchment.log` (`0600`, capped at `5 MiB` with single-file rotation to `parchment.log.1`).
+- [x] **PR 3 — Complete:** Configured `[theme]` support (`mode = "auto"|"light"|"dark"` overridden by `PARCHMENT_THEME`, plus optional hex overrides `primary`, `border`, `error`, `selection`, `match`) across all TUI screens, with configuration validation instead of hardcoded colors.
+- [x] **PR 4 — Complete:** Local backup snapshots (`backup.local.destination`, defaulting to `""` disabled, overridden by `PARCHMENT_BACKUP_DESTINATION`, rejecting paths inside `~/.parchment/`), naming snapshots `<stem>-<8char-path-hash>-<YYYYMMDDTHHMMSSZ><ext>`, keeping the last 10 per source file, and logging/warning without failing a successful save if backup creation fails.
+- [x] **PR 5 — Complete:** Native editor literal `\t` preservation (4-space visual tab stops while `Tab` inserts 2 spaces, removing `\t` rejection from `isUnpreservableText`), `UndoLimit`-bounded keystroke history, and keystroke-undo reset on `Ctrl+S` save.
+- [x] **PR 6 — Complete:** Native editor `go-runewidth` soft line wrapping with CJK/emoji-aware visual row navigation and mouse/selection coordinate mapping.
 
 ### Phase 2: State Safety & CLI Core (PRs 7–13)
 
