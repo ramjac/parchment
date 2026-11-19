@@ -936,6 +936,26 @@ func extractAllRefs(node Node) []refTarget {
 }
 
 func shiftCellReferences(formula string, fromRow, fromColumn int, delete bool) string {
+	return shiftCellReferencesWhere(formula, fromRow, fromColumn, delete, func(sheet string) bool {
+		return sheet == ""
+	})
+}
+
+func shiftCellReferencesForSheet(book *Spreadsheet, formulaSheet, changedSheet int, formula string, fromRow, fromColumn int, delete bool) string {
+	return shiftCellReferencesWhere(formula, fromRow, fromColumn, delete, func(sheet string) bool {
+		if sheet == "" {
+			return formulaSheet == changedSheet
+		}
+		for i := range book.Sheets {
+			if strings.EqualFold(book.Sheets[i].Name, sheet) {
+				return i == changedSheet
+			}
+		}
+		return false
+	})
+}
+
+func shiftCellReferencesWhere(formula string, fromRow, fromColumn int, delete bool, matchesSheet func(string) bool) string {
 	if !strings.HasPrefix(formula, "=") {
 		return formula
 	}
@@ -958,7 +978,7 @@ func shiftCellReferences(formula string, fromRow, fromColumn int, delete bool) s
 	for _, target := range targets {
 		if target.isRange {
 			rng := target.rng
-			if rng.Sheet != "" {
+			if !matchesSheet(rng.Sheet) {
 				continue
 			}
 
@@ -1012,11 +1032,15 @@ func shiftCellReferences(formula string, fromRow, fromColumn int, delete bool) s
 				}
 			}
 
-			newName := CellName(r1, c1) + ":" + CellName(r2, c2)
+			prefix := ""
+			if separator := strings.IndexByte(string(bytes[start:end]), '!'); separator >= 0 {
+				prefix = string(bytes[start : start+separator+1])
+			}
+			newName := prefix + CellName(r1, c1) + ":" + CellName(r2, c2)
 			bytes = append(bytes[:start], append([]byte(newName), bytes[end:]...)...)
 		} else {
 			ref := target.ref
-			if ref.Sheet != "" {
+			if !matchesSheet(ref.Sheet) {
 				continue
 			}
 

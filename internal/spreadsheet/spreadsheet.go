@@ -376,11 +376,14 @@ func cloneSpreadsheetPointer(book *Spreadsheet) *Spreadsheet {
 }
 
 func shiftFormulas(book *Spreadsheet, sheetIndex, fromRow, fromColumn int, delete bool) {
-	for row := range book.Sheets[sheetIndex].Rows {
-		for column := range book.Sheets[sheetIndex].Rows[row] {
-			cell := &book.Sheets[sheetIndex].Rows[row][column]
-			if cell.Formula != "" {
-				cell.Formula = shiftCellReferences(cell.Formula, fromRow, fromColumn, delete)
+	for formulaSheet := range book.Sheets {
+		for row := range book.Sheets[formulaSheet].Rows {
+			for column := range book.Sheets[formulaSheet].Rows[row] {
+				cell := &book.Sheets[formulaSheet].Rows[row][column]
+				if cell.Formula != "" {
+					cell.Formula = shiftCellReferencesForSheet(book, formulaSheet, sheetIndex,
+						cell.Formula, fromRow, fromColumn, delete)
+				}
 			}
 		}
 	}

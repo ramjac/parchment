@@ -608,3 +608,60 @@ func TestSpreadsheetDeletions(t *testing.T) {
 		t.Fatalf("expected 1 sheet, got %d", len(book.Sheets))
 	}
 }
+
+func TestDeleteRowShiftsRangesReferencingChangedSheet(t *testing.T) {
+	book := &Spreadsheet{Sheets: []Sheet{
+		{Name: "Summary", Rows: [][]Cell{{
+			{Formula: "=SUM('Data Sheet'!A1:A4)"},
+			{Formula: "=SUM(Other!A1:A4)"},
+		}}},
+		{Name: "Data Sheet", Rows: [][]Cell{
+			{{Value: "1"}, {Formula: "=SUM(A1:A4)"}},
+			{{Value: "2"}},
+			{{Value: "3"}},
+			{{Value: "4"}},
+		}},
+		{Name: "Other", Rows: [][]Cell{
+			{{Value: "10"}},
+			{{Value: "20"}},
+			{{Value: "30"}},
+			{{Value: "40"}},
+		}},
+	}}
+
+	if err := DeleteRowFromBook(book, "Data Sheet", 2); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := book.Sheets[0].Rows[0][0].Formula, "=SUM('Data Sheet'!A1:A3)"; got != want {
+		t.Errorf("range referencing deleted row = %q, want %q", got, want)
+	}
+	if got, want := book.Sheets[0].Rows[0][1].Formula, "=SUM(Other!A1:A4)"; got != want {
+		t.Errorf("range referencing another sheet = %q, want unchanged %q", got, want)
+	}
+	if got, want := book.Sheets[1].Rows[0][1].Formula, "=SUM(A1:A3)"; got != want {
+		t.Errorf("unqualified range on changed sheet = %q, want %q", got, want)
+	}
+
+	for _, test := range []struct {
+		sheet, cell string
+		want        float64
+	}{
+		{"Summary", "A1", 8},
+		{"Summary", "B1", 100},
+		{"Data Sheet", "B1", 8},
+	} {
+		sheet, err := SheetIndex(*book, test.sheet)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row, column, err := CellCoordinates(test.cell)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := Evaluate(book, sheet, row, column)
+		if err != nil || got.Kind != NumKind || got.Num != test.want {
+			t.Errorf("%s!%s = %+v, %v; want %v", test.sheet, test.cell, got, err, test.want)
+		}
+	}
+}
