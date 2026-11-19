@@ -24,6 +24,12 @@ func TestResolveAppliesConfiguredColorsToSemanticRoles(t *testing.T) {
 	if got.Accent.GetForeground() != lipgloss.Color("#123456") {
 		t.Errorf("accent color = %v, want #123456", got.Accent.GetForeground())
 	}
+	if got.Heading.GetForeground() != lipgloss.Color("#123456") {
+		t.Errorf("content heading color = %v, want #123456", got.Heading.GetForeground())
+	}
+	if got.Chrome.GetForeground() != lipgloss.Color("#72bfb0") {
+		t.Errorf("TUI chrome color = %v, want #72bfb0", got.Chrome.GetForeground())
+	}
 	if got.BorderColor != lipgloss.Color("#234567") {
 		t.Errorf("border color = %v, want #234567", got.BorderColor)
 	}
@@ -36,28 +42,43 @@ func TestResolveAppliesConfiguredColorsToSemanticRoles(t *testing.T) {
 	if got.Match.GetBackground() != lipgloss.Color("#56789a") {
 		t.Errorf("match background = %v, want #56789a", got.Match.GetBackground())
 	}
-	for name, color := range map[string]*string{
-		"heading": got.Markdown.H1.Color,
-		"link":    got.Markdown.Link.Color,
-	} {
-		if color == nil || *color != "#123456" {
-			t.Errorf("%s color = %v, want #123456", name, color)
-		}
+	if got.Markdown.H1.Color == nil || *got.Markdown.H1.Color != "#123456" {
+		t.Errorf("heading color = %v, want #123456", got.Markdown.H1.Color)
+	}
+	if got.Markdown.Link.Color == nil || *got.Markdown.Link.Color != "#ae81ff" {
+		t.Errorf("primary override changed the independent link color: %v", got.Markdown.Link.Color)
 	}
 }
 
-func TestResolveSelectsMarkdownPaletteForConfiguredMode(t *testing.T) {
+func TestResolveSelectsSemanticPaletteForConfiguredMode(t *testing.T) {
 	tests := []struct {
-		name, mode, heading, codeBackground string
+		name, mode, content, chrome, border, selection, code, codeBackground string
 	}{
-		{"light", "light", "#4b3f72", "#f2effa"},
-		{"dark", "dark", "#c4b5fd", "#252331"},
+		{"light", "light", "#805500", "#3e796d", "#4f8277", "#b7d9cf", "#a63d00", "#f7f3e8"},
+		{"dark", "dark", "#f2c66d", "#72bfb0", "#64a99a", "#15564d", "#fd971f", "#2d2b24"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := Resolve(config.Theme{Mode: tt.mode})
-			if got.Markdown.H1.Color == nil || *got.Markdown.H1.Color != tt.heading {
-				t.Fatalf("heading color = %v, want %s", got.Markdown.H1.Color, tt.heading)
+			if got.Accent.GetForeground() != lipgloss.Color(tt.content) ||
+				got.Heading.GetForeground() != lipgloss.Color(tt.content) {
+				t.Fatalf("content accent/heading = %v/%v, want %s",
+					got.Accent.GetForeground(), got.Heading.GetForeground(), tt.content)
+			}
+			if got.Chrome.GetForeground() != lipgloss.Color(tt.chrome) {
+				t.Fatalf("TUI chrome = %v, want %s", got.Chrome.GetForeground(), tt.chrome)
+			}
+			if got.BorderColor != lipgloss.Color(tt.border) {
+				t.Fatalf("chrome border = %v, want %s", got.BorderColor, tt.border)
+			}
+			if got.Selection.GetBackground() != lipgloss.Color(tt.selection) {
+				t.Fatalf("selection background = %v, want %s", got.Selection.GetBackground(), tt.selection)
+			}
+			if got.Code.GetForeground() != lipgloss.Color(tt.code) {
+				t.Fatalf("code foreground = %v, want %s", got.Code.GetForeground(), tt.code)
+			}
+			if got.Markdown.H1.Color == nil || *got.Markdown.H1.Color != tt.content {
+				t.Fatalf("heading color = %v, want %s", got.Markdown.H1.Color, tt.content)
 			}
 			if got.Markdown.CodeBlock.BackgroundColor == nil || *got.Markdown.CodeBlock.BackgroundColor != tt.codeBackground {
 				t.Fatalf("code block background = %v, want %s", got.Markdown.CodeBlock.BackgroundColor, tt.codeBackground)
@@ -89,9 +110,54 @@ func TestResolveUsesAdaptiveColorsInAutoMode(t *testing.T) {
 	if _, ok := got.Accent.GetForeground().(lipgloss.AdaptiveColor); !ok {
 		t.Fatalf("auto accent color = %T, want lipgloss.AdaptiveColor", got.Accent.GetForeground())
 	}
+	if _, ok := got.Chrome.GetForeground().(lipgloss.AdaptiveColor); !ok {
+		t.Fatalf("auto chrome color = %T, want lipgloss.AdaptiveColor", got.Chrome.GetForeground())
+	}
 	if got.Markdown.H1.Color == nil ||
-		(*got.Markdown.H1.Color != "#4b3f72" && *got.Markdown.H1.Color != "#c4b5fd") {
+		(*got.Markdown.H1.Color != "#805500" && *got.Markdown.H1.Color != "#f2c66d") {
 		t.Fatalf("auto Markdown heading color = %v, want a light or dark palette color", got.Markdown.H1.Color)
+	}
+}
+
+func TestContentAndChromeStayDistinctAcrossColorProfiles(t *testing.T) {
+	previousProfile := lipgloss.ColorProfile()
+	t.Cleanup(func() { lipgloss.SetColorProfile(previousProfile) })
+
+	for _, profile := range []termenv.Profile{termenv.TrueColor, termenv.ANSI256, termenv.ANSI} {
+		lipgloss.SetColorProfile(profile)
+		for _, mode := range []string{"light", "dark"} {
+			styles := Resolve(config.Theme{Mode: mode})
+			content := styles.Heading.Render("Title")
+			chrome := styles.Chrome.Render("Title")
+			if content == chrome || ansi.Strip(content) == content || ansi.Strip(chrome) == chrome {
+				t.Errorf("profile %v, mode %s: content and chrome need distinct colored output: %q, %q",
+					profile, mode, content, chrome)
+			}
+		}
+	}
+}
+
+func TestContentKindsUseDistinctColors(t *testing.T) {
+	previousProfile := lipgloss.ColorProfile()
+	t.Cleanup(func() { lipgloss.SetColorProfile(previousProfile) })
+
+	for _, profile := range []termenv.Profile{termenv.TrueColor, termenv.ANSI256} {
+		lipgloss.SetColorProfile(profile)
+		for _, mode := range []string{"light", "dark"} {
+			styles := Resolve(config.Theme{Mode: mode})
+			seen := map[string]string{}
+			for name, style := range map[string]lipgloss.Style{
+				"heading": styles.Heading, "link": styles.Link,
+				"image": styles.Image, "code": styles.Code, "chrome": styles.Chrome,
+			} {
+				rendered := lipgloss.NewStyle().Foreground(style.GetForeground()).Render("text")
+				if other, ok := seen[rendered]; ok {
+					t.Errorf("mode %s, profile %v: %s and %s share a foreground color",
+						mode, profile, name, other)
+				}
+				seen[rendered] = name
+			}
+		}
 	}
 }
 
@@ -103,13 +169,16 @@ func TestSemanticRolesRenderExpectedTruecolorANSI(t *testing.T) {
 	})
 
 	styles := Resolve(config.Theme{Mode: "dark"})
+	if styles.Selection.GetUnderline() {
+		t.Fatal("selection style underlines cells")
+	}
 	tests := []struct {
 		name, rendered, ansiColor string
 	}{
-		{"accent", styles.Accent.Render("title"), "38;2;195;181;253"},
+		{"accent", styles.Accent.Render("title"), "38;2;242;198;109"},
 		{"error", styles.Error.Render("error"), "38;2;248;113;113"},
 		{"selection foreground", styles.Selection.Render("selected"), "38;2;255;255;255"},
-		{"selection background", styles.Selection.Render("selected"), "48;2;76;29;149"},
+		{"selection background", styles.Selection.Render("selected"), "48;2;21;86;77"},
 		{"match background", styles.Match.Render("match"), "48;2;133;77;14"},
 	}
 	for _, tt := range tests {

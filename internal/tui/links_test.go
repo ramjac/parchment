@@ -6,9 +6,12 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
 	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/document"
 )
 
@@ -45,6 +48,10 @@ func TestExtractAndRewriteLinks(t *testing.T) {
 }
 
 func TestDocumentReaderClickableInternalLinks(t *testing.T) {
+	previousProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(previousProfile) })
+
 	h := newHarness(t, "")
 	brk := "\n\n" + document.PageBreakMarkup + "\n\n"
 	body := "# Page One\n\nClick [Jump to Section Two](#section-two) for details.\n\nAlso [Unresolved](#non-existent) link." +
@@ -55,7 +62,7 @@ func TestDocumentReaderClickableInternalLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h.open(artifact.DocumentKind)
+	h.openWithTheme(artifact.DocumentKind, false, config.Theme{Mode: "dark"})
 	h.send(tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	s := h.m.documents
@@ -75,6 +82,9 @@ func TestDocumentReaderClickableInternalLinks(t *testing.T) {
 	}
 	if !strings.Contains(clean, "Jump to Section Two") {
 		t.Fatalf("link label missing from reader view:\n%s", clean)
+	}
+	if !strings.Contains(view, s.theme.Link.Render("Jump to Section Two")) {
+		t.Fatalf("internal link does not use the shared link color:\n%q", view)
 	}
 
 	// Verify hit box was registered

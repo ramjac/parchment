@@ -7,11 +7,24 @@ views, including readers, editors, previews, and dialogs.
 ## Semantic styling
 
 Use semantic styles from the shared TUI theme rather than defining colors in
-individual views. The theme must provide roles for accent, muted text, borders,
-selection, errors, search matches, headings, and code. Map those roles to
-legible light and dark palettes, and provide useful limited-color and
-monochrome fallbacks. Markdown rendering and the native editor should use the
-same role mapping without creating package import cycles.
+individual views. The theme must provide roles for interface chrome, content
+accent, muted text, borders, selection, errors, search matches, headings, links,
+images, and code. Map those roles to legible light and dark palettes, and
+provide useful limited-color and monochrome fallbacks. Markdown rendering and
+the native editor should use the same role mapping without creating package
+import cycles.
+
+Group roles by what they represent. Content titles and headings share the
+gold/ochre family; links use violet, image labels use pink, inline code uses
+orange, and list markers use green. Ordinary prose remains neutral. Fenced
+code uses syntax highlighting (Monokai in dark mode). Parchment-owned interface
+chrome—including screen titles, find prompts, borders, and active-cell
+selection—uses a distinct family. Errors, search matches, and code retain
+their semantic colors. Image styling applies to labels, not image pixels.
+Default content headings are warm gold/ochre, while interface chrome is cool
+teal; these must remain visibly different hues, including in 16-color
+terminals, rather than neighboring shades of blue and cyan. The `primary`
+configuration override affects content headings, not links or image labels.
 
 Do not remove color, borders, help, focus indicators, or other useful
 affordances unless the change is intentional and visually reviewed. Keep

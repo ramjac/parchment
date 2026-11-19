@@ -1068,8 +1068,7 @@ func (m *spreadsheetModel) renderHeader() string {
 	if m.path != "" {
 		header += "  " + sanitizeTerminalLine(m.path)
 	}
-	accent := m.theme.Heading
-	return accent.Render(runewidth.Truncate(header, m.width, "…"))
+	return m.theme.Chrome.Render(runewidth.Truncate(header, m.width, "…"))
 }
 
 func (m *spreadsheetModel) renderFormulaBar() string {

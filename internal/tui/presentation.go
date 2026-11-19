@@ -870,7 +870,6 @@ func (m *presentationModel) View() string {
 	if m.width < 20 || m.height < presentationChromeLines+2 {
 		return "Terminal too small. Press q to quit."
 	}
-	accent := m.theme.Heading
 	muted := m.theme.Muted
 	var content string
 	if m.editing {
@@ -887,10 +886,10 @@ func (m *presentationModel) View() string {
 	} else if m.find.visible && !m.editing {
 		status = m.find.view(len(m.searchMatches), m.searchMatch, m.width)
 	}
-	return chromeLayout(m.width, m.height, m.renderHeader(accent), m.renderHelp(muted), content, status, m.theme.BorderColor)
+	return chromeLayout(m.width, m.height, m.renderHeader(m.theme.Chrome), m.renderHelp(muted), content, status, m.theme.BorderColor)
 }
 
-func (m *presentationModel) renderHeader(accent lipgloss.Style) string {
+func (m *presentationModel) renderHeader(chrome lipgloss.Style) string {
 	header := "Presentation"
 	if m.loaded {
 		header = sanitizeTerminalLine(m.deck.Title)
@@ -903,7 +902,7 @@ func (m *presentationModel) renderHeader(accent lipgloss.Style) string {
 	if m.path != "" {
 		header += "  " + sanitizeTerminalLine(m.path)
 	}
-	return accent.Render(runewidth.Truncate(header, m.width, "…"))
+	return chrome.Render(runewidth.Truncate(header, m.width, "…"))
 }
 
 func (m *presentationModel) renderSlideContent() string {

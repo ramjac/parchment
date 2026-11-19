@@ -659,7 +659,7 @@ func (m Model) View() string {
 	if m.tooSmall() {
 		return "parchment — terminal too small (minimum 40×10)\nResize the terminal, or press q to quit."
 	}
-	header := m.theme.Accent.Bold(true).
+	header := m.theme.Chrome.
 		Render("parchment  ·  " + sanitizeTerminalLine(m.path))
 	switch m.stage {
 	case stageOpening:

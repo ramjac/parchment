@@ -42,7 +42,7 @@ func newFindBar(theme Theme) findBar {
 	input.Prompt = "Find: "
 	input.Placeholder = "type to search"
 	input.CharLimit = 4096
-	input.PromptStyle = theme.Accent
+	input.PromptStyle = theme.Chrome
 	input.TextStyle = theme.Muted
 	return findBar{input: input}
 }

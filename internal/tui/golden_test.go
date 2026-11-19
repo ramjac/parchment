@@ -52,7 +52,7 @@ func TestTUIRenderGoldens(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := h.notes.UpdateExpected(context.Background(), saved,
-			"# A Short Note\n\nText with **emphasis** and `code`.\n"); err != nil {
+			"# A Short Note\n\nText with **emphasis** and `code`.\n\n[Reference](https://example.com)\n\n![Diagram](diagram.png)\n\n- A useful item\n"); err != nil {
 			t.Fatal(err)
 		}
 		h.openWithTheme(artifact.NoteKind, false, darkTheme)
@@ -119,6 +119,42 @@ func TestTUIRenderGoldens(t *testing.T) {
 		prepareGoldenView(h, 80, 24)
 		assertTUIViewGolden(t, "open-error", h.m.View(), 0, 0)
 	})
+}
+
+func TestMarkdownContentColors(t *testing.T) {
+	previousProfile := lipgloss.ColorProfile()
+	t.Cleanup(func() { lipgloss.SetColorProfile(previousProfile) })
+
+	for _, profile := range []termenv.Profile{termenv.TrueColor, termenv.ANSI256, termenv.ANSI} {
+		lipgloss.SetColorProfile(profile)
+		for _, mode := range []string{"light", "dark"} {
+			styles := tuitheme.Resolve(config.Theme{Mode: mode})
+			for _, tt := range []struct {
+				name, source, text string
+				color              *string
+			}{
+				{"heading", "# Title", "Title", styles.Markdown.H1.Color},
+				{"link", "[Reference](https://example.com)", "Reference", styles.Markdown.LinkText.Color},
+				{"image", "![Diagram](diagram.png)", "Diagram", styles.Markdown.ImageText.Color},
+				{"inline code", "`value`", "value", styles.Markdown.Code.Color},
+				{"bullet", "- Item", "Item", styles.Markdown.Item.Color},
+				{"number", "1. Item", "Item", styles.Markdown.Enumeration.Color},
+			} {
+				if tt.color == nil {
+					t.Fatalf("%s has no semantic color", tt.name)
+				}
+				rendered := renderMarkdown(tt.source, 60, styles)
+				sample := lipgloss.NewStyle().Foreground(lipgloss.Color(*tt.color)).Render("sample")
+				colorSequence, _, _ := strings.Cut(sample, "sample")
+				colorParams := strings.TrimSuffix(strings.TrimPrefix(colorSequence, "\x1b["), "m")
+				if colorParams == "" || !strings.Contains(rendered, colorParams) ||
+					!strings.Contains(ansi.Strip(rendered), tt.text) {
+					t.Errorf("%s, mode %s, profile %v: expected color %s and text %q in %q",
+						tt.name, mode, profile, colorParams, tt.text, rendered)
+				}
+			}
+		}
+	}
 }
 
 func assertRenderedDocumentMarkdown(t *testing.T, pages []document.Page) {
