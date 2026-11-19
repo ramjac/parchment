@@ -1032,9 +1032,19 @@ func shiftCellReferencesWhere(formula string, fromRow, fromColumn int, delete bo
 				}
 			}
 
+			if r1 < 1 || r2 > MaxRows || c1 < 1 || c2 > MaxColumns {
+				bytes = append(bytes[:start], append([]byte("#REF!"), bytes[end:]...)...)
+				continue
+			}
+
+			original := string(bytes[start:end])
 			prefix := ""
-			if separator := strings.IndexByte(string(bytes[start:end]), '!'); separator >= 0 {
-				prefix = string(bytes[start : start+separator+1])
+			if separator := strings.IndexByte(original, '!'); separator >= 0 {
+				if colon := strings.IndexByte(original, ':'); colon >= 0 && colon < separator {
+					prefix = original[colon+1 : separator+1]
+				} else {
+					prefix = original[:separator+1]
+				}
 			}
 			newName := prefix + CellName(r1, c1) + ":" + CellName(r2, c2)
 			bytes = append(bytes[:start], append([]byte(newName), bytes[end:]...)...)
@@ -1079,7 +1089,16 @@ func shiftCellReferencesWhere(formula string, fromRow, fromColumn int, delete bo
 			}
 
 			if shifted {
-				newName := CellName(r, c)
+				if r < 1 || r > MaxRows || c < 1 || c > MaxColumns {
+					bytes = append(bytes[:start], append([]byte("#REF!"), bytes[end:]...)...)
+					continue
+				}
+				original := string(bytes[start:end])
+				prefix := ""
+				if separator := strings.IndexByte(original, '!'); separator >= 0 {
+					prefix = original[:separator+1]
+				}
+				newName := prefix + CellName(r, c)
 				bytes = append(bytes[:start], append([]byte(newName), bytes[end:]...)...)
 			}
 		}

@@ -205,6 +205,48 @@ func TestFormulaReferenceShiftsPreserveDecimalExponents(t *testing.T) {
 	}
 }
 
+func TestFormulaReferenceShiftsPreserveSheetQualifiersAndBounds(t *testing.T) {
+	book := &Spreadsheet{Sheets: []Sheet{{Name: "Summary"}, {Name: "Data"}}}
+	for _, test := range []struct {
+		name        string
+		formula     string
+		row, column int
+		want        string
+	}{
+		{"qualified scalar", "=Data!A2", 1, 0, "=Data!A3"},
+		{"second endpoint qualifier", "=SUM(A1:Data!A2)", 1, 0, "=SUM(Data!A2:A3)"},
+		{"range exceeds row limit", "=SUM(Data!A1:A1000)", 1, 0, "=SUM(#REF!)"},
+		{"scalar exceeds row limit", "=Data!A1000", 999, 0, "=#REF!"},
+		{"range exceeds column limit", "=SUM(Data!IV1:IV2)", 0, MaxColumns, "=SUM(#REF!)"},
+		{"scalar exceeds column limit", "=Data!IV1", 0, MaxColumns, "=#REF!"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := shiftCellReferencesForSheet(book, 0, 1, test.formula, test.row, test.column, false)
+			if got != test.want {
+				t.Errorf("shifted formula = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestInsertRowAtSheetLimitKeepsOutOfBoundsRangesValid(t *testing.T) {
+	book := formulaChain(0)
+	book.Sheets = []Sheet{
+		{Name: "Summary", Rows: [][]Cell{{{Formula: "=SUM(Data!A1:A1000)"}}}},
+		{Name: "Data", Rows: [][]Cell{{{Value: "1"}}}},
+	}
+
+	if err := InsertRowInBook(&book, "Data", 1); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := book.Sheets[0].Rows[0][0].Formula, "=SUM(#REF!)"; got != want {
+		t.Fatalf("range formula after insertion = %q, want %q", got, want)
+	}
+	if err := Normalize(&book); err != nil {
+		t.Fatalf("Normalize rejected the inserted row: %v", err)
+	}
+}
+
 func TestNormalizeRejectsDeepFormulaChainsRegardlessOfCacheOrder(t *testing.T) {
 	book := formulaChain(maxFormulaDepth + 1)
 	if err := Normalize(&book); err == nil || !strings.Contains(err.Error(), "dependency depth") {
