@@ -11,6 +11,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/artifact"
@@ -370,6 +371,9 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if m.find.active && m.pdfPrompt == promptNone {
+		return m, m.updateFindKey(message)
+	}
 	if m.editing {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(message)
@@ -459,6 +463,9 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 			}
 			return m.syncAutosave()
 		}
+		if m.find.visible {
+			return m.updateFindKey(msg)
+		}
 		return m.requestClose()
 	case "q":
 		if m.pending {
@@ -490,13 +497,10 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		case "N":
 			m.moveSearchMatch(-1)
 			return nil
-		case "esc":
-			m.find.close()
-			m.searchSpreadsheet("")
-			return nil
 		}
 	}
 	if key == "/" || key == "ctrl+f" {
+		m.searchSpreadsheet(m.find.query())
 		return m.find.open(m.width)
 	}
 
@@ -760,6 +764,7 @@ func (m *spreadsheetModel) setBook(book spreadsheet.Spreadsheet) {
 		name = m.book.Sheets[m.sheet].Name
 	}
 	m.book, m.baseline, m.loaded = cloneSpreadsheetState(book), cloneSpreadsheetState(book), true
+	m.clearSearch()
 	m.bufferUndo, m.bufferRedo = nil, nil
 	m.sheet = 0
 	if index, err := spreadsheet.SheetIndex(book, name); err == nil && name != "" {
@@ -798,6 +803,7 @@ func (m *spreadsheetModel) editWorkbook(edit func(*spreadsheet.Spreadsheet) erro
 	m.bufferUndo = appendBoundedWorkbook(m.bufferUndo, m.book, m.undoLimit)
 	m.bufferRedo = nil
 	m.book = next
+	m.clearSearch()
 	m.sheet = min(m.sheet, len(m.book.Sheets)-1)
 	if index, err := spreadsheet.SheetIndex(m.book, selectedSheet); err == nil {
 		m.sheet = index
@@ -820,8 +826,10 @@ func (m *spreadsheetModel) undo() tea.Cmd {
 	if len(m.bufferUndo) > 0 {
 		m.bufferRedo = appendBoundedWorkbook(m.bufferRedo, m.book, m.undoLimit)
 		m.book = m.bufferUndo[len(m.bufferUndo)-1]
+		m.clearSearch()
 		m.bufferUndo = m.bufferUndo[:len(m.bufferUndo)-1]
 		m.status, m.errMessage = "Undid spreadsheet edit", ""
+		m.sheet = min(max(m.sheet, 0), len(m.book.Sheets)-1)
 		m.computeValues()
 		m.scrollToSelection()
 		return m.syncAutosave()
@@ -836,6 +844,7 @@ func (m *spreadsheetModel) redo() tea.Cmd {
 	if len(m.bufferRedo) > 0 {
 		m.bufferUndo = appendBoundedWorkbook(m.bufferUndo, m.book, m.undoLimit)
 		m.book = m.bufferRedo[len(m.bufferRedo)-1]
+		m.clearSearch()
 		m.bufferRedo = m.bufferRedo[:len(m.bufferRedo)-1]
 		m.status, m.errMessage = "Redid spreadsheet edit", ""
 		m.sheet = min(max(m.sheet, 0), len(m.book.Sheets)-1)
@@ -919,7 +928,12 @@ func (m *spreadsheetModel) displayValue(row, column int) string {
 	return cell.Value
 }
 
-func (m *spreadsheetModel) updateFindKey(msg tea.KeyMsg) tea.Cmd {
+func (m *spreadsheetModel) clearSearch() {
+	m.find.close()
+	m.searchMatches, m.searchMatch = nil, -1
+}
+
+func (m *spreadsheetModel) updateFindKey(msg tea.Msg) tea.Cmd {
 	action, cmd := m.find.update(msg)
 	switch action {
 	case findChanged:
@@ -969,6 +983,12 @@ func (m *spreadsheetModel) gotoSearchMatch() {
 		return
 	}
 	match := m.searchMatches[m.searchMatch]
+	if match.sheet < 0 || match.sheet >= len(m.book.Sheets) ||
+		match.row < 0 || match.row >= len(m.book.Sheets[match.sheet].Rows) ||
+		match.column < 0 || match.column >= len(m.book.Sheets[match.sheet].Rows[match.row]) {
+		m.clearSearch()
+		return
+	}
 	m.sheet, m.row, m.column = match.sheet, match.row, match.column
 	m.computeValues()
 	m.scrollToSelection()
@@ -1080,7 +1100,7 @@ func (m *spreadsheetModel) renderFormulaBar() string {
 	if m.find.visible && m.find.query() != "" {
 		line = highlightLine(line, m.find.query(), m.theme)
 	}
-	return runewidth.Truncate(line, m.width, "…")
+	return ansi.Truncate(line, m.width, "…")
 }
 
 func (m *spreadsheetModel) renderColumnHeader(rowWidth, columns int) string {

@@ -367,6 +367,16 @@ func (s *documentsScreen) update(message tea.Msg) tea.Cmd {
 		s.layoutEditor()
 		return cmd
 	}
+	if s.find.active && s.prompt == promptNone {
+		switch {
+		case s.reading:
+			return s.updateReaderFindKey(message)
+		case s.previewing:
+			return s.updatePreviewFindKey(message)
+		default:
+			return s.updateFindKey(message)
+		}
+	}
 	return nil
 }
 

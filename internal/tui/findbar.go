@@ -67,23 +67,24 @@ func (f *findBar) blur() {
 	f.input.Blur()
 }
 
-func (f *findBar) update(msg tea.KeyMsg) (findAction, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		return findClosed, f.close()
-	case "enter", "down":
-		return findNext, nil
-	case "up", "shift+tab":
-		return findPrevious, nil
-	default:
-		old := f.input.Value()
-		var cmd tea.Cmd
-		f.input, cmd = f.input.Update(msg)
-		if old == f.input.Value() {
-			return findUnchanged, cmd
+func (f *findBar) update(msg tea.Msg) (findAction, tea.Cmd) {
+	if key, ok := msg.(tea.KeyMsg); ok {
+		switch key.String() {
+		case "esc":
+			return findClosed, f.close()
+		case "enter", "down":
+			return findNext, nil
+		case "up", "shift+tab":
+			return findPrevious, nil
 		}
-		return findChanged, cmd
 	}
+	old := f.input.Value()
+	var cmd tea.Cmd
+	f.input, cmd = f.input.Update(msg)
+	if old == f.input.Value() {
+		return findUnchanged, cmd
+	}
+	return findChanged, cmd
 }
 
 func (f *findBar) query() string { return f.input.Value() }

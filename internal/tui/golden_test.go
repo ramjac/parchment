@@ -75,6 +75,7 @@ func TestTUIRenderGoldens(t *testing.T) {
 
 	t.Run("spreadsheet-grid", func(t *testing.T) {
 		h := newHarness(t, artifact.SpreadsheetKind)
+		h.openWithTheme(artifact.SpreadsheetKind, false, darkTheme)
 		prepareGoldenView(h, 80, 24)
 		assertTUIViewGolden(t, "spreadsheet-grid", h.m.View(), 80, 24)
 	})
@@ -107,6 +108,7 @@ func TestTUIRenderGoldens(t *testing.T) {
 
 	t.Run("note-discard-confirmation", func(t *testing.T) {
 		h := newHarness(t, artifact.NoteKind)
+		h.openWithTheme(artifact.NoteKind, false, darkTheme)
 		h.typeText("unsaved content")
 		h.key("esc")
 		prepareGoldenView(h, 80, 24)
@@ -115,6 +117,7 @@ func TestTUIRenderGoldens(t *testing.T) {
 
 	t.Run("open-error", func(t *testing.T) {
 		h := newHarness(t, artifact.NoteKind)
+		h.openWithTheme(artifact.NoteKind, false, darkTheme)
 		h.m.stage = stageFailed
 		prepareGoldenView(h, 80, 24)
 		assertTUIViewGolden(t, "open-error", h.m.View(), 0, 0)

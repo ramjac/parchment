@@ -376,6 +376,7 @@ func (s *documentsScreen) updatePreviewKey(msg tea.KeyMsg) tea.Cmd {
 		}
 	}
 	if key == "/" || key == "ctrl+f" {
+		s.searchPreview(s.find.query())
 		return s.find.open(s.width)
 	}
 	switch msg.String() {
@@ -432,7 +433,7 @@ func (s *documentsScreen) movePreviewMatch(step int) {
 	s.gotoPreviewMatch()
 }
 
-func (s *documentsScreen) updatePreviewFindKey(msg tea.KeyMsg) tea.Cmd {
+func (s *documentsScreen) updatePreviewFindKey(msg tea.Msg) tea.Cmd {
 	action, cmd := s.find.update(msg)
 	switch action {
 	case findChanged:
@@ -513,6 +514,7 @@ func (s *documentsScreen) updateEditorKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	if key == "ctrl+f" {
 		s.body.Blur()
+		s.body.SetSearch(s.find.query())
 		return s.find.open(s.width)
 	}
 	if key != "esc" && key != "ctrl+c" {
@@ -545,7 +547,7 @@ func (s *documentsScreen) updateEditorKey(msg tea.KeyMsg) tea.Cmd {
 	return cmd
 }
 
-func (s *documentsScreen) updateFindKey(msg tea.KeyMsg) tea.Cmd {
+func (s *documentsScreen) updateFindKey(msg tea.Msg) tea.Cmd {
 	action, cmd := s.find.update(msg)
 	switch action {
 	case findChanged:

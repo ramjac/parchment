@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"example.com/parchment/internal/artifact"
@@ -23,6 +24,7 @@ import (
 // driveSheet sends a message and feeds command results back into the model.
 func driveSheet(t *testing.T, m *spreadsheetModel, message tea.Msg) tea.Msg {
 	t.Helper()
+	m.find.input.Cursor.SetMode(cursor.CursorStatic)
 	_, cmd := m.Update(message)
 	var last tea.Msg
 	var run func(tea.Cmd)

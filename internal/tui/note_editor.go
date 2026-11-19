@@ -87,6 +87,7 @@ func (n *noteEditor) markSaved(savedNote note.Note) {
 }
 
 func (n *noteEditor) resizePreview(width, height int) {
+	offset, current := n.preview.YOffset, n.previewMatch
 	promptRows := 0
 	if n.pdfPrompt != promptNone {
 		promptRows = 1
@@ -95,11 +96,9 @@ func (n *noteEditor) resizePreview(width, height int) {
 	saved := n.snapshot
 	saved.Body = n.bodyInput.Value()
 	n.previewContent = preview(saved, n.preview.Width, n.theme)
-	n.preview.SetContent(n.previewContent)
-	n.preview.GotoTop()
-	if n.find.query() != "" {
-		n.searchPreview(n.find.query())
-	}
+	n.previewMatches = renderedMatches(strings.Split(n.previewContent, "\n"), n.find.query(), 0)
+	n.previewMatch = min(max(current, 0), len(n.previewMatches)-1)
+	n.renderPreviewContent(offset)
 }
 
 func (n *noteEditor) resizeEditors(width, height int) {
@@ -116,7 +115,7 @@ func (n *noteEditor) resizeEditors(width, height int) {
 	}
 }
 
-func (n *noteEditor) updateFindKey(msg tea.KeyMsg) tea.Cmd {
+func (n *noteEditor) updateFindKey(msg tea.Msg) tea.Cmd {
 	action, cmd := n.find.update(msg)
 	if n.previewing {
 		switch action {
@@ -149,6 +148,11 @@ func (n *noteEditor) updateFindKey(msg tea.KeyMsg) tea.Cmd {
 
 func (n *noteEditor) openFind(width int) tea.Cmd {
 	n.bodyInput.Blur()
+	if n.previewing {
+		n.searchPreview(n.find.query())
+	} else {
+		n.bodyInput.SetSearch(n.find.query())
+	}
 	return n.find.open(width)
 }
 

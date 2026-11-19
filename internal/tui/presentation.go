@@ -141,10 +141,11 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.editor.SetWidth(max(1, m.width-4))
 		m.resizePDFPrompt()
 		if !m.editing && m.find.visible && m.find.query() != "" {
-			m.searchSlides(m.find.query())
-		} else {
-			m.clampScroll()
+			current := m.searchMatch
+			m.rebuildSlideMatches(m.find.query())
+			m.searchMatch = min(max(current, 0), len(m.searchMatches)-1)
 		}
+		m.clampScroll()
 		return m, nil
 	case presentationPDFExportedMsg:
 		return m, m.presentationPDFExported(msg)
@@ -240,6 +241,9 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if m.find.active && m.pdfPrompt == promptNone {
+		return m, m.updateFindKey(message)
+	}
 	if m.editing {
 		var cmd tea.Cmd
 		m.editor, cmd = m.editor.Update(message)
@@ -280,6 +284,7 @@ func (m *presentationModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	if key == "ctrl+f" {
 		m.editor.Blur()
+		m.editor.SetSearch(m.find.query())
 		return m.find.open(m.width)
 	}
 	switch key {
@@ -316,7 +321,7 @@ func (m *presentationModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
 	return cmd
 }
 
-func (m *presentationModel) updateFindKey(msg tea.KeyMsg) tea.Cmd {
+func (m *presentationModel) updateFindKey(msg tea.Msg) tea.Cmd {
 	action, cmd := m.find.update(msg)
 	if !m.editing {
 		switch action {
@@ -394,6 +399,7 @@ func (m *presentationModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	if key == "/" || key == "ctrl+f" {
+		m.searchSlides(m.find.query())
 		return m.find.open(m.width)
 	}
 	switch key {
@@ -456,6 +462,16 @@ func (m *presentationModel) goToPage(page int) {
 }
 
 func (m *presentationModel) searchSlides(query string) {
+	m.rebuildSlideMatches(query)
+	if len(m.searchMatches) > 0 {
+		m.searchMatch = 0
+		m.gotoSearchMatch()
+	} else {
+		m.clampScroll()
+	}
+}
+
+func (m *presentationModel) rebuildSlideMatches(query string) {
 	m.searchMatches = nil
 	m.searchMatch = -1
 	if !m.loaded || query == "" {
@@ -479,12 +495,6 @@ func (m *presentationModel) searchSlides(query string) {
 		}
 	}
 	m.page, m.showNotes, m.scroll = page, showNotes, scroll
-	if len(m.searchMatches) > 0 {
-		m.searchMatch = 0
-		m.gotoSearchMatch()
-	} else {
-		m.clampScroll()
-	}
 }
 
 func (m *presentationModel) gotoSearchMatch() {
@@ -492,6 +502,10 @@ func (m *presentationModel) gotoSearchMatch() {
 		return
 	}
 	match := m.searchMatches[m.searchMatch]
+	if match.page < 0 || match.page >= m.pageCount() {
+		m.searchMatches, m.searchMatch = nil, -1
+		return
+	}
 	m.page = match.page
 	if match.inNotes {
 		m.showNotes = true
@@ -806,6 +820,9 @@ func (m *presentationModel) setItem(item presentation.Presentation) {
 		return
 	}
 	m.item, m.deck, m.loaded = item, deck, true
+	m.find.close()
+	m.editor.ClearSearch()
+	m.searchMatches, m.searchMatch = nil, -1
 	m.status, m.errMessage = "", ""
 	m.page = min(m.page, m.pageCount()-1)
 	m.clampScroll()
@@ -881,7 +898,7 @@ func (m *presentationModel) View() string {
 		content = m.pdfInput.View() + "\n" + content
 	}
 	status := m.renderStatus()
-	if m.find.active {
+	if m.editing && m.find.active {
 		status = m.find.view(m.editor.MatchCount(), m.editor.ActiveMatch(), m.width)
 	} else if m.find.visible && !m.editing {
 		status = m.find.view(len(m.searchMatches), m.searchMatch, m.width)

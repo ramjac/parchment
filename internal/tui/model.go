@@ -284,6 +284,12 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m, m.updateKey(msg)
 	}
+	if m.stage == stageDocument && m.documents != nil {
+		return m, m.documents.update(message)
+	}
+	if m.stage == stageNote && m.find.active && m.pdfPrompt == promptNone {
+		return m, m.updateFindKey(message)
+	}
 	return m, nil
 }
 
@@ -557,7 +563,7 @@ func (m *Model) updateNoteKey(msg tea.KeyMsg) tea.Cmd {
 			}
 		}
 		if key == "/" || key == "ctrl+f" {
-			return m.find.open(m.width)
+			return m.openFind(m.width)
 		}
 		switch key {
 		case "ctrl+p":
@@ -592,6 +598,7 @@ func (m *Model) updateNoteKey(msg tea.KeyMsg) tea.Cmd {
 	case "f5":
 		m.previewing = true
 		m.resizePreview()
+		m.searchPreview(m.find.query())
 		return nil
 	case "ctrl+z", "ctrl+r", "ctrl+y", "ctrl+shift+z":
 		if key == "ctrl+z" && m.bodyInput.CanUndo() {
