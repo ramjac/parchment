@@ -16,6 +16,7 @@ import (
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/document"
+	"example.com/parchment/internal/imageedit"
 	"example.com/parchment/internal/note"
 	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/recovery"
@@ -36,6 +37,7 @@ type Config struct {
 	Documents     *document.Service
 	Spreadsheets  *spreadsheet.Service
 	Presentations *presentation.Service
+	Images        *imageedit.Service
 	Recovery      recovery.Store
 	Theme         config.Theme
 	UndoLimit     int
@@ -64,6 +66,7 @@ const (
 	stageDocument
 	stageSpreadsheet
 	stagePresentation
+	stageImage
 	stageFailed
 )
 
@@ -73,6 +76,7 @@ type fileOpenedMsg struct {
 	document document.Document
 	book     spreadsheet.Spreadsheet
 	deck     presentation.Presentation
+	image    *imageedit.Image
 	created  bool
 	draft    recovery.Draft
 	hasDraft bool
@@ -111,6 +115,7 @@ type Model struct {
 	service       *note.Service
 	spreadsheets  *spreadsheet.Service
 	presentations *presentation.Service
+	images        *imageedit.Service
 	recoveryStore recovery.Store
 	theme         Theme
 	undoLimit     int
@@ -133,6 +138,7 @@ type Model struct {
 	documents *documentsScreen
 	sheet     *spreadsheetModel
 	deck      *presentationModel
+	image     *imageModel
 }
 
 // NewModel creates the interactive editor for config.Path.
@@ -145,6 +151,7 @@ func NewModel(config Config) Model {
 	m := Model{
 		path: config.Path, kind: config.Kind, edit: config.Edit,
 		service: config.Notes, spreadsheets: config.Spreadsheets, presentations: config.Presentations,
+		images:        config.Images,
 		recoveryStore: config.Recovery,
 		theme:         resolvedTheme,
 		undoLimit:     undoLimit,
@@ -190,6 +197,7 @@ func (m *Model) openFile(kind artifact.Kind) tea.Cmd {
 	ctx := m.startOperation()
 	path, notes, store := m.path, m.service, m.recoveryStore
 	sheets, decks := m.spreadsheets, m.presentations
+	images := m.images
 	var documents *document.Service
 	if m.documents != nil {
 		documents = m.documents.service
@@ -197,6 +205,8 @@ func (m *Model) openFile(kind artifact.Kind) tea.Cmd {
 	return func() tea.Msg {
 		msg := fileOpenedMsg{kind: kind}
 		switch {
+		case kind == artifact.ImageKind && images != nil:
+			msg.image, msg.err = images.Load(ctx, path)
 		case kind == artifact.NoteKind && notes != nil:
 			msg.note, msg.err = notes.Get(ctx, path)
 			if errors.Is(msg.err, note.ErrNotFound) {
@@ -224,7 +234,7 @@ func (m *Model) openFile(kind artifact.Kind) tea.Cmd {
 		default:
 			msg.err = fmt.Errorf("the interactive editor cannot open %s artifacts", kind)
 		}
-		if msg.err == nil && store != nil {
+		if msg.err == nil && store != nil && kind != artifact.ImageKind {
 			msg.draft, msg.hasDraft, msg.err = store.LoadRecovery(ctx, path)
 		}
 		return msg
@@ -245,6 +255,9 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	switch {
+	case m.stage == stageImage && m.image != nil:
+		_, cmd := m.image.Update(message)
+		return m, cmd
 	case m.stage == stageSpreadsheet && m.sheet != nil:
 		_, cmd := m.sheet.Update(message)
 		return m, cmd
@@ -397,6 +410,13 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 // enterEditor opens the loaded artifact in its editor.
 func (m *Model) enterEditor() tea.Cmd {
 	switch m.opened.kind {
+	case artifact.ImageKind:
+		m.image = newImageModel(m.images, m.opened.image, m.theme, m.undoLimit)
+		m.opened.image = nil
+		m.image.newOperationContext = m.newOperationContext
+		m.stage = stageImage
+		_, cmd := m.image.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+		return cmd
 	case artifact.NoteKind:
 		if !m.startEdit(m.opened.note) {
 			m.stage = stageFailed
@@ -663,6 +683,9 @@ func (m *Model) history(undo bool) tea.Cmd {
 
 // View renders the current model without performing application operations.
 func (m Model) View() string {
+	if m.stage == stageImage && m.image != nil {
+		return m.image.View()
+	}
 	if m.tooSmall() {
 		cleanup := ""
 		if m.stage == stageDocument && m.documents != nil {

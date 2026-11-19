@@ -48,6 +48,9 @@ type metadataEnvelope struct {
 // Encode serializes an artifact as Markdown, with structured payloads after
 // the visible body so ordinary Markdown readers encounter the content first.
 func Encode(item artifact.Artifact, body string, blocks map[string]any) ([]byte, error) {
+	if item.Kind == artifact.ImageKind {
+		return nil, errors.New("images are standalone binary files, not Markdown artifacts")
+	}
 	if err := item.Validate(); err != nil {
 		return nil, fmt.Errorf("validate artifact metadata: %w", err)
 	}
@@ -471,8 +474,7 @@ func decodeMetadata(metadataBytes []byte) (artifact.Artifact, error) {
 		ModifiedAt: envelope.ModifiedAt.UTC(), FormatVersion: envelope.FormatVersion,
 	}
 	if item.Kind != artifact.NoteKind && item.Kind != artifact.DocumentKind &&
-		item.Kind != artifact.SpreadsheetKind && item.Kind != artifact.PresentationKind &&
-		item.Kind != artifact.ImageKind {
+		item.Kind != artifact.SpreadsheetKind && item.Kind != artifact.PresentationKind {
 		return artifact.Artifact{}, fmt.Errorf("validate Parchment metadata: unsupported artifact kind %q", item.Kind)
 	}
 	if item.FormatVersion != artifact.FormatVersion {
@@ -487,7 +489,7 @@ func decodeMetadata(metadataBytes []byte) (artifact.Artifact, error) {
 func transientID(kind artifact.Kind, data []byte) string {
 	prefixes := map[artifact.Kind]byte{
 		artifact.NoteKind: 'n', artifact.DocumentKind: 'd', artifact.SpreadsheetKind: 's',
-		artifact.PresentationKind: 'p', artifact.ImageKind: 'i',
+		artifact.PresentationKind: 'p',
 	}
 	digest := sha256.Sum256(data)
 	return string(prefixes[kind]) + new(big.Int).SetBytes(digest[:16]).Text(36)

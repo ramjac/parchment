@@ -174,12 +174,17 @@ func RenderImage(data []byte, maxCols, maxRows int) (string, int, error) {
 	if err != nil {
 		return "", 0, fmt.Errorf("decode image: %w", err)
 	}
+	rendered, rows := RenderPixels(img, maxCols, maxRows, DetectProtocol())
+	return rendered, rows, nil
+}
+
+// RenderPixels renders already-decoded, orientation-normalized pixels.
+func RenderPixels(img image.Image, maxCols, maxRows int, protocol GraphicsProtocol) (string, int) {
 	_, rows := fitToCells(img, maxCols, maxRows)
 	if rows == 0 {
-		return "", 0, nil
+		return "", 0
 	}
 
-	protocol := DetectProtocol()
 	var rendered string
 	switch protocol {
 	case ProtocolKitty:
@@ -194,7 +199,7 @@ func RenderImage(data []byte, maxCols, maxRows int) (string, int, error) {
 	if protocol != ProtocolNone {
 		rendered = "\x1b[s" + rendered + "\x1b[u"
 	}
-	return rendered, rows, nil
+	return rendered, rows
 }
 
 // RenderKitty renders an image using the Kitty graphics protocol.
