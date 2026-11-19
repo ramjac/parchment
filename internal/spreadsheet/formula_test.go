@@ -466,3 +466,29 @@ func TestRangeShifting(t *testing.T) {
 		t.Errorf("insert col 2 into A1:E1 = %q, want =SUM(A1:F1)", got)
 	}
 }
+
+func TestErrorValueParsing(t *testing.T) {
+	book := &Spreadsheet{Sheets: []Sheet{{Rows: [][]Cell{{{Formula: "=#REF!"}}}}}}
+	val, err := Evaluate(book, 0, 1, 1)
+	if err != nil || val.Kind != ErrKind || val.Err != ErrRef {
+		t.Errorf("expected #REF! error value, got %+v (err: %v)", val, err)
+	}
+}
+
+func TestShiftCellReferencesDeletion(t *testing.T) {
+	for _, test := range []struct {
+		formula    string
+		fromRow    int
+		fromColumn int
+		want       string
+	}{
+		{"=A1+B2", 1, 0, "=#REF!+B1"},
+		{"=A2+B2", 0, 1, "=#REF!+A2"},
+		{"=C3", 2, 0, "=C2"},
+		{"=C3", 0, 2, "=B3"},
+	} {
+		if got := shiftCellReferences(test.formula, test.fromRow, test.fromColumn, true); got != test.want {
+			t.Errorf("shiftCellReferences(%q, %d, %d, true) = %q, want %q", test.formula, test.fromRow, test.fromColumn, got, test.want)
+		}
+	}
+}
