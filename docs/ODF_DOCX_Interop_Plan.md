@@ -8,6 +8,10 @@ per-section fonts, exact floating object positioning, or every feature
 available in office formats. Import and export must report unsupported or
 approximated content rather than implying a lossless round trip.
 
+**Status:** Implemented on `main` for PRs 31–35, including DOCX and ODF import
+and export, layout and media mapping, CLI commands, and round-trip tests. The
+steps below document the delivered scope.
+
 ## Architecture & Dependencies
 
 - Implement format-specific adapters in a dedicated `internal/docinterop`
@@ -111,17 +115,17 @@ approximated content rather than implying a lossless round trip.
 
 ## Step-by-Step PR Breakdown
 
-Each step below is scoped as one self-contained Pull Request (`~200–450` LOC)
-that compiles cleanly and passes `go test -race ./...`:
+Each step below was scoped as one self-contained Pull Request (`~200–450` LOC)
+that compiles cleanly and passes `go test -race ./...`; all steps are merged:
 
-1. **PR 31 — `internal/docinterop` Foundation, Safety Reader & Markdown Bridge:**
+1. **Merged — PR 31: `internal/docinterop` Foundation, Safety Reader & Markdown Bridge:**
    - Create `internal/docinterop` with format-agnostic `Exporter` / `Importer`
      interfaces, `Warning` collector (`warning: ...` formatting), bounded ZIP
      reader (`<= 64 MiB` input, `<= 128 MiB` total decompressed, `<= 1000`
      entries), entity-free `encoding/xml` decoder helper, Goldmark AST parser
      bridge for export, custom canonical Markdown generator for import, and
      shared unit/page-size/margin/header/footer/font mapping helpers with unit tests.
-2. **PR 32a — DOCX Export Core Document Writer:**
+2. **Merged — PR 32a: DOCX Export Core Document Writer:**
    - Implement the `.docx` OpenXML archive writer (`[Content_Types].xml`,
      `_rels/.rels`, `word/document.xml`, `word/styles.xml`) for paragraphs,
      runs, headings, bold/italic/code, lists, blockquotes, and GFM tables.
@@ -129,34 +133,34 @@ that compiles cleanly and passes `go test -race ./...`:
      in `internal/cli` (emitting `warning: N pending proposal(s) not exported`
      when proposals exist, and returning a clear unsupported-format error for `odt`
      until PR 34).
-3. **PR 32b — DOCX Export Layout, Headers & Images:**
+3. **Merged — PR 32b: DOCX Export Layout, Headers & Images:**
    - Add section layout, page dimensions (`w:pgSz`), margins (`w:pgMar`),
      columns (`w:cols`), running headers/footers with dynamic page numbers
      (`w:headerReference`, `w:footerReference`), and embedded `word/media/`
      image relationships to the `.docx` exporter.
-4. **PR 33a — DOCX Import Core Reader & In-Test Fixtures:**
+4. **Merged — PR 33a: DOCX Import Core Reader & In-Test Fixtures:**
    - Implement the `.docx` reader + `[Content_Types].xml` format sniffer,
      mapping Word paragraphs, runs, lists, and tables into canonical Markdown.
    - Provide Go test helpers that construct minimal valid `.docx` archives in-memory
      to verify import decoding, plus round-trip tests through the PR 32 exporter.
    - Wire `parchment document import <src.docx> <dst.md> [--format] [--no-edit]`.
-5. **PR 33b — DOCX Import Layout, Headers & Images:**
+5. **Merged — PR 33b: DOCX Import Layout, Headers & Images:**
    - Map Word section geometry, margins, running headers/footers, and extract
      supported `PNG`/`JPEG`/`GIF` media into `document.Draft` images via
      `document.NewImage`. Test skipped unsupported/oversized media and warnings.
-6. **PR 34a — ODF Text (`.odt`) Export Core Document Writer:**
+6. **Merged — PR 34a: ODF Text (`.odt`) Export Core Document Writer:**
    - Implement the `.odt` OpenDocument archive writer (`mimetype` stored first
      uncompressed per ODF spec, `META-INF/manifest.xml`, `styles.xml`,
      `content.xml`) for paragraphs, headings, lists, and tables. Enable `odt` in
      `document export`.
-7. **PR 34b — ODF Text (`.odt`) Export Layout, Headers & Images:**
+7. **Merged — PR 34b: ODF Text (`.odt`) Export Layout, Headers & Images:**
    - Add ODF page layout masters, margins, column styles, header/footer text
      fields, and embedded `Pictures/` media to the `.odt` exporter.
-8. **PR 35a — ODF Text (`.odt`) Import Core Reader:**
+8. **Merged — PR 35a: ODF Text (`.odt`) Import Core Reader:**
    - Implement the `.odt` reader + `mimetype` format sniffer (`content.xml`),
      mapping paragraphs, lists, and tables to canonical Markdown with in-memory
      test archive fixtures. Enable `odt` in `document import`.
-9. **PR 35b — ODF Text (`.odt`) Import Layout, Headers & Media:**
+9. **Merged — PR 35b: ODF Text (`.odt`) Import Layout, Headers & Media:**
    - Map ODF page styles, headers/footers, and media extraction, plus cross-format
      round-trip (`.md` -> `.docx` -> `.md` -> `.odt` -> `.md`) regression tests.
 

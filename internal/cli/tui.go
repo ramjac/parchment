@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -51,6 +52,10 @@ func runTUI(cmd *cobra.Command, arg string, requested artifact.Kind, edit bool) 
 	if err != nil {
 		return err
 	}
+	lastPDFPath, err := repo.LastPDFPath(cmd.Context())
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", err)
+	}
 	err = tui.Run(cmd.Context(), tui.Config{
 		Path:          path,
 		Kind:          kind,
@@ -61,6 +66,9 @@ func runTUI(cmd *cobra.Command, arg string, requested artifact.Kind, edit bool) 
 		Presentations: presentation.NewService(repo, settings.UndoLimit),
 		Recovery:      repo,
 		Theme:         settings.Theme,
+		UndoLimit:     settings.UndoLimit,
+		LastPDFPath:   lastPDFPath,
+		PDFStore:      repo,
 	})
 	for _, w := range repo.Warnings() {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", w)
@@ -129,8 +137,13 @@ func finishCreate(cmd *cobra.Command, streams output, path string, kind artifact
 // interactive reports whether standard input and the command's output are
 // both terminals.
 func (s output) interactive() bool {
-	out, ok := s.out.(*os.File)
-	return ok && isTerminal(out) && isTerminal(os.Stdin)
+	return streamsInteractive(os.Stdin, s.out)
+}
+
+func streamsInteractive(in io.Reader, out io.Writer) bool {
+	input, inputOK := in.(*os.File)
+	output, outputOK := out.(*os.File)
+	return inputOK && outputOK && isTerminal(input) && isTerminal(output)
 }
 
 func isTerminal(file *os.File) bool {

@@ -56,6 +56,7 @@ type Model struct {
 	// Undo/Redo history
 	undoStack    []editorSnapshot
 	redoStack    []editorSnapshot
+	undoLimit    int
 	lastEditType editKind
 
 	// Mouse click tracking for double/triple click detection
@@ -64,6 +65,8 @@ type Model struct {
 	clickCount    int
 	isDragging    bool
 }
+
+const defaultUndoLimit = 200
 
 var internalClipboard string
 
@@ -102,6 +105,9 @@ func (m Model) getVisualRows(lineIdx int) []visualRow {
 		w += runeDisplayWidth(r, w)
 	}
 	rows = append(rows, visualRow{start, len(line)})
+	if w >= m.Width {
+		rows = append(rows, visualRow{len(line), len(line)})
+	}
 	return rows
 }
 
@@ -117,11 +123,9 @@ func (m Model) visualXFromCol(lineIdx, col int) int {
 	}
 
 	rowStart := 0
-	for _, r := range rows {
+	for i, r := range rows {
 		if col >= r.startCol && col <= r.endCol {
-			// Find offset within this row
-			if col == r.endCol && col < len(line) {
-				// Continue to next row unless it's the end of line
+			if col == r.endCol && i < len(rows)-1 {
 				continue
 			}
 			rowStart = r.startCol
@@ -193,6 +197,14 @@ func (m Model) pointFromVisual(x, y int) Point {
 
 // New creates a new Model with default settings.
 func New() Model {
+	return NewWithUndoLimit(defaultUndoLimit)
+}
+
+// NewWithUndoLimit creates a new Model with a configured keystroke history cap.
+func NewWithUndoLimit(limit int) Model {
+	if limit < 1 {
+		limit = defaultUndoLimit
+	}
 	return Model{
 		Lines:       [][]rune{{}},
 		Width:       80,
@@ -200,6 +212,7 @@ func New() Model {
 		Focused:     true,
 		SelectStyle: lipgloss.NewStyle().Reverse(true),
 		CursorStyle: lipgloss.NewStyle().Reverse(true),
+		undoLimit:   limit,
 	}
 }
 
@@ -216,10 +229,17 @@ func (m *Model) saveSnapshot() {
 		Lines:  cloneLines(m.Lines),
 		Cursor: m.Cursor,
 	})
-	if len(m.undoStack) > 200 {
-		m.undoStack = append([]editorSnapshot(nil), m.undoStack[len(m.undoStack)-200:]...)
+	if len(m.undoStack) > m.undoLimit {
+		m.undoStack = append([]editorSnapshot(nil), m.undoStack[len(m.undoStack)-m.undoLimit:]...)
 	}
 	m.redoStack = nil
+}
+
+// ResetHistory clears keystroke undo and redo history without changing the buffer.
+func (m *Model) ResetHistory() {
+	m.undoStack = nil
+	m.redoStack = nil
+	m.lastEditType = editNone
 }
 
 // CanUndo reports whether an undo operation is available.
@@ -287,6 +307,7 @@ func (m *Model) SetValue(text string) {
 	m.StickyCol = 0
 	m.Selection = Selection{}
 	m.TopLine = 0
+	m.TopRowOffset = 0
 
 	m.undoStack = nil
 	m.redoStack = nil
@@ -320,7 +341,11 @@ func (m *Model) SetWidth(w int) {
 	if w < 1 {
 		w = 1
 	}
-	m.Width = w
+	if m.Width != w {
+		m.Width = w
+		m.TopRowOffset = min(m.TopRowOffset, len(m.getVisualRows(m.TopLine))-1)
+		m.ensureCursorVisible()
+	}
 }
 
 // SetHeight updates the editor height.
@@ -328,7 +353,10 @@ func (m *Model) SetHeight(h int) {
 	if h < 1 {
 		h = 1
 	}
-	m.Height = h
+	if m.Height != h {
+		m.Height = h
+		m.ensureCursorVisible()
+	}
 }
 
 // Focus sets focus to the editor.
@@ -348,7 +376,7 @@ func (m *Model) CursorUp() {
 	rowIdx := 0
 	for i, r := range rows {
 		if m.Cursor.Col >= r.startCol && m.Cursor.Col <= r.endCol {
-			if m.Cursor.Col == r.endCol && m.Cursor.Col < len(m.Lines[m.Cursor.Line]) {
+			if m.Cursor.Col == r.endCol && i < len(rows)-1 {
 				continue
 			}
 			rowIdx = i
@@ -372,7 +400,7 @@ func (m *Model) CursorDown() {
 	rowIdx := 0
 	for i, r := range rows {
 		if m.Cursor.Col >= r.startCol && m.Cursor.Col <= r.endCol {
-			if m.Cursor.Col == r.endCol && m.Cursor.Col < len(m.Lines[m.Cursor.Line]) {
+			if m.Cursor.Col == r.endCol && i < len(rows)-1 {
 				continue
 			}
 			rowIdx = i
@@ -572,7 +600,7 @@ func (m *Model) ensureCursorVisible() {
 	cursorRowIdx := 0
 	for i, r := range cursorRows {
 		if m.Cursor.Col >= r.startCol && m.Cursor.Col <= r.endCol {
-			if m.Cursor.Col == r.endCol && m.Cursor.Col < len(m.Lines[m.Cursor.Line]) {
+			if m.Cursor.Col == r.endCol && i < len(cursorRows)-1 {
 				continue
 			}
 			cursorRowIdx = i
@@ -1106,7 +1134,7 @@ func (m Model) View() string {
 		}
 
 		// Handle trailing cursor or selection at the end of the logical line
-		if r.endCol == len(lineRunes) {
+		if rowOffset == len(rows)-1 {
 			pt := Point{Line: lineIdx, Col: r.endCol}
 			isCursor := m.Focused && pt == m.Cursor && !hasSelection
 			isLineBreakSelected := hasSelection && (pointLess(start, pt) || start == pt) && pointLess(pt, end)

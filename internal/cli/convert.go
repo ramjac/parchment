@@ -1,13 +1,13 @@
 package cli
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
-	"os"
+	"io"
 	"path/filepath"
 	"strings"
 
-	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
 	"example.com/parchment/internal/artifact"
@@ -27,32 +27,29 @@ func newConvertCmd(streams output) *cobra.Command {
 				return fmt.Errorf("unsupported artifact kind %q", kindStr)
 			}
 
-			repo, _, err := openStore()
-			if err != nil {
-				return err
-			}
-
 			absPath, err := filepath.Abs(path)
 			if err != nil {
 				return err
 			}
 
 			yes, _ := cmd.Flags().GetBool("yes")
-			isInteractive := isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd())
-
 			if !yes {
-				if !isInteractive {
+				if !streamsInteractive(cmd.InOrStdin(), cmd.OutOrStdout()) {
 					return errors.New("conversion requires --yes when running non-interactively")
 				}
-				fmt.Fprintf(streams.out, "Convert %s to a Parchment %s in place? [y/N] ", path, kind)
-				var response string
-				fmt.Scanln(&response)
-				response = strings.ToLower(strings.TrimSpace(response))
-				if response != "y" && response != "yes" {
+				confirmed, err := confirmConversion(cmd.InOrStdin(), cmd.OutOrStdout(), path, kind)
+				if err != nil {
+					return err
+				}
+				if !confirmed {
 					return nil
 				}
 			}
 
+			repo, _, err := openStore()
+			if err != nil {
+				return err
+			}
 			if err := repo.Convert(cmd.Context(), absPath, kind); err != nil {
 				return err
 			}
@@ -62,4 +59,16 @@ func newConvertCmd(streams output) *cobra.Command {
 	cmd.Flags().String("kind", "document", "kind of artifact to convert to (document, note, presentation)")
 	cmd.Flags().Bool("yes", false, "confirm conversion without prompting")
 	return cmd
+}
+
+func confirmConversion(in io.Reader, out io.Writer, path string, kind artifact.Kind) (bool, error) {
+	if _, err := fmt.Fprintf(out, "Convert %s to a Parchment %s in place? [y/N] ", path, kind); err != nil {
+		return false, fmt.Errorf("write conversion prompt: %w", err)
+	}
+	response, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, fmt.Errorf("read conversion confirmation: %w", err)
+	}
+	response = strings.ToLower(strings.TrimSpace(response))
+	return response == "y" || response == "yes", nil
 }

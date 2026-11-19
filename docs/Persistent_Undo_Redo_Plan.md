@@ -6,6 +6,9 @@ Implement persistent, bounded, per-file undo/redo history stored under
 process-local in-memory `history.Stack` across domain services while keeping
 unsaved keystroke undo/redo in `internal/tui/editor`.
 
+**Status:** Not implemented. Undo/redo remains process-local; PRs 36–38 are
+still pending, and open draft PRs do not satisfy these milestones.
+
 ## Storage Strategy: Chunked Content-Addressable Blobs
 
 - **Why not text diffs or monolithic file copies:** Unified diffs are fragile

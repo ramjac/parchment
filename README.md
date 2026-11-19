@@ -26,9 +26,14 @@ name; titles and IDs are not stored in the file. The first run creates
 `~/.parchment/parchment.toml`. Use `parchment --help` and
 `parchment note --help` for the complete command tree.
 
-Note operations are `note create`, `show`, and `edit`. Plain Markdown files
+Note operations are `note create`, `show`, `edit`, and `print`. Plain Markdown files
 without Parchment metadata can be shown, edited, and opened as notes, and stay
-plain Markdown when saved. Parchment does not list, search, or delete files: use your
+plain Markdown when saved. `parchment note print <file>` prints paginated text;
+add `--format pdf -o <output>` to export a PDF. In the note editor or preview,
+`Ctrl+P` exports the current text, including unsaved edits, to PDF using the
+same remembered destination and overwrite confirmation as documents. Notes
+use the default page layout and do not interpret document page or section breaks.
+Parchment does not list, search, or delete files: use your
 file manager, shell, or tools such as `ls`, `grep`, and `rm` for that, as
 with any other file.
 
@@ -50,8 +55,9 @@ Metadata timestamps are UTC RFC 3339 values. Back up, copy, move, or version
 artifacts with the same tools you use for any other file.
 
 Initial artifact metadata recognizes the `note`, `document`, `spreadsheet`,
-`presentation`, and `image` kinds. Notes, documents, spreadsheets, and basic
-presentations have application behavior; image editing is not yet implemented.
+`presentation`, and `image` kinds. Notes, documents, spreadsheets, and
+presentations have application behavior; standalone image editing is not yet
+implemented.
 
 ### Documents
 
@@ -71,17 +77,28 @@ margins, columns, headers, footers, and page numbers, separated by form feeds:
 ```sh
 parchment document create report.md --body-file draft.md --columns 2 --footer "{title}|{page}/{pages}"
 parchment document print report.md | lpr
+parchment document print report.md --format pdf -o report.pdf
 ```
 
-Document font selection, when implemented, applies to the whole document, not
-individual sections, and only to printer-oriented rendering. It cannot change
-the font used by the TUI or terminal previews, which use the font configured
-in the user's terminal emulator.
+Documents store a document-wide core-font choice (`courier`, `helvetica`, or
+`times`) in their layout; it does not change the font used by the TUI or
+terminal previews, which use the font configured in the user's terminal
+emulator. Text printing remains plain text, while `document print --format pdf`
+exports paginated PDFs with Markdown headings, emphasis, links, code styling,
+embedded inline and reference-style images, and the selected core font.
+In the document reader or editor, `Ctrl+P` exports a PDF. The output prompt
+defaults to the most recently successful PDF destination, remembered in
+`~/.parchment/last-pdf-path`; an existing file requires confirmation before
+replacement. CLI PDF exports also remember their destination. On an interactive
+terminal the CLI asks before replacing an existing PDF; non-interactive use
+requires `--force`.
 
 Document commands (`parchment document`, alias `doc`): `create`, `show`,
 `edit`, `layout`, `page-break`,
-`section-break`, `image`, `print`, `propose`, `changes`, `review`, `accept`,
-and `reject`. `propose` records a Markdown or layout edit without changing the live document; `review` displays the
+`section-break`, `image`, `print`, `import`, `export`, `propose`, `changes`,
+`review`, `accept`, and `reject`. Import/export supports ODF (`.odt`) and DOCX
+(`.docx`) for the documented subset, with lossy-conversion warnings.
+`propose` records a Markdown or layout edit without changing the live document; `review` displays the
 current and proposed Markdown, and `accept` or `reject` resolves the pending
 proposal. Only one proposal may be pending per document, and a proposal cannot
 be accepted if the live document has changed since it was recorded. For
@@ -107,7 +124,7 @@ strikethrough, code, headings, lists, quote, link, rule, image) and page setup
 footer, page numbers). Click a button, press `F2` and use the arrow keys with
 `Enter`, or use the `Alt` shortcuts (`B` bold, `I` italic, `C` code, `1`–`3`
 headings, `L`/`N` lists, `Q` quote, `K` link, `M` image, `P` page break, `S`
-section break). `F5` previews the printed pages and `Ctrl+S` saves. Document
+section break). `F5` previews rendered Markdown pages and `Ctrl+S` saves. Document
 changes, including images, support undo and redo like notes.
 
 ### Spreadsheets
@@ -126,19 +143,26 @@ parchment spreadsheet cell budget.md B2 12
 parchment spreadsheet cell budget.md C2 '=B2*2' --formula
 parchment spreadsheet cell budget.md C2
 parchment spreadsheet show budget.md
+parchment spreadsheet print budget.md --format pdf -o budget.pdf
 ```
 
-Formula evaluation currently supports numeric constants, same-sheet A1 cell
+Formula evaluation supports numeric constants, same-sheet and cross-sheet A1
 references, parentheses, unary signs, and `+`, `-`, `*`, and `/`. Empty
-referenced cells evaluate to zero. Cycles, non-numeric references, and
-division by zero are rejected. Formulas are limited to 4096 bytes and 512
-nested dependencies or parentheses. Rows and columns can be inserted with
-`spreadsheet insert-row` and `spreadsheet insert-column`; formula references
-shift with inserted rows and columns. Spreadsheet edits can be undone and
-redone through the service API while its process is running; the CLI is
+referenced cells evaluate to zero; formula errors such as `#REF!` can be
+persisted. Rows, columns, and sheets can be deleted, with formula references
+shifted or changed to `#REF!` as appropriate. Use
+`spreadsheet export <file> --csv` to export a sheet as CSV. Spreadsheet edits
+are buffered in the TUI until `Ctrl+S`; `u`/`Ctrl+Z` and `Ctrl+R` undo and redo
+buffered edits before using service history for committed changes. The CLI is
 stateless across invocations. The Markdown file with its JSON data block is
 Parchment's canonical format, not a CSV file that third-party spreadsheet
 applications can open directly.
+
+`spreadsheet print` prints all worksheets as text or PDF, paging across columns
+before continuing to the next group of rows. Cell contents wrap within columns;
+PDF pages include thin, light gridlines around cells and headers.
+Formulas print their calculated values (or `#ERR` for evaluation errors). In the
+TUI, `Ctrl+P` exports the workbook, including unsaved edits, to PDF.
 
 ### Presentations
 
@@ -166,15 +190,26 @@ Presenter Name
 Thank you.
 ```
 
-Use `presentation create talk.md --body-file slides.md` to create a deck, `presentation show talk.md` to
-inspect its source, and `presentation preview talk.md` for a slide-separated
-plain-text preview. `presentation edit talk.md --body-file slides.md` replaces
-the Markdown source.
-The parser preserves Markdown for later rendering but does not yet render it;
-embedded media and Go present command directives are not implemented.
-Presentation font selection, when implemented, applies to the whole
-presentation, not individual sections. It applies only to rendered output,
-never to terminal previews.
+Use `presentation create talk.md --body-file slides.md` to create a deck,
+`presentation show talk.md` to inspect its source, and
+`presentation preview talk.md` for a slide-separated preview.
+`presentation edit talk.md --body-file slides.md` replaces the Markdown
+source. `presentation print talk.md` prints landscape text pages, and
+`presentation print talk.md --format pdf -o talk.pdf` exports a landscape PDF.
+By default, both print the title page followed by one page per slide, with
+speaker notes at the bottom of the corresponding page. Use `--slides-per-page 2`
+for portrait pages with two boxed slides and their notes below each box. The
+title page occupies the first slot; an odd final slide occupies one slot.
+Slides or notes that cannot fit return an error instead of losing content. In
+the presentation viewer or source editor, `Ctrl+P` exports to PDF, including
+unsaved edits; press `Tab` at the path prompt to switch layouts. It remembers
+the last PDF path and asks before overwriting an existing file.
+
+The TUI renders slide Markdown and supports embedded images; CLI
+commands can add, list, extract, and remove presentation images. The TUI and
+printing support Go present `.image` and `.code` directives. Presentations store a
+document-wide core-font choice (`courier`, `helvetica`, or `times`); it never
+changes terminal output.
 
 ## Examples
 
@@ -204,9 +239,11 @@ destination = ""
 ```
 
 Settings are merged from built-in defaults, the configuration file, then
-environment overrides. `PARCHMENT_UNDO_LIMIT` overrides the configured undo limit. Theme,
-logging, and backup settings are not yet connected to runtime
-behavior, and their environment variables currently have no effect.
+environment overrides. `PARCHMENT_UNDO_LIMIT`, `PARCHMENT_THEME`,
+`PARCHMENT_LOG_LEVEL`, `PARCHMENT_LOG_FORMAT`, and
+`PARCHMENT_BACKUP_DESTINATION` override their corresponding settings. Theme,
+file logging, and opt-in local backup snapshots are connected to runtime
+behavior.
 
 ## Interactive editor
 
@@ -218,13 +255,13 @@ without creating anything). Mouse clicks position the text cursor in the note
 and document editors and select cells and slides.
 
 In the note editor, `Ctrl+S` saves
-and keeps editing, `F5` toggles a plain-text preview (`↑`/`↓` scroll), and
+and keeps editing, `F5` toggles a rendered Markdown preview (`↑`/`↓` scroll), and
 `Ctrl+Z`/`Ctrl+R` undo and redo edits seamlessly.
 `Esc` or `Ctrl+C` closes the editor, asking for confirmation when there are
 unsaved changes. `Ctrl+C` during a save cancels the save and keeps the editor
 open. Very small terminals show a minimum-size message; `q` then quits only
-when there are no unsaved changes. Preview is plain text rather than rendered
-Markdown, so canonical Markdown is never confused with presentation.
+when there are no unsaved changes. The preview renders Markdown without
+changing the canonical source.
 
 An existing document opens in a reader: an outline of its headings sits beside
 the rendered printed pages (only the pages on narrow terminals). `↑`/`↓` scroll
@@ -234,9 +271,21 @@ lists proposals, `u`/`Ctrl+R` undo and redo, and `Esc` or `q` quits. Press `e` t
 `Esc` in the editor returns to the reader, asking first when there are unsaved
 changes. New documents and restored drafts open directly in the editor.
 
-Spreadsheets open as a grid: use arrow keys to select a cell, `Enter` to edit,
-`=` to enter a formula, and `u`/`Ctrl+R` for undo/redo. Presentations open as
-slides with an editable Markdown source. Press `Esc` or `q` to quit either viewer.
+Spreadsheets open as a grid: use arrow keys to select a cell, `Enter` to edit
+and stage a cell, and `Ctrl+S` to save the workbook. While editing, `Shift+Enter`
+stages the cell and starts editing the cell directly below in the same column.
+Parchment enables modified-key reporting for supported terminals. If your terminal
+or multiplexer still sends `Shift+Enter` as ordinary `Enter`, use `Alt+Enter`
+for the same stage-and-move action.
+Windows Terminal normally reserves `Alt+Enter` for fullscreen; that fallback
+requires unbinding the terminal action. Windows Terminal 1.25 and newer support
+the modified-key reporting used for `Shift+Enter`.
+Use `i` then `r`/`c` to
+insert a row/column before the selection, and `d` then `r`/`c`/`s` to delete a
+row/column/sheet. `u`/`Ctrl+Z` and `Ctrl+R` undo/redo buffered edits before
+committed service history. `Esc` or `q` asks before discarding unsaved changes.
+Presentations open as slides with an editable Markdown source. Press `Esc` or
+`q` to quit either viewer.
 
 While editing a note or document, Parchment autosaves recovery drafts every couple of seconds to
 `~/.parchment/recovery/`, never next to the artifact. Saving, proposing, or
@@ -247,7 +296,11 @@ recovers it into the editor, `d` discards it, and `q` quits and keeps it for
 later. If the file changed after the draft was written, saving the recovered
 draft reports a conflict instead of overwriting those changes.
 
-Spreadsheet and presentation edits are not yet autosaved as recovery drafts.
+Presentation and spreadsheet edits are autosaved as recovery drafts.
+Spreadsheet drafts include buffered workbook changes and pending cell input;
+reopening offers recovery, and saving a recovered draft reports a conflict if
+the file changed externally. Saving or normally closing the spreadsheet
+removes its recovery draft.
 
 Undo and redo cover edits made in the running process; creating a file is not undoable. The bounded history is in memory and
 does not survive a restart.
@@ -258,22 +311,37 @@ Parchment supports notes, documents, basic spreadsheets, and Markdown
 presentations. Detailed PR-by-PR implementation plans are in
 [`FutureWork.md`](FutureWork.md), [`docs/ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md),
 and [`docs/Persistent_Undo_Redo_Plan.md`](docs/Persistent_Undo_Redo_Plan.md).
-Planned work is organized into five sequential implementation phases broken down
-into **38 reviewable Pull Requests (`PR 1`–`PR 38`)**:
+Work is organized into five sequential implementation phases broken down into
+**38 reviewable Pull Requests (`PR 1`–`PR 38`)**. The main branch has completed
+milestones **1–14, 15a, 16–19, 22, 24a–b, 26, and 31–35**. Detailed
+acceptance criteria and an accompanying progress checklist are in
+[`FutureWork.md`](FutureWork.md). The Phase 2 status below includes the merged
+spreadsheet editing and recovery work; its PR 7–8 checklist entries there are
+outdated. Only fully implemented, merged milestones count as complete; merged
+scaffolding that does not yet meet its acceptance criteria remains incomplete.
 
 ### Phase 1: Foundations & Bug Fixes (PRs 1–6)
-- **PR 1:** Fix bordered content sizing in the note editor (and Lip Gloss outer border dimensions `width-2` / `height-chrome-2` so borders never overflow terminal bounds)
-- **PRs 2–4:** Connect configuration settings (`version = 1`) to runtime behavior, rejecting invalid configuration values on load
-  - **PR 2:** Implement `log/slog` file logging for `logging.level` (`debug`, `info`, `warn`, `error`, `off`) and `logging.format` (`text`, `json`) via `PARCHMENT_LOG_LEVEL` and `PARCHMENT_LOG_FORMAT` at `~/.parchment/parchment.log` (`0600`, capped at `5 MiB` with single-file rotation to `parchment.log.1`)
-  - **PR 3:** Respect configured `[theme]` (`mode = "auto"|"light"|"dark"` overridden by `PARCHMENT_THEME`, plus optional hex overrides `primary`, `border`, `error`, `selection`, `match`) across all TUI screens instead of hardcoding colors
-  - **PR 4:** Implement local backup snapshots (`backup.local.destination`, defaulting to `""` disabled, overridden by `PARCHMENT_BACKUP_DESTINATION`, rejecting paths inside `~/.parchment/`), naming snapshots `<stem>-<8char-path-hash>-<YYYYMMDDTHHMMSSZ><ext>`, keeping the last 10 per source file, and logging/warning without failing a successful save if backup creation fails
-- **PRs 5–6:** Complete the native text editor widget (`internal/tui/editor`) with literal `\t` preservation (4-space visual tab stops while `Tab` inserts 2 spaces, removing `\t` rejection from `isUnpreservableText`), `UndoLimit`-bounded keystroke history, keystroke-undo reset on `Ctrl+S` save (**PR 5**), and `go-runewidth` soft line wrapping with CJK/emoji-aware visual row navigation and mouse/selection coordinate mapping (**PR 6**)
+
+**Complete: PRs 1–6. No outstanding Phase 1 PRs.**
+
+- [x] **PR 1 — Complete:** Fixed bordered content sizing in the note editor (and Lip Gloss outer border dimensions `width-2` / `height-chrome-2` so borders never overflow terminal bounds).
+- [x] **PR 2 — Complete:** Configuration validation and `log/slog` file logging for `logging.level` (`debug`, `info`, `warn`, `error`, `off`) and `logging.format` (`text`, `json`) via `PARCHMENT_LOG_LEVEL` and `PARCHMENT_LOG_FORMAT` at `~/.parchment/parchment.log` (`0600`, capped at `5 MiB` with single-file rotation to `parchment.log.1`).
+- [x] **PR 3 — Complete:** Configured `[theme]` support (`mode = "auto"|"light"|"dark"` overridden by `PARCHMENT_THEME`, plus optional hex overrides `primary`, `border`, `error`, `selection`, `match`) across all TUI screens, with configuration validation instead of hardcoded colors.
+- [x] **PR 4 — Complete:** Local backup snapshots (`backup.local.destination`, defaulting to `""` disabled, overridden by `PARCHMENT_BACKUP_DESTINATION`, rejecting paths inside `~/.parchment/`), naming snapshots `<stem>-<8char-path-hash>-<YYYYMMDDTHHMMSSZ><ext>`, keeping the last 10 per source file, and logging/warning without failing a successful save if backup creation fails.
+- [x] **PR 5 — Complete:** Native editor literal `\t` preservation (4-space visual tab stops while `Tab` inserts 2 spaces, removing `\t` rejection from `isUnpreservableText`), `UndoLimit`-bounded keystroke history, and keystroke-undo reset on `Ctrl+S` save.
+- [x] **PR 6 — Complete:** Native editor `go-runewidth` soft line wrapping with CJK/emoji-aware visual row navigation and mouse/selection coordinate mapping.
 
 ### Phase 2: State Safety & CLI Core (PRs 7–13)
-- **PRs 7–9:** Buffered `Ctrl+S` saving and autosave recovery drafts for spreadsheets (switching the spreadsheet TUI from immediate per-cell disk writes to buffered workbook editing with dirty-close confirmation in **PR 7**, autosaving the dirty workbook + active cell input in **PR 8**) and presentations (opening recovered drafts directly into the Markdown source editor in **PR 9**)
-- **PR 10:** Explicit CLI-only conversion of plain Markdown files (`parchment convert <file> [--kind document|note|presentation] [--yes]`, defaulting `--kind` to `document`, prompting `[y/N]` on a TTY and requiring `--yes` when non-interactive, setting `created_at` from file `mtime` UTC and `modified_at` to current UTC)
-- **PRs 11–12:** Spreadsheet deletion & CSV export: 1-based `delete-row`, `delete-column`, and `delete-sheet` (CLI + TUI shortcuts) with formula reference shifting, `#REF!` token support, and relaxed save-time validation allowing formula error values to persist while rejecting invalid syntax (**PR 11**); `spreadsheet export <file> --csv [--sheet <name>] [-o <output>] [--force]` defaulting to the first sheet and `stdout` when omitted and refusing overwrite without `--force` (**PR 12**)
-- **PR 13:** Document embedded image management: `document images <file>` (`<name>\t<format>\t<WxH>\t<bytes>\t<referenced|unreferenced>`), `document image-extract <file> <image-name> -o <output> [--force]` (`0600`), and `document image-remove <file> <image-name> [--strip-references]` (refusing removal when referenced in `Body` without `--strip-references` or when referenced by a pending proposal)
+
+**Complete: PRs 7–13. No outstanding Phase 2 PRs.**
+
+- [x] **PR 7 — Complete:** Buffered spreadsheet TUI editing with `Ctrl+S` saving, in-session undo/redo, and dirty-close confirmation instead of immediate per-cell disk writes.
+- [x] **PR 8 — Complete:** Spreadsheet autosave recovery drafts preserving the dirty workbook and active cell input, with reopen prompts and external-edit conflict checks.
+- [x] **PR 9 — Complete:** Presentation autosave recovery drafts, opening recovered drafts directly into the Markdown source editor.
+- [x] **PR 10 — Complete:** Explicit CLI-only conversion of plain Markdown files (`parchment convert <file> [--kind document|note|presentation] [--yes]`, defaulting `--kind` to `document`, prompting `[y/N]` on a TTY and requiring `--yes` when non-interactive, setting `created_at` from file `mtime` UTC and `modified_at` to current UTC).
+- [x] **PR 11 — Complete:** Spreadsheet deletion: 1-based row/column indices for `delete-row` and `delete-column`, and named `delete-sheet` (CLI + TUI shortcuts), with formula reference shifting, `#REF!` token support, and save-time validation allowing formula error values to persist while rejecting invalid syntax.
+- [x] **PR 12 — Complete:** Spreadsheet CSV export: `spreadsheet export <file> --csv [--sheet <name>] [-o <output>] [--force]`, defaulting to the first sheet and `stdout` when omitted and refusing overwrite without `--force`.
+- [x] **PR 13 — Complete:** Document embedded image management: `document images <file>` (`<name>\t<format>\t<WxH>\t<bytes>\t<referenced|unreferenced>`), `document image-extract <file> <image-name> -o <output> [--force]` (`0600`), and `document image-remove <file> <image-name> [--strip-references]` (refusing removal when referenced in `Body` without `--strip-references` or when referenced by a pending proposal).
 
 ### Phase 3: Rendering & TUI Features (PRs 14–23)
 - **PRs 14–16:** Overall visual improvements
@@ -283,7 +351,7 @@ into **38 reviewable Pull Requests (`PR 1`–`PR 38`)**:
   - **PRs 17–18:** Heading slugging (`-1`/`-2` suffixes) and `#id` anchor parsing (**PR 17**), plus a left-side outline pane in the Document editor and reader (`Ctrl+O` toggles visibility; `F6` focuses the editor outline pane, freeing `Tab` in the body to insert 2 spaces while `F2` focuses the toolbar), displaying H1–H6 headings, untitled section breaks (`── Section (N cols)`), and `#id` anchors (**PR 18**)
   - **PR 19:** Pre-render rewritten and coordinate-mapped clickable internal links in Document preview and reader views (suppressing raw destination URLs in Glamour and tracking ordered post-render ANSI line spans)
 - **PRs 20–21:** In-editor search and find across all artifact viewers and editors (`Ctrl+F` everywhere plus `/` in read-only/grid browse views; modal bottom find bar + text-editor match highlighting in **PR 20**, extended with `n`/`N`, smart-case matching, ANSI stripping, and full multi-sheet + auto-revealed presentation speaker-note search in **PR 21**)
-- **PRs 22–23:** Document and presentation printer font selection (`"courier"` default, `"helvetica"`, `"times"` in `document.Layout` at `LayoutVersion = 1` and a new `font` field in the existing `parchment-presentation` v1 block in **PR 22**), adding a pure-Go core-font PDF renderer (`internal/pdfrender`) and `document print --format text|pdf` (default `text`) without affecting terminal fonts (**PR 23**)
+- **PRs 22–23:** Document and presentation printer font selection (`"courier"` default, `"helvetica"`, `"times"` in `document.Layout` at `LayoutVersion = 1` and a new `font` field in the existing `parchment-presentation` v1 block in **PR 22**), plus a pure-Go core-font PDF renderer (`internal/pdfrender`) and `document print --format text|pdf` (default `text`) with page layout and embedded images (**PR 23**); terminal fonts remain unchanged
 
 ### Phase 4: Extended Domain Engines (PRs 24–30)
 - **PRs 24–25:** Zero-dependency recursive-descent spreadsheet formula Lexer, AST, span rewriter, and cross-sheet references (`Sheet2!A1`) in `internal/spreadsheet/formula` (**PR 24**), followed by rectangular ranges (`A1:B10`), `""`-escaped `StringLiteral`s with Excel/Calc coercion, `SUM`, `AVERAGE`, `COUNT`, `MIN`, `MAX`, nested calls, and persisted runtime error propagation (`#REF!`, `#DIV/0!`, `#NAME?`, `#VALUE!`, `#CIRCULAR!`) (**PR 25**)
@@ -300,9 +368,145 @@ into **38 reviewable Pull Requests (`PR 1`–`PR 38`)**:
 ## Architecture & Planning
 
 The detailed PR-by-PR implementation plans can be found in [`FutureWork.md`](FutureWork.md) and the `docs/` directory:
+
 - [Future Work Implementation Plan (Phases 1–5, PRs 1–38)](FutureWork.md)
 - [ODF / DOCX Import & Export Plan (Phase 5, PRs 31–35)](docs/ODF_DOCX_Interop_Plan.md)
 - [Persistent Undo/Redo Storage Plan (Phase 5, PRs 36–38)](docs/Persistent_Undo_Redo_Plan.md)
+
+The supplemental backlog below adds priorities and acceptance criteria, not claims
+of completed functionality. Before implementation, reconcile each item with the
+existing plans and current behavior so overlapping work is not scheduled twice.
+
+### TUI quality and regression prevention
+
+Because AI agents implement most of Parchment, UI expectations must be enforced
+by tests and reviewable visual evidence, not instructions alone. Prioritize the
+design contract and known-bug regression tests before broad UI refactoring.
+
+- **Document the design language.** Create `docs/TUI_Design.md` and reference it
+  from `AGENTS.md`, keeping `.github/copilot-instructions.md` consistent. Define
+  semantic roles such as accent, muted text, border, selection, error, search
+  match, heading, and code block; light/dark palettes; and legible limited-color
+  and monochrome fallbacks. Specify fixed header/help/status areas, pane sizing,
+  focus indicators, contextual shortcuts, and small-terminal behavior. Include
+  approved example screenshots. Agents must not remove colors, borders, help,
+  or other useful affordances unless an intentional design change is approved.
+- **Centralize theme and styling.** Implement reusable semantic Lip Gloss styles
+  in a central theme definition, such as `internal/tui/theme.go`, rather than
+  scattering color literals across views. Pass styles to the native editor
+  widget without introducing an import cycle. Share the role mapping with
+  Markdown rendering and honor configured theme modes and color overrides
+  planned in PR 3; resolve configuration at the application boundary.
+- **Make view-state preservation an explicit contract.** Cursor, selection,
+  focused pane, viewport offsets, and active cell/slide are model state, not
+  disposable rendering state. Saves, save-result messages, status changes, and
+  background updates must not jump to the top or reset focus. Update content in
+  existing editor/viewport components instead of reconstructing them on save.
+  Document necessary remapping or clamping after resizing or content shrinkage,
+  and intentional reader/editor transitions. Keep `View()` free of I/O and
+  mutation, and add these rules to the agent instructions.
+- **Add behavioral regression tests for UI bugs.** Extend the existing
+  message-driven Go TUI harness over real services and temporary files. For the
+  save-jump bug, open a long artifact, scroll well below the first screen
+  (for example, to line 200), position the cursor, send `Ctrl+S`, process the
+  returned command/result messages, and verify the visible content anchor,
+  cursor, selection, focus, and viewport position are preserved. Cover repeated
+  saves, failed saves, and relevant background updates; add focused resize and
+  mode-transition cases where behavior differs. Require every UI bug fix to
+  include a regression test that fails without the fix.
+- **Add deterministic golden-file rendering tests.** Capture full `View()`
+  output, including ANSI color/style sequences, under `internal/tui/testdata/`.
+  Use the existing harness and a small Go golden-file helper, or
+  `charmbracelet/x/exp/teatest` if its runner is needed. Cover representative
+  editors, readers/previews, spreadsheet grids, dialogs, and error states at
+  fixed sizes such as 80x24 and 120x40, plus a small-terminal case. Explicitly
+  control light/dark mode, color profile, cursor blink, time, and fixture paths;
+  restore any renderer globals and avoid parallel tests that mutate them.
+  Assert ANSI-aware screen dimensions and fixed chrome as well as output.
+  Establish approved baselines rather than blessing broken rendering, provide
+  readable diffs, and make baseline regeneration an explicit local action.
+- **Enforce styling with automated guards.** Add a lightweight Go test or CI
+  check rejecting new hard-coded UI colors and direct `lipgloss.Color` /
+  `lipgloss.AdaptiveColor` palette declarations outside the approved theme code.
+  Exempt test fixtures and distinguish image pixel colors and user-provided
+  configuration from semantic UI colors. Add render assertions that important
+  regions actually use their expected styles under a forced color profile;
+  checking for any ANSI escape sequence is insufficient. Test monochrome
+  behavior separately. Run these guards and golden tests in the existing PR CI.
+- **Require visual evidence and focused review.** Keep TUI PRs small and separate
+  from unrelated feature or domain changes. Add a PR checklist requiring
+  before/after screenshots or reproducible Charm VHS recordings using the same
+  fixture, dimensions, and theme. A save/scroll fix needs evidence of the
+  interaction, not just a static screen. Use the repository's
+  `review-pull-request` skill with explicit checks for state preservation,
+  design-language compliance, helpful controls, and golden-file differences.
+  Do not bulk-update goldens merely to make CI pass; intentional visual changes
+  need an explanation and visual approval.
+- **Repair Document reader and preview rendering.** Align this work with
+  PRs 14-16: render Markdown through Glamour with the shared theme, restoring
+  visible hierarchy and styling for headings, emphasis, lists, quotes, links,
+  and ordinary code blocks rather than showing formatting delimiters as prose.
+  Add rendering fixtures and golden tests for these elements. Preserve canonical
+  Markdown and hide reserved `parchment-*` fences without losing ordinary code
+  fences or literal Markdown examples. Retain existing reader views and the
+  distinction between editor image placeholders and graphical preview/reader
+  images. Document outline and internal-link navigation remain Document-only.
+
+### Additional functionality
+
+- **Refine CLI file-opening convenience.** Review the existing
+  `parchment <file>` entry point rather than introducing duplicate routing.
+  The desired shortcut is to open/edit the named file, or create a Document if
+  it does not exist. Reconcile that proposed default with the current kind
+  prompt and Document reader-first behavior before implementation; retain
+  explicit kind selection, preserve plain Markdown files as plain notes, and
+  never overwrite an existing file. Update CLI help, tests, documentation, and
+  agent instructions together for any approved change to opening defaults.
+- **Retire proposals and specify real Document change tracking.** Remove the
+  existing proposal workflow and its UI/commands, updating affected tests,
+  examples, and plans. Before implementing a replacement, agree on tracked
+  insertions/deletions, review presentation, accept/reject operations, and
+  interactions with save, undo/redo, and external edits. Specify how tracking
+  data stays in the artifact's single Markdown file, with concrete interaction
+  examples and acceptance tests. Do not relabel proposals or undo history as
+  change tracking.
+- **Expand spreadsheet built-in formulas.** Reconcile the initial formula work
+  in PRs 24-25, then cover SUM, AVERAGE, COUNT, COUNTA, MIN, MAX, ROUND, IF,
+  IFERROR, SUMIFS, COUNTIFS, XLOOKUP, INDEX, MATCH, XMATCH, TEXTJOIN, TODAY, NOW,
+  DATE, YEAR, MONTH, DAY, FILTER, SORT, UNIQUE, and SEQUENCE. Specify argument,
+  empty-cell, error, date/time, and array-result semantics before implementation,
+  and test representative successful and failing calculations.
+- **Complete formula parsing and cycle handling.** Support parentheses,
+  operator precedence, nested function calls, and expressions mixing operators
+  and functions. Detect direct and indirect circular dependencies and report
+  clear cell errors instead of hanging or recursing indefinitely. Keep parsing,
+  evaluation, and error rules in the spreadsheet domain layer.
+- **Add spreadsheet copy/paste with reference adjustment.** Update relative
+  formula references when copying cells or ranges, while preserving absolute
+  and mixed references (`$A$1`, `$A1`, `A$1`). Define clipboard behavior and
+  boundary/error handling, and test copying in both row and column directions.
+- **Add spreadsheet charts.** Support pie, bar, and line charts sourced from
+  workbook ranges. Define data binding, TUI rendering, persistence, and export
+  behavior before implementation; keep chart definitions in the spreadsheet
+  artifact rather than per-artifact sidecars.
+
+### Large-artifact performance and responsiveness
+
+Extend the existing Go benchmarks with reproducibly generated inputs rather than
+committing huge fixtures. Record baseline commands and results, and agree on
+latency and memory targets before optimization. Measure opening, editing,
+rendering/scrolling, saving, and peak memory at fixed terminal sizes; verify that
+improvements preserve content, layout, and view-state stability.
+
+- **Documents:** Hundreds of pages and several hundred megabytes of embedded
+  images; measure page navigation, Markdown layout/rendering, image decoding,
+  and memory retained while scrolling.
+- **Presentations:** Hundreds of slides and several hundred megabytes of media;
+  measure slide switching, source editing, preview rendering, and image/cache
+  memory without sacrificing responsive keyboard input.
+- **Spreadsheets:** Hundreds of rows and columns with dense data, formulas, and
+  dependencies; measure bulk edits/paste, dependent recalculation, grid
+  scrolling, and saving, including large update cascades and cycle errors.
 
 ## Development
 

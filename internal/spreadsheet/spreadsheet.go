@@ -150,22 +150,8 @@ func (s *Service) SetCellInSheet(ctx context.Context, path string, opts SetCellO
 	if err := validateCell(opts.Cell); err != nil {
 		return Spreadsheet{}, err
 	}
-	return s.modify(ctx, path, "Set cell", func(sheet *Spreadsheet) error {
-		index, err := SheetIndex(*sheet, opts.Sheet)
-		if err != nil {
-			return err
-		}
-		grid := &sheet.Sheets[index].Rows
-		if opts.Row > len(*grid) {
-			*grid = append(*grid, make([][]Cell, opts.Row-len(*grid))...)
-		}
-		for i := range *grid {
-			if len((*grid)[i]) < opts.Column {
-				(*grid)[i] = append((*grid)[i], make([]Cell, opts.Column-len((*grid)[i]))...)
-			}
-		}
-		(*grid)[opts.Row-1][opts.Column-1] = opts.Cell
-		return nil
+	return s.modify(ctx, path, "Set cell", func(book *Spreadsheet) error {
+		return SetCellInBook(book, opts)
 	})
 }
 
@@ -174,21 +160,8 @@ func (s *Service) InsertRow(ctx context.Context, path string, row int) (Spreadsh
 }
 
 func (s *Service) InsertRowInSheet(ctx context.Context, path, name string, row int) (Spreadsheet, error) {
-	return s.modify(ctx, path, "Insert row", func(sheet *Spreadsheet) error {
-		index, err := SheetIndex(*sheet, name)
-		if err != nil {
-			return err
-		}
-		grid := &sheet.Sheets[index].Rows
-		if row < 1 || row > len(*grid)+1 || len(*grid) >= MaxRows {
-			return fmt.Errorf("row must be between 1 and %d", min(len(*grid)+1, MaxRows))
-		}
-		inserted := make([]Cell, rowWidth(*grid))
-		*grid = append(*grid, nil)
-		copy((*grid)[row:], (*grid)[row-1:])
-		(*grid)[row-1] = inserted
-		shiftFormulas(sheet, index, row, 0, false)
-		return nil
+	return s.modify(ctx, path, "Insert row", func(book *Spreadsheet) error {
+		return InsertRowInBook(book, name, row)
 	})
 }
 
@@ -197,31 +170,34 @@ func (s *Service) InsertColumn(ctx context.Context, path string, column int) (Sp
 }
 
 func (s *Service) InsertColumnInSheet(ctx context.Context, path, name string, column int) (Spreadsheet, error) {
-	return s.modify(ctx, path, "Insert column", func(sheet *Spreadsheet) error {
-		index, err := SheetIndex(*sheet, name)
-		if err != nil {
-			return err
-		}
-		grid := &sheet.Sheets[index].Rows
-		width := rowWidth(*grid)
-		if column < 1 || column > width+1 || width >= MaxColumns {
-			return fmt.Errorf("column must be between 1 and %d", min(width+1, MaxColumns))
-		}
-		for i := range *grid {
-			(*grid)[i] = append((*grid)[i], Cell{})
-			copy((*grid)[i][column:], (*grid)[i][column-1:])
-			(*grid)[i][column-1] = Cell{}
-		}
-		shiftFormulas(sheet, index, 0, column, false)
-		return nil
+	return s.modify(ctx, path, "Insert column", func(book *Spreadsheet) error {
+		return InsertColumnInBook(book, name, column)
 	})
 }
 
 func (s *Service) AddSheet(ctx context.Context, path, name string) (Spreadsheet, error) {
 	return s.modify(ctx, path, "Add sheet", func(book *Spreadsheet) error {
-		book.Sheets = append(book.Sheets, Sheet{Name: name, Rows: [][]Cell{{{}}}})
-		return nil
+		return AddSheetToBook(book, name)
 	})
+}
+
+// Update saves the edited sheets if expected still matches storage. All edits
+// in one workbook buffer become a single undoable "Update spreadsheet" change.
+func (s *Service) Update(ctx context.Context, expected, updated Spreadsheet) (Spreadsheet, error) {
+	before := cloneSpreadsheet(expected)
+	after := cloneSpreadsheet(expected)
+	after.Sheets = cloneSpreadsheet(updated).Sheets
+	if reflect.DeepEqual(before.Sheets, after.Sheets) {
+		return before, nil
+	}
+	after.ModifiedAt = s.now().UTC()
+	if err := Normalize(&after); err != nil {
+		return Spreadsheet{}, err
+	}
+	if err := s.change(ctx, &before, &after, "Update spreadsheet"); err != nil {
+		return Spreadsheet{}, err
+	}
+	return cloneSpreadsheet(after), nil
 }
 
 func (s *Service) Undo(ctx context.Context) (string, error) { return s.history.Undo(ctx) }
@@ -321,7 +297,7 @@ func normalizeSheetGrid(sheet *Sheet) error {
 func validateFormulas(book *Spreadsheet) error {
 	evaluator := evaluator{
 		book: book, visiting: make(map[cellCoordinate]bool),
-		cache: make(map[cellCoordinate]float64), depth: make(map[cellCoordinate]int),
+		cache: make(map[cellCoordinate]Value), depth: make(map[cellCoordinate]int),
 	}
 	for sheetIndex := range book.Sheets {
 		for row := range book.Sheets[sheetIndex].Rows {
@@ -329,13 +305,11 @@ func validateFormulas(book *Spreadsheet) error {
 				if cell.Formula == "" {
 					continue
 				}
-				if _, err := evaluator.cell(sheetIndex, row+1, column+1); err != nil {
-					var errVal ErrorValue
-					if errors.As(err, &errVal) {
-						continue
-					}
+				if val, err := evaluator.cell(sheetIndex, row+1, column+1); err != nil {
 					return fmt.Errorf("sheet %q cell %s formula: %w", book.Sheets[sheetIndex].Name,
 						CellName(row+1, column+1), err)
+				} else if val.Kind == ErrKind {
+					continue
 				}
 			}
 		}
@@ -544,20 +518,8 @@ func (s *Service) DeleteRow(ctx context.Context, path string, row int) (Spreadsh
 }
 
 func (s *Service) DeleteRowInSheet(ctx context.Context, path, name string, row int) (Spreadsheet, error) {
-	return s.modify(ctx, path, "Delete row", func(sheet *Spreadsheet) error {
-		index, err := SheetIndex(*sheet, name)
-		if err != nil {
-			return err
-		}
-		grid := &sheet.Sheets[index].Rows
-		if row < 1 || row > len(*grid) {
-			return fmt.Errorf("row must be between 1 and %d", len(*grid))
-		}
-		shiftFormulas(sheet, index, row, 0, true)
-		copy((*grid)[row-1:], (*grid)[row:])
-		(*grid)[len(*grid)-1] = nil
-		*grid = (*grid)[:len(*grid)-1]
-		return nil
+	return s.modify(ctx, path, "Delete row", func(book *Spreadsheet) error {
+		return DeleteRowFromBook(book, name, row)
 	})
 }
 
@@ -566,39 +528,135 @@ func (s *Service) DeleteColumn(ctx context.Context, path string, column int) (Sp
 }
 
 func (s *Service) DeleteColumnInSheet(ctx context.Context, path, name string, column int) (Spreadsheet, error) {
-	return s.modify(ctx, path, "Delete column", func(sheet *Spreadsheet) error {
-		index, err := SheetIndex(*sheet, name)
-		if err != nil {
-			return err
-		}
-		grid := &sheet.Sheets[index].Rows
-		width := rowWidth(*grid)
-		if column < 1 || column > width {
-			return fmt.Errorf("column must be between 1 and %d", width)
-		}
-		shiftFormulas(sheet, index, 0, column, true)
-		for i := range *grid {
-			if column <= len((*grid)[i]) {
-				copy((*grid)[i][column-1:], (*grid)[i][column:])
-				(*grid)[i][len((*grid)[i])-1] = Cell{}
-				(*grid)[i] = (*grid)[i][:len((*grid)[i])-1]
-			}
-		}
-		return nil
+	return s.modify(ctx, path, "Delete column", func(book *Spreadsheet) error {
+		return DeleteColumnFromBook(book, name, column)
 	})
 }
 
 func (s *Service) DeleteSheet(ctx context.Context, path, name string) (Spreadsheet, error) {
 	return s.modify(ctx, path, "Delete sheet", func(sheet *Spreadsheet) error {
-		if len(sheet.Sheets) <= 1 {
-			return errors.New("cannot delete the only sheet")
-		}
-		index, err := SheetIndex(*sheet, name)
-		if err != nil {
-			return err
-		}
-		copy(sheet.Sheets[index:], sheet.Sheets[index+1:])
-		sheet.Sheets = sheet.Sheets[:len(sheet.Sheets)-1]
-		return nil
+		return DeleteSheetFromBook(sheet, name)
 	})
+}
+
+// SetCellInBook updates a cell in an in-memory workbook.
+func SetCellInBook(book *Spreadsheet, opts SetCellOptions) error {
+	if opts.Row < 1 || opts.Row > MaxRows || opts.Column < 1 || opts.Column > MaxColumns {
+		return fmt.Errorf("cell coordinates must be within %d rows and %d columns", MaxRows, MaxColumns)
+	}
+	if err := validateCell(opts.Cell); err != nil {
+		return err
+	}
+	index, err := SheetIndex(*book, opts.Sheet)
+	if err != nil {
+		return err
+	}
+	grid := &book.Sheets[index].Rows
+	if opts.Row > len(*grid) {
+		*grid = append(*grid, make([][]Cell, opts.Row-len(*grid))...)
+	}
+	for i := range *grid {
+		if len((*grid)[i]) < opts.Column {
+			(*grid)[i] = append((*grid)[i], make([]Cell, opts.Column-len((*grid)[i]))...)
+		}
+	}
+	(*grid)[opts.Row-1][opts.Column-1] = opts.Cell
+	return nil
+}
+
+// InsertRowInBook inserts a row into an in-memory workbook.
+func InsertRowInBook(book *Spreadsheet, name string, row int) error {
+	index, err := SheetIndex(*book, name)
+	if err != nil {
+		return err
+	}
+	grid := &book.Sheets[index].Rows
+	if row < 1 || row > len(*grid)+1 || len(*grid) >= MaxRows {
+		return fmt.Errorf("row must be between 1 and %d", min(len(*grid)+1, MaxRows))
+	}
+	inserted := make([]Cell, rowWidth(*grid))
+	*grid = append(*grid, nil)
+	copy((*grid)[row:], (*grid)[row-1:])
+	(*grid)[row-1] = inserted
+	shiftFormulas(book, index, row, 0, false)
+	return nil
+}
+
+// InsertColumnInBook inserts a column into an in-memory workbook.
+func InsertColumnInBook(book *Spreadsheet, name string, column int) error {
+	index, err := SheetIndex(*book, name)
+	if err != nil {
+		return err
+	}
+	grid := &book.Sheets[index].Rows
+	width := rowWidth(*grid)
+	if column < 1 || column > width+1 || width >= MaxColumns {
+		return fmt.Errorf("column must be between 1 and %d", min(width+1, MaxColumns))
+	}
+	for i := range *grid {
+		(*grid)[i] = append((*grid)[i], Cell{})
+		copy((*grid)[i][column:], (*grid)[i][column-1:])
+		(*grid)[i][column-1] = Cell{}
+	}
+	shiftFormulas(book, index, 0, column, false)
+	return nil
+}
+
+// AddSheetToBook appends a named sheet to an in-memory workbook.
+func AddSheetToBook(book *Spreadsheet, name string) error {
+	book.Sheets = append(book.Sheets, Sheet{Name: name, Rows: [][]Cell{{{}}}})
+	return nil
+}
+
+// DeleteRowFromBook deletes a row from an in-memory workbook.
+func DeleteRowFromBook(book *Spreadsheet, name string, row int) error {
+	index, err := SheetIndex(*book, name)
+	if err != nil {
+		return err
+	}
+	grid := &book.Sheets[index].Rows
+	if row < 1 || row > len(*grid) {
+		return fmt.Errorf("row must be between 1 and %d", len(*grid))
+	}
+	shiftFormulas(book, index, row, 0, true)
+	copy((*grid)[row-1:], (*grid)[row:])
+	(*grid)[len(*grid)-1] = nil
+	*grid = (*grid)[:len(*grid)-1]
+	return nil
+}
+
+// DeleteColumnFromBook deletes a column from an in-memory workbook.
+func DeleteColumnFromBook(book *Spreadsheet, name string, column int) error {
+	index, err := SheetIndex(*book, name)
+	if err != nil {
+		return err
+	}
+	grid := &book.Sheets[index].Rows
+	width := rowWidth(*grid)
+	if column < 1 || column > width {
+		return fmt.Errorf("column must be between 1 and %d", width)
+	}
+	shiftFormulas(book, index, 0, column, true)
+	for i := range *grid {
+		if column <= len((*grid)[i]) {
+			copy((*grid)[i][column-1:], (*grid)[i][column:])
+			(*grid)[i][len((*grid)[i])-1] = Cell{}
+			(*grid)[i] = (*grid)[i][:len((*grid)[i])-1]
+		}
+	}
+	return nil
+}
+
+// DeleteSheetFromBook deletes a sheet from an in-memory workbook.
+func DeleteSheetFromBook(book *Spreadsheet, name string) error {
+	if len(book.Sheets) <= 1 {
+		return errors.New("cannot delete the only sheet")
+	}
+	index, err := SheetIndex(*book, name)
+	if err != nil {
+		return err
+	}
+	copy(book.Sheets[index:], book.Sheets[index+1:])
+	book.Sheets = book.Sheets[:len(book.Sheets)-1]
+	return nil
 }

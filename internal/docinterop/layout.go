@@ -109,6 +109,30 @@ func MapFontFamily(name string) string {
 	return "helvetica"
 }
 
+// ExportFontFamily maps Parchment's font defaults to Word-compatible font family names.
+func ExportFontFamily(name string) string {
+	switch strings.ToLower(name) {
+	case "courier":
+		return "Courier New"
+	case "times":
+		return "Times New Roman"
+	case "helvetica":
+		return "Arial"
+	default:
+		return "Courier New"
+	}
+}
+
+// MMToTwip converts millimeters to twips (1/1440 inch).
+func MMToTwip(mm float64) int {
+	return int(math.Round(mm / 25.4 * 1440.0))
+}
+
+// MMToEMU converts millimeters to English Metric Units (36000 EMU = 1 mm).
+func MMToEMU(mm float64) int {
+	return int(math.Round(mm * 36000.0))
+}
+
 // MapHeaderFooter checks for dynamic fields or valid strings and emits a warning if complex features are used.
 func MapHeaderFooter(text string, isComplex bool) (string, *Warning) {
 	if isComplex {

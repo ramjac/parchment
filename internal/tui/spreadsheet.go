@@ -2,16 +2,20 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 
+	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/recovery"
 	"example.com/parchment/internal/spreadsheet"
 )
 
@@ -28,19 +32,30 @@ type spreadsheetLoadedMsg struct {
 	err  error
 }
 
-type spreadsheetCellSavedMsg struct {
-	seq    int
-	book   spreadsheet.Spreadsheet
-	row    int
-	column int
-	draft  string
-	err    error
-}
-
 type spreadsheetHistoryMsg struct {
 	seq         int
 	description string
 	err         error
+}
+
+type spreadsheetSavedMsg struct {
+	seq        int
+	book       spreadsheet.Spreadsheet
+	err        error
+	cleanupErr error
+}
+
+type spreadsheetCloseFinishedMsg struct {
+	seq int
+	err error
+}
+
+type spreadsheetAutosaveTickMsg struct{ session uint64 }
+
+type spreadsheetAutosaveFinishedMsg struct {
+	session uint64
+	err     error
+	cleared bool
 }
 
 // spreadsheetGrid holds viewport navigation, selection, and value display state.
@@ -69,26 +84,55 @@ type spreadsheetAsync struct {
 // spreadsheetModel is a single-workbook grid editor. It owns only UI state;
 // it reads and edits the workbook file through the spreadsheet service.
 type spreadsheetModel struct {
-	service *spreadsheet.Service
-	theme   Theme
-	path    string
-	book    spreadsheet.Spreadsheet
-	loaded  bool
-	editing bool
-	input   textinput.Model
+	service          *spreadsheet.Service
+	theme            Theme
+	path             string
+	book             spreadsheet.Spreadsheet
+	baseline         spreadsheet.Spreadsheet
+	loaded           bool
+	editing          bool
+	input            textinput.Model
+	pdfInput         textinput.Model
+	pdfStore         PDFExportStore
+	lastPDFPath      string
+	pdfPrompt        promptKind
+	pdfOverwritePath string
+	pdfPending       bool
+
+	undoLimit    int
+	bufferUndo   []spreadsheet.Spreadsheet
+	bufferRedo   []spreadsheet.Spreadsheet
+	closeWarning bool
+
+	recoveryStore          recovery.Store
+	autosaveSession        uint64
+	autosaveCancel         context.CancelFunc
+	autosaveActive         bool
+	recoveryCleanupPending bool
+	closing                bool
+	draftStored            bool
+	autosaveScheduler      func(uint64) tea.Cmd
 
 	spreadsheetGrid
 	spreadsheetAsync
 }
 
-func newSpreadsheetModel(service *spreadsheet.Service, path string, theme Theme) *spreadsheetModel {
+func newSpreadsheetModel(service *spreadsheet.Service, path string, theme Theme, undoLimit int) *spreadsheetModel {
 	input := textinput.New()
 	input.Prompt = ""
 	input.CharLimit = spreadsheet.MaxFormulaLength + 1
+	pdfInput := textinput.New()
+	pdfInput.CharLimit = 64 << 10
+	if undoLimit < 1 {
+		undoLimit = 100
+	}
 	m := &spreadsheetModel{
-		service: service,
-		path:    path,
-		input:   input,
+		service:   service,
+		path:      path,
+		theme:     theme,
+		input:     input,
+		undoLimit: undoLimit,
+		pdfInput:  pdfInput,
 	}
 	m.newOperationContext = func() (context.Context, context.CancelFunc) {
 		return context.WithCancel(context.Background())
@@ -96,13 +140,104 @@ func newSpreadsheetModel(service *spreadsheet.Service, path string, theme Theme)
 	return m
 }
 
+func (m *spreadsheetModel) startAutosaveSession() {
+	m.autosaveSession++
+	m.autosaveActive = false
+	if m.autosaveCancel != nil {
+		m.autosaveCancel()
+		m.autosaveCancel = nil
+	}
+}
+
+func (m *spreadsheetModel) scheduleAutosave(session uint64) tea.Cmd {
+	if m.recoveryStore == nil || m.autosaveScheduler == nil ||
+		session != m.autosaveSession || !m.autosaveActive || m.pending || m.closing || !m.dirty() {
+		return nil
+	}
+	return m.autosaveScheduler(session)
+}
+
+func (m *spreadsheetModel) stopAutosave() { m.startAutosaveSession() }
+
+func (m *spreadsheetModel) syncAutosave() tea.Cmd {
+	if m.recoveryStore == nil || m.pending || m.closing {
+		return nil
+	}
+	if !m.dirty() {
+		m.stopAutosave()
+		if !m.draftStored || m.recoveryCleanupPending {
+			return nil
+		}
+		return m.deleteRecoveryDraft()
+	}
+	if m.recoveryCleanupPending || m.autosaveActive {
+		return nil
+	}
+	m.startAutosaveSession()
+	m.autosaveActive = true
+	return m.scheduleAutosave(m.autosaveSession)
+}
+
+func (m *spreadsheetModel) saveRecovery(session uint64) tea.Cmd {
+	if m.recoveryStore == nil || session != m.autosaveSession || !m.autosaveActive ||
+		m.pending || m.closing || !m.dirty() {
+		return nil
+	}
+	pendingInput := ""
+	if m.editing {
+		pendingInput = m.input.Value()
+	}
+	baseline, dirty := cloneSpreadsheetState(m.baseline), cloneSpreadsheetState(m.book)
+	data := spreadsheetRecoveryData{
+		Baseline:         baseline,
+		BaselineBody:     m.baseline.Body,
+		BaselineBlocks:   baseline.Blocks,
+		Dirty:            dirty,
+		DirtyBody:        m.book.Body,
+		DirtyBlocks:      dirty.Blocks,
+		ActiveSheet:      m.sheet,
+		CursorRow:        m.row,
+		CursorCol:        m.column,
+		Editing:          m.editing,
+		PendingCellInput: pendingInput,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.autosaveCancel = cancel
+	store := m.recoveryStore
+	draft := recovery.Draft{
+		Path: m.path, Kind: string(artifact.SpreadsheetKind), UpdatedAt: time.Now().UTC(),
+	}
+	m.draftStored = true
+	return func() tea.Msg {
+		encoded, err := json.Marshal(data)
+		if err == nil {
+			draft.Data = encoded
+			err = store.SaveRecovery(ctx, draft)
+		}
+		return spreadsheetAutosaveFinishedMsg{session: session, err: err}
+	}
+}
+
+func (m *spreadsheetModel) deleteRecoveryDraft() tea.Cmd {
+	m.recoveryCleanupPending = true
+	session := m.autosaveSession
+	store, path := m.recoveryStore, m.path
+	return func() tea.Msg {
+		return spreadsheetAutosaveFinishedMsg{
+			session: session, err: store.DeleteRecovery(context.Background(), path), cleared: true,
+		}
+	}
+}
+
 func (m *spreadsheetModel) Init() tea.Cmd { return m.load() }
 
 func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	message = normalizeTerminalKey(message)
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.input.Width = max(1, m.width-12)
+		m.resizePDFPrompt()
 		m.scrollToSelection()
 		return m, nil
 	case spreadsheetLoadedMsg:
@@ -117,20 +252,37 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.setBook(msg.book)
 		m.status, m.loadedStatus = m.loadedStatus, ""
 		return m, nil
-	case spreadsheetCellSavedMsg:
+	case spreadsheetSavedMsg:
 		if msg.seq != m.seq {
 			return m, nil
 		}
 		m.finishOperation()
 		if msg.err != nil {
 			m.setError("Save failed", msg.err)
-			m.row, m.column = msg.row, msg.column
-			m.scrollToSelection()
-			return m, m.beginEdit(msg.draft)
+			return m, m.syncAutosave()
 		}
 		m.setBook(msg.book)
-		m.status = "Saved " + spreadsheet.CellName(msg.row+1, msg.column+1)
+		m.status = "Saved spreadsheet"
+		m.draftStored = msg.cleanupErr != nil
+		if msg.cleanupErr != nil {
+			m.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
+		}
 		return m, nil
+	case spreadsheetCloseFinishedMsg:
+		if msg.seq != m.seq {
+			return m, nil
+		}
+		m.finishOperation()
+		if msg.err != nil {
+			m.closing = false
+			m.setError("Discard autosaved draft", msg.err)
+			if m.dirty() {
+				return m, m.syncAutosave()
+			}
+			return m, nil
+		}
+		m.draftStored = false
+		return m, tea.Quit
 	case spreadsheetHistoryMsg:
 		if msg.seq != m.seq {
 			return m, nil
@@ -143,13 +295,52 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := m.load()
 		m.loadedStatus = msg.description
 		return m, cmd
+	case spreadsheetPDFExportedMsg:
+		return m, m.spreadsheetPDFExported(msg)
+	case spreadsheetAutosaveTickMsg:
+		if msg.session == m.autosaveSession && m.autosaveActive && m.dirty() {
+			return m, m.saveRecovery(msg.session)
+		}
+		return m, nil
+	case spreadsheetAutosaveFinishedMsg:
+		if msg.cleared {
+			m.recoveryCleanupPending = false
+			if msg.err == nil {
+				m.draftStored = false
+			} else {
+				m.errMessage = "Discard autosaved draft: " + msg.err.Error()
+			}
+			if m.dirty() {
+				return m, m.syncAutosave()
+			}
+			return m, nil
+		}
+		if msg.session != m.autosaveSession {
+			return m, nil
+		}
+		if m.autosaveCancel != nil {
+			m.autosaveCancel()
+			m.autosaveCancel = nil
+		}
+		if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
+			m.errMessage = "Autosave failed: " + msg.err.Error()
+		}
+		if m.autosaveActive && m.dirty() {
+			return m, m.scheduleAutosave(msg.session)
+		}
+		return m, m.syncAutosave()
+	case shiftEnterMsg:
+		return m, m.updateEditKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("shift+enter")})
 	case tea.KeyMsg:
+		if m.pdfPrompt != promptNone {
+			return m, m.updatePDFPrompt(msg)
+		}
 		if m.editing {
 			return m, m.updateEditKey(msg)
 		}
 		return m, m.updateBrowseKey(msg)
 	case tea.MouseMsg:
-		if !m.pending && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		if !m.pending && m.pdfPrompt == promptNone && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			if m.editing {
 				if msg.Y == 1 {
 					m.input.SetCursor(max(msg.X-len(spreadsheet.CellName(m.row+1, m.column+1))-3, 0))
@@ -175,27 +366,67 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *spreadsheetModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
-	switch msg.String() {
-	case "ctrl+c":
+	key := msg.String()
+	if key == "ctrl+c" {
 		m.cancelPending()
 		return tea.Quit
+	}
+	if m.pending {
+		if key == "esc" {
+			m.cancelPending()
+			m.closing = false
+			if m.pdfPending {
+				m.pdfPending = false
+				m.status, m.errMessage = "PDF export cancelled", ""
+			} else {
+				m.status, m.errMessage = "Save cancelled", ""
+			}
+			return m.syncAutosave()
+		} else {
+			if m.pdfPending {
+				m.status = "Exporting PDF… (esc cancels)"
+			} else {
+				m.status = "Saving… (esc cancels)"
+			}
+		}
+		return nil
+	}
+	switch key {
 	case "esc":
 		m.editing = false
 		m.input.Blur()
-		m.status, m.errMessage = "Edit cancelled", ""
+		m.status, m.errMessage = "Cell edit cancelled", ""
+		return m.syncAutosave()
+	case "enter", "shift+enter", "alt+enter":
+		if m.commitCell() {
+			if key != "enter" {
+				m.move(1, 0)
+				return tea.Batch(m.beginEdit(cellDraft(m.cell(m.row, m.column))), m.syncAutosave())
+			}
+			return m.syncAutosave()
+		}
 		return nil
-	case "enter":
-		return m.save()
+	case "ctrl+s":
+		if !m.commitCell() {
+			return nil
+		}
+		return m.saveWorkbook()
+	case "ctrl+p":
+		return m.openPDFPrompt()
 	}
+	m.closeWarning = false
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
-	return cmd
+	return tea.Batch(cmd, m.syncAutosave())
 }
 
 func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 	key := msg.String()
+	if key != "esc" && key != "q" && key != "ctrl+c" {
+		m.closeWarning = false
+	}
 	switch key {
-	case "ctrl+c", "q":
+	case "ctrl+c":
 		m.cancelPending()
 		return tea.Quit
 	case "esc":
@@ -206,18 +437,33 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		if m.pending {
 			m.cancelPending()
-			m.status, m.errMessage = "Cancelled", ""
+			m.closing = false
+			if m.pdfPending {
+				m.pdfPending = false
+				m.status, m.errMessage = "PDF export cancelled", ""
+			} else {
+				m.status, m.errMessage = "Cancelled", ""
+			}
+			return m.syncAutosave()
+		}
+		return m.requestClose()
+	case "q":
+		if m.pending {
+			m.status = "Working… (esc cancels)"
 			return nil
 		}
-		m.cancelPending()
-		return tea.Quit
+		return m.requestClose()
 	}
 	if m.pending {
 		m.status = "Working… (esc cancels)"
 		return nil
 	}
 
-	if key == "r" && m.pendingShortcut != "d" {
+	if key == "r" && m.pendingShortcut == "" {
+		if m.dirty() {
+			m.status = "Unsaved changes: Ctrl+S saves before reloading"
+			return nil
+		}
 		return m.load()
 	}
 	if !m.loaded {
@@ -226,29 +472,65 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 
 	if m.pendingShortcut == "d" {
 		m.pendingShortcut = ""
+		name := m.book.Sheets[m.sheet].Name
 		switch key {
 		case "r":
-			return m.history("Deleted row", func(ctx context.Context) (string, error) {
-				_, err := m.service.DeleteRowInSheet(ctx, m.path, m.book.Sheets[m.sheet].Name, m.row+1)
-				return "", err
-			})
+			if m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+				return spreadsheet.DeleteRowFromBook(book, name, m.row+1)
+			}) {
+				m.status = "Row deleted"
+				return m.syncAutosave()
+			}
 		case "c":
-			return m.history("Deleted column", func(ctx context.Context) (string, error) {
-				_, err := m.service.DeleteColumnInSheet(ctx, m.path, m.book.Sheets[m.sheet].Name, m.column+1)
-				return "", err
-			})
+			if m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+				return spreadsheet.DeleteColumnFromBook(book, name, m.column+1)
+			}) {
+				m.status = "Column deleted"
+				return m.syncAutosave()
+			}
 		case "s":
-			return m.history("Deleted sheet", func(ctx context.Context) (string, error) {
-				_, err := m.service.DeleteSheet(ctx, m.path, m.book.Sheets[m.sheet].Name)
-				return "", err
-			})
+			if m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+				return spreadsheet.DeleteSheetFromBook(book, name)
+			}) {
+				m.status = "Sheet deleted"
+				return m.syncAutosave()
+			}
+		default:
+			m.status, m.errMessage = "Cancelled", ""
 		}
-		m.status, m.errMessage = "Cancelled", ""
+		return nil
+	}
+	if m.pendingShortcut == "i" {
+		m.pendingShortcut = ""
+		name := m.book.Sheets[m.sheet].Name
+		switch key {
+		case "r":
+			if m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+				return spreadsheet.InsertRowInBook(book, name, m.row+1)
+			}) {
+				m.status = "Row inserted"
+				return m.syncAutosave()
+			}
+		case "c":
+			if m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+				return spreadsheet.InsertColumnInBook(book, name, m.column+1)
+			}) {
+				m.status = "Column inserted"
+				return m.syncAutosave()
+			}
+		default:
+			m.status, m.errMessage = "Cancelled", ""
+		}
 		return nil
 	}
 	if key == "d" {
 		m.pendingShortcut = "d"
 		m.status = "Delete (r)ow, (c)olumn, or (s)heet?"
+		return nil
+	}
+	if key == "i" {
+		m.pendingShortcut = "i"
+		m.status = "Insert (r)ow or (c)olumn before selection?"
 		return nil
 	}
 
@@ -288,12 +570,22 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		return m.beginEdit(cellDraft(m.cell(m.row, m.column)))
 	case "delete", "backspace":
 		if m.cell(m.row, m.column) != (spreadsheet.Cell{}) {
-			return m.saveCell(m.row, m.column, spreadsheet.Cell{}, "")
+			if m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+				return spreadsheet.SetCellInBook(book, spreadsheet.SetCellOptions{
+					Sheet: m.book.Sheets[m.sheet].Name, Row: m.row + 1, Column: m.column + 1,
+				})
+			}) {
+				return m.syncAutosave()
+			}
 		}
 	case "u", "ctrl+z":
-		return m.history("Undid", m.service.Undo)
+		return m.undo()
 	case "ctrl+r", "ctrl+y", "ctrl+shift+z":
-		return m.history("Redid", m.service.Redo)
+		return m.redo()
+	case "ctrl+s":
+		return m.saveWorkbook()
+	case "ctrl+p":
+		return m.openPDFPrompt()
 	}
 	return nil
 }
@@ -311,30 +603,66 @@ func (m *spreadsheetModel) beginEdit(draft string) tea.Cmd {
 	return m.input.Focus()
 }
 
-func (m *spreadsheetModel) save() tea.Cmd {
+func (m *spreadsheetModel) commitCell() bool {
 	draft := m.input.Value()
 	cell, err := parseCellInput(draft)
 	if err != nil {
 		m.errMessage = err.Error()
-		return nil
+		return false
+	}
+	if !m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+		return spreadsheet.SetCellInBook(book, spreadsheet.SetCellOptions{
+			Sheet: m.book.Sheets[m.sheet].Name, Row: m.row + 1, Column: m.column + 1, Cell: cell,
+		})
+	}) {
+		return false
 	}
 	m.editing = false
 	m.input.Blur()
-	return m.saveCell(m.row, m.column, cell, draft)
+	return true
 }
 
-func (m *spreadsheetModel) saveCell(row, column int, cell spreadsheet.Cell, draft string) tea.Cmd {
+func (m *spreadsheetModel) saveWorkbook() tea.Cmd {
+	if !m.dirty() {
+		m.status, m.errMessage = "No changes to save", ""
+		return nil
+	}
+	m.stopAutosave()
 	ctx, seq := m.startOperation()
 	m.status, m.errMessage = "Saving…", ""
-	service, path, name := m.service, m.path, m.book.Sheets[m.sheet].Name
+	service, expected, updated := m.service, cloneSpreadsheetState(m.baseline), cloneSpreadsheetState(m.book)
+	store, path := m.recoveryStore, m.path
 	return func() tea.Msg {
-		book, err := service.SetCellInSheet(ctx, path, spreadsheet.SetCellOptions{
-			Sheet:  name,
-			Row:    row + 1,
-			Column: column + 1,
-			Cell:   cell,
-		})
-		return spreadsheetCellSavedMsg{seq: seq, book: book, row: row, column: column, draft: draft, err: err}
+		book, err := service.Update(ctx, expected, updated)
+		var cleanupErr error
+		if err == nil && store != nil {
+			cleanupErr = store.DeleteRecovery(context.Background(), path)
+		}
+		return spreadsheetSavedMsg{seq: seq, book: book, err: err, cleanupErr: cleanupErr}
+	}
+}
+
+func (m *spreadsheetModel) requestClose() tea.Cmd {
+	if m.dirty() && !m.closeWarning {
+		m.closeWarning = true
+		m.status, m.errMessage = "Unsaved changes: Ctrl+S saves, Esc/q again discards and quits", ""
+		return nil
+	}
+	return m.close()
+}
+
+func (m *spreadsheetModel) close() tea.Cmd {
+	m.stopAutosave()
+	if m.recoveryStore == nil {
+		m.cancelPending()
+		return tea.Quit
+	}
+	m.closing = true
+	ctx, seq := m.startOperation()
+	m.status, m.errMessage = "Closing…", ""
+	store, path := m.recoveryStore, m.path
+	return func() tea.Msg {
+		return spreadsheetCloseFinishedMsg{seq: seq, err: store.DeleteRecovery(ctx, path)}
 	}
 }
 
@@ -401,14 +729,112 @@ func (m *spreadsheetModel) setBook(book spreadsheet.Spreadsheet) {
 	if m.loaded && m.sheet < len(m.book.Sheets) {
 		name = m.book.Sheets[m.sheet].Name
 	}
-	m.book, m.loaded = book, true
+	m.book, m.baseline, m.loaded = cloneSpreadsheetState(book), cloneSpreadsheetState(book), true
+	m.bufferUndo, m.bufferRedo = nil, nil
 	m.sheet = 0
 	if index, err := spreadsheet.SheetIndex(book, name); err == nil && name != "" {
 		m.sheet = index
 	}
-	m.status, m.errMessage = "", ""
+	m.status, m.errMessage, m.closeWarning = "", "", false
 	m.computeValues()
 	m.scrollToSelection()
+}
+
+func (m *spreadsheetModel) dirty() bool {
+	if !m.loaded {
+		return false
+	}
+	if !spreadsheet.Equal(m.book, m.baseline) {
+		return true
+	}
+	return m.editing && m.input.Value() != cellDraft(m.cell(m.row, m.column))
+}
+
+func (m *spreadsheetModel) editWorkbook(edit func(*spreadsheet.Spreadsheet) error) bool {
+	selectedSheet := m.book.Sheets[m.sheet].Name
+	next := cloneSpreadsheetState(m.book)
+	if err := edit(&next); err != nil {
+		m.setError("Edit failed", err)
+		return false
+	}
+	if err := spreadsheet.Normalize(&next); err != nil {
+		m.setError("Edit failed", err)
+		return false
+	}
+	if spreadsheet.Equal(m.book, next) {
+		m.errMessage = ""
+		return true
+	}
+	m.bufferUndo = appendBoundedWorkbook(m.bufferUndo, m.book, m.undoLimit)
+	m.bufferRedo = nil
+	m.book = next
+	m.sheet = min(m.sheet, len(m.book.Sheets)-1)
+	if index, err := spreadsheet.SheetIndex(m.book, selectedSheet); err == nil {
+		m.sheet = index
+	}
+	m.status, m.errMessage, m.closeWarning = "", "", false
+	m.computeValues()
+	m.scrollToSelection()
+	return true
+}
+
+func appendBoundedWorkbook(stack []spreadsheet.Spreadsheet, book spreadsheet.Spreadsheet, limit int) []spreadsheet.Spreadsheet {
+	stack = append(stack, cloneSpreadsheetState(book))
+	if len(stack) > limit {
+		stack = append([]spreadsheet.Spreadsheet(nil), stack[len(stack)-limit:]...)
+	}
+	return stack
+}
+
+func (m *spreadsheetModel) undo() tea.Cmd {
+	if len(m.bufferUndo) > 0 {
+		m.bufferRedo = appendBoundedWorkbook(m.bufferRedo, m.book, m.undoLimit)
+		m.book = m.bufferUndo[len(m.bufferUndo)-1]
+		m.bufferUndo = m.bufferUndo[:len(m.bufferUndo)-1]
+		m.status, m.errMessage = "Undid spreadsheet edit", ""
+		m.computeValues()
+		m.scrollToSelection()
+		return m.syncAutosave()
+	}
+	if m.dirty() || len(m.bufferRedo) > 0 {
+		return nil
+	}
+	return m.history("Undid", m.service.Undo)
+}
+
+func (m *spreadsheetModel) redo() tea.Cmd {
+	if len(m.bufferRedo) > 0 {
+		m.bufferUndo = appendBoundedWorkbook(m.bufferUndo, m.book, m.undoLimit)
+		m.book = m.bufferRedo[len(m.bufferRedo)-1]
+		m.bufferRedo = m.bufferRedo[:len(m.bufferRedo)-1]
+		m.status, m.errMessage = "Redid spreadsheet edit", ""
+		m.sheet = min(max(m.sheet, 0), len(m.book.Sheets)-1)
+		m.computeValues()
+		m.scrollToSelection()
+		return m.syncAutosave()
+	}
+	if m.dirty() || len(m.bufferUndo) > 0 {
+		return nil
+	}
+	return m.history("Redid", m.service.Redo)
+}
+
+func cloneSpreadsheetState(book spreadsheet.Spreadsheet) spreadsheet.Spreadsheet {
+	clone := book
+	clone.Sheets = append([]spreadsheet.Sheet(nil), book.Sheets...)
+	for i := range clone.Sheets {
+		clone.Sheets[i].Rows = make([][]spreadsheet.Cell, len(book.Sheets[i].Rows))
+		for row := range book.Sheets[i].Rows {
+			clone.Sheets[i].Rows[row] = append([]spreadsheet.Cell(nil), book.Sheets[i].Rows[row]...)
+		}
+	}
+	if len(book.Blocks) > 0 {
+		clone.Blocks = make(map[string]json.RawMessage, len(book.Blocks))
+		for key, value := range book.Blocks {
+			clone.Blocks[key] = append(json.RawMessage(nil), value...)
+		}
+	}
+	return clone
 }
 
 // computeValues evaluates formulas in the current sheet so views stay pure.
@@ -419,7 +845,11 @@ func (m *spreadsheetModel) computeValues() {
 			if cell.Formula == "" {
 				continue
 			}
-			value, err := spreadsheet.Evaluate(&m.book, m.sheet, row+1, column+1)
+			valueV, err := spreadsheet.Evaluate(&m.book, m.sheet, row+1, column+1)
+			var value float64
+			if err == nil {
+				value, err = valueV.Float64()
+			}
 			if err != nil {
 				m.values[[2]int{row, column}] = "#ERR"
 				continue
@@ -495,7 +925,11 @@ func (m *spreadsheetModel) rowHeaderWidth() int {
 }
 
 func (m *spreadsheetModel) visibleRows() int {
-	return max(1, m.height-spreadsheetChromeLines)
+	promptRows := 0
+	if m.pdfPrompt != promptNone {
+		promptRows = 1
+	}
+	return max(1, m.height-spreadsheetChromeLines-promptRows)
 }
 
 func (m *spreadsheetModel) visibleColumns() int {
@@ -603,16 +1037,21 @@ func (m *spreadsheetModel) renderStatus() string {
 	if m.errMessage != "" {
 		status = "Error: " + m.errMessage
 	} else if status == "" && m.loaded {
-		status = fmt.Sprintf("%d×%d", len(m.book.Sheets[m.sheet].Rows), len(m.book.Sheets[m.sheet].Rows[0]))
+		dimensions := fmt.Sprintf("%d×%d", len(m.book.Sheets[m.sheet].Rows), len(m.book.Sheets[m.sheet].Rows[0]))
+		if m.dirty() {
+			status = "Unsaved changes • " + dimensions
+		} else {
+			status = dimensions
+		}
 	}
 	return runewidth.Truncate(sanitizeTerminalLine(status), m.width, "…")
 }
 
 func (m *spreadsheetModel) renderHelp() string {
 	muted := lipgloss.NewStyle().Foreground(m.theme.Border)
-	help := "arrows move • enter edit • del clear • f formulas • tab sheet • u undo • ctrl+r redo • d delete • r reload • esc/q quit"
+	help := "arrows move • enter edit • ctrl+s save • del clear • ctrl+p PDF • f formulas • tab sheet • u/ctrl+z undo • ctrl+r redo • d delete • i insert • r reload • esc/q quit"
 	if m.editing {
-		help = "enter save • esc cancel • =formula • 'literal"
+		help = "enter stage • ctrl+s save • esc cancel • =formula • 'literal • shift+enter/alt+enter down • ctrl+p PDF"
 	} else if !m.loaded {
 		help = "r retry • esc/q quit"
 	}
@@ -624,5 +1063,9 @@ func (m *spreadsheetModel) View() string {
 		return "Terminal too small. Press q to quit."
 	}
 	shortcuts := m.renderHelp() + "\n" + m.renderFormulaBar()
-	return chromeLayout(m.width, m.height, m.renderHeader(), shortcuts, m.renderGrid(), m.renderStatus(), m.theme.Border)
+	content := m.renderGrid()
+	if m.pdfPrompt != promptNone {
+		content = m.pdfInput.View() + "\n" + content
+	}
+	return chromeLayout(m.width, m.height, m.renderHeader(), shortcuts, content, m.renderStatus(), m.theme.Border)
 }

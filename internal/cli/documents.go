@@ -1,13 +1,16 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,7 +19,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/docinterop"
 	"example.com/parchment/internal/document"
+	"example.com/parchment/internal/note"
+	"example.com/parchment/internal/pdfrender"
+	"example.com/parchment/internal/presentation"
+	"example.com/parchment/internal/printing"
+	"example.com/parchment/internal/spreadsheet"
 )
 
 func addDocumentCommands(root *cobra.Command, streams output) {
@@ -45,6 +54,8 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 		newDocumentImageExtractCmd(streams),
 		newDocumentImageRemoveCmd(),
 		newDocumentPrintCmd(streams),
+		newDocumentExportCmd(streams),
+		newDocumentImportCmd(streams),
 	)
 }
 
@@ -443,33 +454,171 @@ func newDocumentImageRemoveCmd() *cobra.Command {
 }
 
 func newDocumentPrintCmd(streams output) *cobra.Command {
+	return newPrintCmd(artifact.DocumentKind, streams)
+}
+
+func newPrintCmd(kind artifact.Kind, streams output) *cobra.Command {
 	cmd := &cobra.Command{
-		Use: "print <file>", Short: "Render printer-ready paginated text", Args: cobra.ExactArgs(1),
-		Long: "Render the document as monospaced pages with margins, columns, headers, footers,\n" +
-			"and page numbers. Pages are separated by form feeds, so the output can be sent\n" +
-			"directly to a printer, for example `parchment document print <file> | lpr`.",
+		Use: "print <file>", Short: "Render printer-ready text or PDF", Args: cobra.ExactArgs(1),
+		Long: fmt.Sprintf("Render a %s as paginated text or PDF. Text pages are separated by form feeds\n"+
+			"and can be sent directly to a printer, for example `parchment %s print <file> | lpr`.", kind, kind),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, service, err := openDocuments(cmd)
+			repo, settings, err := openStore()
 			if err != nil {
 				return err
 			}
-			d, err := service.Get(cmd.Context(), args[0])
-			if err != nil {
-				return err
+			var d document.Document
+			var deck presentation.Presentation
+			var book spreadsheet.Spreadsheet
+			switch kind {
+			case artifact.NoteKind:
+				n, getErr := note.NewService(repo, settings.UndoLimit).Get(cmd.Context(), args[0])
+				if getErr != nil {
+					return getErr
+				}
+				d = printing.NoteDocument(n)
+			case artifact.DocumentKind:
+				d, err = document.NewService(repo, settings.UndoLimit).Get(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+			case artifact.PresentationKind:
+				deck, err = presentation.NewService(repo, settings.UndoLimit).Get(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+			case artifact.SpreadsheetKind:
+				book, err = spreadsheet.NewService(repo, settings.UndoLimit).Get(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+			default:
+				return fmt.Errorf("unsupported print kind %q", kind)
 			}
-			text, err := document.Print(d)
-			if err != nil {
-				return err
+			format, _ := cmd.Flags().GetString("format")
+			slidesPerPage := 1
+			if kind == artifact.PresentationKind {
+				slidesPerPage, _ = cmd.Flags().GetInt("slides-per-page")
+				if slidesPerPage != 1 && slidesPerPage != 2 {
+					return fmt.Errorf("slides-per-page must be 1 or 2")
+				}
 			}
-			if path, _ := cmd.Flags().GetString("output"); path != "" {
-				return os.WriteFile(path, []byte(text), 0o644)
+			var data []byte
+			switch format {
+			case "text":
+				var text string
+				if kind == artifact.SpreadsheetKind {
+					text, err = printing.PrintSpreadsheet(book)
+				} else if kind == artifact.PresentationKind && slidesPerPage == 2 {
+					text, err = printing.PrintPresentationTwoUp(deck)
+				} else if kind == artifact.PresentationKind {
+					text, err = printing.PrintPresentation(deck)
+				} else {
+					text, err = document.Print(d)
+				}
+				if err != nil {
+					return err
+				}
+				data = []byte(text)
+			case "pdf":
+				var rendered bytes.Buffer
+				if kind == artifact.SpreadsheetKind {
+					err = pdfrender.RenderSpreadsheet(&rendered, book)
+				} else if kind == artifact.PresentationKind && slidesPerPage == 2 {
+					err = pdfrender.RenderPresentationTwoUp(&rendered, deck)
+				} else if kind == artifact.PresentationKind {
+					err = pdfrender.RenderPresentation(&rendered, deck)
+				} else {
+					err = pdfrender.Render(&rendered, d)
+				}
+				if err != nil {
+					return err
+				}
+				data = rendered.Bytes()
+			default:
+				return fmt.Errorf("unsupported print format %q (use text or pdf)", format)
 			}
-			_, err = io.WriteString(streams.out, text)
+			path, _ := cmd.Flags().GetString("output")
+			if path != "" {
+				if format == "text" {
+					err := repo.WriteTextExport(cmd.Context(), path, args[0], data, false)
+					if errors.Is(err, fs.ErrExist) {
+						force, _ := cmd.Flags().GetBool("force")
+						if !force {
+							if !streamsInteractive(cmd.InOrStdin(), cmd.ErrOrStderr()) {
+								return fmt.Errorf("file %q already exists (use --force to overwrite)", path)
+							}
+							confirmed, promptErr := confirmOutputOverwrite(cmd.InOrStdin(), cmd.ErrOrStderr(), path)
+							if promptErr != nil {
+								return promptErr
+							}
+							if !confirmed {
+								return nil
+							}
+						}
+						err = repo.WriteTextExport(cmd.Context(), path, args[0], data, true)
+					}
+					return err
+				}
+				err := repo.WritePDFExport(cmd.Context(), path, args[0], data, false)
+				if errors.Is(err, fs.ErrExist) {
+					force, _ := cmd.Flags().GetBool("force")
+					if !force {
+						if !streamsInteractive(cmd.InOrStdin(), cmd.ErrOrStderr()) {
+							return fmt.Errorf("file %q already exists (use --force to overwrite)", path)
+						}
+						confirmed, promptErr := confirmPDFOverwrite(cmd.InOrStdin(), cmd.ErrOrStderr(), path)
+						if promptErr != nil {
+							return promptErr
+						}
+						if !confirmed {
+							return nil
+						}
+					}
+					err = repo.WritePDFExport(cmd.Context(), path, args[0], data, true)
+				}
+				if err != nil {
+					return err
+				}
+				if err := repo.SavePDFPath(cmd.Context(), path); err != nil {
+					fmt.Fprintf(streams.err, "warning: could not remember PDF path: %v\n", err)
+				}
+				return nil
+			}
+			_, err = streams.out.Write(data)
 			return err
 		},
 	}
+	cmd.Flags().String("format", "text", "output format: text or pdf")
 	cmd.Flags().StringP("output", "o", "", "write to a file instead of standard output")
+	cmd.Flags().Bool("force", false, "overwrite output file if it exists")
+	if kind == artifact.PresentationKind {
+		cmd.Flags().Int("slides-per-page", 1, "slides per page: 1 (landscape) or 2 (portrait)")
+	}
 	return cmd
+}
+
+func confirmPDFOverwrite(in io.Reader, out io.Writer, path string) (bool, error) {
+	if _, err := fmt.Fprintf(out, "PDF file %q already exists. Overwrite? [y/N] ", path); err != nil {
+		return false, err
+	}
+	return readOverwriteConfirmation(in)
+}
+
+func confirmOutputOverwrite(in io.Reader, out io.Writer, path string) (bool, error) {
+	if _, err := fmt.Fprintf(out, "File %q already exists. Overwrite? [y/N] ", path); err != nil {
+		return false, err
+	}
+	return readOverwriteConfirmation(in)
+}
+
+func readOverwriteConfirmation(in io.Reader) (bool, error) {
+	response, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	response = strings.TrimSpace(strings.ToLower(response))
+	return response == "y" || response == "yes", nil
 }
 
 func addBodyFlags(cmd *cobra.Command) {
@@ -574,4 +723,212 @@ func changeLayoutDescription(layout document.Layout) string {
 		layout.PageSize, layout.Orientation, layout.Margins.Top, layout.Margins.Right,
 		layout.Margins.Bottom, layout.Margins.Left, layout.Columns, layout.Header,
 		layout.Footer, layout.PageNumbers)
+}
+
+func newDocumentExportCmd(streams output) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "export <file> -o <target.odt|target.docx>",
+		Short: "Export a document to DOCX or ODF format",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			outputPath, _ := cmd.Flags().GetString("output")
+			if outputPath == "" {
+				return errors.New("output file is required (-o/--output)")
+			}
+
+			format, _ := cmd.Flags().GetString("format")
+			if format == "" {
+				ext := strings.ToLower(filepath.Ext(outputPath))
+				switch ext {
+				case ".docx":
+					format = "docx"
+				case ".odt":
+					format = "odt"
+				default:
+					return fmt.Errorf("unable to determine export format from %q (use --format)", outputPath)
+				}
+			} else {
+				format = strings.ToLower(format)
+			}
+
+			var exporter docinterop.Exporter
+			switch format {
+			case "docx":
+				exporter = docinterop.NewDocxExporter()
+			case "odt":
+				exporter = docinterop.NewOdtExporter()
+			default:
+				return fmt.Errorf("unsupported export format %q", format)
+			}
+
+			force, _ := cmd.Flags().GetBool("force")
+			mode := os.FileMode(0o600)
+			if info, err := os.Stat(outputPath); err == nil {
+				mode = info.Mode().Perm()
+				if !force {
+					return fmt.Errorf("%s already exists (use --force to overwrite)", outputPath)
+				}
+			}
+
+			repo, service, err := openDocuments(cmd)
+			if err != nil {
+				return err
+			}
+
+			srcPath, err := filepath.Abs(args[0])
+			if err != nil {
+				return err
+			}
+
+			doc, err := service.Get(cmd.Context(), srcPath)
+			if err != nil {
+				return err
+			}
+
+			// Check pending proposals
+			changes, err := repo.ListDocumentChanges(cmd.Context(), srcPath)
+			if err == nil {
+				pendingCount := 0
+				for _, ch := range changes {
+					if ch.Status == document.ChangePending {
+						pendingCount++
+					}
+				}
+				if pendingCount > 0 {
+					fmt.Fprintf(streams.err, "warning: %d pending proposal(s) not exported\n", pendingCount)
+				}
+			}
+
+			var buf bytes.Buffer
+			warnings, err := exporter.Export(&buf, doc)
+			if err != nil {
+				return err
+			}
+			for _, w := range warnings {
+				fmt.Fprintf(streams.err, "%s\n", w.Error())
+			}
+
+			// Write atomically beside target
+			dir := filepath.Dir(outputPath)
+			tempFile, err := os.CreateTemp(dir, ".parchment-export-*")
+			if err != nil {
+				return err
+			}
+			tempName := tempFile.Name()
+			written := false
+			defer func() {
+				if !written {
+					_ = os.Remove(tempName)
+				}
+			}()
+
+			if err := tempFile.Chmod(mode); err != nil {
+				_ = tempFile.Close()
+				return err
+			}
+			if _, err := tempFile.Write(buf.Bytes()); err != nil {
+				_ = tempFile.Close()
+				return err
+			}
+			if err := tempFile.Sync(); err != nil {
+				_ = tempFile.Close()
+				return err
+			}
+			if err := tempFile.Close(); err != nil {
+				return err
+			}
+			if err := os.Rename(tempName, outputPath); err != nil {
+				return err
+			}
+			written = true
+			drainWarnings(repo, output{err: cmd.ErrOrStderr()})
+			return nil
+		},
+	}
+	cmd.Flags().StringP("output", "o", "", "output file (required)")
+	cmd.Flags().String("format", "", "export format: docx or odt")
+	cmd.Flags().Bool("force", false, "overwrite output file if it exists")
+	return cmd
+}
+
+func newDocumentImportCmd(streams output) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "import <source> <target.md>",
+		Short: "Import a document from DOCX or ODF format",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			srcPath, err := filepath.Abs(args[0])
+			if err != nil {
+				return err
+			}
+			targetPath, err := filepath.Abs(args[1])
+			if err != nil {
+				return err
+			}
+
+			// Refuse to overwrite target if it already exists
+			if _, err := os.Stat(targetPath); err == nil {
+				return fmt.Errorf("%s already exists", targetPath)
+			}
+
+			format, _ := cmd.Flags().GetString("format")
+			if format == "" {
+				ext := strings.ToLower(filepath.Ext(srcPath))
+				switch ext {
+				case ".docx":
+					format = "docx"
+				case ".odt":
+					format = "odt"
+				default:
+					return fmt.Errorf("unable to determine import format from %q (use --format)", srcPath)
+				}
+			} else {
+				format = strings.ToLower(format)
+			}
+
+			var importer docinterop.Importer
+			switch format {
+			case "docx":
+				importer = docinterop.NewDocxImporter()
+			case "odt":
+				importer = docinterop.NewOdtImporter()
+			default:
+				return fmt.Errorf("unsupported import format %q", format)
+			}
+
+			srcFile, err := os.Open(srcPath)
+			if err != nil {
+				return err
+			}
+			defer srcFile.Close()
+
+			fi, err := srcFile.Stat()
+			if err != nil {
+				return err
+			}
+
+			draft, warnings, err := importer.Import(srcFile, fi.Size())
+			if err != nil {
+				return err
+			}
+			for _, w := range warnings {
+				fmt.Fprintf(streams.err, "%s\n", w.Error())
+			}
+
+			repo, service, err := openDocuments(cmd)
+			if err != nil {
+				return err
+			}
+
+			d, err := service.Create(cmd.Context(), targetPath, draft)
+			if err != nil {
+				return err
+			}
+			drainWarnings(repo, output{err: cmd.ErrOrStderr()})
+			return finishCreate(cmd, streams, d.Path, artifact.DocumentKind)
+		},
+	}
+	cmd.Flags().String("format", "", "import format: docx or odt")
+	addEditFlag(cmd)
+	return cmd
 }

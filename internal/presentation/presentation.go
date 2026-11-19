@@ -503,6 +503,9 @@ func Validate(item Presentation) error {
 	default:
 		return fmt.Errorf("unsupported font %q", item.Font)
 	}
+	if err := ValidateDirectives(item); err != nil {
+		return err
+	}
 	_, err := Parse(item.Source)
 	return err
 }

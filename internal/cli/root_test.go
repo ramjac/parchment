@@ -37,6 +37,15 @@ func (c cliRunner) run(args ...string) (string, error) {
 	return stdout.String(), err
 }
 
+func (c cliRunner) runWithStderr(args ...string) (string, string, error) {
+	c.t.Helper()
+	var stdout, stderr bytes.Buffer
+	cmd := New(&stdout, &stderr)
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	return stdout.String(), stderr.String(), err
+}
+
 func (c cliRunner) must(args ...string) string {
 	c.t.Helper()
 	out, err := c.run(args...)

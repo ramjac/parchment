@@ -15,6 +15,10 @@ remain ordinary user-named files; application state, logs, recovery drafts, and
 persistent history belong under `~/.parchment/` (local backup snapshots live
 outside `~/.parchment/` at a user-chosen destination).
 
+The implementation checklist below tracks `main`: check an item only when its
+full planned scope is implemented and merged. Partial scaffolding remains
+unchecked until it meets the milestone's acceptance criteria.
+
 ## 1. Document navigation pane and in-document link navigation
 
 Add structural navigation to documents. In-document link navigation, heading
@@ -230,7 +234,7 @@ respect `undo_limit`, and hand off undo/redo cleanly on save.
 ### 5.1 Render Markdown and graphical images in viewers and previews
 - Integrate `github.com/charmbracelet/glamour` across **Note `F5` previews,
   Document reader/preview pages, and Presentation slide views** (updating the
-  Note preview description in `README.md` when implemented), styled dynamically
+  Note preview description in `README.md` to reflect rendered Markdown), styled dynamically
   from Parchment's active theme (**Section 9**).
 - **Hybrid Document Pagination:**
   - In Document reader and `F5` preview, split the Markdown body into runs at
@@ -246,7 +250,7 @@ respect `undo_limit`, and hand off undo/redo cleanly on save.
 - **Dual-Mode Image Presentation:**
   - **In text editors:** Keep embedded images as ordinary canonical Markdown
     `![alt](image-<hash>.<ext>)` text (no virtual badge replacement).
-  - **In Document reader & `F5` preview (and Presentation slides in Phase 4):**
+  - **In Document reader & `F5` preview and Presentation slides (PR 26):**
     Decode embedded `PNG`, `JPEG`, and `GIF` payloads and render them
     proportionally. Detect Kitty, Sixel, and iTerm2 graphics support strictly
     via environment variables (`KITTY_WINDOW_ID`, `TERM`, `TERM_PROGRAM`,
@@ -704,9 +708,10 @@ Glamour views bound strictly to the user's terminal emulator font.
     - `--format pdf` renders paginated pages (respecting page size, orientation,
       margins, columns, headers, footers, page numbers, embedded images, and the
       selected PostScript/PDF core font family `Courier`, `Helvetica`, or
-      `Times-Roman`) via a pure-Go PDF writer in `internal/pdfrender` (shared
-      with Phase 4 `presentation export --format pdf`), writing to `-o` (refusing
-      overwrite without `--force`) or `stdout`.
+      `Times-Roman`), with Markdown heading/inline styles and embedded
+      inline/reference-style images, via a pure-Go PDF writer in
+      `internal/pdfrender` (shared with Phase 4 `presentation export --format
+      pdf`), writing to `-o` (refusing overwrite without `--force`) or `stdout`.
 
 ### PR Breakdown
 - **PR 22:** Add validated `Font` (`courier`|`helvetica`|`times`) to
@@ -721,12 +726,15 @@ Glamour views bound strictly to the user's terminal emulator font.
 - **PR 23b:** Add multi-column page layout, running headers/footers with dynamic
   page numbers, and page breaks to `internal/pdfrender`.
 - **PR 23c:** Add embedded image rendering to `internal/pdfrender` (`DCTDecode`
-  for JPEG; `FlateDecode` RGB with `SMask` alpha for PNG/GIF).
+  for JPEG; `FlateDecode` RGB with `SMask` alpha for PNG/GIF), including
+  reference-style images; preserve Markdown headings, emphasis, links, and code
+  styling in PDF output.
 
 **Acceptance:** Documents and presentations persist validated core font
 selections (`courier`, `helvetica`, `times`), `document print --format pdf`
-renders pages in the selected font while `--format text` preserves `lpr` text
-output, and terminal views never alter terminal fonts.
+renders Markdown-styled pages with embedded images in the selected font while
+`--format text` preserves `lpr` text output, and terminal views never alter
+terminal fonts.
 
 ## Implementation Order (PR-by-PR Execution Checklist)
 
@@ -795,59 +803,59 @@ flowchart TD
 ```
 
 ### Phase 1: Foundations & Bug Fixes (PRs 1–6)
-- [ ] **PR 1 — Fix Note Editor Border Sizing (Section 5.2):** Fix Lip Gloss outer border dimensions (`width-2` / `height-chromeRows-2`) in `internal/tui/model.go` and `internal/tui/note_editor.go` with row/column budget tests.
-- [ ] **PR 2 — Config Validation & Rotated `slog` File Logging (Section 9):** Validate `logging.level` (`debug|info|warn|error|off`) and `logging.format` (`text|json`) in `internal/config` and wire `5 MiB`-rotated `slog` logging (`~/.parchment/parchment.log` -> `parchment.log.1`, `0600`) with minimal save/conflict/restore log events.
-- [ ] **PR 3 — `[theme]` Config & Dynamic TUI Palette (Section 9):** Parse/validate `[theme]` (`mode` + optional hex overrides) and `PARCHMENT_THEME`, replacing hardcoded Lip Gloss colors across all TUI models (`auto` keeps `lipgloss.AdaptiveColor`).
-- [ ] **PR 4 — Opt-In Local Backup Snapshots (Section 9):** Default `backup.local.destination` to `""`, pass options struct into `filerepo.New`, add `PARCHMENT_BACKUP_DESTINATION`, reject paths inside `~/.parchment/`, and implement atomic post-save snapshots (`<stem>-<8char-hash>-<YYYYMMDDTHHMMSSZ><ext>`), 10-copy pruning, and non-fatal warning draining (`repo.Warnings()`) in CLI and TUI.
-- [ ] **PR 5 — Editor Literal Tabs, `UndoLimit` & Save Handoff (Section 4):** Preserve literal `\t` runes rendered at 4-column tab stops (while `Tab` inserts 2 spaces), drop `\t` rejection from `isUnpreservableText`, bound snapshots by `Settings.UndoLimit`, and reset unsaved keystroke undo on `Ctrl+S`.
-- [ ] **PR 6 — Editor `go-runewidth` Soft Wrapping (Section 4):** Implement CJK/emoji-aware soft line wrapping, visual row `Up`/`Down` with `StickyCol`, and wrapped mouse/selection coordinate mapping in `internal/tui/editor`.
+- [x] **PR 1 — Fix Note Editor Border Sizing (Section 5.2):** Fix Lip Gloss outer border dimensions (`width-2` / `height-chromeRows-2`) in `internal/tui/model.go` and `internal/tui/note_editor.go` with row/column budget tests.
+- [x] **PR 2 — Config Validation & Rotated `slog` File Logging (Section 9):** Validate `logging.level` (`debug|info|warn|error|off`) and `logging.format` (`text|json`) in `internal/config` and wire `5 MiB`-rotated `slog` logging (`~/.parchment/parchment.log` -> `parchment.log.1`, `0600`) with minimal save/conflict/restore log events.
+- [x] **PR 3 — `[theme]` Config & Dynamic TUI Palette (Section 9):** Parse/validate `[theme]` (`mode` + optional hex overrides) and `PARCHMENT_THEME`, replacing hardcoded Lip Gloss colors across all TUI models (`auto` keeps `lipgloss.AdaptiveColor`).
+- [x] **PR 4 — Opt-In Local Backup Snapshots (Section 9):** Default `backup.local.destination` to `""`, pass options struct into `filerepo.New`, add `PARCHMENT_BACKUP_DESTINATION`, reject paths inside `~/.parchment/`, and implement atomic post-save snapshots (`<stem>-<8char-hash>-<YYYYMMDDTHHMMSSZ><ext>`), 10-copy pruning, and non-fatal warning draining (`repo.Warnings()`) in CLI and TUI.
+- [x] **PR 5 — Editor Literal Tabs, `UndoLimit` & Save Handoff (Section 4):** Preserve literal `\t` runes rendered at 4-column tab stops (while `Tab` inserts 2 spaces), drop `\t` rejection from `isUnpreservableText`, bound snapshots by `Settings.UndoLimit`, and reset unsaved keystroke undo on `Ctrl+S`.
+- [x] **PR 6 — Editor `go-runewidth` Soft Wrapping (Section 4):** Implement CJK/emoji-aware soft line wrapping, visual row `Up`/`Down` with `StickyCol`, and wrapped mouse/selection coordinate mapping in `internal/tui/editor`.
 
 ### Phase 2: State Safety & CLI Core (PRs 7–13)
-- [ ] **PR 7 — Buffered `Ctrl+S` Spreadsheet TUI Editing (Section 3):** Convert `spreadsheetModel` from immediate per-cell disk writes on `Enter` to buffered workbook editing with `Ctrl+S` save committing 1 service history entry, in-session buffer undo/redo (`u`/`Ctrl+Z`/`Ctrl+R`), clean handoff to service undo/redo, and `Esc`/`q` dirty-close confirmation.
-- [ ] **PR 8 — Spreadsheet Autosave Recovery Drafts (Section 3):** Add `spreadsheetRecoveryData` snapshot schema (`baseline`, `dirty`, cursor, pending cell input), cancellable autosave ticks, reopen prompts, and conflict checks.
-- [ ] **PR 9 — Presentation Autosave Recovery Drafts (Section 3):** Add `presentationRecoveryData` snapshot schema (`baseline`, `source`), cancellable autosave ticks, reopen directly into Markdown source editing (`editing = true`), and conflict checks.
-- [ ] **PR 10 — Explicit Plain Markdown CLI Conversion (Section 2):** Add `parchment convert <file> [--kind document|note|presentation] [--yes]` (default `document`, TTY `[y/N]` prompt, `created_at` from file `mtime` UTC).
-- [ ] **PR 11 — `#REF!` Persistence & Spreadsheet Deletion (Section 11):** Add `spreadsheet.ErrorValue("#REF!")` sentinel allowing error formulas to evaluate and save cleanly while rejecting malformed syntax; add 1-based `delete-row`, `delete-column`, and `delete-sheet` (CLI + TUI shortcuts) with formula shifting.
-- [ ] **PR 12 — Spreadsheet CSV Export (Section 11):** Add `parchment spreadsheet export <file> --csv [--sheet] [-o] [--force]` writing RFC 4180 CSV (`stdout` and first-sheet defaults).
-- [ ] **PR 13 — Document Embedded Image CLI (Section 12):** Add `document images` (`WxH` tab-separated output), `image-extract -o [--force]`, and `image-remove [--strip-references]` (guarded against active body and pending-proposal references).
+- [ ] **PR 7 — Buffered `Ctrl+S` Spreadsheet TUI Editing (Section 3; implemented in current branch, pending merge):** Convert `spreadsheetModel` from immediate per-cell disk writes on `Enter` to buffered workbook editing with `Ctrl+S` save committing 1 service history entry, in-session buffer undo/redo (`u`/`Ctrl+Z`/`Ctrl+R`), clean handoff to service undo/redo, and `Esc`/`q` dirty-close confirmation.
+- [ ] **PR 8 — Spreadsheet Autosave Recovery Drafts (Section 3; implemented in current branch, pending merge):** Add `spreadsheetRecoveryData` snapshot schema (`baseline`, `dirty`, cursor, pending cell input), cancellable autosave ticks, reopen prompts, and conflict checks after PR 7 provides buffered dirty workbook state.
+- [x] **PR 9 — Presentation Autosave Recovery Drafts (Section 3):** Add `presentationRecoveryData` snapshot schema (`baseline`, `source`), cancellable autosave ticks, reopen directly into Markdown source editing (`editing = true`), and conflict checks.
+- [x] **PR 10 — Explicit Plain Markdown CLI Conversion (Section 2):** Add `parchment convert <file> [--kind document|note|presentation] [--yes]` (default `document`, TTY `[y/N]` prompt, `created_at` from file `mtime` UTC).
+- [x] **PR 11 — `#REF!` Persistence & Spreadsheet Deletion (Section 11):** Add `spreadsheet.ErrorValue("#REF!")` sentinel allowing error formulas to evaluate and save cleanly while rejecting malformed syntax; add 1-based `delete-row`, `delete-column`, and `delete-sheet` (CLI + TUI shortcuts) with formula shifting.
+- [x] **PR 12 — Spreadsheet CSV Export (Section 11):** Add `parchment spreadsheet export <file> --csv [--sheet] [-o] [--force]` writing RFC 4180 CSV (`stdout` and first-sheet defaults).
+- [x] **PR 13 — Document Embedded Image CLI (Section 12):** Add `document images` (`WxH` tab-separated output), `image-extract -o [--force]`, and `image-remove [--strip-references]` (guarded against active body and pending-proposal references).
 
 ### Phase 3: Rendering & TUI Features (PRs 14–23)
-- [ ] **PR 14 — Glamour Markdown Hybrid Pagination (Section 5.1):** Render Note `F5` previews, Document reader/preview pages, and Presentation slides via themed Glamour, using hybrid directive-split column rendering flowed into printer pages with header/footer composers.
-- [ ] **PR 15a — `termimg` Truecolor ANSI Half-Block Fallback (Section 5.1):** Implement `internal/tui/termimg` 24-bit half-block renderer (`▀`/`▄`), terminal environment protocol detection, and fallback wiring for Document reader and `F5` preview.
+- [x] **PR 14 — Glamour Markdown Hybrid Pagination (Section 5.1):** Render Note `F5` previews, Document reader/preview pages, and Presentation slides via themed Glamour, using hybrid directive-split column rendering flowed into printer pages with header/footer composers.
+- [x] **PR 15a — `termimg` Truecolor ANSI Half-Block Fallback (Section 5.1):** Implement `internal/tui/termimg` 24-bit half-block renderer (`▀`/`▄`), terminal environment protocol detection, and fallback wiring for Document reader and `F5` preview.
 - [ ] **PR 15b — `termimg` Kitty & iTerm2 Graphics Protocols (Section 5.1):** Implement direct terminal image display for Kitty and iTerm2 protocols with cell aspect scaling.
 - [ ] **PR 15c — `termimg` Pure-Go Sixel Graphics Protocol (Section 5.1):** Implement pure-Go Sixel encoder with color quantization.
-- [ ] **PR 16 — Unified Bordered Application Chrome (Section 5.3):** Share consistent top header/help bar, `NormalBorder()` content frame, and bottom status/undo bar across Note, Document, Spreadsheet, and Presentation screens.
-- [ ] **PR 17 — Document Slugging, Anchors & Outline Parser (Section 1):** Add GitHub-compatible heading slugger (`-1`/`-2` suffixes), `<a id|name>` anchor extraction, fenced-code exclusion, and section-break outline metadata in `internal/document`.
-- [ ] **PR 18 — Document Editor Left Outline Pane (Section 1):** Add the Document editor left navigation pane (`Ctrl+O` visibility toggle in editor & reader, `F6` focus in editor, freeing `Tab` in body to insert 2 spaces, mouse/Enter cursor jump).
-- [ ] **PR 19 — Clickable Internal Links in Reader & Preview (Section 1):** Pre-render link rewrite (suppressing destination URLs in Glamour) + ordered post-render ANSI line coordinate tracking across columns and mouse click navigation in Document reader/preview.
+- [x] **PR 16 — Unified Bordered Application Chrome (Section 5.3):** Share consistent top header/help bar, `NormalBorder()` content frame, and bottom status/undo bar across Note, Document, Spreadsheet, and Presentation screens.
+- [x] **PR 17 — Document Slugging, Anchors & Outline Parser (Section 1):** Add GitHub-compatible heading slugger (`-1`/`-2` suffixes), `<a id|name>` anchor extraction, fenced-code exclusion, and section-break outline metadata in `internal/document`.
+- [x] **PR 18 — Document Editor Left Outline Pane (Section 1):** Add the Document editor left navigation pane (`Ctrl+O` visibility toggle in editor & reader, `F6` focus in editor, freeing `Tab` in body to insert 2 spaces, mouse/Enter cursor jump).
+- [x] **PR 19 — Clickable Internal Links in Reader & Preview (Section 1):** Pre-render link rewrite (suppressing destination URLs in Glamour) + ordered post-render ANSI line coordinate tracking across columns and mouse click navigation in Document reader/preview.
 - [ ] **PR 20 — Smart-Case Find Bar & Editor Match Highlighting (Section 10):** Build the shared `Ctrl+F` bottom find bar and `editor.Model` match-span highlighter across Note, Document, and Presentation text editors.
 - [ ] **PR 21 — Reader, Multi-Sheet Grid & Slide/Notes Search (Section 10):** Extend `Ctrl+F`, `/`, and `n`/`N` smart-case search to Document reader/preview (ANSI stripping + `charmbracelet/x/ansi` re-styling), Note `F5` preview, all Spreadsheet sheets/formulas, and Presentation slides + auto-revealed speaker notes.
-- [ ] **PR 22 — Core Font Schema, `parchment-presentation` & Font Controls (Section 14):** Add validated `Font` (`courier`|`helvetica`|`times`) to `document.Layout` v1 and the existing `parchment-presentation` v1 block, and add CLI `--font` flags and Document/Presentation TUI controls.
-- [ ] **PR 23a — Core Pure-Go PDF Writer with AFM Metrics (Section 14):** Implement `internal/pdfrender` with embedded standard-14 AFM width tables (Courier, Helvetica, Times-Roman), point-based single-column text layout, and `document print [--format text|pdf] [-o] [--force]`.
-- [ ] **PR 23b — PDF Multi-Column Layout & Running Headers/Footers (Section 14):** Add multi-column sections, running headers/footers with dynamic `{page}`/`{pages}` fields, and explicit page breaks to `internal/pdfrender`.
-- [ ] **PR 23c — PDF Embedded Image Rendering (Section 14):** Add embedded image support to `internal/pdfrender` (`DCTDecode` JPEG + `FlateDecode` RGB/SMask PNG).
+- [x] **PR 22 — Core Font Schema, `parchment-presentation` & Font Controls (Section 14):** Add validated `Font` (`courier`|`helvetica`|`times`) to `document.Layout` v1 and the existing `parchment-presentation` v1 block, and add CLI `--font` flags and Document/Presentation TUI controls.
+- [x] **PR 23a — Core Pure-Go PDF Writer with AFM Metrics (Section 14):** Implement `internal/pdfrender` with standard-14 AFM metrics (Courier, Helvetica, Times-Roman), point-based page output, and `document print [--format text|pdf] [-o] [--force]`.
+- [x] **PR 23b — PDF Multi-Column Layout & Running Headers/Footers (Section 14):** Render multi-column sections, running headers/footers with dynamic `{page}`/`{pages}` fields, and explicit page breaks through the shared document paginator.
+- [x] **PR 23c — PDF Markdown Styling & Embedded Images (Section 14):** Preserve Markdown heading/inline styles and embed inline/reference-style JPEG, PNG, and GIF images in PDF output.
 
 ### Phase 4: Extended Domain Engines (PRs 24–30)
-- [ ] **PR 24a — Tagged `Value` Union & Evaluator Migration (Section 11):** Define `type Value struct { Kind ValueKind; Num float64; Str string; Err ErrorCode }`, migrate `Evaluate` return type and callers across CLI, TUI, and CSV export, providing `Value.Float64()`.
-- [ ] **PR 24b — Formula Lexer, AST, Span Rewriter & Cross-Sheet Refs (Section 11):** Implement zero-dependency recursive-descent Lexer/AST in `internal/spreadsheet/formula` with byte spans for reference shifting, cross-sheet references (`Sheet2!A1`), and `#REF!` rewriting on sheet deletion.
+- [x] **PR 24a — Tagged `Value` Union & Evaluator Migration (Section 11):** Define `type Value struct { Kind ValueKind; Num float64; Str string; Err ErrorCode }`, migrate `Evaluate` return type and callers across CLI, TUI, and CSV export, providing `Value.Float64()`.
+- [x] **PR 24b — Formula Lexer, AST, Span Rewriter & Cross-Sheet Refs (Section 11):** Implement zero-dependency recursive-descent Lexer/AST in `internal/spreadsheet/formula` with byte spans for reference shifting, cross-sheet references (`Sheet2!A1`), and `#REF!` rewriting on sheet deletion.
 - [ ] **PR 25a — Formula Ranges & Aggregate Functions (Section 11):** Add rectangular ranges (`A1:B10`) with range shrinking/collapsing on deletion, and `SUM`, `AVERAGE`, `COUNT`, `MIN`, `MAX` with nested calls.
 - [ ] **PR 25b — Formula String Coercion & Runtime Error Propagation (Section 11):** Add `""`-escaped `StringLiteral`s with Excel/Calc coercion, and persisted `#DIV/0!`, `#CIRCULAR!`, `#VALUE!`, `#NAME?`, `#REF!` propagation.
-- [ ] **PR 26 — Presentation Embedded Images & CLI/TUI Parity (Section 13):** Add embedded `PNG`/`JPEG`/`GIF` payloads to `parchment-presentation`, `presentation image|images|image-extract|image-remove` CLI commands, and graphical TUI slide image rendering.
+- [x] **PR 26 — Presentation Embedded Images & CLI/TUI Parity (Section 13):** Add embedded `PNG`/`JPEG`/`GIF` payloads to `parchment-presentation`, `presentation image|images|image-extract|image-remove` CLI commands, and graphical TUI slide image rendering.
 - [ ] **PR 27 — Presentation `.image` & Sandboxed `.code` Directives (Section 13):** Support `.image <embedded-name> [h] [w]` and directory-confined `.code <relpath> [bounds]` (whole file, `N`, `N,M`, `/regexp/`, `/START/,/END/`, stripping `// OMIT` and `// HL`, `<= 1 MiB`, no `..`/symlink escape).
 - [ ] **PR 28 — Standalone Pure-Go Presentation HTML & PDF Export (Section 13):** Add `presentation export <file> --format html|pdf -o <output> [--notes] [--force]` (self-contained HTML with `data:` URIs + landscape PDF via `internal/pdfrender`).
 - [ ] **PR 29 — `internal/imageedit` Service & Image CLI (Section 8):** Remove Markdown-envelope `ImageKind` from `internal/artifactfile`, implement `golang.org/x/image/draw` (`CatmullRom`) crop & proportional resize (`<= 16384px`, EXIF orientation, PNG->JPEG white matte), and add `parchment image crop|resize`.
 - [ ] **PR 30 — Magic-Byte Image Routing & TUI Image View (Section 8):** Sniff PNG/JPEG magic bytes in `resolveTUITarget` before plain-note fallback and add the TUI image screen (`termimg` preview, crop/resize prompts, undo/redo, confirmed save/save-as).
 
 ### Phase 5: External Interop & Persistent History (PRs 31–38)
-- [ ] **PR 31 — `internal/docinterop` Foundation, Safety & Markdown Bridge ([`ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md)):** Bounded ZIP/XML safety reader (`128 MiB` / `1000` entries / no entities), `stderr` warning collector, Goldmark AST parser for export, and canonical Markdown emitter for import.
-- [ ] **PR 32a — DOCX Export Core Document Writer ([`ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md)):** Pure-Go `.docx` OpenXML archive writer for paragraphs, runs, headings, bold/italic/code, lists, tables, and CLI `document export --format docx` (warning on pending proposals).
-- [ ] **PR 32b — DOCX Export Layout, Headers & Images ([`ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md)):** Add page geometry, margins, running headers/footers with dynamic page numbers, and embedded `word/media/` images.
-- [ ] **PR 33a — DOCX Import Core Reader & In-Test Fixtures ([`ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md)):** Pure-Go `.docx` reader & format sniffer mapping paragraphs, runs, lists, and tables to canonical Markdown, with in-test archive builder fixtures and round-trip tests.
-- [ ] **PR 33b — DOCX Import Layout, Headers & Images ([`ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md)):** Map page geometry, margins, headers/footers, and extract embedded images to `document.NewImage`.
-- [ ] **PR 34a — ODF (`.odt`) Export Core Document Writer ([`ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md)):** Pure-Go `.odt` OpenDocument writer (`mimetype` uncompressed first) for body paragraphs, headings, lists, tables, and CLI `document export --format odt`.
-- [ ] **PR 34b — ODF (`.odt`) Export Layout, Headers & Images ([`ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md)):** Add ODF page master layout, running headers/footers, and `Pictures/` media.
-- [ ] **PR 35a — ODF (`.odt`) Import Core Reader ([`ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md)):** Pure-Go `.odt` reader mapping content and tables to canonical Markdown with in-test fixtures.
-- [ ] **PR 35b — ODF (`.odt`) Import Layout, Headers & Images ([`ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md)):** Map ODF page styles, headers/footers, and extract media, plus cross-format ODF/DOCX round-trip tests.
+- [x] **PR 31 — `internal/docinterop` Foundation, Safety & Markdown Bridge ([`ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md)):** Bounded ZIP/XML safety reader (`128 MiB` / `1000` entries / no entities), `stderr` warning collector, Goldmark AST parser for export, and canonical Markdown emitter for import.
+- [x] **PR 32a — DOCX Export Core Document Writer ([`ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md)):** Pure-Go `.docx` OpenXML archive writer for paragraphs, runs, headings, bold/italic/code, lists, tables, and CLI `document export --format docx` (warning on pending proposals).
+- [x] **PR 32b — DOCX Export Layout, Headers & Images ([`ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md)):** Add page geometry, margins, running headers/footers with dynamic page numbers, and embedded `word/media/` images.
+- [x] **PR 33a — DOCX Import Core Reader & In-Test Fixtures ([`ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md)):** Pure-Go `.docx` reader & format sniffer mapping paragraphs, runs, lists, and tables to canonical Markdown, with in-test archive builder fixtures and round-trip tests.
+- [x] **PR 33b — DOCX Import Layout, Headers & Images ([`ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md)):** Map page geometry, margins, headers/footers, and extract embedded images to `document.NewImage`.
+- [x] **PR 34a — ODF (`.odt`) Export Core Document Writer ([`ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md)):** Pure-Go `.odt` OpenDocument writer (`mimetype` uncompressed first) for body paragraphs, headings, lists, tables, and CLI `document export --format odt`.
+- [x] **PR 34b — ODF (`.odt`) Export Layout, Headers & Images ([`ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md)):** Add ODF page master layout, running headers/footers, and `Pictures/` media.
+- [x] **PR 35a — ODF (`.odt`) Import Core Reader ([`ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md)):** Pure-Go `.odt` reader mapping content and tables to canonical Markdown with in-test fixtures.
+- [x] **PR 35b — ODF (`.odt`) Import Layout, Headers & Images ([`ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md)):** Map ODF page styles, headers/footers, and extract media, plus cross-format ODF/DOCX round-trip tests.
 - [ ] **PR 36a — `history.Store`, Raw Blob Store & Crash Journal in `filerepo` ([`Persistent_Undo_Redo_Plan.md`](docs/Persistent_Undo_Redo_Plan.md)):** `history.Store` interface, `~/.parchment/history/<path-sha256>/index.json` (`entries[0]` baseline), raw blob store, `write.lock` coordination, and crash-safe two-phase `journal.json` committed inside repository write path.
 - [ ] **PR 36b — Envelope Chunk Decomposition & Exact Fallback ([`Persistent_Undo_Redo_Plan.md`](docs/Persistent_Undo_Redo_Plan.md)):** Decompose envelopes into body, block, and detached image chunks in `blobs/` with `file_digest` verification and automatic fallback to `raw_blob_hash` on non-canonical byte mismatches.
 - [ ] **PR 37 — Service/TUI Persistent History & External-Edit Checkpointing ([`Persistent_Undo_Redo_Plan.md`](docs/Persistent_Undo_Redo_Plan.md)):** Replace in-memory `history.Stack` across services with repository history methods; refuse `Undo`/`Redo` on external modification; record `"External edit"` checkpoint when saving new edits atop external changes.
