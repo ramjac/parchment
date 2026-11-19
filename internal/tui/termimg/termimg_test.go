@@ -3,10 +3,13 @@ package termimg
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/png"
+	"math/rand"
 	"strings"
 	"testing"
 )
@@ -123,6 +126,29 @@ func TestRenderImageSelectsProtocolAndReturnsCellRows(t *testing.T) {
 	}
 }
 
+func TestRenderImageRejectsOversizedDecodedDimensions(t *testing.T) {
+	data := pngHeaderWithDimensions(1<<20, 1<<20)
+	if _, _, err := RenderImage(data, 80, 24); err == nil ||
+		!strings.Contains(err.Error(), "image dimensions exceed terminal limits") {
+		t.Fatalf("RenderImage error = %v, want oversized-dimensions error", err)
+	}
+}
+
+func TestRenderPixelsDoesNotWrapITermFallback(t *testing.T) {
+	img := image.NewNRGBA(image.Rect(0, 0, 768, 768))
+	if _, err := rand.New(rand.NewSource(42)).Read(img.Pix); err != nil {
+		t.Fatal(err)
+	}
+	if got := RenderITerm2(img, 80, 24); strings.HasPrefix(got, "\x1b]1337;File=") {
+		t.Fatal("test image unexpectedly fit in an iTerm2 graphics sequence")
+	}
+	rendered, _ := RenderPixels(img, 80, 24, ProtocolITerm2)
+	if !strings.Contains(rendered, "\n") || strings.HasPrefix(rendered, "\x1b[s") ||
+		strings.HasSuffix(rendered, "\x1b[u") {
+		t.Fatalf("iTerm2 fallback was wrapped as a graphics payload: %q", rendered[:min(len(rendered), 40)])
+	}
+}
+
 func TestGraphicsProtocolsEncodePNGAtCellDimensions(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 400, 200))
 	for y := 0; y < 200; y++ {
@@ -225,6 +251,21 @@ func TestGraphicsProtocolRenderersIgnoreInvalidSizes(t *testing.T) {
 			t.Errorf("renderer with invalid dimensions = %q, want empty", got)
 		}
 	}
+}
+
+func pngHeaderWithDimensions(width, height uint32) []byte {
+	var out bytes.Buffer
+	out.Write([]byte{137, 80, 78, 71, 13, 10, 26, 10})
+	var ihdr bytes.Buffer
+	_ = binary.Write(&ihdr, binary.BigEndian, width)
+	_ = binary.Write(&ihdr, binary.BigEndian, height)
+	ihdr.Write([]byte{8, 2, 0, 0, 0})
+	_ = binary.Write(&out, binary.BigEndian, uint32(ihdr.Len()))
+	out.WriteString("IHDR")
+	out.Write(ihdr.Bytes())
+	checksum := crc32.ChecksumIEEE(append([]byte("IHDR"), ihdr.Bytes()...))
+	_ = binary.Write(&out, binary.BigEndian, checksum)
+	return out.Bytes()
 }
 
 func parseKitty(t *testing.T, rendered string) ([]string, []byte) {

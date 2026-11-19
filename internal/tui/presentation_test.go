@@ -3,6 +3,7 @@ package tui
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"image"
@@ -229,6 +230,104 @@ func TestPresentationViewRendersEmbeddedImages(t *testing.T) {
 	}
 }
 
+func TestPresentationFallbackImageRowsKeepIndentation(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+	img := documentTestImage(t)
+	m.setItem(presentation.Presentation{
+		Source: "# Deck\n\n## Slide\n\n.image " + img.Name + " 4 12\n",
+		Images: []artifact.Image{img},
+	})
+	m.page = 1
+	documentImageEnv(t, "none")
+
+	var imageRows []string
+	for _, line := range strings.Split(ansi.Strip(strings.Join(m.pageLines(), "\n")), "\n") {
+		if strings.ContainsRune(line, '▀') {
+			imageRows = append(imageRows, line)
+		}
+	}
+	if len(imageRows) < 2 {
+		t.Fatalf("fallback image rendered in %d rows: %q", len(imageRows), imageRows)
+	}
+	wantIndent := strings.IndexRune(imageRows[0], '▀')
+	for row, line := range imageRows[1:] {
+		if got := strings.IndexRune(line, '▀'); got != wantIndent {
+			t.Fatalf("fallback row %d starts at column %d, want %d: %q", row+1, got, wantIndent, line)
+		}
+	}
+}
+
+func TestPresentationImageUnderscoreMeansUnspecifiedDimension(t *testing.T) {
+	for _, directive := range []string{"_ 12", "3 _", "_ _"} {
+		t.Run(directive, func(t *testing.T) {
+			m, _, _ := newPresentationTestModel(t)
+			img := documentTestImage(t)
+			m.setItem(presentation.Presentation{
+				Source: "# Deck\n\n## Slide\n\n.image " + img.Name + " " + directive + "\n",
+				Images: []artifact.Image{img},
+			})
+			m.page = 1
+			documentImageEnv(t, "none")
+			view := ansi.Strip(m.View())
+			if strings.Contains(view, "[invalid image") || !strings.ContainsRune(view, '▀') {
+				t.Fatalf("directive .image %s did not render the image:\n%s", directive, view)
+			}
+		})
+	}
+}
+
+func TestPresentationImageRowsRemainVisibleAfterScrollingPastTop(t *testing.T) {
+	documentImageEnv(t, "kitty")
+	m, _, _ := newPresentationTestModel(t)
+	img := documentTestImage(t)
+	m.setItem(presentation.Presentation{
+		Source: "# Deck\n\n## Slide\n\nBefore image\n\n.image " + img.Name + " 4 12\n\n" +
+			"After image\n\nMore text\n\nMore text\n\nMore text\n\nMore text\n\nMore text\n\nMore text\n",
+		Images: []artifact.Image{img},
+	})
+	m.page = 1
+	m.width, m.height = 80, 14
+	lines := m.pageLines()
+	imageTop := -1
+	for row, line := range lines {
+		for marker, imageRow := range m.imageRowMarkers {
+			if imageRow.row == 0 && strings.ContainsRune(line, marker) {
+				imageTop = row
+			}
+		}
+	}
+	if imageTop < 0 || imageTop+1 > len(lines)-m.visibleLines() {
+		t.Fatalf("test image cannot be scrolled partially out of view: top=%d lines=%d", imageTop, len(lines))
+	}
+	m.scroll = imageTop + 1
+
+	view := m.View()
+	start := strings.Index(view, "\x1b_Ga=T")
+	if start < 0 {
+		t.Fatalf("image disappeared after its first row scrolled out of view:\n%s", view)
+	}
+	sequence := view[start+3:]
+	end := strings.Index(sequence, "\x1b\\")
+	if end < 0 {
+		t.Fatal("visible image crop has no Kitty terminator")
+	}
+	_, payload, ok := strings.Cut(sequence[:end], ";")
+	if !ok {
+		t.Fatal("visible image crop has no Kitty payload separator")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		t.Fatalf("decode visible image crop: %v", err)
+	}
+	config, err := png.DecodeConfig(bytes.NewReader(decoded))
+	if err != nil {
+		t.Fatalf("decode visible image crop dimensions: %v", err)
+	}
+	if config.Height >= 4*2*documentImagePixelScale {
+		t.Fatalf("visible crop height = %d, want less than full image height", config.Height)
+	}
+}
+
 type presentationRenderModel struct{ *presentationModel }
 
 func (m presentationRenderModel) Init() tea.Cmd {
@@ -392,22 +491,32 @@ func TestExamplePresentationImagePaintOrder(t *testing.T) {
 				}
 				drivePresentation(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
 				prefix := map[string]string{"kitty": "\x1b_Ga=T", "iterm": "\x1b]1337;File=", "sixel": "\x1bP0;1;0q"}[protocol]
-				source := strings.Join(m.pageLines(), "\n")
-				start := strings.Index(source, prefix)
-				if start < 0 {
-					t.Fatal("example image was not prepared")
-				}
-				rows := 0
-				for _, rendered := range m.imageRenderCache {
-					if strings.Contains(rendered.output, prefix) {
-						rows = rendered.rows
-						break
+				source := m.pageLines()
+				firstRow, rows := -1, 0
+				var pixels *image.NRGBA
+				for marker, imageRow := range m.imageRowMarkers {
+					if pixels == nil {
+						pixels = imageRow.image.pixels
 					}
+					if imageRow.image.pixels == pixels {
+						rows++
+						if imageRow.row == 0 {
+							for row, line := range source {
+								if strings.ContainsRune(line, marker) {
+									firstRow = row
+									break
+								}
+							}
+						}
+					}
+				}
+				if firstRow < 0 {
+					t.Fatal("example image was not prepared")
 				}
 				if rows < 2 {
 					t.Fatal("test image must cover multiple terminal rows")
 				}
-				firstRow := 3 + strings.Count(source[:start], "\n") - m.scroll
+				firstRow = 3 + firstRow - m.scroll
 				view := m.View()
 				paintAt := strings.Index(view, prefix)
 				if paintAt < 0 {
@@ -420,8 +529,15 @@ func TestExamplePresentationImagePaintOrder(t *testing.T) {
 				if !strings.Contains(view[:paintAt], fmt.Sprintf("\x1b[%dA", rows-1)) {
 					t.Fatal("deferred image did not return to its original top row")
 				}
-				if strings.Count(ansi.Strip(view), "\n")+1 != 24 || tuiScreenWidth(view) > 80 {
-					t.Fatal("painting the example image displaced terminal chrome")
+				if gotRows, gotWidth := strings.Count(ansi.Strip(view), "\n")+1, tuiScreenWidth(view); gotRows != 24 || gotWidth > 80 {
+					var widest string
+					for _, line := range strings.Split(ansi.Strip(view), "\n") {
+						if len([]rune(line)) > len([]rune(widest)) {
+							widest = line
+						}
+					}
+					t.Fatalf("painting the example image displaced terminal chrome: rows=%d width=%d line=%q",
+						gotRows, gotWidth, widest)
 				}
 			})
 		}

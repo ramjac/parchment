@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -79,7 +81,14 @@ type presentationEditorState struct {
 
 type renderedPresentationImage struct {
 	output string
+	pixels *image.NRGBA
+	cols   int
 	rows   int
+}
+
+type presentationImageRow struct {
+	image renderedPresentationImage
+	row   int
 }
 
 type presentationImageSlot struct {
@@ -120,6 +129,8 @@ type presentationModel struct {
 	pdfTwoUp          bool
 	find              findBar
 	imageRenderCache  map[string]renderedPresentationImage
+	imageRowMarkers   map[rune]presentationImageRow
+	nextImageMarker   rune
 	imageGraphicsUsed bool
 	imageFrame        uint64
 	imageRevision     uint64
@@ -871,6 +882,8 @@ func (m *presentationModel) pageLines() []string {
 	if !m.loaded {
 		return nil
 	}
+	m.imageRowMarkers = make(map[rune]presentationImageRow)
+	m.nextImageMarker = 0xf0000
 	width := max(1, m.width-4)
 	var text strings.Builder
 	var title string
@@ -920,14 +933,28 @@ func (m *presentationModel) pageLines() []string {
 			for slot, directive := range imageSlots {
 				if strings.Contains(plainLine, slot) {
 					remainingRows := max(m.visibleLines()-len(lines), 1)
-					image := m.renderPresentationImage(directive.name, directive.height, directive.width, remainingRows)
-					outputLines := strings.Split(image.output, "\n")
-					lines = append(lines, strings.Replace(line, slot, outputLines[0], 1))
-					for row := 1; row < max(image.rows, 1); row++ {
-						if row < len(outputLines) {
-							lines = append(lines, outputLines[row])
-						} else {
-							lines = append(lines, "")
+					slotAt := strings.Index(line, slot)
+					prefixWidth := ansi.StringWidth(line[:slotAt])
+					availableCols := max(1, width-prefixWidth)
+					image := m.renderPresentationImage(
+						directive.name, directive.height, directive.width, remainingRows, availableCols,
+					)
+					if termimg.IsGraphicsOutput(termimg.DetectProtocol(), image.output) && image.pixels != nil {
+						marker := m.nextPresentationImageMarker(body, image, 0)
+						lines = append(lines, strings.Replace(line, slot, string(marker), 1))
+						for row := 1; row < max(image.rows, 1); row++ {
+							marker := m.nextPresentationImageMarker(body, image, row)
+							lines = append(lines, strings.Repeat(" ", prefixWidth)+string(marker))
+						}
+					} else {
+						outputLines := strings.Split(image.output, "\n")
+						lines = append(lines, strings.Replace(line, slot, outputLines[0], 1))
+						for row := 1; row < max(image.rows, 1); row++ {
+							if row < len(outputLines) {
+								lines = append(lines, strings.Repeat(" ", prefixWidth)+outputLines[row])
+							} else {
+								lines = append(lines, strings.Repeat(" ", prefixWidth))
+							}
 						}
 					}
 					matchedSlot = true
@@ -942,9 +969,27 @@ func (m *presentationModel) pageLines() []string {
 	return lines
 }
 
+func (m *presentationModel) nextPresentationImageMarker(
+	source string,
+	rendered renderedPresentationImage,
+	row int,
+) rune {
+	if m.nextImageMarker < 0xf0000 {
+		m.nextImageMarker = 0xf0000
+	}
+	for {
+		marker := m.nextImageMarker
+		m.nextImageMarker++
+		if !strings.ContainsRune(source, marker) {
+			m.imageRowMarkers[marker] = presentationImageRow{image: rendered, row: row}
+			return marker
+		}
+	}
+}
+
 func (m *presentationModel) renderPresentationImage(
 	name, heightText, widthText string,
-	availableRows int,
+	availableRows, availableCols int,
 ) renderedPresentationImage {
 	var data []byte
 	for _, img := range m.item.Images {
@@ -960,9 +1005,9 @@ func (m *presentationModel) renderPresentationImage(
 		}
 	}
 
-	maxCols := max(1, m.width-4)
+	maxCols := min(max(1, m.width-4), max(availableCols, 1))
 	maxRows := max(availableRows, 1)
-	if heightText != "" {
+	if heightText != "" && heightText != "_" {
 		height, err := strconv.Atoi(heightText)
 		if err != nil || height < 1 {
 			return renderedPresentationImage{
@@ -972,7 +1017,7 @@ func (m *presentationModel) renderPresentationImage(
 		}
 		maxRows = min(maxRows, height)
 	}
-	if widthText != "" {
+	if widthText != "" && widthText != "_" {
 		width, err := strconv.Atoi(widthText)
 		if err != nil || width < 1 {
 			return renderedPresentationImage{
@@ -988,7 +1033,7 @@ func (m *presentationModel) renderPresentationImage(
 	if rendered, ok := m.imageRenderCache[cacheKey]; ok {
 		return rendered
 	}
-	output, rows, err := termimg.RenderImage(data, maxCols, maxRows)
+	img, err := termimg.DecodeImage(data)
 	if err != nil {
 		rendered := renderedPresentationImage{
 			output: m.theme.Image.Render("[could not render image " + name + ": " + err.Error() + "]"),
@@ -997,7 +1042,22 @@ func (m *presentationModel) renderPresentationImage(
 		m.imageRenderCache[cacheKey] = rendered
 		return rendered
 	}
-	rendered := renderedPresentationImage{output: output, rows: max(rows, 1)}
+	cols, rows := termimg.CellSize(img, maxCols, maxRows)
+	output, rows := termimg.RenderPixels(img, maxCols, maxRows, termimg.DetectProtocol())
+	rendered := renderedPresentationImage{output: output, cols: cols, rows: max(rows, 1)}
+	if termimg.IsGraphicsOutput(termimg.DetectProtocol(), output) {
+		scaled := image.NewNRGBA(image.Rect(0, 0,
+			cols*documentImagePixelScale, rows*2*documentImagePixelScale))
+		bounds := img.Bounds()
+		for y := 0; y < scaled.Bounds().Dy(); y++ {
+			for x := 0; x < scaled.Bounds().Dx(); x++ {
+				sourceX := bounds.Min.X + x*bounds.Dx()/scaled.Bounds().Dx()
+				sourceY := bounds.Min.Y + y*bounds.Dy()/scaled.Bounds().Dy()
+				scaled.Set(x, y, img.At(sourceX, sourceY))
+			}
+		}
+		rendered.pixels = scaled
+	}
 	m.imageRenderCache[cacheKey] = rendered
 	return rendered
 }
@@ -1025,48 +1085,68 @@ func (m *presentationModel) View() string {
 }
 
 func (m *presentationModel) paintPresentationImages(view string) string {
-	rows := make(map[string]int, len(m.imageRenderCache))
-	for _, rendered := range m.imageRenderCache {
-		rows[rendered.output] = rendered.rows
-	}
 	type placement struct {
-		top, last, x int
-		output       string
+		top, last, x, width, sourceRow int
+		image                          renderedPresentationImage
 	}
 	var images []placement
 	lines := strings.Split(view, "\n")
-	const save, restore = "\x1b[s", "\x1b[u"
 	for row, line := range lines {
+		var painted strings.Builder
 		for offset := 0; offset < len(line); {
-			start := strings.Index(line[offset:], save)
-			if start < 0 {
-				break
-			}
-			start += offset
-			end := strings.Index(line[start:], restore)
-			if end < 0 {
-				break
-			}
-			end += start + len(restore)
-			output := line[start:end]
-			height, found := rows[output]
+			marker, size := utf8.DecodeRuneInString(line[offset:])
+			rowInfo, found := m.imageRowMarkers[marker]
 			if !found {
-				offset = end
+				painted.WriteString(line[offset : offset+size])
+				offset += size
 				continue
 			}
-			last := row + height - 1
-			if last < len(lines) {
+			x := ansi.StringWidth(line[:offset])
+			width := min(rowInfo.image.cols, max(m.width-x-1, 0))
+			painted.WriteByte(' ')
+			if width == 0 {
+				offset += size
+				continue
+			}
+			merged := false
+			for p := range images {
+				previous := &images[p]
+				if previous.image.pixels == rowInfo.image.pixels && previous.x == x && previous.width == width &&
+					previous.sourceRow+previous.last-previous.top+1 == rowInfo.row &&
+					previous.last+1 == row {
+					previous.last = row
+					merged = true
+					break
+				}
+			}
+			if !merged {
 				images = append(images, placement{
-					top: row, last: last, x: ansi.StringWidth(line[:start]),
-					output: output[len(save) : len(output)-len(restore)],
+					top: row, last: row, x: x, width: width,
+					sourceRow: rowInfo.row, image: rowInfo.image,
 				})
 			}
-			line = line[:start] + line[end:]
-			offset = start
+			offset += size
 		}
-		lines[row] = line
+		lines[row] = painted.String()
 	}
 	for _, img := range images {
+		scale := documentImagePixelScale
+		top := img.sourceRow * 2 * scale
+		height := (img.last - img.top + 1) * 2 * scale
+		cropped := img.image.pixels.SubImage(image.Rect(0, top,
+			img.width*scale, top+height))
+		var output string
+		switch termimg.DetectProtocol() {
+		case termimg.ProtocolKitty:
+			output = termimg.RenderKitty(cropped, img.width, img.last-img.top+1)
+		case termimg.ProtocolITerm2:
+			output = termimg.RenderITerm2(cropped, img.width, img.last-img.top+1)
+		case termimg.ProtocolSixel:
+			output = termimg.RenderSixel(cropped, img.width, img.last-img.top+1)
+		}
+		if output == "" {
+			continue
+		}
 		// Text repaints erase Sixel and iTerm2 pixels. Paint only after the
 		// entire image rectangle, including its blank rows, has been written.
 		position := "\r"
@@ -1076,7 +1156,7 @@ func (m *presentationModel) paintPresentationImages(view string) string {
 		if img.x > 0 {
 			position += fmt.Sprintf("\x1b[%dC", img.x)
 		}
-		lines[img.last] += save + position + img.output + restore
+		lines[img.last] += "\x1b[s" + position + output + "\x1b[u"
 	}
 	return strings.Join(lines, "\n")
 }
