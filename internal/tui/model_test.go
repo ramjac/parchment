@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/filerepo"
 	"example.com/parchment/internal/note"
@@ -70,6 +71,10 @@ func (h *harness) open(kind artifact.Kind) {
 
 // openWith starts a session; edit opens an existing document in its editor.
 func (h *harness) openWith(kind artifact.Kind, edit bool) {
+	h.openWithTheme(kind, edit, config.Theme{})
+}
+
+func (h *harness) openWithTheme(kind artifact.Kind, edit bool, theme config.Theme) {
 	h.t.Helper()
 	lastPDFPath, err := h.repo.LastPDFPath(context.Background())
 	if err != nil {
@@ -78,6 +83,7 @@ func (h *harness) openWith(kind artifact.Kind, edit bool) {
 	model := NewModel(Config{
 		Path: h.path, Kind: kind, Edit: edit, Notes: h.notes, Documents: h.docs,
 		Spreadsheets: h.sheets, Presentations: h.decks, Recovery: h.repo, UndoLimit: h.undoLimit,
+		Theme:    theme,
 		PDFStore: h.repo, LastPDFPath: lastPDFPath,
 	})
 	h.m, h.quit = &model, false
@@ -87,6 +93,13 @@ func (h *harness) openWith(kind artifact.Kind, edit bool) {
 		s.promptInput.Cursor.SetMode(cursor.CursorStatic)
 	}
 	h.m.pdfInput.Cursor.SetMode(cursor.CursorStatic)
+	h.m.noteEditor.find.input.Cursor.SetMode(cursor.CursorStatic)
+	if h.m.documents != nil {
+		h.m.documents.find.input.Cursor.SetMode(cursor.CursorStatic)
+	}
+	if h.m.deck != nil {
+		h.m.deck.find.input.Cursor.SetMode(cursor.CursorStatic)
+	}
 	if s := h.m.sheet; s != nil {
 		s.input.Cursor.SetMode(cursor.CursorStatic)
 	}
@@ -105,11 +118,17 @@ func (h *harness) send(message tea.Msg) {
 	if h.m.deck != nil {
 		h.m.deck.autosaveScheduler = nil
 		h.m.deck.pdfInput.Cursor.SetMode(cursor.CursorStatic)
+		h.m.deck.find.input.Cursor.SetMode(cursor.CursorStatic)
+	}
+	h.m.noteEditor.find.input.Cursor.SetMode(cursor.CursorStatic)
+	if h.m.documents != nil {
+		h.m.documents.find.input.Cursor.SetMode(cursor.CursorStatic)
 	}
 	if h.m.sheet != nil {
 		h.m.sheet.autosaveScheduler = nil
 		h.m.sheet.input.Cursor.SetMode(cursor.CursorStatic)
 		h.m.sheet.pdfInput.Cursor.SetMode(cursor.CursorStatic)
+		h.m.sheet.find.input.Cursor.SetMode(cursor.CursorStatic)
 	}
 	_, cmd := h.m.Update(message)
 	if h.m.sheet != nil {
@@ -175,6 +194,36 @@ func (h *harness) key(key string) {
 func (h *harness) typeText(text string) {
 	h.t.Helper()
 	h.send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text)})
+}
+
+func TestNoteEditorFindBarSearchAndClose(t *testing.T) {
+	h := newHarness(t, artifact.NoteKind)
+	h.typeText("alpha ALPHA alpha")
+	h.send(tea.KeyMsg{Type: tea.KeyCtrlF})
+	if !h.m.find.active || h.m.bodyInput.Focused {
+		t.Fatal("find bar did not take focus from the note editor")
+	}
+
+	h.typeText("alpha")
+	if h.m.bodyInput.MatchCount() != 3 || h.m.bodyInput.Cursor.Col != 0 ||
+		!strings.Contains(h.m.View(), "Find: alpha") || !strings.Contains(h.m.View(), "1/3") {
+		t.Fatalf("live search state: matches=%d cursor=%+v view=%q",
+			h.m.bodyInput.MatchCount(), h.m.bodyInput.Cursor, h.m.View())
+	}
+	h.send(tea.KeyMsg{Type: tea.KeyEnter})
+	if h.m.bodyInput.Cursor.Col != 6 || h.m.bodyInput.ActiveMatch() != 1 {
+		t.Fatalf("next match cursor=%+v active=%d", h.m.bodyInput.Cursor, h.m.bodyInput.ActiveMatch())
+	}
+	h.send(tea.KeyMsg{Type: tea.KeyUp})
+	if h.m.bodyInput.Cursor.Col != 0 || h.m.bodyInput.ActiveMatch() != 0 {
+		t.Fatalf("previous match cursor=%+v active=%d", h.m.bodyInput.Cursor, h.m.bodyInput.ActiveMatch())
+	}
+	h.send(tea.KeyMsg{Type: tea.KeyEsc})
+	if h.m.find.active || h.m.bodyInput.MatchCount() != 0 || !h.m.bodyInput.Focused ||
+		h.m.bodyInput.Cursor.Col != 0 {
+		t.Fatalf("closing find did not clear highlighting and restore focus: active=%t matches=%d editorFocused=%t cursor=%+v",
+			h.m.find.active, h.m.bodyInput.MatchCount(), h.m.bodyInput.Focused, h.m.bodyInput.Cursor)
+	}
 }
 
 func (h *harness) hasDraft() bool {
@@ -284,6 +333,50 @@ func TestNoteSaveStaysInEditorAndCloseQuits(t *testing.T) {
 	h.key("esc")
 	if !h.quit {
 		t.Fatal("Esc on a clean editor did not quit")
+	}
+}
+
+func TestNoteSavePreservesEditorViewState(t *testing.T) {
+	h := newHarness(t, artifact.NoteKind)
+	h.m.bodyInput.SetValue(strings.Repeat("a line of content\n", 30))
+	wantCursor := editor.Point{Line: 20, Col: 4}
+	wantSelection := editor.Selection{
+		Anchor: editor.Point{Line: 19, Col: 1},
+		Active: true,
+	}
+	h.m.bodyInput.Cursor = wantCursor
+	h.m.bodyInput.Selection = wantSelection
+	h.m.bodyInput.TopLine = 12
+	h.m.bodyInput.TopRowOffset = 0
+	h.m.bodyInput.Focus()
+
+	h.key("ctrl+s")
+
+	if h.m.dirty() || h.m.bodyInput.Value() != strings.Repeat("a line of content\n", 30) {
+		t.Fatal("successful save did not preserve the saved editor content")
+	}
+	if h.m.bodyInput.Cursor != wantCursor ||
+		h.m.bodyInput.Selection != wantSelection ||
+		h.m.bodyInput.TopLine != 12 ||
+		h.m.bodyInput.TopRowOffset != 0 ||
+		!h.m.bodyInput.Focused {
+		t.Fatalf("save changed editor view state: cursor=%+v selection=%+v top=%d/%d focused=%t",
+			h.m.bodyInput.Cursor, h.m.bodyInput.Selection, h.m.bodyInput.TopLine,
+			h.m.bodyInput.TopRowOffset, h.m.bodyInput.Focused)
+	}
+
+	h.send(autosaveFinishedMsg{session: h.m.autosaveSession, err: errors.New("autosave failed")})
+	h.send(tea.WindowSizeMsg{Width: 120, Height: 40})
+	h.key("f5")
+	h.key("f5")
+	if h.m.bodyInput.Cursor != wantCursor ||
+		h.m.bodyInput.Selection != wantSelection ||
+		h.m.bodyInput.TopLine != 12 ||
+		h.m.bodyInput.TopRowOffset != 0 ||
+		!h.m.bodyInput.Focused {
+		t.Fatalf("background update, resize, or preview transition changed editor view state: cursor=%+v selection=%+v top=%d/%d focused=%t",
+			h.m.bodyInput.Cursor, h.m.bodyInput.Selection, h.m.bodyInput.TopLine,
+			h.m.bodyInput.TopRowOffset, h.m.bodyInput.Focused)
 	}
 }
 
@@ -1480,9 +1573,16 @@ func TestNoteEditorAcceptsLiteralTabsAndHandsOffUndoOnSave(t *testing.T) {
 
 	h.typeText("unsaved")
 	unsaved := h.m.bodyInput.Value()
+	wantCursor := editor.Point{Line: 0, Col: 2}
+	wantSelection := editor.Selection{Anchor: editor.Point{Line: 0, Col: 1}, Active: true}
+	h.m.bodyInput.Cursor = wantCursor
+	h.m.bodyInput.Selection = wantSelection
+	h.m.bodyInput.TopLine = 0
+	h.m.bodyInput.TopRowOffset = 0
 	h.m.handleNoteSaved(noteSavedMsg{err: errors.New("save failed")})
-	if !h.m.bodyInput.CanUndo() || h.m.bodyInput.Value() != unsaved {
-		t.Fatal("failed note save discarded the unsaved keystroke history")
+	if !h.m.bodyInput.CanUndo() || h.m.bodyInput.Value() != unsaved ||
+		h.m.bodyInput.Cursor != wantCursor || h.m.bodyInput.Selection != wantSelection {
+		t.Fatal("failed note save changed the unsaved draft or editor state")
 	}
 }
 

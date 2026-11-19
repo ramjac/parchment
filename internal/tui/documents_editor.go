@@ -135,7 +135,7 @@ const toolbarTop = 2
 func (s *documentsScreen) toolbarView() string {
 	placed, rows := s.buttonLayout(max(s.width, 20))
 	buttons := s.toolbarButtons()
-	normal := lipgloss.NewStyle().Foreground(s.theme.Primary).Background(s.theme.Selection)
+	normal := s.theme.Selection
 	active := normal.Reverse(true).Bold(true)
 	lineBuilders := make([]strings.Builder, rows)
 	groupSeen := make([]string, rows)
@@ -186,13 +186,17 @@ func (s *documentsScreen) startEdit(d document.Document) (tea.Cmd, bool) {
 
 // loadDocument makes d the saved state of the editor.
 func (s *documentsScreen) loadDocument(d document.Document) {
+	s.body.SetValue(d.Body)
+	s.markSaved(d)
+}
+
+func (s *documentsScreen) markSaved(d document.Document) {
 	s.snapshot, s.lastAutosave = d, nil
 	s.layout = d.Layout
 	if s.layout == (document.Layout{}) {
 		s.layout = document.DefaultLayout()
 	}
 	s.images = d.Images
-	s.body.SetValue(d.Body)
 	s.original = s.currentDraft()
 	s.discardWarning = false
 }
@@ -353,6 +357,28 @@ func (s *documentsScreen) editorDocument() document.Document {
 }
 
 func (s *documentsScreen) updatePreviewKey(msg tea.KeyMsg) tea.Cmd {
+	if s.find.active {
+		return s.updatePreviewFindKey(msg)
+	}
+	key := msg.String()
+	if s.find.visible {
+		switch key {
+		case "n":
+			s.movePreviewMatch(1)
+			return nil
+		case "N":
+			s.movePreviewMatch(-1)
+			return nil
+		case "esc":
+			s.find.close()
+			s.searchPreview("")
+			return nil
+		}
+	}
+	if key == "/" || key == "ctrl+f" {
+		s.searchPreview(s.find.query())
+		return s.find.open(s.width)
+	}
 	switch msg.String() {
 	case "esc", "f5", "q":
 		s.previewing = false
@@ -373,6 +399,55 @@ func (s *documentsScreen) updatePreviewKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	s.clampPreviewLine()
 	return nil
+}
+
+func (s *documentsScreen) searchPreview(query string) {
+	s.previewMatches = nil
+	for page, content := range s.editPages {
+		s.previewMatches = append(s.previewMatches, renderedMatches(content.Lines, query, page)...)
+	}
+	s.previewMatch = -1
+	if len(s.previewMatches) > 0 {
+		s.previewMatch = 0
+		s.gotoPreviewMatch()
+	}
+}
+
+func (s *documentsScreen) gotoPreviewMatch() {
+	if s.previewMatch < 0 || s.previewMatch >= len(s.previewMatches) {
+		return
+	}
+	match := s.previewMatches[s.previewMatch]
+	s.editPage, s.editPageLine = match.page, max(match.row-1, 0)
+	s.clampPreviewLine()
+}
+
+func (s *documentsScreen) movePreviewMatch(step int) {
+	if len(s.previewMatches) == 0 {
+		return
+	}
+	s.previewMatch = (s.previewMatch + step) % len(s.previewMatches)
+	if s.previewMatch < 0 {
+		s.previewMatch += len(s.previewMatches)
+	}
+	s.gotoPreviewMatch()
+}
+
+func (s *documentsScreen) updatePreviewFindKey(msg tea.Msg) tea.Cmd {
+	action, cmd := s.find.update(msg)
+	switch action {
+	case findChanged:
+		s.searchPreview(s.find.query())
+	case findNext:
+		s.movePreviewMatch(1)
+		s.find.blur()
+	case findPrevious:
+		s.movePreviewMatch(-1)
+		s.find.blur()
+	case findClosed:
+		s.searchPreview("")
+	}
+	return cmd
 }
 
 func (s *documentsScreen) updateEditorShortcuts(msg tea.KeyMsg, key string) (tea.Cmd, bool) {
@@ -434,6 +509,14 @@ func (s *documentsScreen) updateEditorKey(msg tea.KeyMsg) tea.Cmd {
 	if s.previewing {
 		return s.updatePreviewKey(msg)
 	}
+	if s.find.active {
+		return s.updateFindKey(msg)
+	}
+	if key == "ctrl+f" {
+		s.body.Blur()
+		s.body.SetSearch(s.find.query())
+		return s.find.open(s.width)
+	}
 	if key != "esc" && key != "ctrl+c" {
 		s.discardWarning = false
 	}
@@ -461,6 +544,22 @@ func (s *documentsScreen) updateEditorKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	var cmd tea.Cmd
 	s.body, cmd = s.body.Update(msg)
+	return cmd
+}
+
+func (s *documentsScreen) updateFindKey(msg tea.Msg) tea.Cmd {
+	action, cmd := s.find.update(msg)
+	switch action {
+	case findChanged:
+		s.body.SetSearch(s.find.query())
+	case findNext:
+		s.body.MoveToMatch(1)
+	case findPrevious:
+		s.body.MoveToMatch(-1)
+	case findClosed:
+		s.body.ClearSearch()
+		return tea.Batch(cmd, s.focusBody())
+	}
 	return cmd
 }
 
@@ -607,6 +706,9 @@ func (s *documentsScreen) openPreview() {
 	s.errMessage = ""
 	s.outline, _ = document.Outline(s.editorDocument())
 	s.editPages, s.editLinks, s.editPage, s.editPageLine, s.previewing = pages, links, 0, 0, true
+	if s.find.query() != "" {
+		s.searchPreview(s.find.query())
+	}
 }
 
 func (s *documentsScreen) clickPreviewLink(x, y int) {
@@ -947,7 +1049,7 @@ func (s *documentsScreen) editorView(header string) string {
 	if s.dirty() {
 		state += " • unsaved"
 	}
-	state += "  ·  Ctrl+P exports PDF  ·  F2 toolbar  ·  F6 outline  ·  Ctrl+S saves  ·  F3 proposes  ·  F4 changes  ·  Esc returns to the reader"
+	state += "  ·  Ctrl+F find  ·  Ctrl+P exports PDF  ·  F2 toolbar  ·  F6 outline  ·  Ctrl+S saves  ·  F3 proposes  ·  F4 changes  ·  Esc returns to the reader"
 	if s.previewing {
 		// A printed page is usually taller than the terminal. Show only the
 		// lines that fit; an over-tall view would be clipped from the top,
@@ -957,6 +1059,9 @@ func (s *documentsScreen) editorView(header string) string {
 		first := min(max(s.editPageLine, 0), max(len(page.Lines)-rows, 0))
 		last := min(first+rows, len(page.Lines))
 		visible := document.Page{Lines: page.Lines[first:last]}
+		if s.find.visible && s.find.query() != "" {
+			visible.Lines = highlightLines(visible.Lines, s.find.query(), s.theme)
+		}
 		position := fmt.Sprintf("page %d/%d", s.editPage+1, len(s.editPages))
 		if len(page.Lines) > rows {
 			position += fmt.Sprintf(", lines %d–%d of %d", first+1, last, len(page.Lines))
@@ -970,6 +1075,9 @@ func (s *documentsScreen) editorView(header string) string {
 			title = runewidth.Truncate(s.promptInput.View()+help, max(s.width, 1), "…")
 		}
 		status := ansi.Truncate(s.statusLine(), max(s.width, 1), "…")
+		if s.find.visible {
+			status = s.find.view(len(s.previewMatches), s.previewMatch, s.width)
+		}
 		return header + "\n" + title + "\n" + pageText(visible, max(s.width, 1)) + "\n" + status
 	}
 	var content strings.Builder
@@ -998,7 +1106,7 @@ func (s *documentsScreen) editorView(header string) string {
 			Width(outlineWidth-1).
 			Height(outlineHeight).
 			Border(lipgloss.NormalBorder(), false, true, false, false).
-			BorderForeground(s.theme.Border).
+			BorderForeground(s.theme.BorderColor).
 			PaddingRight(1).
 			Render(strings.Join(lines, "\n"))
 		renderedPane = lipgloss.JoinHorizontal(lipgloss.Top, outlinePane, content.String())
@@ -1006,7 +1114,10 @@ func (s *documentsScreen) editorView(header string) string {
 		renderedPane = content.String()
 	}
 	status := ansi.Truncate(s.statusLine(), max(s.width, 1), "…")
-	return chromeLayout(s.width, s.height, header, shortcuts, renderedPane, status, s.theme.Border)
+	if s.find.active {
+		status = s.find.view(s.body.MatchCount(), s.body.ActiveMatch(), s.width)
+	}
+	return chromeLayout(s.width, s.height, header, shortcuts, renderedPane, status, s.theme.BorderColor)
 }
 
 func (s *documentsScreen) editorOutline() []document.Section {

@@ -4,7 +4,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
@@ -58,14 +57,14 @@ func extractAndRewriteLinks(lines []string) ([]string, []linkRef) {
 }
 
 // paginateDocumentWithLinks paginates a document using Glamour, rewrites internal links
-// so raw URLs are not printed, styles links with the primary theme color and underline,
+// so raw URLs are not printed, styles links with the shared link role,
 // and computes hit-test boxes for mouse navigation in reader and preview.
 func (s *documentsScreen) paginateDocumentWithLinks(doc document.Document) ([]document.Page, []linkHitBox, error) {
 	_, allLinks := extractAndRewriteLinks(strings.Split(doc.Body, "\n"))
 
 	pages, err := document.PaginateWithFormatter(doc, func(lines []string, width, _ int, _ string) []string {
 		rewritten, _ := extractAndRewriteLinks(lines)
-		return strings.Split(renderMarkdown(strings.Join(rewritten, "\n"), width), "\n")
+		return strings.Split(renderMarkdown(strings.Join(rewritten, "\n"), width, s.theme), "\n")
 	})
 	if err != nil {
 		return nil, nil, err
@@ -76,7 +75,7 @@ func (s *documentsScreen) paginateDocumentWithLinks(doc document.Document) ([]do
 	}
 
 	var hitBoxes []linkHitBox
-	linkStyle := lipgloss.NewStyle().Underline(true).Foreground(s.theme.Primary)
+	linkStyle := s.theme.Link
 
 	linkIdx := 0
 	for p := 0; p < len(pages) && linkIdx < len(allLinks); p++ {

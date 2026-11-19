@@ -11,7 +11,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/artifact"
@@ -58,6 +58,10 @@ type spreadsheetAutosaveFinishedMsg struct {
 	cleared bool
 }
 
+type spreadsheetSearchMatch struct {
+	sheet, row, column int
+}
+
 // spreadsheetGrid holds viewport navigation, selection, and value display state.
 type spreadsheetGrid struct {
 	sheet         int
@@ -67,6 +71,9 @@ type spreadsheetGrid struct {
 	width, height int
 	values        map[[2]int]string
 	showFormulas  bool
+	find          findBar
+	searchMatches []spreadsheetSearchMatch
+	searchMatch   int
 }
 
 // spreadsheetAsync holds status, error messages, and async operation tracking.
@@ -133,6 +140,10 @@ func newSpreadsheetModel(service *spreadsheet.Service, path string, theme Theme,
 		input:     input,
 		undoLimit: undoLimit,
 		pdfInput:  pdfInput,
+		spreadsheetGrid: spreadsheetGrid{
+			find:        newFindBar(theme),
+			searchMatch: -1,
+		},
 	}
 	m.newOperationContext = func() (context.Context, context.CancelFunc) {
 		return context.WithCancel(context.Background())
@@ -335,6 +346,9 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.pdfPrompt != promptNone {
 			return m, m.updatePDFPrompt(msg)
 		}
+		if m.find.active {
+			return m, m.updateFindKey(msg)
+		}
 		if m.editing {
 			return m, m.updateEditKey(msg)
 		}
@@ -356,6 +370,9 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	}
+	if m.find.active && m.pdfPrompt == promptNone {
+		return m, m.updateFindKey(message)
 	}
 	if m.editing {
 		var cmd tea.Cmd
@@ -446,6 +463,9 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 			}
 			return m.syncAutosave()
 		}
+		if m.find.visible {
+			return m.updateFindKey(msg)
+		}
 		return m.requestClose()
 	case "q":
 		if m.pending {
@@ -468,6 +488,20 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	if !m.loaded {
 		return nil
+	}
+	if m.find.visible {
+		switch key {
+		case "n":
+			m.moveSearchMatch(1)
+			return nil
+		case "N":
+			m.moveSearchMatch(-1)
+			return nil
+		}
+	}
+	if key == "/" || key == "ctrl+f" {
+		m.searchSpreadsheet(m.find.query())
+		return m.find.open(m.width)
 	}
 
 	if m.pendingShortcut == "d" {
@@ -730,6 +764,7 @@ func (m *spreadsheetModel) setBook(book spreadsheet.Spreadsheet) {
 		name = m.book.Sheets[m.sheet].Name
 	}
 	m.book, m.baseline, m.loaded = cloneSpreadsheetState(book), cloneSpreadsheetState(book), true
+	m.clearSearch()
 	m.bufferUndo, m.bufferRedo = nil, nil
 	m.sheet = 0
 	if index, err := spreadsheet.SheetIndex(book, name); err == nil && name != "" {
@@ -768,6 +803,7 @@ func (m *spreadsheetModel) editWorkbook(edit func(*spreadsheet.Spreadsheet) erro
 	m.bufferUndo = appendBoundedWorkbook(m.bufferUndo, m.book, m.undoLimit)
 	m.bufferRedo = nil
 	m.book = next
+	m.clearSearch()
 	m.sheet = min(m.sheet, len(m.book.Sheets)-1)
 	if index, err := spreadsheet.SheetIndex(m.book, selectedSheet); err == nil {
 		m.sheet = index
@@ -790,8 +826,10 @@ func (m *spreadsheetModel) undo() tea.Cmd {
 	if len(m.bufferUndo) > 0 {
 		m.bufferRedo = appendBoundedWorkbook(m.bufferRedo, m.book, m.undoLimit)
 		m.book = m.bufferUndo[len(m.bufferUndo)-1]
+		m.clearSearch()
 		m.bufferUndo = m.bufferUndo[:len(m.bufferUndo)-1]
 		m.status, m.errMessage = "Undid spreadsheet edit", ""
+		m.sheet = min(max(m.sheet, 0), len(m.book.Sheets)-1)
 		m.computeValues()
 		m.scrollToSelection()
 		return m.syncAutosave()
@@ -806,6 +844,7 @@ func (m *spreadsheetModel) redo() tea.Cmd {
 	if len(m.bufferRedo) > 0 {
 		m.bufferUndo = appendBoundedWorkbook(m.bufferUndo, m.book, m.undoLimit)
 		m.book = m.bufferRedo[len(m.bufferRedo)-1]
+		m.clearSearch()
 		m.bufferRedo = m.bufferRedo[:len(m.bufferRedo)-1]
 		m.status, m.errMessage = "Redid spreadsheet edit", ""
 		m.sheet = min(max(m.sheet, 0), len(m.book.Sheets)-1)
@@ -887,6 +926,83 @@ func (m *spreadsheetModel) displayValue(row, column int) string {
 		return m.values[[2]int{row, column}]
 	}
 	return cell.Value
+}
+
+func (m *spreadsheetModel) clearSearch() {
+	m.find.close()
+	m.searchMatches, m.searchMatch = nil, -1
+}
+
+func (m *spreadsheetModel) updateFindKey(msg tea.Msg) tea.Cmd {
+	action, cmd := m.find.update(msg)
+	switch action {
+	case findChanged:
+		m.searchSpreadsheet(m.find.query())
+	case findNext:
+		m.moveSearchMatch(1)
+		m.find.blur()
+	case findPrevious:
+		m.moveSearchMatch(-1)
+		m.find.blur()
+	case findClosed:
+		m.searchSpreadsheet("")
+	}
+	return cmd
+}
+
+func (m *spreadsheetModel) searchSpreadsheet(query string) {
+	m.searchMatches = nil
+	m.searchMatch = -1
+	if !m.loaded || query == "" {
+		return
+	}
+	originalSheet, originalValues := m.sheet, m.values
+	for sheet := range m.book.Sheets {
+		m.sheet = sheet
+		m.computeValues()
+		for row, cells := range m.book.Sheets[sheet].Rows {
+			for column, cell := range cells {
+				if len(findTextMatches(cell.Value, query)) > 0 ||
+					len(findTextMatches(cell.Formula, query)) > 0 ||
+					len(findTextMatches(m.values[[2]int{row, column}], query)) > 0 {
+					m.searchMatches = append(m.searchMatches, spreadsheetSearchMatch{sheet, row, column})
+				}
+			}
+		}
+	}
+	m.sheet, m.values = originalSheet, originalValues
+	if len(m.searchMatches) == 0 {
+		return
+	}
+	m.searchMatch = 0
+	m.gotoSearchMatch()
+}
+
+func (m *spreadsheetModel) gotoSearchMatch() {
+	if m.searchMatch < 0 || m.searchMatch >= len(m.searchMatches) {
+		return
+	}
+	match := m.searchMatches[m.searchMatch]
+	if match.sheet < 0 || match.sheet >= len(m.book.Sheets) ||
+		match.row < 0 || match.row >= len(m.book.Sheets[match.sheet].Rows) ||
+		match.column < 0 || match.column >= len(m.book.Sheets[match.sheet].Rows[match.row]) {
+		m.clearSearch()
+		return
+	}
+	m.sheet, m.row, m.column = match.sheet, match.row, match.column
+	m.computeValues()
+	m.scrollToSelection()
+}
+
+func (m *spreadsheetModel) moveSearchMatch(step int) {
+	if len(m.searchMatches) == 0 {
+		return
+	}
+	m.searchMatch = (m.searchMatch + step) % len(m.searchMatches)
+	if m.searchMatch < 0 {
+		m.searchMatch += len(m.searchMatches)
+	}
+	m.gotoSearchMatch()
 }
 
 // cellDraft renders a cell for editing. Literals that would otherwise be read
@@ -972,8 +1088,7 @@ func (m *spreadsheetModel) renderHeader() string {
 	if m.path != "" {
 		header += "  " + sanitizeTerminalLine(m.path)
 	}
-	accent := lipgloss.NewStyle().Foreground(m.theme.Primary).Bold(true)
-	return accent.Render(runewidth.Truncate(header, m.width, "…"))
+	return m.theme.Chrome.Render(runewidth.Truncate(header, m.width, "…"))
 }
 
 func (m *spreadsheetModel) renderFormulaBar() string {
@@ -981,7 +1096,11 @@ func (m *spreadsheetModel) renderFormulaBar() string {
 	if m.editing {
 		return reference + " > " + m.input.View()
 	}
-	return runewidth.Truncate(reference+" │ "+sanitizeTerminalLine(cellDraft(m.cell(m.row, m.column))), m.width, "…")
+	line := reference + " │ " + sanitizeTerminalLine(cellDraft(m.cell(m.row, m.column)))
+	if m.find.visible && m.find.query() != "" {
+		line = highlightLine(line, m.find.query(), m.theme)
+	}
+	return ansi.Truncate(line, m.width, "…")
 }
 
 func (m *spreadsheetModel) renderColumnHeader(rowWidth, columns int) string {
@@ -996,8 +1115,8 @@ func (m *spreadsheetModel) renderColumnHeader(rowWidth, columns int) string {
 }
 
 func (m *spreadsheetModel) renderGrid() string {
-	muted := lipgloss.NewStyle().Foreground(m.theme.Border)
-	selected := lipgloss.NewStyle().Reverse(true)
+	muted := m.theme.Muted
+	selected := m.theme.Selection
 
 	rowWidth := m.rowHeaderWidth()
 	columns := m.visibleColumns()
@@ -1018,6 +1137,9 @@ func (m *spreadsheetModel) renderGrid() string {
 		gridBuf.WriteString(muted.Render(fmt.Sprintf("%*d", rowWidth, r+1)))
 		for c := m.columnOffset; c < m.columnOffset+columns && c < spreadsheet.MaxColumns; c++ {
 			text := fitCell(m.displayValue(r, c), spreadsheetColumnWidth)
+			if m.find.visible && m.find.query() != "" {
+				text = highlightLine(text, m.find.query(), m.theme)
+			}
 			if r == m.row && c == m.column {
 				text = selected.Render(text)
 			}
@@ -1048,7 +1170,7 @@ func (m *spreadsheetModel) renderStatus() string {
 }
 
 func (m *spreadsheetModel) renderHelp() string {
-	muted := lipgloss.NewStyle().Foreground(m.theme.Border)
+	muted := m.theme.Muted
 	help := "arrows move • enter edit • ctrl+s save • del clear • ctrl+p PDF • f formulas • tab sheet • u/ctrl+z undo • ctrl+r redo • d delete • i insert • r reload • esc/q quit"
 	if m.editing {
 		help = "enter stage • ctrl+s save • esc cancel • =formula • 'literal • shift+enter/alt+enter down • ctrl+p PDF"
@@ -1067,5 +1189,9 @@ func (m *spreadsheetModel) View() string {
 	if m.pdfPrompt != promptNone {
 		content = m.pdfInput.View() + "\n" + content
 	}
-	return chromeLayout(m.width, m.height, m.renderHeader(), shortcuts, content, m.renderStatus(), m.theme.Border)
+	status := m.renderStatus()
+	if m.find.visible {
+		status = m.find.view(len(m.searchMatches), m.searchMatch, m.width)
+	}
+	return chromeLayout(m.width, m.height, m.renderHeader(), shortcuts, content, status, m.theme.BorderColor)
 }

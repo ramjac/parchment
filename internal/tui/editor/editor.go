@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -9,6 +10,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
+
+	"example.com/parchment/internal/tui/theme"
 )
 
 // Point represents a line and column location in the line-based buffer.
@@ -21,6 +24,12 @@ type Point struct {
 type Selection struct {
 	Anchor Point
 	Active bool
+}
+
+// MatchSpan identifies a search match in the rune buffer.
+type MatchSpan struct {
+	Start Point
+	End   Point
 }
 
 type editKind int
@@ -38,20 +47,23 @@ type editorSnapshot struct {
 
 // Model is a line-based rune buffer text editor with micro-style visual selections.
 type Model struct {
-	Lines        [][]rune
-	Cursor       Point
-	Selection    Selection
-	StickyCol    int
-	TopLine      int
-	TopRowOffset int
-	Width        int
-	Height       int
-	Focused      bool
-	Placeholder  string
-	ShowLineNums bool
-	Style        lipgloss.Style
-	SelectStyle  lipgloss.Style
-	CursorStyle  lipgloss.Style
+	Lines         [][]rune
+	Cursor        Point
+	Selection     Selection
+	StickyCol     int
+	TopLine       int
+	TopRowOffset  int
+	Width         int
+	Height        int
+	Focused       bool
+	Placeholder   string
+	ShowLineNums  bool
+	Style         lipgloss.Style
+	SelectStyle   lipgloss.Style
+	CursorStyle   lipgloss.Style
+	MatchStyle    lipgloss.Style
+	searchMatches []MatchSpan
+	activeMatch   int
 
 	// Undo/Redo history
 	undoStack    []editorSnapshot
@@ -212,8 +224,108 @@ func NewWithUndoLimit(limit int) Model {
 		Focused:     true,
 		SelectStyle: lipgloss.NewStyle().Reverse(true),
 		CursorStyle: lipgloss.NewStyle().Reverse(true),
+		MatchStyle:  lipgloss.NewStyle().Reverse(true),
+		activeMatch: -1,
 		undoLimit:   limit,
 	}
+}
+
+// SetTheme applies the shared TUI semantic styles to editor text and selection.
+func (m *Model) SetTheme(theme theme.Theme) {
+	m.Style = theme.Muted
+	m.SelectStyle = theme.Selection
+	m.CursorStyle = theme.Cursor
+	m.MatchStyle = theme.Match
+}
+
+// SetSearch updates match spans using smart-case matching and selects the first
+// match when one exists.
+func (m *Model) SetSearch(query string) int {
+	m.searchMatches = nil
+	m.activeMatch = -1
+	queryRunes := []rune(query)
+	if len(queryRunes) == 0 {
+		return 0
+	}
+
+	caseSensitive := false
+	for _, r := range queryRunes {
+		caseSensitive = caseSensitive || unicode.IsUpper(r)
+	}
+	for lineIndex, line := range m.Lines {
+		for start := 0; start+len(queryRunes) <= len(line); {
+			matched := true
+			for i, queryRune := range queryRunes {
+				textRune := line[start+i]
+				if caseSensitive && textRune != queryRune ||
+					!caseSensitive && unicode.ToLower(textRune) != unicode.ToLower(queryRune) {
+					matched = false
+					break
+				}
+			}
+			if matched {
+				m.searchMatches = append(m.searchMatches, MatchSpan{
+					Start: Point{Line: lineIndex, Col: start},
+					End:   Point{Line: lineIndex, Col: start + len(queryRunes)},
+				})
+				start += len(queryRunes)
+			} else {
+				start++
+			}
+		}
+	}
+	if len(m.searchMatches) > 0 {
+		m.SetActiveMatch(0)
+	}
+	return len(m.searchMatches)
+}
+
+// MatchCount reports the number of matches in the current search.
+func (m Model) MatchCount() int { return len(m.searchMatches) }
+
+// ActiveMatch reports the zero-based current match, or -1 when there are none.
+func (m Model) ActiveMatch() int { return m.activeMatch }
+
+// MoveToMatch selects a match by relative index, wrapping at either end.
+func (m *Model) MoveToMatch(step int) bool {
+	if len(m.searchMatches) == 0 {
+		return false
+	}
+	next := (m.activeMatch + step) % len(m.searchMatches)
+	if next < 0 {
+		next += len(m.searchMatches)
+	}
+	return m.SetActiveMatch(next)
+}
+
+// ClearSearch removes highlights without moving the editor cursor.
+func (m *Model) ClearSearch() {
+	m.searchMatches = nil
+	m.activeMatch = -1
+}
+
+func (m *Model) SetActiveMatch(index int) bool {
+	if index < 0 || index >= len(m.searchMatches) {
+		return false
+	}
+	m.activeMatch = index
+	m.Cursor = m.searchMatches[index].Start
+	m.Selection.Active = false
+	m.StickyCol = m.Cursor.Col
+	m.ensureCursorVisible()
+	return true
+}
+
+func (m Model) isSearchMatch(point Point) bool {
+	i := sort.Search(len(m.searchMatches), func(i int) bool {
+		start := m.searchMatches[i].Start
+		return start.Line > point.Line || start.Line == point.Line && start.Col > point.Col
+	})
+	if i == 0 {
+		return false
+	}
+	match := m.searchMatches[i-1]
+	return point.Line == match.Start.Line && point.Col >= match.Start.Col && point.Col < match.End.Col
 }
 
 func cloneLines(lines [][]rune) [][]rune {
@@ -1122,6 +1234,8 @@ func (m Model) View() string {
 
 			if isSelected {
 				charStr = m.SelectStyle.Render(charStr)
+			} else if m.isSearchMatch(pt) {
+				charStr = m.MatchStyle.Render(charStr)
 			} else if isCursor {
 				if charStr == "" {
 					charStr = " "

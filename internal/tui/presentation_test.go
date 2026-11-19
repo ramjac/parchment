@@ -67,6 +67,30 @@ func newPresentationTestModel(t *testing.T) (*presentationModel, *presentation.S
 	return m, service, path
 }
 
+func TestPresentationSourceFindBarSearchAndClose(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+	m.editing = true
+	m.editor.SetValue("alpha ALPHA alpha")
+	m.editor.Focus()
+
+	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyCtrlF})
+	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("alpha")})
+	if !m.find.active || m.editor.MatchCount() != 3 || m.editor.Cursor.Col != 0 ||
+		!strings.Contains(m.View(), "Find: alpha") {
+		t.Fatalf("presentation source search: active=%t matches=%d cursor=%+v view=%q",
+			m.find.active, m.editor.MatchCount(), m.editor.Cursor, m.View())
+	}
+	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.editor.Cursor.Col != 6 || m.editor.ActiveMatch() != 1 {
+		t.Fatalf("next presentation match cursor=%+v active=%d", m.editor.Cursor, m.editor.ActiveMatch())
+	}
+	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.find.active || m.editor.MatchCount() != 0 || !m.editor.Focused || m.editor.Cursor.Col != 6 {
+		t.Fatalf("closing presentation search did not preserve the current match: active=%t matches=%d focused=%t cursor=%+v",
+			m.find.active, m.editor.MatchCount(), m.editor.Focused, m.editor.Cursor)
+	}
+}
+
 func storedPresentation(t *testing.T, path string) presentation.Presentation {
 	t.Helper()
 	data, err := os.ReadFile(path)

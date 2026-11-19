@@ -203,19 +203,21 @@ type documentChangesState struct {
 
 // documentEditorState holds state for editing a document.
 type documentEditorState struct {
-	snapshot     document.Document
-	body         editor.Model
-	layout       document.Layout
-	images       []artifact.Image
-	original     editorDraft
-	focus        editorFocus
-	toolbarIndex int
-	prompt       promptKind
-	promptInput  textinput.Model
-	previewing   bool
-	editPages    []document.Page
-	editLinks    []linkHitBox
-	editPage     int
+	snapshot       document.Document
+	body           editor.Model
+	layout         document.Layout
+	images         []artifact.Image
+	original       editorDraft
+	focus          editorFocus
+	toolbarIndex   int
+	prompt         promptKind
+	promptInput    textinput.Model
+	previewing     bool
+	editPages      []document.Page
+	editLinks      []linkHitBox
+	editPage       int
+	previewMatches []renderedMatch
+	previewMatch   int
 	// editPageLine is the first page line shown by the print preview.
 	editPageLine   int
 	discardWarning bool
@@ -224,12 +226,14 @@ type documentEditorState struct {
 // documentReaderState holds state for reading/viewing a document.
 type documentReaderState struct {
 	// reading reports that the reader, not the editor, is shown.
-	reading     bool
-	reader      viewport.Model
-	readerPages []document.Page
-	readerLinks []linkHitBox
-	readerPage  int
-	outline     []document.Section
+	reading       bool
+	reader        viewport.Model
+	readerPages   []document.Page
+	readerLinks   []linkHitBox
+	readerPage    int
+	readerMatches []renderedMatch
+	readerMatch   int
+	outline       []document.Section
 }
 
 // documentsScreen edits one document file and reviews its proposed changes.
@@ -252,6 +256,7 @@ type documentsScreen struct {
 	pdfStore            PDFExportStore
 	lastPDFPath         string
 	pdfOverwritePath    string
+	find                findBar
 	autosaveSession     uint64
 	autosaveCancel      context.CancelFunc
 	// draftStored reports that a recovery draft for this file may exist.
@@ -270,8 +275,9 @@ type editorDraft struct {
 	layout       document.Layout
 }
 
-func newDocumentEditorState(undoLimit int) documentEditorState {
+func newDocumentEditorState(undoLimit int, theme Theme) documentEditorState {
 	body := editor.NewWithUndoLimit(undoLimit)
+	body.SetTheme(theme)
 	body.Placeholder = "Write Markdown…"
 	prompt := textinput.New()
 	prompt.CharLimit = document.MaxRunningTextLength * 2
@@ -299,7 +305,8 @@ func newDocumentsScreen(service *document.Service, path string, newContext func(
 		theme:                theme,
 		service:              service,
 		path:                 path,
-		documentEditorState:  newDocumentEditorState(undoLimit),
+		find:                 newFindBar(theme),
+		documentEditorState:  newDocumentEditorState(undoLimit, theme),
 		documentChangesState: newDocumentChangesState(),
 		documentReaderState:  newDocumentReaderState(),
 		newOperationContext:  newContext,
@@ -360,6 +367,16 @@ func (s *documentsScreen) update(message tea.Msg) tea.Cmd {
 		s.layoutEditor()
 		return cmd
 	}
+	if s.find.active && s.prompt == promptNone {
+		switch {
+		case s.reading:
+			return s.updateReaderFindKey(message)
+		case s.previewing:
+			return s.updatePreviewFindKey(message)
+		default:
+			return s.updateFindKey(message)
+		}
+	}
 	return nil
 }
 
@@ -398,7 +415,7 @@ func (s *documentsScreen) documentSaved(msg documentSavedMsg) tea.Cmd {
 		return s.resumeAutosave()
 	}
 	s.body.ResetHistory()
-	s.loadDocument(msg.document)
+	s.markSaved(msg.document)
 	s.errMessage, s.status = "", "Saved “"+msg.document.Title+"”"
 	if msg.cleanupErr != nil {
 		s.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"

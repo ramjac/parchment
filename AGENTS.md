@@ -149,6 +149,9 @@ does not record the file's path; the path is wherever the file is.
   CLI thin and make operations reusable by both CLI and TUI. Do not introduce
   ID-based commands for opening or editing files; IDs are internal metadata,
   not user-facing file addresses.
+- Follow the visual and interaction contract in `docs/TUI_Design.md` for
+  semantic styling, layout, focus, small-terminal behavior, state
+  preservation, and visual evidence.
 - Follow Bubble Tea's model/update/view/command structure. Keep views free of
   I/O and domain mutation; represent blocking operations as commands returning
   typed result messages. Keep key bindings contextual and ensure text editing

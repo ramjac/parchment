@@ -20,6 +20,7 @@ import (
 	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/recovery"
 	"example.com/parchment/internal/spreadsheet"
+	tuitheme "example.com/parchment/internal/tui/theme"
 )
 
 // Config selects the one artifact file the interactive editor opens.
@@ -48,52 +49,10 @@ type PDFExportStore interface {
 	SavePDFPath(context.Context, string) error
 }
 
-// Theme holds the resolved Lip Gloss colors for the TUI.
-type Theme struct {
-	Primary   lipgloss.TerminalColor
-	Border    lipgloss.TerminalColor
-	Error     lipgloss.TerminalColor
-	Selection lipgloss.TerminalColor
-	Match     lipgloss.TerminalColor
-}
+// Theme is the shared semantic style set used across TUI components.
+type Theme = tuitheme.Theme
 
-func resolveTheme(c config.Theme) Theme {
-	var primary, border, errColor, selection, match lipgloss.TerminalColor
-
-	defaultPrimaryLight, defaultPrimaryDark := "#4b3f72", "#c4b5fd"
-	defaultBorderLight, defaultBorderDark := "#b8b4c7", "#55516a"
-	defaultErrorLight, defaultErrorDark := "#b42318", "#f87171"
-	defaultSelectionLight, defaultSelectionDark := "#dcd6f7", "#4c1d95"
-	defaultMatchLight, defaultMatchDark := "#fde68a", "#854d0e"
-
-	getColor := func(override, defaultLight, defaultDark string) lipgloss.TerminalColor {
-		if override != "" {
-			return lipgloss.Color(override)
-		}
-		switch c.Mode {
-		case "light":
-			return lipgloss.Color(defaultLight)
-		case "dark":
-			return lipgloss.Color(defaultDark)
-		default: // "auto"
-			return lipgloss.AdaptiveColor{Light: defaultLight, Dark: defaultDark}
-		}
-	}
-
-	primary = getColor(c.Primary, defaultPrimaryLight, defaultPrimaryDark)
-	border = getColor(c.Border, defaultBorderLight, defaultBorderDark)
-	errColor = getColor(c.Error, defaultErrorLight, defaultErrorDark)
-	selection = getColor(c.Selection, defaultSelectionLight, defaultSelectionDark)
-	match = getColor(c.Match, defaultMatchLight, defaultMatchDark)
-
-	return Theme{
-		Primary:   primary,
-		Border:    border,
-		Error:     errColor,
-		Selection: selection,
-		Match:     match,
-	}
-}
+func resolveTheme(c config.Theme) Theme { return tuitheme.Resolve(c) }
 
 type stage int
 
@@ -182,13 +141,14 @@ func NewModel(config Config) Model {
 	if undoLimit < 1 {
 		undoLimit = 100
 	}
+	resolvedTheme := resolveTheme(config.Theme)
 	m := Model{
 		path: config.Path, kind: config.Kind, edit: config.Edit,
 		service: config.Notes, spreadsheets: config.Spreadsheets, presentations: config.Presentations,
 		recoveryStore: config.Recovery,
-		theme:         resolveTheme(config.Theme),
+		theme:         resolvedTheme,
 		undoLimit:     undoLimit,
-		noteEditor:    newNoteEditor(undoLimit),
+		noteEditor:    newNoteEditor(undoLimit, resolvedTheme),
 		newOperationContext: func() (context.Context, context.CancelFunc) {
 			return context.WithCancel(context.Background())
 		},
@@ -324,6 +284,12 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m, m.updateKey(msg)
 	}
+	if m.stage == stageDocument && m.documents != nil {
+		return m, m.documents.update(message)
+	}
+	if m.stage == stageNote && m.find.active && m.pdfPrompt == promptNone {
+		return m, m.updateFindKey(message)
+	}
 	return m, nil
 }
 
@@ -394,7 +360,7 @@ func (m *Model) handleNoteSaved(msg noteSavedMsg) (tea.Model, tea.Cmd) {
 		return m, m.scheduleAutosave(m.autosaveSession)
 	}
 	m.bodyInput.ResetHistory()
-	m.loadNote(msg.note)
+	m.markSaved(msg.note)
 	m.errMessage, m.status = "", "Saved “"+msg.note.Title+"”"
 	if msg.cleanupErr != nil {
 		m.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
@@ -575,10 +541,30 @@ func (m *Model) updateNoteKey(msg tea.KeyMsg) tea.Cmd {
 	if m.pdfPrompt != promptNone {
 		return m.updateNotePDFPrompt(msg)
 	}
+	if m.find.active {
+		return m.updateFindKey(msg)
+	}
 	if key != "esc" && key != "ctrl+c" {
 		m.discardWarning = false
 	}
 	if m.previewing {
+		if m.find.visible {
+			switch key {
+			case "n":
+				m.movePreviewMatch(1)
+				return nil
+			case "N":
+				m.movePreviewMatch(-1)
+				return nil
+			case "esc":
+				m.find.close()
+				m.searchPreview("")
+				return nil
+			}
+		}
+		if key == "/" || key == "ctrl+f" {
+			return m.openFind(m.width)
+		}
 		switch key {
 		case "ctrl+p":
 			return m.openNotePDFPrompt()
@@ -592,6 +578,8 @@ func (m *Model) updateNoteKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	switch key {
+	case "ctrl+f":
+		return m.openFind(m.width)
 	case "ctrl+p":
 		return m.openNotePDFPrompt()
 	case "ctrl+c":
@@ -610,6 +598,7 @@ func (m *Model) updateNoteKey(msg tea.KeyMsg) tea.Cmd {
 	case "f5":
 		m.previewing = true
 		m.resizePreview()
+		m.searchPreview(m.find.query())
 		return nil
 	case "ctrl+z", "ctrl+r", "ctrl+y", "ctrl+shift+z":
 		if key == "ctrl+z" && m.bodyInput.CanUndo() {
@@ -677,7 +666,7 @@ func (m Model) View() string {
 	if m.tooSmall() {
 		return "parchment — terminal too small (minimum 40×10)\nResize the terminal, or press q to quit."
 	}
-	header := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Primary).
+	header := m.theme.Chrome.
 		Render("parchment  ·  " + sanitizeTerminalLine(m.path))
 	switch m.stage {
 	case stageOpening:
@@ -721,14 +710,22 @@ func (m Model) View() string {
 		if m.pdfPrompt != promptNone {
 			content = m.pdfInput.View() + "\n" + content
 		}
-		return chromeLayout(m.width, m.height, header, shortcuts, content, m.statusLine(), m.theme.Border)
+		status := m.statusLine()
+		if m.find.visible {
+			status = m.find.view(len(m.previewMatches), m.previewMatch, m.width)
+		}
+		return chromeLayout(m.width, m.height, header, shortcuts, content, status, m.theme.BorderColor)
 	}
-	shortcuts := ansi.Truncate(state+"  ·  Ctrl+S saves  ·  Ctrl+P PDF  ·  F5 preview  ·  Ctrl+Z/Ctrl+R undo/redo  ·  Esc quits", m.width, "…")
+	shortcuts := ansi.Truncate(state+"  ·  Ctrl+F find  ·  Ctrl+S saves  ·  Ctrl+P PDF  ·  F5 preview  ·  Ctrl+Z/Ctrl+R undo/redo  ·  Esc quits", m.width, "…")
 	content := m.bodyInput.View()
 	if m.pdfPrompt != promptNone {
 		content = m.pdfInput.View() + "\n" + content
 	}
-	return chromeLayout(m.width, m.height, header, shortcuts, content, m.statusLine(), m.theme.Border)
+	status := m.statusLine()
+	if m.find.active {
+		status = m.findStatus(m.width)
+	}
+	return chromeLayout(m.width, m.height, header, shortcuts, content, status, m.theme.BorderColor)
 }
 
 func (m Model) tooSmall() bool { return m.width < 40 || m.height < 10 }
