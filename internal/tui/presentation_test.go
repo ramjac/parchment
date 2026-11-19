@@ -14,11 +14,15 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
 	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/tui/termimg"
+	tuitheme "example.com/parchment/internal/tui/theme"
 )
 
 // drivePresentation sends a message and feeds presentation results back in.
@@ -218,9 +222,134 @@ func TestPresentationViewRendersEmbeddedImages(t *testing.T) {
 	t.Setenv("KITTY_WINDOW_ID", "")
 	t.Setenv("TERM_PROGRAM", "iTerm.app")
 	m.goToPage(1)
+	frame := m.imageFrame
 	_, clearCmd := m.Update(sheetKey("right"))
-	if clearCmd == nil {
-		t.Fatal("leaving an iTerm2 image slide did not request a full-screen redraw")
+	if clearCmd != nil || m.imageFrame == frame {
+		t.Fatal("leaving an iTerm2 image slide must repaint without clearing the screen")
+	}
+}
+
+type presentationRenderModel struct{ *presentationModel }
+
+func (m presentationRenderModel) Init() tea.Cmd {
+	size := tea.WindowSizeMsg{Width: m.width, Height: m.height}
+	return func() tea.Msg { return size }
+}
+
+func TestPresentationImagesRendererUpdates(t *testing.T) {
+	previousProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(previousProfile) })
+	for _, protocol := range []string{"kitty", "iterm", "sixel"} {
+		t.Run(protocol, func(t *testing.T) {
+			documentImageEnv(t, protocol)
+			m, _, _ := newPresentationTestModel(t)
+			m.theme = tuitheme.Resolve(config.Theme{Mode: "dark"})
+			for index, slide := range m.deck.Slides {
+				if strings.Contains(slide.Body, ".image ") {
+					m.goToPage(index + 1)
+					break
+				}
+			}
+			drivePresentation(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
+			m.path = "fixtures/example.md"
+			nextStatus := fmt.Sprintf("Slide %d of %d", m.page+1, len(m.deck.Slides))
+			prefix := map[string]string{"kitty": "\x1b_Ga=T", "iterm": "\x1b]1337;File=", "sixel": "\x1bP0;1;0q"}[protocol]
+			view := m.View()
+			paintAt := strings.Index(view, prefix)
+			if paintAt < 0 {
+				t.Fatal("example image was not rendered")
+			}
+			paintRow := strings.Count(view[:paintAt], "\n")
+			out := make(terminalRenderOutput, 128)
+			program := tea.NewProgram(presentationRenderModel{m},
+				tea.WithInput(nil), tea.WithOutput(out), tea.WithAltScreen(), tea.WithoutSignals())
+			done := make(chan error, 1)
+			go func() {
+				_, err := program.Run()
+				done <- err
+			}()
+			defer func() {
+				program.Quit()
+				if err := <-done; err != nil {
+					t.Error(err)
+				}
+			}()
+			output := readTerminalOutputUntil(t, out, prefix)
+			if strings.Count(output[:strings.Index(output, prefix)], "\r\n") != paintRow {
+				t.Fatal("terminal renderer changed the deferred image position")
+			}
+			program.Send(tea.MouseMsg{Action: tea.MouseActionMotion, Button: tea.MouseButtonNone})
+			program.Send(sheetKey("?"))
+			program.Send(sheetKey("right"))
+			output = readTerminalOutputUntil(t, out, nextStatus)
+			if strings.Contains(output, "\x1b[2J") || strings.Contains(output, prefix) ||
+				strings.Count(output, "\r\n") < 23 {
+				t.Fatal("leaving the image slide did not repaint its old rows without clearing")
+			}
+			if protocol == "kitty" && !strings.Contains(output, termimg.ClearKittyPlacements()) {
+				t.Fatal("leaving the image slide retained Kitty placements")
+			}
+			program.Send(sheetKey("left"))
+			output = readTerminalOutputUntil(t, out, prefix)
+			if strings.Contains(output, "\x1b[2J") || strings.Count(output, prefix) != 1 {
+				t.Fatal("returning to the image slide cleared the screen or duplicated the image")
+			}
+			if strings.Count(output[:strings.Index(output, prefix)], "\r\n") != paintRow {
+				t.Fatal("returning to the example painted the image before its covered text rows")
+			}
+		})
+	}
+}
+
+func TestPresentationImageRepaintState(t *testing.T) {
+	for _, protocol := range []string{"kitty", "iterm", "sixel"} {
+		t.Run(protocol, func(t *testing.T) {
+			documentImageEnv(t, protocol)
+			m, _, _ := newPresentationTestModel(t)
+			img := documentTestImage(t)
+			m.setItem(presentation.Presentation{
+				Source: "# Deck\n\n## Diagram\n\n.image " + img.Name + " 3 12\n\n## Next slide\n\nText only.",
+				Images: []artifact.Image{img},
+			})
+			m.goToPage(1)
+			view, frame := m.View(), m.imageFrame
+			for _, message := range []tea.Msg{
+				sheetKey("?"),
+				tea.MouseMsg{Action: tea.MouseActionMotion, Button: tea.MouseButtonNone},
+				presentationAutosaveTickMsg{session: m.autosaveSession + 1},
+				presentationLoadedMsg{seq: m.seq + 1},
+			} {
+				_, cmd := m.Update(message)
+				if cmd != nil || m.imageFrame != frame || m.View() != view {
+					t.Fatal("unrelated input or background update repainted the image")
+				}
+			}
+			for _, message := range []tea.Msg{
+				sheetKey("right"), sheetKey("left"),
+				tea.WindowSizeMsg{Width: 96, Height: 32},
+				presentationLoadedMsg{seq: m.seq, item: m.item},
+				presentationSavedMsg{seq: m.seq, item: m.item},
+			} {
+				_, cmd := m.Update(message)
+				if cmd != nil || m.imageFrame == frame {
+					t.Fatal("image transition must repaint without a screen-clear command")
+				}
+				next := m.View()
+				if strings.Count(next, "\n") == strings.Count(view, "\n") {
+					for i, line := range strings.Split(next, "\n") {
+						if line == strings.Split(view, "\n")[i] {
+							t.Fatal("image transition left a cached row that could retain graphics")
+						}
+					}
+				}
+				view, frame = next, m.imageFrame
+			}
+			m.Update(sheetKey("e"))
+			if !m.editing || m.imageFrame == frame {
+				t.Fatal("entering the source editor did not invalidate the image frame")
+			}
+		})
 	}
 }
 
@@ -243,6 +372,60 @@ func TestExamplePresentationImageRenders(t *testing.T) {
 		return
 	}
 	t.Fatal("example presentation has no image directive")
+}
+
+func TestExamplePresentationImagePaintOrder(t *testing.T) {
+	previousProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(previousProfile) })
+	for _, mode := range []string{"dark", "light"} {
+		for _, protocol := range []string{"kitty", "iterm", "sixel"} {
+			t.Run(mode+"/"+protocol, func(t *testing.T) {
+				documentImageEnv(t, protocol)
+				m, _, _ := newPresentationTestModel(t)
+				m.theme = tuitheme.Resolve(config.Theme{Mode: mode})
+				for index, slide := range m.deck.Slides {
+					if strings.Contains(slide.Body, ".image ") {
+						m.goToPage(index + 1)
+						break
+					}
+				}
+				drivePresentation(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
+				prefix := map[string]string{"kitty": "\x1b_Ga=T", "iterm": "\x1b]1337;File=", "sixel": "\x1bP0;1;0q"}[protocol]
+				source := strings.Join(m.pageLines(), "\n")
+				start := strings.Index(source, prefix)
+				if start < 0 {
+					t.Fatal("example image was not prepared")
+				}
+				rows := 0
+				for _, rendered := range m.imageRenderCache {
+					if strings.Contains(rendered.output, prefix) {
+						rows = rendered.rows
+						break
+					}
+				}
+				if rows < 2 {
+					t.Fatal("test image must cover multiple terminal rows")
+				}
+				firstRow := 3 + strings.Count(source[:start], "\n") - m.scroll
+				view := m.View()
+				paintAt := strings.Index(view, prefix)
+				if paintAt < 0 {
+					t.Fatal("example image disappeared during layout")
+				}
+				paintRow := strings.Count(view[:paintAt], "\n")
+				if want := firstRow + rows - 1; paintRow != want {
+					t.Fatalf("image painted on row %d, before its text rectangle ended on row %d", paintRow, want)
+				}
+				if !strings.Contains(view[:paintAt], fmt.Sprintf("\x1b[%dA", rows-1)) {
+					t.Fatal("deferred image did not return to its original top row")
+				}
+				if strings.Count(ansi.Strip(view), "\n")+1 != 24 || tuiScreenWidth(view) > 80 {
+					t.Fatal("painting the example image displaced terminal chrome")
+				}
+			})
+		}
+	}
 }
 
 func TestPresentationEditModeSeamlessUndoRedo(t *testing.T) {

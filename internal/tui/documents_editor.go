@@ -704,7 +704,7 @@ func (s *documentsScreen) openPreview() {
 		return
 	}
 	s.errMessage = ""
-	s.outline, _ = document.Outline(s.editorDocument())
+	s.outline = append([]document.Section(nil), s.imageState.outline...)
 	s.editPages, s.editLinks, s.editPage, s.editPageLine, s.previewing = pages, links, 0, 0, true
 	if s.find.query() != "" {
 		s.searchPreview(s.find.query())
@@ -1078,7 +1078,8 @@ func (s *documentsScreen) editorView(header string) string {
 		if s.find.visible {
 			status = s.find.view(len(s.previewMatches), s.previewMatch, s.width)
 		}
-		return header + "\n" + title + "\n" + pageText(visible, max(s.width, 1)) + "\n" + status
+		content := pageText(visible, max(s.width, 1))
+		return header + "\n" + title + "\n" + content + "\n" + status
 	}
 	var content strings.Builder
 	if s.prompt != promptNone {

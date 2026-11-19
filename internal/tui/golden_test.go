@@ -77,6 +77,48 @@ func TestTUIRenderGoldens(t *testing.T) {
 		assertTUIViewGolden(t, "document-reader", h.m.View(), 120, 40)
 	})
 
+	for _, mode := range []string{"editor", "reader", "preview", "small-reader"} {
+		t.Run("document-image-"+mode, func(t *testing.T) {
+			documentImageEnv(t, "")
+			img := documentTestImage(t)
+			h := newHarness(t, "")
+			body := "# Illustrated Document\n\n![Color diagram](" + img.Name + ")\n\n[Continue](#next)\n\n## Next\n\nText after the diagram."
+			if _, err := h.docs.Create(context.Background(), h.path, document.Draft{
+				Body: body, Images: []artifact.Image{img},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			h.openWithTheme(artifact.DocumentKind, false, darkTheme)
+			width, height := 96, 30
+			if mode == "small-reader" {
+				width, height = 60, 16
+			}
+			prepareGoldenView(h, width, height)
+			s := h.m.documents
+			switch mode {
+			case "editor":
+				h.key("e")
+				s.stopDocumentAutosave()
+			case "preview":
+				h.key("e")
+				h.key("f5")
+				_, row := firstDocumentImageRow(t, s, s.editPages)
+				s.editPageLine = max(row-5, 0)
+			default:
+				_, row := firstDocumentImageRow(t, s, s.readerPages)
+				s.reader.SetYOffset(max(row-5, 0))
+			}
+			view := h.m.View()
+			if mode == "preview" {
+				if got := tuiScreenWidth(view); got != width {
+					t.Fatalf("preview width = %d, want %d", got, width)
+				}
+				width = 0 // The print preview intentionally has no border.
+			}
+			assertTUIViewGolden(t, "document-image-"+mode, view, width, height)
+		})
+	}
+
 	t.Run("spreadsheet-grid", func(t *testing.T) {
 		h := newHarness(t, artifact.SpreadsheetKind)
 		h.openWithTheme(artifact.SpreadsheetKind, false, darkTheme)

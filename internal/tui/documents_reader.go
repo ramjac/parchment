@@ -37,7 +37,7 @@ func (s *documentsScreen) refreshReader() {
 	} else {
 		s.readerPages = pages
 		s.readerLinks = links
-		s.outline, _ = document.Outline(s.snapshot)
+		s.outline = append([]document.Section(nil), s.imageState.outline...)
 	}
 	s.readerPage = min(max(s.readerPage, 0), max(len(s.readerPages)-1, 0))
 	s.resizeReader()
@@ -45,7 +45,7 @@ func (s *documentsScreen) refreshReader() {
 
 func (s *documentsScreen) resizeReader() {
 	offset, current := s.reader.YOffset, s.readerMatch
-	width, height := s.width, s.height-4
+	width, height := s.width-4, s.height-6
 	if s.wideReader() {
 		_, preview := s.readerPaneWidths()
 		width, height = preview-2, s.height-6

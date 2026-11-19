@@ -88,6 +88,13 @@ type presentationImageSlot struct {
 	width  string
 }
 
+type presentationImageViewState struct {
+	page, scroll, width, height int
+	showNotes                   bool
+	pdfPrompt                   promptKind
+	revision                    uint64
+}
+
 // presentationModel is a single-deck slide viewer and Markdown source editor.
 // It owns only UI state; it reads and edits the deck file through the
 // presentation service.
@@ -114,6 +121,8 @@ type presentationModel struct {
 	find              findBar
 	imageRenderCache  map[string]renderedPresentationImage
 	imageGraphicsUsed bool
+	imageFrame        uint64
+	imageRevision     uint64
 
 	presentationOpState
 	presentationViewState
@@ -151,9 +160,17 @@ func newPresentationModel(service *presentation.Service, path string, theme Them
 func (m *presentationModel) Init() tea.Cmd { return m.load() }
 
 func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	previous := m.imageViewState()
+	model, cmd := m.updatePresentation(message)
+	if previous != m.imageViewState() {
+		m.imageFrame++
+	}
+	return model, cmd
+}
+
+func (m *presentationModel) updatePresentation(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
-		hadImage := m.pageHasImageDirective()
 		m.width, m.height = msg.Width, msg.Height
 		m.editor.SetWidth(max(1, m.width-4))
 		m.resizePDFPrompt()
@@ -163,14 +180,13 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.searchMatch = min(max(current, 0), len(m.searchMatches)-1)
 		}
 		m.clampScroll()
-		return m, m.clearScreenForImage(hadImage, nil)
+		return m, nil
 	case presentationPDFExportedMsg:
 		return m, m.presentationPDFExported(msg)
 	case presentationLoadedMsg:
 		if msg.seq != m.seq {
 			return m, nil
 		}
-		hadImage := m.pageHasImageDirective()
 		m.finishOperation()
 		if msg.err != nil {
 			m.setError("Load failed", msg.err)
@@ -178,12 +194,11 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.setItem(msg.item)
 		m.status, m.loadedStatus = m.loadedStatus, ""
-		return m, m.clearScreenForImage(hadImage, nil)
+		return m, nil
 	case presentationSavedMsg:
 		if msg.seq != m.seq {
 			return m, nil
 		}
-		hadImage := m.pageHasImageDirective()
 		m.finishOperation()
 		if msg.err != nil {
 			// Keep the editor open so the draft is not lost.
@@ -203,7 +218,7 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.draftStored = false
 		}
-		return m, m.clearScreenForImage(hadImage, nil)
+		return m, nil
 	case presentationAutosaveTickMsg:
 		if msg.session == m.autosaveSession && m.editing {
 			return m, m.saveRecovery(msg.session)
@@ -239,7 +254,6 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.loadedStatus = msg.description
 		return m, cmd
 	case tea.KeyMsg:
-		hadImage := m.pageHasImageDirective()
 		var cmd tea.Cmd
 		if m.pdfPrompt != promptNone {
 			cmd = m.updatePDFPrompt(msg)
@@ -250,7 +264,7 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			cmd = m.updateBrowseKey(msg)
 		}
-		return m, m.clearScreenForImage(hadImage, cmd)
+		return m, cmd
 	case tea.MouseMsg:
 		if m.editing && !m.pending && m.pdfPrompt == promptNone {
 			mouseMsg := msg
@@ -842,6 +856,7 @@ func (m *presentationModel) setItem(item presentation.Presentation) {
 	}
 	m.item, m.deck, m.loaded = item, deck, true
 	m.imageGraphicsUsed = m.imageGraphicsUsed || len(item.Images) > 0
+	m.imageRevision++
 	clear(m.imageRenderCache)
 	m.find.close()
 	m.editor.ClearSearch()
@@ -1001,6 +1016,72 @@ func (m *presentationModel) clampScroll() {
 }
 
 func (m *presentationModel) View() string {
+	view := m.presentationView()
+	if m.imageGraphicsUsed && termimg.DetectProtocol() != termimg.ProtocolNone {
+		view = m.paintPresentationImages(view)
+		view = repaintImageFrame(view, m.imageFrame)
+	}
+	return view
+}
+
+func (m *presentationModel) paintPresentationImages(view string) string {
+	rows := make(map[string]int, len(m.imageRenderCache))
+	for _, rendered := range m.imageRenderCache {
+		rows[rendered.output] = rendered.rows
+	}
+	type placement struct {
+		top, last, x int
+		output       string
+	}
+	var images []placement
+	lines := strings.Split(view, "\n")
+	const save, restore = "\x1b[s", "\x1b[u"
+	for row, line := range lines {
+		for offset := 0; offset < len(line); {
+			start := strings.Index(line[offset:], save)
+			if start < 0 {
+				break
+			}
+			start += offset
+			end := strings.Index(line[start:], restore)
+			if end < 0 {
+				break
+			}
+			end += start + len(restore)
+			output := line[start:end]
+			height, found := rows[output]
+			if !found {
+				offset = end
+				continue
+			}
+			last := row + height - 1
+			if last < len(lines) {
+				images = append(images, placement{
+					top: row, last: last, x: ansi.StringWidth(line[:start]),
+					output: output[len(save) : len(output)-len(restore)],
+				})
+			}
+			line = line[:start] + line[end:]
+			offset = start
+		}
+		lines[row] = line
+	}
+	for _, img := range images {
+		// Text repaints erase Sixel and iTerm2 pixels. Paint only after the
+		// entire image rectangle, including its blank rows, has been written.
+		position := "\r"
+		if img.last > img.top {
+			position += fmt.Sprintf("\x1b[%dA", img.last-img.top)
+		}
+		if img.x > 0 {
+			position += fmt.Sprintf("\x1b[%dC", img.x)
+		}
+		lines[img.last] += save + position + img.output + restore
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *presentationModel) presentationView() string {
 	clearImages := ""
 	if m.imageGraphicsUsed && termimg.DetectProtocol() == termimg.ProtocolKitty {
 		clearImages = termimg.ClearKittyPlacements()
@@ -1039,14 +1120,16 @@ func (m *presentationModel) pageHasImageDirective() bool {
 	return false
 }
 
-func (m *presentationModel) clearScreenForImage(hadImage bool, cmd tea.Cmd) tea.Cmd {
-	if !hadImage || termimg.DetectProtocol() == termimg.ProtocolNone {
-		return cmd
+func (m *presentationModel) imageViewState() presentationImageViewState {
+	if m.editing || !m.imageGraphicsUsed || !m.pageHasImageDirective() ||
+		m.width < 20 || m.height < presentationChromeLines+2 ||
+		termimg.DetectProtocol() == termimg.ProtocolNone {
+		return presentationImageViewState{}
 	}
-	if cmd == nil {
-		return tea.ClearScreen
+	return presentationImageViewState{
+		page: m.page, scroll: m.scroll, width: m.width, height: m.height,
+		showNotes: m.showNotes, pdfPrompt: m.pdfPrompt, revision: m.imageRevision,
 	}
-	return tea.Batch(cmd, tea.ClearScreen)
 }
 
 func (m *presentationModel) renderHeader(chrome lipgloss.Style) string {

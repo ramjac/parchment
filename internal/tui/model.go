@@ -664,7 +664,11 @@ func (m *Model) history(undo bool) tea.Cmd {
 // View renders the current model without performing application operations.
 func (m Model) View() string {
 	if m.tooSmall() {
-		return "parchment — terminal too small (minimum 40×10)\nResize the terminal, or press q to quit."
+		cleanup := ""
+		if m.stage == stageDocument && m.documents != nil {
+			cleanup = m.documents.clearDocumentImages()
+		}
+		return cleanup + "parchment — terminal too small (minimum 40×10)\nResize the terminal, or press q to quit."
 	}
 	header := m.theme.Chrome.
 		Render("parchment  ·  " + sanitizeTerminalLine(m.path))

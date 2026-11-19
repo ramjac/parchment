@@ -60,15 +60,19 @@ func extractAndRewriteLinks(lines []string) ([]string, []linkRef) {
 // so raw URLs are not printed, styles links with the shared link role,
 // and computes hit-test boxes for mouse navigation in reader and preview.
 func (s *documentsScreen) paginateDocumentWithLinks(doc document.Document) ([]document.Page, []linkHitBox, error) {
+	s.imageState.rows = make(map[rune]documentImageRow)
+	s.imageState.prepared = make(map[string][]string)
+	s.imageState.nextMarker = 0
+	s.imageState.outline, _ = document.Outline(doc)
+	s.imageState.navigation = make(map[rune]int)
+	s.imageState.source = doc.Body
 	_, allLinks := extractAndRewriteLinks(strings.Split(doc.Body, "\n"))
 
-	pages, err := document.PaginateWithFormatter(doc, func(lines []string, width, _ int, _ string) []string {
-		rewritten, _ := extractAndRewriteLinks(lines)
-		return strings.Split(renderMarkdown(strings.Join(rewritten, "\n"), width, s.theme), "\n")
-	})
+	pages, err := document.PaginateWithFormatter(doc, s.documentMarkdownFormatter(doc))
 	if err != nil {
 		return nil, nil, err
 	}
+	s.locateDocumentSections(pages)
 
 	if len(allLinks) == 0 {
 		return pages, nil, nil
