@@ -2,6 +2,7 @@ package pdfrender
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"math"
@@ -19,9 +20,17 @@ type File struct {
 // PDFPage contains drawing elements positioned from the top-left in
 // millimeters.
 type PDFPage struct {
-	WidthMM  float64
-	HeightMM float64
-	Elements []Element
+	WidthMM    float64
+	HeightMM   float64
+	Rectangles []Rectangle
+	Elements   []Element
+}
+
+// Rectangle is a stroked rectangle positioned in millimeters.
+type Rectangle struct {
+	X, Y, WidthMM, HeightMM float64
+	Color                   [3]uint8
+	LineWidthMM             float64
 }
 
 // Element is either positioned text or an embedded image. FontSize is in
@@ -50,6 +59,14 @@ type PDFImage struct {
 // Write serializes a reusable, positioned PDF document. The selected core
 // font uses the standard-14 AFM metrics for text measurement.
 func Write(w io.Writer, file File) error {
+	return WriteContext(context.Background(), w, file)
+}
+
+// WriteContext serializes a PDF document while honoring cancellation.
+func WriteContext(ctx context.Context, w io.Writer, file File) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if len(file.Pages) == 0 {
 		return fmt.Errorf("PDF must contain at least one page")
 	}
@@ -57,10 +74,25 @@ func Write(w io.Writer, file File) error {
 		return fmt.Errorf("unsupported PDF core font %q", file.Font)
 	}
 	for _, page := range file.Pages {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if !validDimension(page.WidthMM) || !validDimension(page.HeightMM) {
 			return fmt.Errorf("PDF page dimensions must be positive and finite")
 		}
+		for _, rect := range page.Rectangles {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if !finite(rect.X) || !finite(rect.Y) || !validDimension(rect.WidthMM) ||
+				!validDimension(rect.HeightMM) || !validDimension(rect.LineWidthMM) {
+				return fmt.Errorf("PDF rectangle dimensions and coordinates must be finite and positive")
+			}
+		}
 		for _, element := range page.Elements {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if !finite(element.X) || !finite(element.Y) {
 				return fmt.Errorf("PDF element coordinates must be finite")
 			}
@@ -88,18 +120,35 @@ func Write(w io.Writer, file File) error {
 	pdf.SetFont(font, "", printerFontSize)
 
 	for name, img := range file.Images {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		pdf.RegisterImageOptionsReader(name, fpdf.ImageOptions{ImageType: img.Format}, bytes.NewReader(img.Data))
 		if err := pdf.Error(); err != nil {
 			return fmt.Errorf("register image %s: %w", name, err)
 		}
 	}
 	for _, page := range file.Pages {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		pdf.AddPageFormat("P", fpdf.SizeType{Wd: page.WidthMM, Ht: page.HeightMM})
 		if err := pdf.Error(); err != nil {
 			return err
 		}
 
+		for _, rect := range page.Rectangles {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			pdf.SetDrawColor(int(rect.Color[0]), int(rect.Color[1]), int(rect.Color[2]))
+			pdf.SetLineWidth(rect.LineWidthMM)
+			pdf.Rect(rect.X, rect.Y, rect.WidthMM, rect.HeightMM, "D")
+		}
 		for _, element := range page.Elements {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if element.ImageName != "" {
 				img, ok := file.Images[element.ImageName]
 				if !ok {
@@ -139,6 +188,9 @@ func Write(w io.Writer, file File) error {
 				return err
 			}
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	return pdf.Output(w)
 }

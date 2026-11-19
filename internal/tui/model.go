@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/config"
@@ -36,6 +38,14 @@ type Config struct {
 	Recovery      recovery.Store
 	Theme         config.Theme
 	UndoLimit     int
+	LastPDFPath   string
+	PDFStore      PDFExportStore
+}
+
+// PDFExportStore persists PDF output and the last destination path.
+type PDFExportStore interface {
+	WritePDFExport(context.Context, string, string, []byte, bool) error
+	SavePDFPath(context.Context, string) error
 }
 
 // Theme holds the resolved Lip Gloss colors for the TUI.
@@ -183,12 +193,16 @@ func NewModel(config Config) Model {
 			return context.WithCancel(context.Background())
 		},
 	}
+	m.noteEditor.pdfStore = config.PDFStore
+	m.noteEditor.lastPDFPath = config.LastPDFPath
 	if m.service != nil {
 		m.canUndo, m.canRedo = m.service.CanUndo(), m.service.CanRedo()
 	}
 	if config.Documents != nil {
 		m.documents = newDocumentsScreen(config.Documents, config.Path, m.newOperationContext, m.theme, undoLimit)
 		m.documents.recoveryStore = config.Recovery
+		m.documents.pdfStore = config.PDFStore
+		m.documents.lastPDFPath = config.LastPDFPath
 		m.documents.autosaveScheduler = func(session uint64) tea.Cmd {
 			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
 				return documentAutosaveTickMsg{session: session}
@@ -259,6 +273,7 @@ func (m *Model) openFile(kind artifact.Kind) tea.Cmd {
 
 // Update applies a terminal message to the editor.
 func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	message = normalizeTerminalKey(message)
 	// Record the size before delegating: the file may open before the first
 	// size arrives, and the shell's view checks the size too.
 	size, resized := message.(tea.WindowSizeMsg)
@@ -300,6 +315,8 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleAutosaveFinished(msg)
 	case noteSavedMsg:
 		return m.handleNoteSaved(msg)
+	case notePDFExportedMsg:
+		return m, m.notePDFExported(msg)
 	case historyChangedMsg:
 		return m.handleHistoryChanged(msg)
 	case tea.MouseMsg:
@@ -400,7 +417,7 @@ func (m *Model) handleHistoryChanged(msg historyChangedMsg) (tea.Model, tea.Cmd)
 }
 
 func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	if m.stage == stageNote && !m.pending && !m.previewing {
+	if m.stage == stageNote && !m.pending && !m.previewing && m.pdfPrompt == promptNone {
 		mouseMsg := msg
 		mouseMsg.Y = msg.Y - 3
 		mouseMsg.X = msg.X - 2
@@ -424,6 +441,8 @@ func (m *Model) enterEditor() tea.Cmd {
 	case artifact.SpreadsheetKind:
 		m.sheet = newSpreadsheetModel(m.spreadsheets, m.path, m.theme, m.undoLimit)
 		m.sheet.recoveryStore = m.recoveryStore
+		m.sheet.pdfStore = m.noteEditor.pdfStore
+		m.sheet.lastPDFPath = m.noteEditor.lastPDFPath
 		m.sheet.autosaveScheduler = func(session uint64) tea.Cmd {
 			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
 				return spreadsheetAutosaveTickMsg{session: session}
@@ -439,6 +458,8 @@ func (m *Model) enterEditor() tea.Cmd {
 	case artifact.PresentationKind:
 		m.deck = newPresentationModel(m.presentations, m.path, m.theme, m.undoLimit)
 		m.deck.recoveryStore = m.recoveryStore
+		m.deck.pdfStore = m.noteEditor.pdfStore
+		m.deck.lastPDFPath = m.noteEditor.lastPDFPath
 		m.deck.autosaveScheduler = func(session uint64) tea.Cmd {
 			return tea.Tick(autosaveInterval, func(time.Time) tea.Msg {
 				return presentationAutosaveTickMsg{session: session}
@@ -514,7 +535,7 @@ func (m *Model) updatePendingKey(key string) tea.Cmd {
 			m.cancelOperation()
 		}
 		if m.stage == stageNote {
-			m.status = "Cancelling save…"
+			m.status = "Cancelling…"
 			return nil
 		}
 		return tea.Quit
@@ -551,11 +572,16 @@ func (m *Model) updateNoteKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		return nil
 	}
+	if m.pdfPrompt != promptNone {
+		return m.updateNotePDFPrompt(msg)
+	}
 	if key != "esc" && key != "ctrl+c" {
 		m.discardWarning = false
 	}
 	if m.previewing {
 		switch key {
+		case "ctrl+p":
+			return m.openNotePDFPrompt()
 		case "esc", "f5", "q":
 			m.previewing = false
 		case "ctrl+c":
@@ -566,6 +592,8 @@ func (m *Model) updateNoteKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	switch key {
+	case "ctrl+p":
+		return m.openNotePDFPrompt()
 	case "ctrl+c":
 		if m.bodyInput.Selection.Active {
 			var cmd tea.Cmd
@@ -688,11 +716,19 @@ func (m Model) View() string {
 		state += " • unsaved"
 	}
 	if m.previewing {
-		shortcuts := "Preview  ·  ↑/↓ scroll  ·  Esc returns to the editor"
-		return chromeLayout(m.width, m.height, header, shortcuts, m.preview.View(), m.statusLine(), m.theme.Border)
+		shortcuts := ansi.Truncate("Preview  ·  Ctrl+P PDF  ·  ↑/↓ scroll  ·  Esc returns to the editor", m.width, "…")
+		content := m.preview.View()
+		if m.pdfPrompt != promptNone {
+			content = m.pdfInput.View() + "\n" + content
+		}
+		return chromeLayout(m.width, m.height, header, shortcuts, content, m.statusLine(), m.theme.Border)
 	}
-	shortcuts := state + "  ·  Ctrl+S saves  ·  F5 preview  ·  Ctrl+Z/Ctrl+R undo/redo  ·  Esc quits"
-	return chromeLayout(m.width, m.height, header, shortcuts, m.bodyInput.View(), m.statusLine(), m.theme.Border)
+	shortcuts := ansi.Truncate(state+"  ·  Ctrl+S saves  ·  Ctrl+P PDF  ·  F5 preview  ·  Ctrl+Z/Ctrl+R undo/redo  ·  Esc quits", m.width, "…")
+	content := m.bodyInput.View()
+	if m.pdfPrompt != promptNone {
+		content = m.pdfInput.View() + "\n" + content
+	}
+	return chromeLayout(m.width, m.height, header, shortcuts, content, m.statusLine(), m.theme.Border)
 }
 
 func (m Model) tooSmall() bool { return m.width < 40 || m.height < 10 }
@@ -847,7 +883,10 @@ func Run(ctx context.Context, config Config, opts ...tea.ProgramOption) error {
 	if model.documents != nil {
 		model.documents.newOperationContext = model.newOperationContext
 	}
-	options := append([]tea.ProgramOption{tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx)}, opts...)
+	options := append([]tea.ProgramOption{
+		tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx),
+		tea.WithOutput(keyboardTerminalOutput{os.Stdout}),
+	}, opts...)
 	program := tea.NewProgram(&model, options...)
 	_, err := program.Run()
 	return err

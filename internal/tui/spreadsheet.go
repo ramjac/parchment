@@ -84,14 +84,20 @@ type spreadsheetAsync struct {
 // spreadsheetModel is a single-workbook grid editor. It owns only UI state;
 // it reads and edits the workbook file through the spreadsheet service.
 type spreadsheetModel struct {
-	service  *spreadsheet.Service
-	theme    Theme
-	path     string
-	book     spreadsheet.Spreadsheet
-	baseline spreadsheet.Spreadsheet
-	loaded   bool
-	editing  bool
-	input    textinput.Model
+	service          *spreadsheet.Service
+	theme            Theme
+	path             string
+	book             spreadsheet.Spreadsheet
+	baseline         spreadsheet.Spreadsheet
+	loaded           bool
+	editing          bool
+	input            textinput.Model
+	pdfInput         textinput.Model
+	pdfStore         PDFExportStore
+	lastPDFPath      string
+	pdfPrompt        promptKind
+	pdfOverwritePath string
+	pdfPending       bool
 
 	undoLimit    int
 	bufferUndo   []spreadsheet.Spreadsheet
@@ -115,6 +121,8 @@ func newSpreadsheetModel(service *spreadsheet.Service, path string, theme Theme,
 	input := textinput.New()
 	input.Prompt = ""
 	input.CharLimit = spreadsheet.MaxFormulaLength + 1
+	pdfInput := textinput.New()
+	pdfInput.CharLimit = 64 << 10
 	if undoLimit < 1 {
 		undoLimit = 100
 	}
@@ -124,6 +132,7 @@ func newSpreadsheetModel(service *spreadsheet.Service, path string, theme Theme,
 		theme:     theme,
 		input:     input,
 		undoLimit: undoLimit,
+		pdfInput:  pdfInput,
 	}
 	m.newOperationContext = func() (context.Context, context.CancelFunc) {
 		return context.WithCancel(context.Background())
@@ -223,10 +232,12 @@ func (m *spreadsheetModel) deleteRecoveryDraft() tea.Cmd {
 func (m *spreadsheetModel) Init() tea.Cmd { return m.load() }
 
 func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	message = normalizeTerminalKey(message)
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.input.Width = max(1, m.width-12)
+		m.resizePDFPrompt()
 		m.scrollToSelection()
 		return m, nil
 	case spreadsheetLoadedMsg:
@@ -284,6 +295,8 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := m.load()
 		m.loadedStatus = msg.description
 		return m, cmd
+	case spreadsheetPDFExportedMsg:
+		return m, m.spreadsheetPDFExported(msg)
 	case spreadsheetAutosaveTickMsg:
 		if msg.session == m.autosaveSession && m.autosaveActive && m.dirty() {
 			return m, m.saveRecovery(msg.session)
@@ -316,13 +329,18 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.scheduleAutosave(msg.session)
 		}
 		return m, m.syncAutosave()
+	case shiftEnterMsg:
+		return m, m.updateEditKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("shift+enter")})
 	case tea.KeyMsg:
+		if m.pdfPrompt != promptNone {
+			return m, m.updatePDFPrompt(msg)
+		}
 		if m.editing {
 			return m, m.updateEditKey(msg)
 		}
 		return m, m.updateBrowseKey(msg)
 	case tea.MouseMsg:
-		if !m.pending && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		if !m.pending && m.pdfPrompt == promptNone && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			if m.editing {
 				if msg.Y == 1 {
 					m.input.SetCursor(max(msg.X-len(spreadsheet.CellName(m.row+1, m.column+1))-3, 0))
@@ -357,10 +375,19 @@ func (m *spreadsheetModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
 		if key == "esc" {
 			m.cancelPending()
 			m.closing = false
-			m.status, m.errMessage = "Save cancelled", ""
+			if m.pdfPending {
+				m.pdfPending = false
+				m.status, m.errMessage = "PDF export cancelled", ""
+			} else {
+				m.status, m.errMessage = "Save cancelled", ""
+			}
 			return m.syncAutosave()
 		} else {
-			m.status = "Saving… (esc cancels)"
+			if m.pdfPending {
+				m.status = "Exporting PDF… (esc cancels)"
+			} else {
+				m.status = "Saving… (esc cancels)"
+			}
 		}
 		return nil
 	}
@@ -370,8 +397,12 @@ func (m *spreadsheetModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
 		m.input.Blur()
 		m.status, m.errMessage = "Cell edit cancelled", ""
 		return m.syncAutosave()
-	case "enter":
+	case "enter", "shift+enter", "alt+enter":
 		if m.commitCell() {
+			if key != "enter" {
+				m.move(1, 0)
+				return tea.Batch(m.beginEdit(cellDraft(m.cell(m.row, m.column))), m.syncAutosave())
+			}
 			return m.syncAutosave()
 		}
 		return nil
@@ -380,6 +411,8 @@ func (m *spreadsheetModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 		return m.saveWorkbook()
+	case "ctrl+p":
+		return m.openPDFPrompt()
 	}
 	m.closeWarning = false
 	var cmd tea.Cmd
@@ -405,7 +438,12 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		if m.pending {
 			m.cancelPending()
 			m.closing = false
-			m.status, m.errMessage = "Cancelled", ""
+			if m.pdfPending {
+				m.pdfPending = false
+				m.status, m.errMessage = "PDF export cancelled", ""
+			} else {
+				m.status, m.errMessage = "Cancelled", ""
+			}
 			return m.syncAutosave()
 		}
 		return m.requestClose()
@@ -546,6 +584,8 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		return m.redo()
 	case "ctrl+s":
 		return m.saveWorkbook()
+	case "ctrl+p":
+		return m.openPDFPrompt()
 	}
 	return nil
 }
@@ -885,7 +925,11 @@ func (m *spreadsheetModel) rowHeaderWidth() int {
 }
 
 func (m *spreadsheetModel) visibleRows() int {
-	return max(1, m.height-spreadsheetChromeLines)
+	promptRows := 0
+	if m.pdfPrompt != promptNone {
+		promptRows = 1
+	}
+	return max(1, m.height-spreadsheetChromeLines-promptRows)
 }
 
 func (m *spreadsheetModel) visibleColumns() int {
@@ -1005,9 +1049,9 @@ func (m *spreadsheetModel) renderStatus() string {
 
 func (m *spreadsheetModel) renderHelp() string {
 	muted := lipgloss.NewStyle().Foreground(m.theme.Border)
-	help := "arrows move • enter edit • ctrl+s save • del clear • f formulas • tab sheet • u/ctrl+z undo • ctrl+r redo • d delete • i insert • r reload • esc/q quit"
+	help := "arrows move • enter edit • ctrl+s save • del clear • ctrl+p PDF • f formulas • tab sheet • u/ctrl+z undo • ctrl+r redo • d delete • i insert • r reload • esc/q quit"
 	if m.editing {
-		help = "enter stage • ctrl+s save • esc cancel • =formula • 'literal"
+		help = "enter stage • ctrl+s save • esc cancel • =formula • 'literal • shift+enter/alt+enter down • ctrl+p PDF"
 	} else if !m.loaded {
 		help = "r retry • esc/q quit"
 	}
@@ -1019,5 +1063,9 @@ func (m *spreadsheetModel) View() string {
 		return "Terminal too small. Press q to quit."
 	}
 	shortcuts := m.renderHelp() + "\n" + m.renderFormulaBar()
-	return chromeLayout(m.width, m.height, m.renderHeader(), shortcuts, m.renderGrid(), m.renderStatus(), m.theme.Border)
+	content := m.renderGrid()
+	if m.pdfPrompt != promptNone {
+		content = m.pdfInput.View() + "\n" + content
+	}
+	return chromeLayout(m.width, m.height, m.renderHeader(), shortcuts, content, m.renderStatus(), m.theme.Border)
 }

@@ -71,9 +71,14 @@ func (h *harness) open(kind artifact.Kind) {
 // openWith starts a session; edit opens an existing document in its editor.
 func (h *harness) openWith(kind artifact.Kind, edit bool) {
 	h.t.Helper()
+	lastPDFPath, err := h.repo.LastPDFPath(context.Background())
+	if err != nil {
+		h.t.Fatal(err)
+	}
 	model := NewModel(Config{
 		Path: h.path, Kind: kind, Edit: edit, Notes: h.notes, Documents: h.docs,
 		Spreadsheets: h.sheets, Presentations: h.decks, Recovery: h.repo, UndoLimit: h.undoLimit,
+		PDFStore: h.repo, LastPDFPath: lastPDFPath,
 	})
 	h.m, h.quit = &model, false
 	// Blinking cursors return tea.Tick commands, which the harness would run
@@ -81,6 +86,7 @@ func (h *harness) openWith(kind artifact.Kind, edit bool) {
 	if s := h.m.documents; s != nil {
 		s.promptInput.Cursor.SetMode(cursor.CursorStatic)
 	}
+	h.m.pdfInput.Cursor.SetMode(cursor.CursorStatic)
 	if s := h.m.sheet; s != nil {
 		s.input.Cursor.SetMode(cursor.CursorStatic)
 	}
@@ -98,15 +104,18 @@ func (h *harness) send(message tea.Msg) {
 	}
 	if h.m.deck != nil {
 		h.m.deck.autosaveScheduler = nil
+		h.m.deck.pdfInput.Cursor.SetMode(cursor.CursorStatic)
 	}
 	if h.m.sheet != nil {
 		h.m.sheet.autosaveScheduler = nil
 		h.m.sheet.input.Cursor.SetMode(cursor.CursorStatic)
+		h.m.sheet.pdfInput.Cursor.SetMode(cursor.CursorStatic)
 	}
 	_, cmd := h.m.Update(message)
 	if h.m.sheet != nil {
 		h.m.sheet.autosaveScheduler = nil
 		h.m.sheet.input.Cursor.SetMode(cursor.CursorStatic)
+		h.m.sheet.pdfInput.Cursor.SetMode(cursor.CursorStatic)
 	}
 	h.run(cmd)
 }

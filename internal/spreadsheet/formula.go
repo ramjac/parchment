@@ -50,15 +50,30 @@ func (v Value) Float64() (float64, error) {
 // formulas support numeric literals, A1 references, parentheses, unary signs,
 // +, -, *, /, ranges, string literals, and aggregate functions.
 func Evaluate(book *Spreadsheet, sheetIndex, row, column int) (Value, error) {
+	return NewEvaluator(book).Evaluate(sheetIndex, row, column)
+}
+
+// Evaluator evaluates cells in one workbook while reusing its dependency cache.
+type Evaluator struct {
+	evaluator evaluator
+}
+
+// NewEvaluator creates an evaluator for book.
+func NewEvaluator(book *Spreadsheet) *Evaluator {
+	return &Evaluator{evaluator: evaluator{
+		book: book, visiting: make(map[cellCoordinate]bool),
+		cache: make(map[cellCoordinate]Value), depth: make(map[cellCoordinate]int),
+	}}
+}
+
+// Evaluate calculates one cell and caches its result for subsequent lookups.
+func (e *Evaluator) Evaluate(sheetIndex, row, column int) (Value, error) {
+	book := e.evaluator.book
 	if sheetIndex < 0 || sheetIndex >= len(book.Sheets) || row < 1 || row > MaxRows ||
 		column < 1 || column > MaxColumns {
 		return Value{}, errors.New("cell coordinates are outside the workbook")
 	}
-	e := evaluator{
-		book: book, visiting: make(map[cellCoordinate]bool),
-		cache: make(map[cellCoordinate]Value), depth: make(map[cellCoordinate]int),
-	}
-	return e.cell(sheetIndex, row, column)
+	return e.evaluator.cell(sheetIndex, row, column)
 }
 
 const maxFormulaDepth = 512

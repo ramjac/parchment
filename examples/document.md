@@ -4,7 +4,7 @@
   "kind": "document",
   "format_version": 2,
   "created_at": "2026-01-15T09:00:00Z",
-  "modified_at": "2026-11-17T18:54:36.672970015Z"
+  "modified_at": "2026-11-18T19:35:44.944693596Z"
 }
 ```
 

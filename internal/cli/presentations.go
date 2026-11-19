@@ -122,6 +122,8 @@ func addPresentationCommands(root *cobra.Command, streams output) {
 		},
 	})
 
+	group.AddCommand(newPrintCmd(artifact.PresentationKind, streams))
+
 	edit := &cobra.Command{
 		Use: "edit <file>", Short: "Replace a presentation's Markdown source", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

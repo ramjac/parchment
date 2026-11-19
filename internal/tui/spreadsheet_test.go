@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -61,6 +64,10 @@ func sheetKey(name string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyRight}
 	case "enter":
 		return tea.KeyMsg{Type: tea.KeyEnter}
+	case "shift+enter":
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("shift+enter")}
+	case "alt+enter":
+		return tea.KeyMsg{Type: tea.KeyEnter, Alt: true}
 	case "esc":
 		return tea.KeyMsg{Type: tea.KeyEsc}
 	case "delete":
@@ -309,25 +316,156 @@ func TestSpreadsheetEditDistinguishesFormulasAndLiterals(t *testing.T) {
 	driveSheet(t, m, sheetKey("u"))
 }
 
-func TestSpreadsheetInvalidFormulaKeepsDraft(t *testing.T) {
-	m, service, _, id := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "1"}}})
+func TestSpreadsheetShiftEnterContinuesDownColumn(t *testing.T) {
+	m, service, _, path := newSheetModel(t, [][]spreadsheet.Cell{
+		{{}, {Value: "old"}},
+		{{}, {Formula: "=1+2"}},
+	})
 	driveSheet(t, m, sheetKey("right"))
 	driveSheet(t, m, sheetKey("enter"))
-	driveSheet(t, m, sheetKey("=B1+"))
-	driveSheet(t, m, sheetKey("enter"))
-	if !m.editing || m.input.Value() != "=B1+" || !m.dirty() || !strings.Contains(m.errMessage, "Edit failed") {
-		t.Fatalf("state after invalid formula: editing %t dirty %t draft %q err %q", m.editing, m.dirty(), m.input.Value(), m.errMessage)
+	m.input.SetValue("first")
+	_, _ = m.Update(shiftEnterMsg{})
+	if got := m.cell(0, 1); got.Value != "first" {
+		t.Fatalf("staged cell = %#v", got)
 	}
-	if got := storedCell(t, service, id, 1, 2); got != (spreadsheet.Cell{}) {
-		t.Fatalf("invalid formula was stored: %#v", got)
+	if !m.editing || m.row != 1 || m.column != 1 || m.input.Value() != "=1+2" || !m.input.Focused() {
+		t.Fatalf("next edit: row=%d column=%d editing=%t input=%q", m.row, m.column, m.editing, m.input.Value())
+	}
+	m.input.SetValue("second")
+	driveSheet(t, m, sheetKey("shift+enter"))
+	if !m.editing || m.row != 2 || m.column != 1 || m.input.Value() != "" || m.cell(1, 1).Value != "second" {
+		t.Fatalf("continued edit: row=%d column=%d editing=%t input=%q", m.row, m.column, m.editing, m.input.Value())
+	}
+	if got := storedCell(t, service, path, 1, 2); got.Value != "old" {
+		t.Fatalf("staged edit was persisted before saving: %#v", got)
 	}
 	driveSheet(t, m, sheetKey("esc"))
-	if m.editing {
-		t.Fatal("esc did not cancel editing")
+	driveSheet(t, m, sheetKey("ctrl+s"))
+	if got := storedCell(t, service, path, 2, 2); got.Value != "second" {
+		t.Fatalf("saved cell = %#v", got)
 	}
-	driveSheet(t, m, sheetKey("q"))
-	if got := storedCell(t, service, id, 1, 2); got != (spreadsheet.Cell{}) {
-		t.Fatalf("cancelled edit was stored: %#v", got)
+}
+
+func TestSpreadsheetAutosaveRestartsAroundPDFExport(t *testing.T) {
+	h := newHarness(t, artifact.SpreadsheetKind)
+	m := h.m.sheet
+	if !m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+		return spreadsheet.SetCellInBook(book, spreadsheet.SetCellOptions{
+			Sheet: book.Sheets[0].Name, Row: 1, Column: 1, Cell: spreadsheet.Cell{Value: "draft"},
+		})
+	}) {
+		t.Fatal(m.errMessage)
+	}
+	m.syncAutosave()
+	if !m.autosaveActive {
+		t.Fatal("autosave did not start for dirty workbook")
+	}
+
+	existing := filepath.Join(t.TempDir(), "existing.pdf")
+	if err := os.WriteFile(existing, []byte("existing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := m.exportPDF(existing, false)
+	if cmd == nil || !m.pending || m.autosaveActive {
+		t.Fatal("export did not pause autosave")
+	}
+	message := cmd().(spreadsheetPDFExportedMsg)
+	m.spreadsheetPDFExported(message)
+	if m.pdfPrompt != promptPDFOverwrite || !m.autosaveActive {
+		t.Fatalf("overwrite prompt state: prompt=%v autosave=%v", m.pdfPrompt, m.autosaveActive)
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if m.pdfPrompt != promptNone || !m.autosaveActive {
+		t.Fatalf("cancelled overwrite state: prompt=%v autosave=%v", m.pdfPrompt, m.autosaveActive)
+	}
+
+	cmd = m.exportPDF(filepath.Join(t.TempDir(), "cancelled.pdf"), false)
+	if cmd == nil || m.autosaveActive {
+		t.Fatal("second export did not pause autosave")
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if !m.autosaveActive || m.pending {
+		t.Fatalf("cancelled export state: pending=%v autosave=%v", m.pending, m.autosaveActive)
+	}
+}
+
+func TestSpreadsheetShiftEnterScrollsAndStopsAtLastRow(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, nil)
+	for _, row := range []int{m.visibleRows() - 1, spreadsheet.MaxRows - 1} {
+		m.row = row
+		m.scrollToSelection()
+		driveSheet(t, m, sheetKey("enter"))
+		m.input.SetValue("value")
+		driveSheet(t, m, sheetKey("shift+enter"))
+		if !m.editing || m.row != min(row+1, spreadsheet.MaxRows-1) || m.column != 0 {
+			t.Fatalf("row=%d: selection=%d,%d editing=%t", row, m.row, m.column, m.editing)
+		}
+		if m.row < m.rowOffset || m.row >= m.rowOffset+m.visibleRows() {
+			t.Fatalf("selection %d outside visible rows starting at %d", m.row, m.rowOffset)
+		}
+		driveSheet(t, m, sheetKey("esc"))
+	}
+}
+
+func TestSpreadsheetAltEnterContinuesDownColumn(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, nil)
+	driveSheet(t, m, sheetKey("enter"))
+	m.input.SetValue("value")
+	driveSheet(t, m, sheetKey("alt+enter"))
+	if !m.editing || m.row != 1 || m.column != 0 || m.cell(0, 0).Value != "value" {
+		t.Fatalf("fallback shortcut: row=%d column=%d editing=%t", m.row, m.column, m.editing)
+	}
+}
+
+type loadedSpreadsheetInputModel struct {
+	*spreadsheetModel
+}
+
+func (loadedSpreadsheetInputModel) Init() tea.Cmd { return nil }
+
+func TestSpreadsheetShiftEnterTerminalSequences(t *testing.T) {
+	for _, sequence := range []string{"\x1b[13;2u", "\x1b[27;2;13~"} {
+		t.Run(fmt.Sprintf("%q", sequence), func(t *testing.T) {
+			m, _, _, _ := newSheetModel(t, nil)
+			driveSheet(t, m, sheetKey("enter"))
+			m.input.SetValue("typed")
+			program := tea.NewProgram(loadedSpreadsheetInputModel{m},
+				tea.WithInput(strings.NewReader(sequence+"\x03")),
+				tea.WithOutput(io.Discard), tea.WithoutRenderer(), tea.WithoutSignalHandler(),
+			)
+			if _, err := program.Run(); err != nil {
+				t.Fatal(err)
+			}
+			if !m.editing || m.row != 1 || m.cell(0, 0).Value != "typed" {
+				t.Fatalf("terminal shortcut: row=%d editing=%t cell=%#v", m.row, m.editing, m.cell(0, 0))
+			}
+		})
+	}
+}
+
+func TestSpreadsheetInvalidFormulaKeepsDraft(t *testing.T) {
+	for _, key := range []string{"enter", "shift+enter"} {
+		t.Run(key, func(t *testing.T) {
+			m, service, _, id := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "1"}}})
+			driveSheet(t, m, sheetKey("right"))
+			driveSheet(t, m, sheetKey("enter"))
+			driveSheet(t, m, sheetKey("=B1+"))
+			driveSheet(t, m, sheetKey(key))
+			if !m.editing || m.row != 0 || m.column != 1 || m.input.Value() != "=B1+" || !m.dirty() || !strings.Contains(m.errMessage, "Edit failed") {
+				t.Fatalf("state after invalid formula: editing %t dirty %t draft %q err %q", m.editing, m.dirty(), m.input.Value(), m.errMessage)
+			}
+			if got := storedCell(t, service, id, 1, 2); got != (spreadsheet.Cell{}) {
+				t.Fatalf("invalid formula was stored: %#v", got)
+			}
+			driveSheet(t, m, sheetKey("esc"))
+			if m.editing {
+				t.Fatal("esc did not cancel editing")
+			}
+			driveSheet(t, m, sheetKey("q"))
+			if got := storedCell(t, service, id, 1, 2); got != (spreadsheet.Cell{}) {
+				t.Fatalf("cancelled edit was stored: %#v", got)
+			}
+		})
 	}
 }
 

@@ -28,6 +28,7 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 	group.AddCommand(newSpreadsheetDeleteSheetCmd())
 	group.AddCommand(newSpreadsheetAddSheetCmd())
 	group.AddCommand(newSpreadsheetExportCmd(streams))
+	group.AddCommand(newPrintCmd(artifact.SpreadsheetKind, streams))
 }
 
 func newSpreadsheetCreateCmd(streams output) *cobra.Command {

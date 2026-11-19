@@ -198,12 +198,13 @@ func TestDocumentPDFExportFromEditorPreservesUnsavedDraft(t *testing.T) {
 	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
 	s.promptInput.SetValue(previewOutput)
 	h.key("enter")
-	if !strings.Contains(h.m.View(), "PDF export failed:") {
-		t.Fatal("print preview did not display the PDF export error status")
+	if s.prompt != promptPDFOverwrite || !strings.Contains(h.m.View(), "Overwrite?") {
+		t.Fatal("print preview did not display the overwrite confirmation")
 	}
+	h.key("esc")
 }
 
-func TestDocumentPDFExportFromReaderAndRefusesOverwrite(t *testing.T) {
+func TestDocumentPDFExportFromReaderAndConfirmsOverwrite(t *testing.T) {
 	h := newDocumentHarness(t, document.Draft{Body: "# Reader PDF"})
 	s := h.m.documents
 	s.startReading(s.snapshot)
@@ -222,18 +223,68 @@ func TestDocumentPDFExportFromReaderAndRefusesOverwrite(t *testing.T) {
 		t.Fatalf("export does not have a PDF signature: %q", pdf[:min(len(pdf), 8)])
 	}
 
+	h.open(artifact.DocumentKind)
+	s = h.m.documents
 	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
-	s.promptInput.SetValue(output)
-	h.key("enter")
-	if !strings.Contains(s.errMessage, "already exists") {
-		t.Fatalf("overwrite error = %q, want already exists", s.errMessage)
+	if got := s.promptInput.Value(); got != output {
+		t.Fatalf("remembered PDF path = %q, want %q", got, output)
 	}
+	h.key("enter")
+	if s.prompt != promptPDFOverwrite || !strings.Contains(h.m.View(), "Overwrite?") {
+		t.Fatalf("missing overwrite confirmation: %s", h.m.View())
+	}
+	h.key("enter")
 	after, err := os.ReadFile(output)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(after, pdf) {
 		t.Fatal("refused overwrite changed the existing PDF")
+	}
+
+	if err := os.WriteFile(output, []byte("old PDF"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.key("enter")
+	h.key("y")
+	after, err = os.ReadFile(output)
+	if err != nil || !bytes.HasPrefix(after, []byte("%PDF-")) {
+		t.Fatalf("confirmed overwrite did not create PDF: %v", err)
+	}
+	if !strings.Contains(s.status, "PDF exported") {
+		t.Fatalf("status after confirmed overwrite = %q", s.status)
+	}
+	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	s.promptInput.SetValue(filepath.Join(t.TempDir(), "missing", "failed.pdf"))
+	h.key("enter")
+	if !strings.Contains(s.errMessage, "PDF export failed") {
+		t.Fatalf("expected export failure, got %q", s.errMessage)
+	}
+	h.open(artifact.DocumentKind)
+	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if got := h.m.documents.promptInput.Value(); got != output {
+		t.Fatalf("failed export changed remembered path to %q", got)
+	}
+}
+
+func TestDocumentPDFExportCannotOverwriteSource(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "Source document"})
+	s := h.m.documents
+	before, err := os.ReadFile(h.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	s.promptInput.SetValue(h.path)
+	h.key("enter")
+	h.key("y")
+	after, err := os.ReadFile(h.path)
+	if err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("source document was changed: %v", err)
+	}
+	if !strings.Contains(s.errMessage, "cannot overwrite the source file") {
+		t.Fatalf("error = %q", s.errMessage)
 	}
 }
 

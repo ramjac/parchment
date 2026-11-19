@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -775,12 +774,7 @@ func (s *documentsScreen) actDocument(action string) (tea.Cmd, bool) {
 }
 
 func (s *documentsScreen) openPDFPrompt() tea.Cmd {
-	extension := filepath.Ext(s.path)
-	if extension == filepath.Base(s.path) {
-		extension = ""
-	}
-	path := strings.TrimSuffix(s.path, extension) + ".pdf"
-	return s.openPrompt(promptPDF, "PDF output path: ", path)
+	return s.openPrompt(promptPDF, "PDF output path: ", pdfDefaultPath(s.path, s.lastPDFPath))
 }
 
 func textAction(action string) bool {
@@ -793,6 +787,10 @@ func textAction(action string) bool {
 
 func (s *documentsScreen) openPrompt(kind promptKind, label, value string) tea.Cmd {
 	s.prompt = kind
+	s.promptInput.CharLimit = document.MaxRunningTextLength * 2
+	if kind == promptPDF {
+		s.promptInput.CharLimit = 64 << 10
+	}
 	s.promptInput.Prompt = label
 	s.promptInput.SetValue(value)
 	s.promptInput.CursorEnd()
@@ -800,6 +798,22 @@ func (s *documentsScreen) openPrompt(kind promptKind, label, value string) tea.C
 }
 
 func (s *documentsScreen) updatePrompt(msg tea.KeyMsg) tea.Cmd {
+	if s.prompt == promptPDFOverwrite {
+		switch msg.String() {
+		case "y", "Y":
+			path := s.pdfOverwritePath
+			s.pdfOverwritePath = ""
+			s.prompt = promptNone
+			s.promptInput.Blur()
+			return s.exportPDF(path, true)
+		case "n", "N", "esc", "enter", "ctrl+c":
+			s.pdfOverwritePath = ""
+			s.prompt = promptNone
+			s.promptInput.Blur()
+			s.status = "PDF export cancelled"
+		}
+		return nil
+	}
 	switch msg.String() {
 	case "esc":
 		s.prompt = promptNone
@@ -850,7 +864,7 @@ func (s *documentsScreen) finishPrompt(kind promptKind, value string) tea.Cmd {
 		s.pending = true
 		return readImageCommand(s.startOperation(), value)
 	case promptPDF:
-		return s.exportPDF(value)
+		return s.exportPDF(value, false)
 	case promptSection:
 		trimmed := strings.TrimSuffix(value, "c")
 		continuous := trimmed != value
@@ -949,7 +963,11 @@ func (s *documentsScreen) editorView(header string) string {
 		}
 		title := runewidth.Truncate("Print preview  ·  "+position+"  ·  Ctrl+P PDF  ·  ↑/↓ scroll  ·  ←/→ pages  ·  Esc returns", max(s.width, 1), "…")
 		if s.prompt != promptNone {
-			title = runewidth.Truncate(s.promptInput.View()+"  ·  Enter export PDF  ·  Esc cancel", max(s.width, 1), "…")
+			help := "  ·  Enter export PDF  ·  Esc cancel"
+			if s.prompt == promptPDFOverwrite {
+				help = "  ·  y overwrite  ·  n/Esc cancel"
+			}
+			title = runewidth.Truncate(s.promptInput.View()+help, max(s.width, 1), "…")
 		}
 		status := ansi.Truncate(s.statusLine(), max(s.width, 1), "…")
 		return header + "\n" + title + "\n" + pageText(visible, max(s.width, 1)) + "\n" + status

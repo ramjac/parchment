@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -19,7 +21,11 @@ import (
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/docinterop"
 	"example.com/parchment/internal/document"
+	"example.com/parchment/internal/note"
 	"example.com/parchment/internal/pdfrender"
+	"example.com/parchment/internal/presentation"
+	"example.com/parchment/internal/printing"
+	"example.com/parchment/internal/spreadsheet"
 )
 
 func addDocumentCommands(root *cobra.Command, streams output) {
@@ -448,31 +454,84 @@ func newDocumentImageRemoveCmd() *cobra.Command {
 }
 
 func newDocumentPrintCmd(streams output) *cobra.Command {
+	return newPrintCmd(artifact.DocumentKind, streams)
+}
+
+func newPrintCmd(kind artifact.Kind, streams output) *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "print <file>", Short: "Render printer-ready text or PDF", Args: cobra.ExactArgs(1),
-		Long: "Render a document as paginated text or PDF. Text pages are separated by form feeds\n" +
-			"and can be sent directly to a printer, for example `parchment document print <file> | lpr`.",
+		Long: fmt.Sprintf("Render a %s as paginated text or PDF. Text pages are separated by form feeds\n"+
+			"and can be sent directly to a printer, for example `parchment %s print <file> | lpr`.", kind, kind),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, service, err := openDocuments(cmd)
+			repo, settings, err := openStore()
 			if err != nil {
 				return err
 			}
-			d, err := service.Get(cmd.Context(), args[0])
-			if err != nil {
-				return err
+			var d document.Document
+			var deck presentation.Presentation
+			var book spreadsheet.Spreadsheet
+			switch kind {
+			case artifact.NoteKind:
+				n, getErr := note.NewService(repo, settings.UndoLimit).Get(cmd.Context(), args[0])
+				if getErr != nil {
+					return getErr
+				}
+				d = printing.NoteDocument(n)
+			case artifact.DocumentKind:
+				d, err = document.NewService(repo, settings.UndoLimit).Get(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+			case artifact.PresentationKind:
+				deck, err = presentation.NewService(repo, settings.UndoLimit).Get(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+			case artifact.SpreadsheetKind:
+				book, err = spreadsheet.NewService(repo, settings.UndoLimit).Get(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+			default:
+				return fmt.Errorf("unsupported print kind %q", kind)
 			}
 			format, _ := cmd.Flags().GetString("format")
+			slidesPerPage := 1
+			if kind == artifact.PresentationKind {
+				slidesPerPage, _ = cmd.Flags().GetInt("slides-per-page")
+				if slidesPerPage != 1 && slidesPerPage != 2 {
+					return fmt.Errorf("slides-per-page must be 1 or 2")
+				}
+			}
 			var data []byte
 			switch format {
 			case "text":
-				text, err := document.Print(d)
+				var text string
+				if kind == artifact.SpreadsheetKind {
+					text, err = printing.PrintSpreadsheet(book)
+				} else if kind == artifact.PresentationKind && slidesPerPage == 2 {
+					text, err = printing.PrintPresentationTwoUp(deck)
+				} else if kind == artifact.PresentationKind {
+					text, err = printing.PrintPresentation(deck)
+				} else {
+					text, err = document.Print(d)
+				}
 				if err != nil {
 					return err
 				}
 				data = []byte(text)
 			case "pdf":
 				var rendered bytes.Buffer
-				if err := pdfrender.Render(&rendered, d); err != nil {
+				if kind == artifact.SpreadsheetKind {
+					err = pdfrender.RenderSpreadsheet(&rendered, book)
+				} else if kind == artifact.PresentationKind && slidesPerPage == 2 {
+					err = pdfrender.RenderPresentationTwoUp(&rendered, deck)
+				} else if kind == artifact.PresentationKind {
+					err = pdfrender.RenderPresentation(&rendered, deck)
+				} else {
+					err = pdfrender.Render(&rendered, d)
+				}
+				if err != nil {
 					return err
 				}
 				data = rendered.Bytes()
@@ -482,26 +541,49 @@ func newDocumentPrintCmd(streams output) *cobra.Command {
 			path, _ := cmd.Flags().GetString("output")
 			if path != "" {
 				if format == "text" {
-					return os.WriteFile(path, data, 0o644)
-				}
-				force, _ := cmd.Flags().GetBool("force")
-				flags := os.O_WRONLY | os.O_CREATE
-				if force {
-					flags |= os.O_TRUNC
-				} else {
-					flags |= os.O_EXCL
-				}
-				f, err := os.OpenFile(path, flags, 0o600)
-				if err != nil {
-					if os.IsExist(err) {
-						return fmt.Errorf("file %q already exists (use --force to overwrite)", path)
+					err := repo.WriteTextExport(cmd.Context(), path, args[0], data, false)
+					if errors.Is(err, fs.ErrExist) {
+						force, _ := cmd.Flags().GetBool("force")
+						if !force {
+							if !streamsInteractive(cmd.InOrStdin(), cmd.ErrOrStderr()) {
+								return fmt.Errorf("file %q already exists (use --force to overwrite)", path)
+							}
+							confirmed, promptErr := confirmOutputOverwrite(cmd.InOrStdin(), cmd.ErrOrStderr(), path)
+							if promptErr != nil {
+								return promptErr
+							}
+							if !confirmed {
+								return nil
+							}
+						}
+						err = repo.WriteTextExport(cmd.Context(), path, args[0], data, true)
 					}
 					return err
 				}
-				if _, err := f.Write(data); err != nil {
-					return errors.Join(err, f.Close())
+				err := repo.WritePDFExport(cmd.Context(), path, args[0], data, false)
+				if errors.Is(err, fs.ErrExist) {
+					force, _ := cmd.Flags().GetBool("force")
+					if !force {
+						if !streamsInteractive(cmd.InOrStdin(), cmd.ErrOrStderr()) {
+							return fmt.Errorf("file %q already exists (use --force to overwrite)", path)
+						}
+						confirmed, promptErr := confirmPDFOverwrite(cmd.InOrStdin(), cmd.ErrOrStderr(), path)
+						if promptErr != nil {
+							return promptErr
+						}
+						if !confirmed {
+							return nil
+						}
+					}
+					err = repo.WritePDFExport(cmd.Context(), path, args[0], data, true)
 				}
-				return f.Close()
+				if err != nil {
+					return err
+				}
+				if err := repo.SavePDFPath(cmd.Context(), path); err != nil {
+					fmt.Fprintf(streams.err, "warning: could not remember PDF path: %v\n", err)
+				}
+				return nil
 			}
 			_, err = streams.out.Write(data)
 			return err
@@ -510,7 +592,33 @@ func newDocumentPrintCmd(streams output) *cobra.Command {
 	cmd.Flags().String("format", "text", "output format: text or pdf")
 	cmd.Flags().StringP("output", "o", "", "write to a file instead of standard output")
 	cmd.Flags().Bool("force", false, "overwrite output file if it exists")
+	if kind == artifact.PresentationKind {
+		cmd.Flags().Int("slides-per-page", 1, "slides per page: 1 (landscape) or 2 (portrait)")
+	}
 	return cmd
+}
+
+func confirmPDFOverwrite(in io.Reader, out io.Writer, path string) (bool, error) {
+	if _, err := fmt.Fprintf(out, "PDF file %q already exists. Overwrite? [y/N] ", path); err != nil {
+		return false, err
+	}
+	return readOverwriteConfirmation(in)
+}
+
+func confirmOutputOverwrite(in io.Reader, out io.Writer, path string) (bool, error) {
+	if _, err := fmt.Fprintf(out, "File %q already exists. Overwrite? [y/N] ", path); err != nil {
+		return false, err
+	}
+	return readOverwriteConfirmation(in)
+}
+
+func readOverwriteConfirmation(in io.Reader) (bool, error) {
+	response, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	response = strings.TrimSpace(strings.ToLower(response))
+	return response == "y" || response == "yes", nil
 }
 
 func addBodyFlags(cmd *cobra.Command) {
