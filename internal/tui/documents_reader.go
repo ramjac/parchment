@@ -50,7 +50,11 @@ func (s *documentsScreen) resizeReader() {
 		width, height = preview-2, s.height-6
 	}
 	s.reader.Width, s.reader.Height = max(width, 1), max(height, 1)
-	s.showReaderPage()
+	if s.find.visible && s.find.query() != "" {
+		s.searchReader(s.find.query())
+	} else {
+		s.showReaderPage()
+	}
 }
 
 func (s *documentsScreen) showReaderPage() {
@@ -58,8 +62,47 @@ func (s *documentsScreen) showReaderPage() {
 		s.reader.SetContent("")
 		return
 	}
-	s.reader.SetContent(pageText(s.readerPages[s.readerPage], s.reader.Width))
+	content := pageText(s.readerPages[s.readerPage], s.reader.Width)
+	if s.find.visible && s.find.query() != "" {
+		content = highlightRenderedText(content, s.find.query(), s.theme)
+	}
+	s.reader.SetContent(content)
 	s.reader.GotoTop()
+}
+
+func (s *documentsScreen) searchReader(query string) {
+	s.readerMatches = nil
+	for page, content := range s.readerPages {
+		s.readerMatches = append(s.readerMatches, renderedMatches(strings.Split(pageText(content, s.reader.Width), "\n"), query, page)...)
+	}
+	s.readerMatch = -1
+	if len(s.readerMatches) > 0 {
+		s.readerMatch = 0
+		s.gotoReaderMatch()
+		return
+	}
+	s.showReaderPage()
+}
+
+func (s *documentsScreen) gotoReaderMatch() {
+	if s.readerMatch < 0 || s.readerMatch >= len(s.readerMatches) {
+		return
+	}
+	match := s.readerMatches[s.readerMatch]
+	s.readerPage = match.page
+	s.showReaderPage()
+	s.reader.SetYOffset(match.row)
+}
+
+func (s *documentsScreen) moveReaderMatch(step int) {
+	if len(s.readerMatches) == 0 {
+		return
+	}
+	s.readerMatch = (s.readerMatch + step) % len(s.readerMatches)
+	if s.readerMatch < 0 {
+		s.readerMatch += len(s.readerMatches)
+	}
+	s.gotoReaderMatch()
 }
 
 func (s *documentsScreen) wideReader() bool { return s.width >= 80 }
@@ -108,6 +151,26 @@ func (s *documentsScreen) updateReaderKey(msg tea.KeyMsg) tea.Cmd {
 		return s.updatePrompt(msg)
 	}
 	key := msg.String()
+	if s.find.active {
+		return s.updateReaderFindKey(msg)
+	}
+	if s.find.visible {
+		switch key {
+		case "n":
+			s.moveReaderMatch(1)
+			return nil
+		case "N":
+			s.moveReaderMatch(-1)
+			return nil
+		case "esc":
+			s.find.close()
+			s.searchReader("")
+			return nil
+		}
+	}
+	if key == "/" || key == "ctrl+f" {
+		return s.find.open(s.width)
+	}
 	switch key {
 	case "q", "esc", "ctrl+c":
 		if s.showChanges {
@@ -309,7 +372,7 @@ func (s *documentsScreen) readerView(header string) string {
 			content = "Page " + s.readerPageLabel() + "\n" + content
 		}
 		shortcuts = runewidth.Truncate(shortcuts, max(s.width, 1), "…")
-		return chromeLayout(s.width, s.height, header, shortcuts, content, s.statusLine(), s.theme.Border)
+		return chromeLayout(s.width, s.height, header, shortcuts, content, s.readerStatus(), s.theme.BorderColor)
 	}
 	outlineWidth, previewWidth := s.readerPaneWidths()
 	lines, _ := s.outlineLines()
@@ -320,7 +383,7 @@ func (s *documentsScreen) readerView(header string) string {
 	left := lipgloss.NewStyle().
 		Width(outlineWidth-2).
 		Border(lipgloss.NormalBorder(), false, true, false, false).
-		BorderForeground(s.theme.Border).
+		BorderForeground(s.theme.BorderColor).
 		PaddingRight(1).
 		Render(strings.Join(lines, "\n"))
 
@@ -338,7 +401,31 @@ func (s *documentsScreen) readerView(header string) string {
 		shortcuts = "click outline to jump  " + shortcuts
 	}
 	shortcuts = runewidth.Truncate(shortcuts, max(s.width, 1), "…")
-	return chromeLayout(s.width, s.height, header, shortcuts, content, s.statusLine(), s.theme.Border)
+	return chromeLayout(s.width, s.height, header, shortcuts, content, s.readerStatus(), s.theme.BorderColor)
+}
+
+func (s *documentsScreen) readerStatus() string {
+	if s.find.visible {
+		return s.find.view(len(s.readerMatches), s.readerMatch, s.width)
+	}
+	return s.statusLine()
+}
+
+func (s *documentsScreen) updateReaderFindKey(msg tea.KeyMsg) tea.Cmd {
+	action, cmd := s.find.update(msg)
+	switch action {
+	case findChanged:
+		s.searchReader(s.find.query())
+	case findNext:
+		s.moveReaderMatch(1)
+		s.find.blur()
+	case findPrevious:
+		s.moveReaderMatch(-1)
+		s.find.blur()
+	case findClosed:
+		s.searchReader("")
+	}
+	return cmd
 }
 
 // leaveEditor returns from the editor to the reader, discarding unsaved edits

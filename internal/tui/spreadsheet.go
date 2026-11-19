@@ -11,7 +11,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/artifact"
@@ -58,6 +57,10 @@ type spreadsheetAutosaveFinishedMsg struct {
 	cleared bool
 }
 
+type spreadsheetSearchMatch struct {
+	sheet, row, column int
+}
+
 // spreadsheetGrid holds viewport navigation, selection, and value display state.
 type spreadsheetGrid struct {
 	sheet         int
@@ -67,6 +70,9 @@ type spreadsheetGrid struct {
 	width, height int
 	values        map[[2]int]string
 	showFormulas  bool
+	find          findBar
+	searchMatches []spreadsheetSearchMatch
+	searchMatch   int
 }
 
 // spreadsheetAsync holds status, error messages, and async operation tracking.
@@ -133,6 +139,10 @@ func newSpreadsheetModel(service *spreadsheet.Service, path string, theme Theme,
 		input:     input,
 		undoLimit: undoLimit,
 		pdfInput:  pdfInput,
+		spreadsheetGrid: spreadsheetGrid{
+			find:        newFindBar(theme),
+			searchMatch: -1,
+		},
 	}
 	m.newOperationContext = func() (context.Context, context.CancelFunc) {
 		return context.WithCancel(context.Background())
@@ -335,6 +345,9 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.pdfPrompt != promptNone {
 			return m, m.updatePDFPrompt(msg)
 		}
+		if m.find.active {
+			return m, m.updateFindKey(msg)
+		}
 		if m.editing {
 			return m, m.updateEditKey(msg)
 		}
@@ -468,6 +481,23 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	if !m.loaded {
 		return nil
+	}
+	if m.find.visible {
+		switch key {
+		case "n":
+			m.moveSearchMatch(1)
+			return nil
+		case "N":
+			m.moveSearchMatch(-1)
+			return nil
+		case "esc":
+			m.find.close()
+			m.searchSpreadsheet("")
+			return nil
+		}
+	}
+	if key == "/" || key == "ctrl+f" {
+		return m.find.open(m.width)
 	}
 
 	if m.pendingShortcut == "d" {
@@ -889,6 +919,72 @@ func (m *spreadsheetModel) displayValue(row, column int) string {
 	return cell.Value
 }
 
+func (m *spreadsheetModel) updateFindKey(msg tea.KeyMsg) tea.Cmd {
+	action, cmd := m.find.update(msg)
+	switch action {
+	case findChanged:
+		m.searchSpreadsheet(m.find.query())
+	case findNext:
+		m.moveSearchMatch(1)
+		m.find.blur()
+	case findPrevious:
+		m.moveSearchMatch(-1)
+		m.find.blur()
+	case findClosed:
+		m.searchSpreadsheet("")
+	}
+	return cmd
+}
+
+func (m *spreadsheetModel) searchSpreadsheet(query string) {
+	m.searchMatches = nil
+	m.searchMatch = -1
+	if !m.loaded || query == "" {
+		return
+	}
+	originalSheet, originalValues := m.sheet, m.values
+	for sheet := range m.book.Sheets {
+		m.sheet = sheet
+		m.computeValues()
+		for row, cells := range m.book.Sheets[sheet].Rows {
+			for column, cell := range cells {
+				if len(findTextMatches(cell.Value, query)) > 0 ||
+					len(findTextMatches(cell.Formula, query)) > 0 ||
+					len(findTextMatches(m.values[[2]int{row, column}], query)) > 0 {
+					m.searchMatches = append(m.searchMatches, spreadsheetSearchMatch{sheet, row, column})
+				}
+			}
+		}
+	}
+	m.sheet, m.values = originalSheet, originalValues
+	if len(m.searchMatches) == 0 {
+		return
+	}
+	m.searchMatch = 0
+	m.gotoSearchMatch()
+}
+
+func (m *spreadsheetModel) gotoSearchMatch() {
+	if m.searchMatch < 0 || m.searchMatch >= len(m.searchMatches) {
+		return
+	}
+	match := m.searchMatches[m.searchMatch]
+	m.sheet, m.row, m.column = match.sheet, match.row, match.column
+	m.computeValues()
+	m.scrollToSelection()
+}
+
+func (m *spreadsheetModel) moveSearchMatch(step int) {
+	if len(m.searchMatches) == 0 {
+		return
+	}
+	m.searchMatch = (m.searchMatch + step) % len(m.searchMatches)
+	if m.searchMatch < 0 {
+		m.searchMatch += len(m.searchMatches)
+	}
+	m.gotoSearchMatch()
+}
+
 // cellDraft renders a cell for editing. Literals that would otherwise be read
 // back as a formula or as an escaped literal are prefixed with an apostrophe.
 func cellDraft(cell spreadsheet.Cell) string {
@@ -972,7 +1068,7 @@ func (m *spreadsheetModel) renderHeader() string {
 	if m.path != "" {
 		header += "  " + sanitizeTerminalLine(m.path)
 	}
-	accent := lipgloss.NewStyle().Foreground(m.theme.Primary).Bold(true)
+	accent := m.theme.Heading
 	return accent.Render(runewidth.Truncate(header, m.width, "…"))
 }
 
@@ -981,7 +1077,11 @@ func (m *spreadsheetModel) renderFormulaBar() string {
 	if m.editing {
 		return reference + " > " + m.input.View()
 	}
-	return runewidth.Truncate(reference+" │ "+sanitizeTerminalLine(cellDraft(m.cell(m.row, m.column))), m.width, "…")
+	line := reference + " │ " + sanitizeTerminalLine(cellDraft(m.cell(m.row, m.column)))
+	if m.find.visible && m.find.query() != "" {
+		line = highlightLine(line, m.find.query(), m.theme)
+	}
+	return runewidth.Truncate(line, m.width, "…")
 }
 
 func (m *spreadsheetModel) renderColumnHeader(rowWidth, columns int) string {
@@ -996,8 +1096,8 @@ func (m *spreadsheetModel) renderColumnHeader(rowWidth, columns int) string {
 }
 
 func (m *spreadsheetModel) renderGrid() string {
-	muted := lipgloss.NewStyle().Foreground(m.theme.Border)
-	selected := lipgloss.NewStyle().Reverse(true)
+	muted := m.theme.Muted
+	selected := m.theme.Selection
 
 	rowWidth := m.rowHeaderWidth()
 	columns := m.visibleColumns()
@@ -1018,6 +1118,9 @@ func (m *spreadsheetModel) renderGrid() string {
 		gridBuf.WriteString(muted.Render(fmt.Sprintf("%*d", rowWidth, r+1)))
 		for c := m.columnOffset; c < m.columnOffset+columns && c < spreadsheet.MaxColumns; c++ {
 			text := fitCell(m.displayValue(r, c), spreadsheetColumnWidth)
+			if m.find.visible && m.find.query() != "" {
+				text = highlightLine(text, m.find.query(), m.theme)
+			}
 			if r == m.row && c == m.column {
 				text = selected.Render(text)
 			}
@@ -1048,7 +1151,7 @@ func (m *spreadsheetModel) renderStatus() string {
 }
 
 func (m *spreadsheetModel) renderHelp() string {
-	muted := lipgloss.NewStyle().Foreground(m.theme.Border)
+	muted := m.theme.Muted
 	help := "arrows move • enter edit • ctrl+s save • del clear • ctrl+p PDF • f formulas • tab sheet • u/ctrl+z undo • ctrl+r redo • d delete • i insert • r reload • esc/q quit"
 	if m.editing {
 		help = "enter stage • ctrl+s save • esc cancel • =formula • 'literal • shift+enter/alt+enter down • ctrl+p PDF"
@@ -1067,5 +1170,9 @@ func (m *spreadsheetModel) View() string {
 	if m.pdfPrompt != promptNone {
 		content = m.pdfInput.View() + "\n" + content
 	}
-	return chromeLayout(m.width, m.height, m.renderHeader(), shortcuts, content, m.renderStatus(), m.theme.Border)
+	status := m.renderStatus()
+	if m.find.visible {
+		status = m.find.view(len(m.searchMatches), m.searchMatch, m.width)
+	}
+	return chromeLayout(m.width, m.height, m.renderHeader(), shortcuts, content, status, m.theme.BorderColor)
 }

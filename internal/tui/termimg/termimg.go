@@ -1,12 +1,14 @@
 package termimg
 
 import (
+	"bytes"
+	"encoding/base64"
 	"fmt"
 	"image"
 	"image/color"
 	_ "image/gif"
 	_ "image/jpeg"
-	_ "image/png"
+	"image/png"
 	"os"
 	"strings"
 
@@ -19,38 +21,12 @@ import (
 // twice as tall as it is wide, and each half-block represents two vertical pixels,
 // one cell can render a 1x2 block of pixels without distortion.
 func Fallback(img image.Image, maxCols, maxRows int) string {
-	// If the image is nil or dimensions are non-positive, return an empty string.
-	if img == nil || maxCols <= 0 || maxRows <= 0 {
+	outW, outH := fitToCells(img, maxCols, maxRows)
+	if outW == 0 || outH == 0 {
 		return ""
 	}
-
 	bounds := img.Bounds()
 	imgW, imgH := bounds.Dx(), bounds.Dy()
-	if imgW == 0 || imgH == 0 {
-		return ""
-	}
-
-	// Calculate aspect ratios
-	imgAspect := float64(imgW) / (float64(imgH) / 2.0)
-	termAspect := float64(maxCols) / float64(maxRows)
-
-	var outW, outH int
-	if imgAspect > termAspect {
-		// Image is wider than the terminal view
-		outW = maxCols
-		outH = int(float64(maxCols) / imgAspect)
-	} else {
-		// Image is taller than the terminal view
-		outH = maxRows
-		outW = int(float64(maxRows) * imgAspect)
-	}
-
-	if outW <= 0 {
-		outW = 1
-	}
-	if outH <= 0 {
-		outH = 1
-	}
 
 	// The number of pixel rows we need is outH * 2
 	pxRows := outH * 2
@@ -81,6 +57,28 @@ func Fallback(img image.Image, maxCols, maxRows int) string {
 	}
 
 	return b.String()
+}
+
+func fitToCells(img image.Image, maxCols, maxRows int) (cols, rows int) {
+	if img == nil || maxCols <= 0 || maxRows <= 0 {
+		return 0, 0
+	}
+	bounds := img.Bounds()
+	imgW, imgH := bounds.Dx(), bounds.Dy()
+	if imgW <= 0 || imgH <= 0 {
+		return 0, 0
+	}
+
+	imageAspect := float64(imgW) / (float64(imgH) / 2)
+	terminalAspect := float64(maxCols) / float64(maxRows)
+	if imageAspect > terminalAspect {
+		cols = maxCols
+		rows = int(float64(maxCols) / imageAspect)
+	} else {
+		rows = maxRows
+		cols = int(float64(maxRows) * imageAspect)
+	}
+	return max(cols, 1), max(rows, 1)
 }
 
 func renderHalfBlock(top, bottom color.Color) string {
@@ -163,20 +161,74 @@ func DetectProtocol() GraphicsProtocol {
 	return ProtocolNone
 }
 
-// RenderKitty renders the image using the Kitty graphics protocol
+const kittyChunkSize = 4096
+
+// RenderKitty renders an image using the Kitty graphics protocol.
 func RenderKitty(img image.Image, maxCols, maxRows int) string {
-	// ... Need to implement 15b
-	return Fallback(img, maxCols, maxRows)
+	cols, rows := fitToCells(img, maxCols, maxRows)
+	if cols == 0 || rows == 0 {
+		return ""
+	}
+	pngData, err := encodePNG(img)
+	if err != nil {
+		return Fallback(img, maxCols, maxRows)
+	}
+	payload := base64.StdEncoding.EncodeToString(pngData)
+	var out strings.Builder
+	for offset := 0; offset < len(payload); offset += kittyChunkSize {
+		end := min(offset+kittyChunkSize, len(payload))
+		more := end < len(payload)
+		if offset == 0 {
+			fmt.Fprintf(&out, "\x1b_Ga=T,f=100,t=d,c=%d,r=%d,m=%d;", cols, rows, boolInt(more))
+		} else {
+			fmt.Fprintf(&out, "\x1b_Gm=%d;", boolInt(more))
+		}
+		out.WriteString(payload[offset:end])
+		out.WriteString("\x1b\\")
+	}
+	return out.String()
 }
 
-// RenderITerm2 renders the image using the iTerm2 graphics protocol
+// RenderITerm2 renders an image using the iTerm2 inline image protocol.
 func RenderITerm2(img image.Image, maxCols, maxRows int) string {
-	// ... Need to implement 15b
-	return Fallback(img, maxCols, maxRows)
+	cols, rows := fitToCells(img, maxCols, maxRows)
+	if cols == 0 || rows == 0 {
+		return ""
+	}
+	pngData, err := encodePNG(img)
+	if err != nil {
+		return Fallback(img, maxCols, maxRows)
+	}
+	payload := base64.StdEncoding.EncodeToString(pngData)
+	sequence := fmt.Sprintf("\x1b]1337;File=inline=1;width=%d;height=%d;preserveAspectRatio=1;size=%d:%s\a",
+		cols, rows, len(pngData), payload)
+	if len(sequence) > 1<<20 {
+		return Fallback(img, maxCols, maxRows)
+	}
+	return sequence
 }
 
-// RenderSixel renders the image using the pure-Go Sixel encoder
+// RenderSixel renders an image using the pure-Go Sixel encoder.
 func RenderSixel(img image.Image, maxCols, maxRows int) string {
-	// ... Need to implement 15c
-	return Fallback(img, maxCols, maxRows)
+	cols, rows := fitToCells(img, maxCols, maxRows)
+	if cols == 0 || rows == 0 || cols > int(^uint(0)>>1)/sixelCellPixelWidth ||
+		rows > int(^uint(0)>>1)/sixelCellPixelHeight {
+		return ""
+	}
+	return encodeSixel(img, cols*sixelCellPixelWidth, rows*sixelCellPixelHeight)
+}
+
+func encodePNG(img image.Image) ([]byte, error) {
+	var out bytes.Buffer
+	if err := png.Encode(&out, img); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }

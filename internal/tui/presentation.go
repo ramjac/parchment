@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/artifact"
@@ -64,6 +65,8 @@ type presentationViewState struct {
 	scroll        int
 	showNotes     bool
 	width, height int
+	searchMatches []renderedMatch
+	searchMatch   int
 }
 
 type presentationEditorState struct {
@@ -95,6 +98,7 @@ type presentationModel struct {
 	pdfOverwritePath  string
 	pdfPending        bool
 	pdfTwoUp          bool
+	find              findBar
 
 	presentationOpState
 	presentationViewState
@@ -107,6 +111,7 @@ func newPresentationModel(service *presentation.Service, path string, theme Them
 		undoLimit = undoLimits[0]
 	}
 	body := editor.NewWithUndoLimit(undoLimit)
+	body.SetTheme(theme)
 	pdfInput := textinput.New()
 	pdfInput.CharLimit = 64 << 10
 	return &presentationModel{
@@ -114,6 +119,7 @@ func newPresentationModel(service *presentation.Service, path string, theme Them
 		path:     path,
 		theme:    theme,
 		pdfInput: pdfInput,
+		find:     newFindBar(theme),
 		presentationEditorState: presentationEditorState{
 			editor: body,
 		},
@@ -122,6 +128,7 @@ func newPresentationModel(service *presentation.Service, path string, theme Them
 				return context.WithCancel(context.Background())
 			},
 		},
+		presentationViewState: presentationViewState{searchMatch: -1},
 	}
 }
 
@@ -133,7 +140,11 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.editor.SetWidth(max(1, m.width-4))
 		m.resizePDFPrompt()
-		m.clampScroll()
+		if !m.editing && m.find.visible && m.find.query() != "" {
+			m.searchSlides(m.find.query())
+		} else {
+			m.clampScroll()
+		}
 		return m, nil
 	case presentationPDFExportedMsg:
 		return m, m.presentationPDFExported(msg)
@@ -214,6 +225,9 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.editing {
 			return m, m.updateEditKey(msg)
 		}
+		if m.find.active {
+			return m, m.updateFindKey(msg)
+		}
 		return m, m.updateBrowseKey(msg)
 	case tea.MouseMsg:
 		if m.editing && !m.pending && m.pdfPrompt == promptNone {
@@ -236,6 +250,9 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *presentationModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
 	key := msg.String()
+	if m.find.active {
+		return m.updateFindKey(msg)
+	}
 	if key == "ctrl+c" {
 		if m.editor.Selection.Active {
 			var cmd tea.Cmd
@@ -260,6 +277,10 @@ func (m *presentationModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
 			}
 		}
 		return nil
+	}
+	if key == "ctrl+f" {
+		m.editor.Blur()
+		return m.find.open(m.width)
 	}
 	switch key {
 	case "ctrl+p":
@@ -295,8 +316,53 @@ func (m *presentationModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
 	return cmd
 }
 
+func (m *presentationModel) updateFindKey(msg tea.KeyMsg) tea.Cmd {
+	action, cmd := m.find.update(msg)
+	if !m.editing {
+		switch action {
+		case findChanged:
+			m.searchSlides(m.find.query())
+		case findNext:
+			m.moveSearchMatch(1)
+			m.find.blur()
+		case findPrevious:
+			m.moveSearchMatch(-1)
+			m.find.blur()
+		case findClosed:
+			m.searchSlides("")
+		}
+		return cmd
+	}
+	switch action {
+	case findChanged:
+		m.editor.SetSearch(m.find.query())
+	case findNext:
+		m.editor.MoveToMatch(1)
+	case findPrevious:
+		m.editor.MoveToMatch(-1)
+	case findClosed:
+		m.editor.ClearSearch()
+		return tea.Batch(cmd, m.editor.Focus())
+	}
+	return cmd
+}
+
 func (m *presentationModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 	key := msg.String()
+	if m.find.visible && !m.pending {
+		switch key {
+		case "n":
+			m.moveSearchMatch(1)
+			return nil
+		case "N":
+			m.moveSearchMatch(-1)
+			return nil
+		case "esc":
+			m.find.close()
+			m.searchSlides("")
+			return nil
+		}
+	}
 	switch key {
 	case "ctrl+c":
 		m.cancelPending()
@@ -326,6 +392,9 @@ func (m *presentationModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	if !m.loaded {
 		return nil
+	}
+	if key == "/" || key == "ctrl+f" {
+		return m.find.open(m.width)
 	}
 	switch key {
 	case "ctrl+p":
@@ -384,6 +453,62 @@ func (m *presentationModel) goToPage(page int) {
 	if page != m.page {
 		m.page, m.scroll = page, 0
 	}
+}
+
+func (m *presentationModel) searchSlides(query string) {
+	m.searchMatches = nil
+	m.searchMatch = -1
+	if !m.loaded || query == "" {
+		m.clampScroll()
+		return
+	}
+	page, showNotes, scroll := m.page, m.showNotes, m.scroll
+	for currentPage := 0; currentPage < m.pageCount(); currentPage++ {
+		m.page, m.showNotes = currentPage, true
+		lines := m.pageLines()
+		notesRow := -1
+		for row, line := range lines {
+			if strings.Contains(ansi.Strip(line), "Speaker notes") {
+				notesRow = row
+				break
+			}
+		}
+		for _, match := range renderedMatches(lines, query, currentPage) {
+			match.inNotes = notesRow >= 0 && match.row > notesRow
+			m.searchMatches = append(m.searchMatches, match)
+		}
+	}
+	m.page, m.showNotes, m.scroll = page, showNotes, scroll
+	if len(m.searchMatches) > 0 {
+		m.searchMatch = 0
+		m.gotoSearchMatch()
+	} else {
+		m.clampScroll()
+	}
+}
+
+func (m *presentationModel) gotoSearchMatch() {
+	if m.searchMatch < 0 || m.searchMatch >= len(m.searchMatches) {
+		return
+	}
+	match := m.searchMatches[m.searchMatch]
+	m.page = match.page
+	if match.inNotes {
+		m.showNotes = true
+	}
+	m.scroll = max(match.row-m.visibleLines()/2, 0)
+	m.clampScroll()
+}
+
+func (m *presentationModel) moveSearchMatch(step int) {
+	if len(m.searchMatches) == 0 {
+		return
+	}
+	m.searchMatch = (m.searchMatch + step) % len(m.searchMatches)
+	if m.searchMatch < 0 {
+		m.searchMatch += len(m.searchMatches)
+	}
+	m.gotoSearchMatch()
 }
 
 func (m *presentationModel) beginEdit() tea.Cmd {
@@ -714,7 +839,7 @@ func (m *presentationModel) pageLines() []string {
 			}
 		}
 	}
-	accent := lipgloss.NewStyle().Foreground(m.theme.Primary).Bold(true)
+	accent := m.theme.Heading
 	lines := []string{
 		accent.Render(runewidth.Truncate(sanitizeTerminalLine(title), width, "…")),
 		strings.Repeat("─", min(width, max(1, runewidth.StringWidth(sanitizeTerminalLine(title))))),
@@ -722,7 +847,7 @@ func (m *presentationModel) pageLines() []string {
 	}
 	body := strings.ReplaceAll(sanitizeTerminalText(strings.Trim(text.String(), "\n")), "\t", "    ")
 	if body != "" {
-		rendered := renderMarkdown(body, width)
+		rendered := renderMarkdown(body, width, m.theme)
 		lines = append(lines, strings.Split(rendered, "\n")...)
 	}
 	return lines
@@ -745,8 +870,8 @@ func (m *presentationModel) View() string {
 	if m.width < 20 || m.height < presentationChromeLines+2 {
 		return "Terminal too small. Press q to quit."
 	}
-	accent := lipgloss.NewStyle().Foreground(m.theme.Primary).Bold(true)
-	muted := lipgloss.NewStyle().Foreground(m.theme.Border)
+	accent := m.theme.Heading
+	muted := m.theme.Muted
 	var content string
 	if m.editing {
 		content = m.editor.View()
@@ -756,7 +881,13 @@ func (m *presentationModel) View() string {
 	if m.pdfPrompt != promptNone {
 		content = m.pdfInput.View() + "\n" + content
 	}
-	return chromeLayout(m.width, m.height, m.renderHeader(accent), m.renderHelp(muted), content, m.renderStatus(), m.theme.Border)
+	status := m.renderStatus()
+	if m.find.active {
+		status = m.find.view(m.editor.MatchCount(), m.editor.ActiveMatch(), m.width)
+	} else if m.find.visible && !m.editing {
+		status = m.find.view(len(m.searchMatches), m.searchMatch, m.width)
+	}
+	return chromeLayout(m.width, m.height, m.renderHeader(accent), m.renderHelp(muted), content, status, m.theme.BorderColor)
 }
 
 func (m *presentationModel) renderHeader(accent lipgloss.Style) string {
@@ -777,6 +908,9 @@ func (m *presentationModel) renderHeader(accent lipgloss.Style) string {
 
 func (m *presentationModel) renderSlideContent() string {
 	lines := m.pageLines()
+	if m.find.visible && m.find.query() != "" {
+		lines = highlightLines(lines, m.find.query(), m.theme)
+	}
 	var slideBuf strings.Builder
 	for i := 0; i < m.visibleLines(); i++ {
 		if i > 0 {
@@ -806,7 +940,7 @@ func (m *presentationModel) renderStatus() string {
 func (m *presentationModel) renderHelp(muted lipgloss.Style) string {
 	help := "ctrl+p PDF • ←/→ slide • ↑/↓ scroll • e edit • s notes • f font • u undo • ctrl+r redo • r reload • esc/q quit"
 	if m.editing {
-		help = "ctrl+p PDF • ctrl+s save • esc cancel • ctrl+c quit"
+		help = "ctrl+f find • ctrl+p PDF • ctrl+s save • esc cancel • ctrl+c quit"
 	} else if !m.loaded {
 		help = "r retry • esc/q quit"
 	}

@@ -78,6 +78,23 @@ func TestDocumentEditModeSeamlessUndoRedo(t *testing.T) {
 	}
 }
 
+func TestDocumentEditorFindBarUsesSharedMatchHighlighting(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "alpha ALPHA alpha"})
+	s := h.m.documents
+	h.send(tea.KeyMsg{Type: tea.KeyCtrlF})
+	h.typeText("ALPHA")
+	if !s.find.active || s.body.MatchCount() != 1 || s.body.Cursor.Col != 6 ||
+		!strings.Contains(s.find.view(s.body.MatchCount(), s.body.ActiveMatch(), s.width), "1/1") {
+		t.Fatalf("document editor search: active=%t matches=%d cursor=%+v",
+			s.find.active, s.body.MatchCount(), s.body.Cursor)
+	}
+	h.send(tea.KeyMsg{Type: tea.KeyEsc})
+	if s.find.active || s.body.MatchCount() != 0 || !s.body.Focused || s.body.Cursor.Col != 6 {
+		t.Fatalf("closing document search did not preserve the current match: active=%t matches=%d focused=%t cursor=%+v",
+			s.find.active, s.body.MatchCount(), s.body.Focused, s.body.Cursor)
+	}
+}
+
 func TestDocumentEditorHasToolbarAndSavesLayout(t *testing.T) {
 	h := newDocumentHarness(t, document.Draft{})
 	view := h.m.View()
@@ -127,9 +144,54 @@ func TestDocumentSaveHandsOffUndoAndPreservesHistoryOnFailure(t *testing.T) {
 	failed := newDocumentHarness(t, document.Draft{Body: "body"})
 	failed.typeText("!")
 	unsaved := failed.m.documents.body.Value()
+	failed.m.documents.body.Cursor = editor.Point{Line: 0, Col: 2}
+	failed.m.documents.body.Selection = editor.Selection{Anchor: editor.Point{Line: 0, Col: 1}, Active: true}
 	failed.m.documents.documentSaved(documentSavedMsg{err: errors.New("save failed")})
-	if !failed.m.documents.body.CanUndo() || failed.m.documents.body.Value() != unsaved {
-		t.Fatal("failed document save discarded unsaved keystroke history")
+	if !failed.m.documents.body.CanUndo() || failed.m.documents.body.Value() != unsaved ||
+		failed.m.documents.body.Cursor != (editor.Point{Line: 0, Col: 2}) ||
+		failed.m.documents.body.Selection != (editor.Selection{Anchor: editor.Point{Line: 0, Col: 1}, Active: true}) {
+		t.Fatal("failed document save changed the unsaved draft or editor state")
+	}
+}
+
+func TestDocumentSavePreservesEditorViewState(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{})
+	s := h.m.documents
+	s.body.SetValue(strings.Repeat("a line of content\n", 30))
+	wantCursor := editor.Point{Line: 20, Col: 4}
+	wantSelection := editor.Selection{
+		Anchor: editor.Point{Line: 19, Col: 1},
+		Active: true,
+	}
+	s.body.Cursor = wantCursor
+	s.body.Selection = wantSelection
+	s.body.TopLine = 12
+	s.body.TopRowOffset = 0
+	s.body.Focus()
+
+	h.key("ctrl+s")
+
+	if s.dirty() || s.body.Value() != strings.Repeat("a line of content\n", 30) {
+		t.Fatal("successful save did not preserve the saved editor content")
+	}
+	if s.body.Cursor != wantCursor ||
+		s.body.Selection != wantSelection ||
+		s.body.TopLine != 12 ||
+		s.body.TopRowOffset != 0 ||
+		!s.body.Focused {
+		t.Fatalf("save changed editor view state: cursor=%+v selection=%+v top=%d/%d focused=%t",
+			s.body.Cursor, s.body.Selection, s.body.TopLine, s.body.TopRowOffset, s.body.Focused)
+	}
+
+	h.key("f5")
+	h.key("f5")
+	if s.body.Cursor != wantCursor ||
+		s.body.Selection != wantSelection ||
+		s.body.TopLine != 12 ||
+		s.body.TopRowOffset != 0 ||
+		!s.body.Focused {
+		t.Fatalf("preview transition changed editor view state: cursor=%+v selection=%+v top=%d/%d focused=%t",
+			s.body.Cursor, s.body.Selection, s.body.TopLine, s.body.TopRowOffset, s.body.Focused)
 	}
 }
 

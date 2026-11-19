@@ -4,12 +4,16 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/lipgloss"
+
+	"example.com/parchment/internal/tui/theme"
 )
 
-func renderMarkdown(content string, width int) string {
+func renderMarkdown(content string, width int, theme theme.Theme) string {
 	r, err := glamour.NewTermRenderer(
-		glamour.WithStandardStyle("dark"),
+		glamour.WithStyles(theme.Markdown),
 		glamour.WithPreservedNewLines(),
+		glamour.WithColorProfile(lipgloss.ColorProfile()),
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {

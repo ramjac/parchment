@@ -8,6 +8,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
+
+	"example.com/parchment/internal/config"
+	"example.com/parchment/internal/tui/theme"
 )
 
 func TestEditorCursorAtWrapBoundaryAndResize(t *testing.T) {
@@ -19,6 +23,7 @@ func TestEditorCursorAtWrapBoundaryAndResize(t *testing.T) {
 	if len(lines) != 2 || ansi.StringWidth(lines[0]) != 5 || ansi.StringWidth(lines[1]) != 1 {
 		t.Fatalf("cursor should wrap after a full row: %q", ed.View())
 	}
+
 	ed.SetHeight(1)
 	if ed.TopRowOffset != 1 || ansi.StringWidth(ed.View()) != 1 {
 		t.Fatalf("wrapped cursor not scrolled into view: offset=%d view=%q", ed.TopRowOffset, ed.View())
@@ -31,6 +36,52 @@ func TestEditorCursorAtWrapBoundaryAndResize(t *testing.T) {
 	ed.SetValue("new")
 	if ed.TopRowOffset != 0 || !strings.Contains(ed.View(), "new") {
 		t.Fatalf("loading text retained stale wrap offset: offset=%d view=%q", ed.TopRowOffset, ed.View())
+	}
+}
+
+func TestSearchUsesSmartCaseAndWrapsMatches(t *testing.T) {
+	ed := New()
+	ed.SetValue("alpha ALPHA alpha")
+	if got := ed.SetSearch("alpha"); got != 3 {
+		t.Fatalf("case-insensitive matches = %d, want 3", got)
+	}
+	for _, want := range []int{0, 6, 12, 0} {
+		if ed.Cursor.Col != want {
+			t.Fatalf("active match cursor column = %d, want %d", ed.Cursor.Col, want)
+		}
+		ed.MoveToMatch(1)
+	}
+	if got := ed.SetSearch("ALPHA"); got != 1 || ed.Cursor.Col != 6 {
+		t.Fatalf("case-sensitive search: matches=%d cursor=%d, want 1 and 6", got, ed.Cursor.Col)
+	}
+	ed.ClearSearch()
+	if ed.MatchCount() != 0 || ed.ActiveMatch() != -1 || ed.Cursor.Col != 6 {
+		t.Fatalf("clearing search changed editor state: matches=%d active=%d cursor=%d",
+			ed.MatchCount(), ed.ActiveMatch(), ed.Cursor.Col)
+	}
+}
+
+func TestSearchHighlightsAndScrollsToWrappedMatch(t *testing.T) {
+	previousProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(previousProfile)
+	})
+
+	ed := New()
+	ed.SetTheme(theme.Resolve(config.Theme{Mode: "dark"}))
+	ed.SetValue("before target after")
+	ed.SetWidth(8)
+	ed.SetHeight(2)
+	if got := ed.SetSearch("target"); got != 1 {
+		t.Fatalf("search matches = %d, want 1", got)
+	}
+	view := ed.View()
+	if !strings.Contains(strings.ReplaceAll(ansi.Strip(view), "\n", ""), "target") {
+		t.Fatalf("search match is not visible after navigation: %q", view)
+	}
+	if !strings.Contains(view, "48;2;133;77;14") {
+		t.Fatalf("search match lacks the theme match style: %q", view)
 	}
 }
 

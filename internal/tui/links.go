@@ -4,7 +4,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
@@ -65,7 +64,7 @@ func (s *documentsScreen) paginateDocumentWithLinks(doc document.Document) ([]do
 
 	pages, err := document.PaginateWithFormatter(doc, func(lines []string, width, _ int, _ string) []string {
 		rewritten, _ := extractAndRewriteLinks(lines)
-		return strings.Split(renderMarkdown(strings.Join(rewritten, "\n"), width), "\n")
+		return strings.Split(renderMarkdown(strings.Join(rewritten, "\n"), width, s.theme), "\n")
 	})
 	if err != nil {
 		return nil, nil, err
@@ -76,7 +75,7 @@ func (s *documentsScreen) paginateDocumentWithLinks(doc document.Document) ([]do
 	}
 
 	var hitBoxes []linkHitBox
-	linkStyle := lipgloss.NewStyle().Underline(true).Foreground(s.theme.Primary)
+	linkStyle := s.theme.Accent.Underline(true)
 
 	linkIdx := 0
 	for p := 0; p < len(pages) && linkIdx < len(allLinks); p++ {

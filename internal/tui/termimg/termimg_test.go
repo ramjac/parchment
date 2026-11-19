@@ -1,8 +1,12 @@
 package termimg
 
 import (
+	"bytes"
+	"encoding/base64"
+	"fmt"
 	"image"
 	"image/color"
+	"image/png"
 	"strings"
 	"testing"
 )
@@ -63,15 +67,149 @@ func TestFallback(t *testing.T) {
 		t.Errorf("Expected space for transparent pixel block, got: %q", resTrans)
 	}
 
-	// Test stubs fall back
-	if RenderKitty(img, 2, 1) != res {
-		t.Errorf("RenderKitty should fall back to Fallback")
+}
+
+func TestGraphicsProtocolsEncodePNGAtCellDimensions(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 400, 200))
+	for y := 0; y < 200; y++ {
+		for x := 0; x < 400; x++ {
+			img.SetRGBA(x, y, color.RGBA{R: uint8(x), G: uint8(y), B: uint8(x + y), A: 255})
+		}
 	}
-	if RenderITerm2(img, 2, 1) != res {
-		t.Errorf("RenderITerm2 should fall back to Fallback")
+
+	kitty := RenderKitty(img, 80, 24)
+	headers, kittyPayload := parseKitty(t, kitty)
+	if len(headers) != 1 || headers[0] != "a=T,f=100,t=d,c=80,r=20,m=0" {
+		t.Fatalf("Kitty command headers = %q, want scaled 80x20 single-chunk display", headers)
 	}
-	if RenderSixel(img, 2, 1) != res {
-		t.Errorf("RenderSixel should fall back to Fallback")
+	assertPNGPayload(t, kittyPayload, 400, 200)
+
+	iterm := RenderITerm2(img, 80, 24)
+	const prefix = "\x1b]1337;File=inline=1;width=80;height=20;preserveAspectRatio=1;size="
+	if !strings.HasPrefix(iterm, prefix) || !strings.HasSuffix(iterm, "\a") {
+		t.Fatalf("iTerm2 sequence has incorrect cell dimensions or framing: %q", iterm[:min(len(iterm), 100)])
+	}
+	encoded, ok := strings.CutPrefix(strings.TrimSuffix(iterm, "\a"), prefix)
+	sizeText, encoded, ok := strings.Cut(encoded, ":")
+	if !ok {
+		t.Fatal("iTerm2 sequence is missing payload size")
+	}
+	pngPayload, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("decode iTerm2 payload: %v", err)
+	}
+	if sizeText != fmt.Sprint(len(pngPayload)) {
+		t.Fatalf("iTerm2 payload size = %s, want %d", sizeText, len(pngPayload))
+	}
+	assertPNGPayload(t, pngPayload, 400, 200)
+}
+
+func TestRenderKittyChunksLargePNG(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 256, 256))
+	for y := 0; y < 256; y++ {
+		for x := 0; x < 256; x++ {
+			img.SetRGBA(x, y, color.RGBA{R: uint8(x * 13), G: uint8(y * 17), B: uint8(x*y + x), A: 255})
+		}
+	}
+
+	headers, payload := parseKitty(t, RenderKitty(img, 40, 20))
+	if len(headers) < 2 {
+		t.Fatalf("Kitty transfer used %d chunks, want multiple", len(headers))
+	}
+	for i, header := range headers {
+		wantMore := 1
+		if i == len(headers)-1 {
+			wantMore = 0
+		}
+		if !strings.HasSuffix(header, fmt.Sprintf("m=%d", wantMore)) {
+			t.Errorf("chunk %d header = %q, want m=%d", i, header, wantMore)
+		}
+	}
+	assertPNGPayload(t, payload, 256, 256)
+}
+
+func TestRenderSixelQuantizesPaletteAndKeepsTransparency(t *testing.T) {
+	img := image.NewNRGBA(image.Rect(0, 0, 2, 2))
+	img.SetNRGBA(0, 0, color.NRGBA{R: 255, A: 255})
+	img.SetNRGBA(1, 0, color.NRGBA{B: 255, A: 255})
+	img.SetNRGBA(0, 1, color.NRGBA{G: 255, A: 255})
+
+	got := RenderSixel(img, 2, 1)
+	for _, want := range []string{
+		"\x1bP0;1;0q",
+		`"1;1;16;16`,
+		"#0;2;0;0;100",
+		"#1;2;0;100;0",
+		"#2;2;100;0;0",
+		"\x1b\\",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Sixel output missing %q:\n%q", want, got)
+		}
+	}
+}
+
+func TestRenderSixelRunLengthEncodesSolidBands(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	for y := 0; y < 2; y++ {
+		for x := 0; x < 2; x++ {
+			img.Set(x, y, color.RGBA{R: 255, A: 255})
+		}
+	}
+	got := RenderSixel(img, 2, 1)
+	if !strings.Contains(got, "!16~") {
+		t.Fatalf("solid Sixel bands were not run-length encoded: %q", got)
+	}
+}
+
+func TestGraphicsProtocolRenderersIgnoreInvalidSizes(t *testing.T) {
+	for _, render := range []func(image.Image, int, int) string{RenderKitty, RenderITerm2, RenderSixel} {
+		if got := render(nil, 10, 10); got != "" {
+			t.Errorf("renderer(nil) = %q, want empty", got)
+		}
+		if got := render(image.NewRGBA(image.Rect(0, 0, 1, 1)), 0, 10); got != "" {
+			t.Errorf("renderer with invalid dimensions = %q, want empty", got)
+		}
+	}
+}
+
+func parseKitty(t *testing.T, rendered string) ([]string, []byte) {
+	t.Helper()
+	var headers []string
+	var encoded strings.Builder
+	for rendered != "" {
+		if !strings.HasPrefix(rendered, "\x1b_G") {
+			t.Fatalf("Kitty sequence does not start with APC: %q", rendered[:min(len(rendered), 40)])
+		}
+		rendered = strings.TrimPrefix(rendered, "\x1b_G")
+		end := strings.Index(rendered, "\x1b\\")
+		if end < 0 {
+			t.Fatal("Kitty sequence is missing ST terminator")
+		}
+		command := rendered[:end]
+		header, payload, ok := strings.Cut(command, ";")
+		if !ok {
+			t.Fatalf("Kitty chunk is missing header separator: %q", command)
+		}
+		headers = append(headers, header)
+		encoded.WriteString(payload)
+		rendered = rendered[end+2:]
+	}
+	payload, err := base64.StdEncoding.DecodeString(encoded.String())
+	if err != nil {
+		t.Fatalf("decode Kitty payload: %v", err)
+	}
+	return headers, payload
+}
+
+func assertPNGPayload(t *testing.T, payload []byte, width, height int) {
+	t.Helper()
+	img, err := png.Decode(bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("decode protocol PNG: %v", err)
+	}
+	if bounds := img.Bounds(); bounds.Dx() != width || bounds.Dy() != height {
+		t.Fatalf("PNG bounds = %v, want %dx%d", bounds, width, height)
 	}
 }
 
