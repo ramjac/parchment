@@ -114,6 +114,8 @@ func TestTUIRenderGoldens(t *testing.T) {
 					t.Fatalf("preview width = %d, want %d", got, width)
 				}
 				width = 0 // The print preview intentionally has no border.
+			} else if mode == "editor" {
+				view = strings.ReplaceAll(view, img.Name, "image-<hash>.png")
 			}
 			assertTUIViewGolden(t, "document-image-"+mode, view, width, height)
 		})

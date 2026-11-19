@@ -290,6 +290,13 @@ func TestImageTUIGoldens(t *testing.T) {
 	normalized := func() string {
 		lines := strings.Split(h.m.View(), "\n")
 		lines[0] = h.m.theme.Chrome.Render("parchment image  fixtures/picture.png")
+		const sizeLabel = "saved file: "
+		if start := strings.Index(lines[3], sizeLabel); start >= 0 {
+			start += len(sizeLabel)
+			if end := strings.Index(lines[3][start:], " bytes"); end >= 0 {
+				lines[3] = lines[3][:start] + strings.Repeat("X", end) + lines[3][start+end:]
+			}
+		}
 		return strings.Join(lines, "\n")
 	}
 	assertTUIViewGolden(t, "image-viewer", normalized(), 80, 24)
