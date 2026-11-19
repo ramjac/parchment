@@ -1,9 +1,13 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +18,7 @@ import (
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/presentation"
+	"example.com/parchment/internal/tui/termimg"
 )
 
 // drivePresentation sends a message and feeds presentation results back in.
@@ -157,6 +162,87 @@ func TestPresentationViewNavigatesSlidesAndNotes(t *testing.T) {
 	if _, ok := drivePresentation(t, m, sheetKey("esc")).(tea.QuitMsg); !ok {
 		t.Fatal("esc did not quit")
 	}
+}
+
+func TestPresentationViewRendersEmbeddedImages(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+	var encoded bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			img.Set(x, y, color.RGBA{R: 255, A: 255})
+		}
+	}
+	if err := png.Encode(&encoded, img); err != nil {
+		t.Fatal(err)
+	}
+	embedded, err := artifact.NewImage(encoded.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := "# Deck\n\n## Slide\n\nBefore image\n\n.image " + embedded.Name + " 3 12\n\nAfter image\n\n## Next slide\n\nThis slide has no media."
+	m.setItem(presentation.Presentation{Source: source, Images: []artifact.Image{embedded}})
+	m.page = 1
+	t.Setenv("KITTY_WINDOW_ID", "")
+	t.Setenv("TERM_PROGRAM", "")
+	t.Setenv("LC_TERMINAL", "")
+	t.Setenv("TERM", "dumb")
+
+	view := m.View()
+	plainView := ansi.Strip(view)
+	if !strings.Contains(plainView, "▀") {
+		t.Fatalf("presentation image was not rendered with the terminal fallback:\n%s", view)
+	}
+	if !strings.Contains(plainView, "Before image") || !strings.Contains(plainView, "After image") ||
+		strings.Contains(plainView, ".image ") || strings.Contains(plainView, "PIMG") {
+		t.Fatalf("presentation image replaced or leaked slide content:\n%s", view)
+	}
+
+	t.Setenv("KITTY_WINDOW_ID", "1")
+	view = m.View()
+	clearAt := strings.Index(view, termimg.ClearKittyPlacements())
+	imageAt := strings.Index(view, "\x1b_Ga=T")
+	if clearAt < 0 || imageAt < 0 || clearAt > imageAt {
+		t.Fatalf("presentation did not use Kitty graphics when detected:\n%s", view)
+	}
+	if plainView := ansi.Strip(view); !strings.Contains(plainView, "Deck") || !strings.Contains(plainView, "Slide") {
+		t.Fatalf("image rendering displaced the presentation chrome or slide title:\n%s", view)
+	}
+	drivePresentation(t, m, sheetKey("right"))
+	view = m.View()
+	if m.page != 2 || !strings.Contains(view, termimg.ClearKittyPlacements()) ||
+		strings.Contains(view, "\x1b_Ga=T") {
+		t.Fatalf("leaving an image slide did not clear its Kitty placement:\n%s", view)
+	}
+
+	t.Setenv("KITTY_WINDOW_ID", "")
+	t.Setenv("TERM_PROGRAM", "iTerm.app")
+	m.goToPage(1)
+	_, clearCmd := m.Update(sheetKey("right"))
+	if clearCmd == nil {
+		t.Fatal("leaving an iTerm2 image slide did not request a full-screen redraw")
+	}
+}
+
+func TestExamplePresentationImageRenders(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+	t.Setenv("KITTY_WINDOW_ID", "")
+	t.Setenv("TERM_PROGRAM", "")
+	t.Setenv("LC_TERMINAL", "")
+	t.Setenv("TERM", "dumb")
+
+	for index, slide := range m.deck.Slides {
+		if !strings.Contains(slide.Body, ".image ") {
+			continue
+		}
+		m.page = index + 1
+		view := ansi.Strip(m.View())
+		if !strings.Contains(view, "▀") || strings.Contains(view, ".image ") {
+			t.Fatalf("example presentation image did not render on slide %q:\n%s", slide.Title, view)
+		}
+		return
+	}
+	t.Fatal("example presentation has no image directive")
 }
 
 func TestPresentationEditModeSeamlessUndoRedo(t *testing.T) {

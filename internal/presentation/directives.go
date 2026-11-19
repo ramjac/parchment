@@ -60,6 +60,29 @@ func ExpandDirectives(source string, baseDir string, images []artifact.Image) (s
 
 // ExpandDirectivesContext expands directives while honoring cancellation.
 func ExpandDirectivesContext(ctx context.Context, source string, baseDir string, images []artifact.Image) (string, error) {
+	return expandDirectivesContext(ctx, source, baseDir, images, nil)
+}
+
+// ExpandDirectivesContextWithImageRenderer expands directives and delegates
+// each .image directive to renderImage. The callback receives the image name
+// and optional height and width values from the directive.
+func ExpandDirectivesContextWithImageRenderer(
+	ctx context.Context,
+	source string,
+	baseDir string,
+	images []artifact.Image,
+	renderImage func(name, height, width string) string,
+) (string, error) {
+	return expandDirectivesContext(ctx, source, baseDir, images, renderImage)
+}
+
+func expandDirectivesContext(
+	ctx context.Context,
+	source string,
+	baseDir string,
+	images []artifact.Image,
+	renderImage func(name, height, width string) string,
+) (string, error) {
 	imageMap := make(map[string]bool, len(images))
 	for _, img := range images {
 		imageMap[img.Name] = true
@@ -97,8 +120,12 @@ func ExpandDirectivesContext(ctx context.Context, source string, baseDir string,
 		}
 		if match := imageDirectiveRE.FindStringSubmatch(line); match != nil && strings.HasPrefix(trimmed, ".image") {
 			name := match[1]
-			// Format as standard markdown image tag
-			out.WriteString(fmt.Sprintf("![%s](%s)", name, name))
+			if renderImage != nil {
+				out.WriteString(renderImage(name, match[2], match[3]))
+			} else {
+				// Format as standard markdown image tag.
+				out.WriteString(fmt.Sprintf("![%s](%s)", name, name))
+			}
 			continue
 		}
 

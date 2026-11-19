@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/recovery"
 	"example.com/parchment/internal/tui/editor"
+	"example.com/parchment/internal/tui/termimg"
 )
 
 // presentationChromeLines counts the header, status, and help lines.
@@ -75,6 +77,17 @@ type presentationEditorState struct {
 	discardWarning bool
 }
 
+type renderedPresentationImage struct {
+	output string
+	rows   int
+}
+
+type presentationImageSlot struct {
+	name   string
+	height string
+	width  string
+}
+
 // presentationModel is a single-deck slide viewer and Markdown source editor.
 // It owns only UI state; it reads and edits the deck file through the
 // presentation service.
@@ -99,6 +112,8 @@ type presentationModel struct {
 	pdfPending        bool
 	pdfTwoUp          bool
 	find              findBar
+	imageRenderCache  map[string]renderedPresentationImage
+	imageGraphicsUsed bool
 
 	presentationOpState
 	presentationViewState
@@ -115,11 +130,12 @@ func newPresentationModel(service *presentation.Service, path string, theme Them
 	pdfInput := textinput.New()
 	pdfInput.CharLimit = 64 << 10
 	return &presentationModel{
-		service:  service,
-		path:     path,
-		theme:    theme,
-		pdfInput: pdfInput,
-		find:     newFindBar(theme),
+		service:          service,
+		path:             path,
+		theme:            theme,
+		pdfInput:         pdfInput,
+		find:             newFindBar(theme),
+		imageRenderCache: make(map[string]renderedPresentationImage),
 		presentationEditorState: presentationEditorState{
 			editor: body,
 		},
@@ -137,6 +153,7 @@ func (m *presentationModel) Init() tea.Cmd { return m.load() }
 func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
+		hadImage := m.pageHasImageDirective()
 		m.width, m.height = msg.Width, msg.Height
 		m.editor.SetWidth(max(1, m.width-4))
 		m.resizePDFPrompt()
@@ -146,13 +163,14 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.searchMatch = min(max(current, 0), len(m.searchMatches)-1)
 		}
 		m.clampScroll()
-		return m, nil
+		return m, m.clearScreenForImage(hadImage, nil)
 	case presentationPDFExportedMsg:
 		return m, m.presentationPDFExported(msg)
 	case presentationLoadedMsg:
 		if msg.seq != m.seq {
 			return m, nil
 		}
+		hadImage := m.pageHasImageDirective()
 		m.finishOperation()
 		if msg.err != nil {
 			m.setError("Load failed", msg.err)
@@ -160,11 +178,12 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.setItem(msg.item)
 		m.status, m.loadedStatus = m.loadedStatus, ""
-		return m, nil
+		return m, m.clearScreenForImage(hadImage, nil)
 	case presentationSavedMsg:
 		if msg.seq != m.seq {
 			return m, nil
 		}
+		hadImage := m.pageHasImageDirective()
 		m.finishOperation()
 		if msg.err != nil {
 			// Keep the editor open so the draft is not lost.
@@ -184,7 +203,7 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.draftStored = false
 		}
-		return m, nil
+		return m, m.clearScreenForImage(hadImage, nil)
 	case presentationAutosaveTickMsg:
 		if msg.session == m.autosaveSession && m.editing {
 			return m, m.saveRecovery(msg.session)
@@ -220,16 +239,18 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.loadedStatus = msg.description
 		return m, cmd
 	case tea.KeyMsg:
+		hadImage := m.pageHasImageDirective()
+		var cmd tea.Cmd
 		if m.pdfPrompt != promptNone {
-			return m, m.updatePDFPrompt(msg)
+			cmd = m.updatePDFPrompt(msg)
+		} else if m.editing {
+			cmd = m.updateEditKey(msg)
+		} else if m.find.active {
+			cmd = m.updateFindKey(msg)
+		} else {
+			cmd = m.updateBrowseKey(msg)
 		}
-		if m.editing {
-			return m, m.updateEditKey(msg)
-		}
-		if m.find.active {
-			return m, m.updateFindKey(msg)
-		}
-		return m, m.updateBrowseKey(msg)
+		return m, m.clearScreenForImage(hadImage, cmd)
 	case tea.MouseMsg:
 		if m.editing && !m.pending && m.pdfPrompt == promptNone {
 			mouseMsg := msg
@@ -820,6 +841,8 @@ func (m *presentationModel) setItem(item presentation.Presentation) {
 		return
 	}
 	m.item, m.deck, m.loaded = item, deck, true
+	m.imageGraphicsUsed = m.imageGraphicsUsed || len(item.Images) > 0
+	clear(m.imageRenderCache)
 	m.find.close()
 	m.editor.ClearSearch()
 	m.searchMatches, m.searchMatch = nil, -1
@@ -836,14 +859,25 @@ func (m *presentationModel) pageLines() []string {
 	width := max(1, m.width-4)
 	var text strings.Builder
 	var title string
+	imageSlots := make(map[string]presentationImageSlot)
 	if m.page == 0 {
 		title = m.deck.Title
 		text.WriteString(m.deck.Header)
 	} else {
 		slide := m.deck.Slides[m.page-1]
 		title = slide.Title
+		nextSlot := 0
+		expanded, err := presentation.ExpandDirectivesContextWithImageRenderer(
+			context.Background(), slide.Body, filepath.Dir(m.path), m.item.Images,
+			func(name, height, imageWidth string) string {
+				slot := fmt.Sprintf("PIMG%d__", nextSlot)
+				nextSlot++
+				imageSlots[slot] = presentationImageSlot{name: name, height: height, width: imageWidth}
+				return slot
+			},
+		)
 		body := slide.Body
-		if expanded, err := presentation.ExpandDirectives(slide.Body, filepath.Dir(m.path), m.item.Images); err == nil {
+		if err == nil {
 			body = expanded
 		}
 		text.WriteString(body)
@@ -865,9 +899,92 @@ func (m *presentationModel) pageLines() []string {
 	body := strings.ReplaceAll(sanitizeTerminalText(strings.Trim(text.String(), "\n")), "\t", "    ")
 	if body != "" {
 		rendered := renderMarkdown(body, width, m.theme)
-		lines = append(lines, strings.Split(rendered, "\n")...)
+		for _, line := range strings.Split(rendered, "\n") {
+			plainLine := ansi.Strip(line)
+			matchedSlot := false
+			for slot, directive := range imageSlots {
+				if strings.Contains(plainLine, slot) {
+					remainingRows := max(m.visibleLines()-len(lines), 1)
+					image := m.renderPresentationImage(directive.name, directive.height, directive.width, remainingRows)
+					outputLines := strings.Split(image.output, "\n")
+					lines = append(lines, strings.Replace(line, slot, outputLines[0], 1))
+					for row := 1; row < max(image.rows, 1); row++ {
+						if row < len(outputLines) {
+							lines = append(lines, outputLines[row])
+						} else {
+							lines = append(lines, "")
+						}
+					}
+					matchedSlot = true
+					break
+				}
+			}
+			if !matchedSlot {
+				lines = append(lines, line)
+			}
+		}
 	}
 	return lines
+}
+
+func (m *presentationModel) renderPresentationImage(
+	name, heightText, widthText string,
+	availableRows int,
+) renderedPresentationImage {
+	var data []byte
+	for _, img := range m.item.Images {
+		if img.Name == name {
+			data = img.Data
+			break
+		}
+	}
+	if data == nil {
+		return renderedPresentationImage{
+			output: m.theme.Image.Render("[missing presentation image " + name + "]"),
+			rows:   1,
+		}
+	}
+
+	maxCols := max(1, m.width-4)
+	maxRows := max(availableRows, 1)
+	if heightText != "" {
+		height, err := strconv.Atoi(heightText)
+		if err != nil || height < 1 {
+			return renderedPresentationImage{
+				output: m.theme.Image.Render("[invalid image height " + heightText + "]"),
+				rows:   1,
+			}
+		}
+		maxRows = min(maxRows, height)
+	}
+	if widthText != "" {
+		width, err := strconv.Atoi(widthText)
+		if err != nil || width < 1 {
+			return renderedPresentationImage{
+				output: m.theme.Image.Render("[invalid image width " + widthText + "]"),
+				rows:   1,
+			}
+		}
+		maxCols = min(maxCols, width)
+	}
+	maxRows = max(maxRows, 1)
+
+	cacheKey := fmt.Sprintf("%s:%d:%d:%d", name, maxCols, maxRows, termimg.DetectProtocol())
+	if rendered, ok := m.imageRenderCache[cacheKey]; ok {
+		return rendered
+	}
+	output, rows, err := termimg.RenderImage(data, maxCols, maxRows)
+	if err != nil {
+		rendered := renderedPresentationImage{
+			output: m.theme.Image.Render("[could not render image " + name + ": " + err.Error() + "]"),
+			rows:   1,
+		}
+		m.imageRenderCache[cacheKey] = rendered
+		return rendered
+	}
+	rendered := renderedPresentationImage{output: output, rows: max(rows, 1)}
+	m.imageRenderCache[cacheKey] = rendered
+	return rendered
 }
 
 func (m *presentationModel) visibleLines() int {
@@ -884,8 +1001,12 @@ func (m *presentationModel) clampScroll() {
 }
 
 func (m *presentationModel) View() string {
+	clearImages := ""
+	if m.imageGraphicsUsed && termimg.DetectProtocol() == termimg.ProtocolKitty {
+		clearImages = termimg.ClearKittyPlacements()
+	}
 	if m.width < 20 || m.height < presentationChromeLines+2 {
-		return "Terminal too small. Press q to quit."
+		return clearImages + "Terminal too small. Press q to quit."
 	}
 	muted := m.theme.Muted
 	var content string
@@ -903,7 +1024,29 @@ func (m *presentationModel) View() string {
 	} else if m.find.visible && !m.editing {
 		status = m.find.view(len(m.searchMatches), m.searchMatch, m.width)
 	}
-	return chromeLayout(m.width, m.height, m.renderHeader(m.theme.Chrome), m.renderHelp(muted), content, status, m.theme.BorderColor)
+	return clearImages + chromeLayout(m.width, m.height, m.renderHeader(m.theme.Chrome), m.renderHelp(muted), content, status, m.theme.BorderColor)
+}
+
+func (m *presentationModel) pageHasImageDirective() bool {
+	if !m.loaded || m.page <= 0 || m.page > len(m.deck.Slides) {
+		return false
+	}
+	for _, line := range strings.Split(m.deck.Slides[m.page-1].Body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), ".image ") {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *presentationModel) clearScreenForImage(hadImage bool, cmd tea.Cmd) tea.Cmd {
+	if !hadImage || termimg.DetectProtocol() == termimg.ProtocolNone {
+		return cmd
+	}
+	if cmd == nil {
+		return tea.ClearScreen
+	}
+	return tea.Batch(cmd, tea.ClearScreen)
 }
 
 func (m *presentationModel) renderHeader(chrome lipgloss.Style) string {

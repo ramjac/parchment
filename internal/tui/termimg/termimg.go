@@ -163,6 +163,40 @@ func DetectProtocol() GraphicsProtocol {
 
 const kittyChunkSize = 4096
 
+// ClearKittyPlacements removes visible Kitty graphics placements.
+func ClearKittyPlacements() string { return "\x1b_Ga=d,d=A\x1b\\" }
+
+// RenderImage decodes an embedded image and renders it using the detected
+// terminal graphics protocol, falling back to ANSI half-blocks when needed.
+// The returned row count is the image's height in terminal cells.
+func RenderImage(data []byte, maxCols, maxRows int) (string, int, error) {
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return "", 0, fmt.Errorf("decode image: %w", err)
+	}
+	_, rows := fitToCells(img, maxCols, maxRows)
+	if rows == 0 {
+		return "", 0, nil
+	}
+
+	protocol := DetectProtocol()
+	var rendered string
+	switch protocol {
+	case ProtocolKitty:
+		rendered = RenderKitty(img, maxCols, maxRows)
+	case ProtocolITerm2:
+		rendered = RenderITerm2(img, maxCols, maxRows)
+	case ProtocolSixel:
+		rendered = RenderSixel(img, maxCols, maxRows)
+	default:
+		rendered = Fallback(img, maxCols, maxRows)
+	}
+	if protocol != ProtocolNone {
+		rendered = "\x1b[s" + rendered + "\x1b[u"
+	}
+	return rendered, rows, nil
+}
+
 // RenderKitty renders an image using the Kitty graphics protocol.
 func RenderKitty(img image.Image, maxCols, maxRows int) string {
 	cols, rows := fitToCells(img, maxCols, maxRows)

@@ -358,12 +358,14 @@ scaffolding that does not yet meet its acceptance criteria remains incomplete.
 - [x] **PRs 22–23:** Add Document/Presentation printer font selection (`"courier"` default, `"helvetica"`, `"times"` in `document.Layout` at `LayoutVersion = 1` and the existing `parchment-presentation` v1 block), plus the pure-Go `internal/pdfrender` renderer and `document print --format text|pdf` with page layout and embedded images; terminal fonts remain unchanged.
 
 ### Phase 4: Extended Domain Engines (PRs 24–30)
-- **PRs 24–25:** Zero-dependency recursive-descent spreadsheet formula Lexer, AST, span rewriter, and cross-sheet references (`Sheet2!A1`) in `internal/spreadsheet/formula` (**PR 24**), followed by rectangular ranges (`A1:B10`), `""`-escaped `StringLiteral`s with Excel/Calc coercion, `SUM`, `AVERAGE`, `COUNT`, `MIN`, `MAX`, nested calls, and persisted runtime error propagation (`#REF!`, `#DIV/0!`, `#NAME?`, `#VALUE!`, `#CIRCULAR!`) (**PR 25**)
-- **PRs 26–28:** Presentation media, directives, and export
-  - **PR 26:** Embedded images in `parchment-presentation` with CLI parity (`presentation image`, `images`, `image-extract`, `image-remove`) and TUI slide rendering
-  - **PR 27:** Go `present` `.image <embedded-name> [height] [width]` and directory-confined `.code <relpath> [bounds]` directives (`<= 1 MiB`, no `..`/symlink escape, line numbers and `/regex/` bounds)
-  - **PR 28:** Pure-Go standalone `presentation export <file> --format html|pdf -o <output> [--notes] [--force]` (single-file HTML with inline CSS/JS and base64 `data:` URIs; shared pure-Go PDF writer; speaker notes omitted unless `--notes`)
-- **PRs 29–30:** Standalone PNG/JPEG image editing (`parchment image crop` and `parchment image resize` with `-o [--force]` or confirmed `--in-place [--yes]`) using `golang.org/x/image/draw` (`CatmullRom`, JPEG quality `90`, `<= 16384px` cap) and removing Markdown-envelope `artifact.ImageKind` (**PR 29**), followed by PNG/JPEG magic-byte detection in `resolveTUITarget` and a basic TUI image viewer with crop/resize prompts (**PR 30**)
+**Completed:** PRs 24–27. **Outstanding:** PRs 28–30.
+
+- [x] **PRs 24–25:** Zero-dependency recursive-descent spreadsheet formula Lexer, AST, span rewriter, and cross-sheet references (`Sheet2!A1`) in `internal/spreadsheet/formula` (**PR 24**), followed by rectangular ranges (`A1:B10`), `""`-escaped `StringLiteral`s with Excel/Calc coercion, `SUM`, `AVERAGE`, `COUNT`, `MIN`, `MAX`, nested calls, and persisted runtime error propagation (`#REF!`, `#DIV/0!`, `#NAME?`, `#VALUE!`, `#CIRCULAR!`) (**PR 25**).
+- [x] **PR 26:** Embedded images in `parchment-presentation` with CLI parity (`presentation image`, `images`, `image-extract`, `image-remove`) and TUI slide rendering via Kitty, Sixel, iTerm2, or ANSI half-blocks.
+- [x] **PR 27:** Go `present` `.image <embedded-name> [height] [width]` and directory-confined `.code <relpath> [bounds]` directives (`<= 1 MiB`, no `..`/symlink escape, line numbers and `/regex/` bounds).
+- [ ] **PR 28 (outstanding):** Pure-Go standalone `presentation export <file> --format html|pdf -o <output> [--notes] [--force]` (single-file HTML with inline CSS/JS and base64 `data:` URIs; shared pure-Go PDF writer; speaker notes omitted unless `--notes`).
+- [ ] **PR 29 (outstanding):** Standalone PNG/JPEG image editing (`parchment image crop` and `parchment image resize` with `-o [--force]` or confirmed `--in-place [--yes]`) using `golang.org/x/image/draw` (`CatmullRom`, JPEG quality `90`, `<= 16384px` cap) and removing Markdown-envelope `artifact.ImageKind`.
+- [ ] **PR 30 (outstanding):** PNG/JPEG magic-byte detection in `resolveTUITarget` and a basic TUI image viewer with crop/resize prompts.
 
 ### Phase 5: External Interop & Persistent History (PRs 31–38)
 - **PRs 31–35:** Import and export ODF (`.odt`) and DOCX (`.docx`) documents via pure-Go stdlib `archive/zip` + `encoding/xml` adapters (`parchment document import` / `export`) with lossy approximation warnings on `stderr` ([`docs/ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md))

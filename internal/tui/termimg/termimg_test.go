@@ -69,6 +69,60 @@ func TestFallback(t *testing.T) {
 
 }
 
+func TestRenderImageSelectsProtocolAndReturnsCellRows(t *testing.T) {
+	var data bytes.Buffer
+	source := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			source.Set(x, y, color.RGBA{R: 255, A: 255})
+		}
+	}
+	if err := png.Encode(&data, source); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KITTY_WINDOW_ID", "")
+	t.Setenv("TERM_PROGRAM", "")
+	t.Setenv("LC_TERMINAL", "")
+	t.Setenv("TERM", "dumb")
+
+	got, rows, err := RenderImage(data.Bytes(), 8, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows != 3 || !strings.Contains(got, "▀") {
+		t.Fatalf("fallback render has %d rows and output %q, want 3 rows of half-blocks", rows, got)
+	}
+
+	t.Setenv("KITTY_WINDOW_ID", "1")
+	got, rows, err = RenderImage(data.Bytes(), 8, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows != 3 || !strings.HasPrefix(got, "\x1b[s\x1b_G") || !strings.HasSuffix(got, "\x1b[u") {
+		t.Fatalf("Kitty render has %d rows and output prefix %q", rows, got[:min(len(got), 30)])
+	}
+
+	t.Setenv("KITTY_WINDOW_ID", "")
+	t.Setenv("TERM_PROGRAM", "iTerm.app")
+	got, rows, err = RenderImage(data.Bytes(), 8, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows != 3 || !strings.HasPrefix(got, "\x1b[s\x1b]1337;File=") || !strings.HasSuffix(got, "\x1b[u") {
+		t.Fatalf("iTerm2 render has %d rows and output prefix %q", rows, got[:min(len(got), 30)])
+	}
+
+	t.Setenv("TERM_PROGRAM", "")
+	t.Setenv("TERM", "xterm")
+	got, rows, err = RenderImage(data.Bytes(), 8, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows != 3 || !strings.HasPrefix(got, "\x1b[s\x1bP0;1;0q") || !strings.HasSuffix(got, "\x1b[u") {
+		t.Fatalf("Sixel render has %d rows and output prefix %q", rows, got[:min(len(got), 30)])
+	}
+}
+
 func TestGraphicsProtocolsEncodePNGAtCellDimensions(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 400, 200))
 	for y := 0; y < 200; y++ {

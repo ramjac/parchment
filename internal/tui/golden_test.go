@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +21,7 @@ import (
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/document"
+	"example.com/parchment/internal/presentation"
 	tuitheme "example.com/parchment/internal/tui/theme"
 )
 
@@ -94,6 +98,36 @@ func TestTUIRenderGoldens(t *testing.T) {
 		h.m.deck.goToPage(1)
 		prepareGoldenView(h, 120, 40)
 		assertTUIViewGolden(t, "presentation", h.m.View(), 120, 40)
+	})
+
+	t.Run("presentation-image", func(t *testing.T) {
+		t.Setenv("KITTY_WINDOW_ID", "")
+		t.Setenv("TERM_PROGRAM", "")
+		t.Setenv("LC_TERMINAL", "")
+		t.Setenv("TERM", "dumb")
+		h := newHarness(t, artifact.PresentationKind)
+		h.openWithTheme(artifact.PresentationKind, false, darkTheme)
+		var encoded bytes.Buffer
+		img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+		for y := 0; y < 4; y++ {
+			for x := 0; x < 4; x++ {
+				img.Set(x, y, color.RGBA{R: 220, G: 90, B: 150, A: 255})
+			}
+		}
+		if err := png.Encode(&encoded, img); err != nil {
+			t.Fatal(err)
+		}
+		embedded, err := artifact.NewImage(encoded.Bytes())
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.m.deck.setItem(presentation.Presentation{
+			Source: "# A Short Deck\n\n## First Slide\n\nA diagram:\n\n.image " + embedded.Name + " 4 20",
+			Images: []artifact.Image{embedded},
+		})
+		h.m.deck.goToPage(1)
+		prepareGoldenView(h, 80, 24)
+		assertTUIViewGolden(t, "presentation-image", h.m.View(), 80, 24)
 	})
 
 	t.Run("small-terminal", func(t *testing.T) {
