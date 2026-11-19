@@ -95,6 +95,7 @@ func (m *spreadsheetModel) exportPDF(path string, overwrite bool) tea.Cmd {
 			return nil
 		}
 	}
+	m.stopAutosave()
 	ctx, seq := m.startOperation()
 	m.pdfPending = true
 	m.status, m.errMessage = "Exporting PDF…", ""
@@ -121,7 +122,7 @@ func (m *spreadsheetModel) spreadsheetPDFExported(msg spreadsheetPDFExportedMsg)
 		m.pdfInput.SetValue("")
 		m.input.Blur()
 		m.resizePDFPrompt()
-		return m.pdfInput.Focus()
+		return tea.Batch(m.pdfInput.Focus(), m.syncAutosave())
 	case msg.err != nil:
 		m.errMessage, m.status = "PDF export failed: "+msg.err.Error(), ""
 	default:

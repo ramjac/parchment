@@ -1,6 +1,7 @@
 package document
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -35,6 +36,14 @@ func Paginate(d Document) ([]Page, error) {
 }
 
 func PaginateWithFormatter(d Document, formatter Formatter) ([]Page, error) {
+	return PaginateWithFormatterContext(context.Background(), d, formatter)
+}
+
+// PaginateWithFormatterContext paginates a document while honoring cancellation.
+func PaginateWithFormatterContext(ctx context.Context, d Document, formatter Formatter) ([]Page, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := d.Layout.Validate(); err != nil {
 		return nil, err
 	}
@@ -44,9 +53,15 @@ func PaginateWithFormatter(d Document, formatter Formatter) ([]Page, error) {
 	}
 	var bodyCells [][][]string
 	directives := d.Kind != artifact.NoteKind && d.Kind != artifact.PresentationKind
-	bodies := paginateBody(d.Body, d.Layout.Columns, g.TextCols, g.BodyRows(), nil, formatter, &bodyCells, directives)
+	bodies, err := paginateBodyContext(ctx, d.Body, d.Layout.Columns, g.TextCols, g.BodyRows(), nil, formatter, &bodyCells, directives)
+	if err != nil {
+		return nil, err
+	}
 	pages := make([]Page, len(bodies))
 	for i, rows := range bodies {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var cells [][]string
 		if i < len(bodyCells) {
 			cells = bodyCells[i]
@@ -115,6 +130,8 @@ type headMark struct {
 }
 
 type bodyPaginator struct {
+	ctx           context.Context
+	err           error
 	textCols      int
 	bodyRows      int
 	sections      *[]Section
@@ -129,9 +146,15 @@ type bodyPaginator struct {
 }
 
 func paginateBody(body string, defaultColumns, textCols, bodyRows int, sections *[]Section, formatter Formatter, cells *[][][]string, directives bool) [][]string {
+	pages, _ := paginateBodyContext(context.Background(), body, defaultColumns, textCols, bodyRows, sections, formatter, cells, directives)
+	return pages
+}
+
+func paginateBodyContext(ctx context.Context, body string, defaultColumns, textCols, bodyRows int, sections *[]Section, formatter Formatter, cells *[][][]string, directives bool) ([][]string, error) {
 	p := bodyPaginator{
 		textCols:   textCols,
 		bodyRows:   bodyRows,
+		ctx:        ctx,
 		sections:   sections,
 		seenSlugs:  make(map[string]int),
 		formatter:  formatter,
@@ -141,7 +164,7 @@ func paginateBody(body string, defaultColumns, textCols, bodyRows int, sections 
 	if cells != nil {
 		*cells = p.pageCells
 	}
-	return pages
+	return pages, p.err
 }
 
 func (p *bodyPaginator) paginate(body string, defaultColumns int, directives bool) [][]string {
@@ -151,6 +174,9 @@ func (p *bodyPaginator) paginate(body string, defaultColumns int, directives boo
 		runs = splitRuns(body, defaultColumns)
 	}
 	for _, r := range runs {
+		if p.err = p.ctx.Err(); p.err != nil {
+			return nil
+		}
 		if wasSectionBreak && p.sections != nil {
 			*p.sections = append(*p.sections, Section{
 				Title:        fmt.Sprintf("── Section (%d cols)", clampColumns(r.columns, p.textCols)),
@@ -161,6 +187,12 @@ func (p *bodyPaginator) paginate(body string, defaultColumns int, directives boo
 		}
 		wasSectionBreak = r.end == sectionBreak
 		p.processRun(r)
+		if p.err != nil {
+			return nil
+		}
+		if p.err = p.ctx.Err(); p.err != nil {
+			return nil
+		}
 	}
 	if len(p.current) > 0 || len(p.pages) == 0 {
 		p.newPage()
@@ -217,6 +249,9 @@ func (p *bodyPaginator) layoutRunLines(flat []string, marks *[]headMark, raw []s
 	}
 
 	for len(flat) > 0 {
+		if p.err = p.ctx.Err(); p.err != nil {
+			return
+		}
 		if len(p.current) >= p.bodyRows {
 			p.newPage()
 		}

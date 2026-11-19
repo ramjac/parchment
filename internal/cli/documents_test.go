@@ -107,10 +107,34 @@ func TestDocumentPrintPDFCLI(t *testing.T) {
 	if err := os.WriteFile("text.out", []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	c.must("document", "print", "pdf.md", "-o", "text.out")
+	if _, err := c.run("document", "print", "pdf.md", "-o", "text.out"); err == nil {
+		t.Fatal("text output was overwritten without --force")
+	}
+	if data, err := os.ReadFile("text.out"); err != nil || string(data) != "old" {
+		t.Fatalf("refused text overwrite changed output: %v", err)
+	}
+	c.must("document", "print", "pdf.md", "-o", "text.out", "--force")
 	data, err = os.ReadFile("text.out")
 	if err != nil || string(data) == "old" {
-		t.Fatalf("text output did not preserve its existing overwrite behavior: %v", err)
+		t.Fatalf("forced text output did not replace destination: %v", err)
+	}
+	if err := os.Remove("text.out"); err != nil {
+		t.Fatal(err)
+	}
+	c.must("document", "print", "pdf.md", "-o", "text.out")
+	info, err = os.Stat("text.out")
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("new text output permissions = %v, %v; want 0600", info, err)
+	}
+	source, err := os.ReadFile("pdf.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.run("document", "print", "pdf.md", "-o", "pdf.md", "--force"); err == nil {
+		t.Fatal("text output overwrote the source document")
+	}
+	if got, err := os.ReadFile("pdf.md"); err != nil || !bytes.Equal(got, source) {
+		t.Fatalf("source document changed: %v", err)
 	}
 }
 

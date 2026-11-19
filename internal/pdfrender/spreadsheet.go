@@ -1,6 +1,7 @@
 package pdfrender
 
 import (
+	"context"
 	"io"
 	"strings"
 
@@ -11,15 +12,24 @@ import (
 
 // RenderSpreadsheet writes the same row-major page bands as text printing.
 func RenderSpreadsheet(w io.Writer, book spreadsheet.Spreadsheet) error {
-	file, err := spreadsheetPDF(book)
+	return RenderSpreadsheetContext(context.Background(), w, book)
+}
+
+// RenderSpreadsheetContext renders workbook pages while honoring cancellation.
+func RenderSpreadsheetContext(ctx context.Context, w io.Writer, book spreadsheet.Spreadsheet) error {
+	file, err := spreadsheetPDFContext(ctx, book)
 	if err != nil {
 		return err
 	}
-	return Write(w, file)
+	return WriteContext(ctx, w, file)
 }
 
 func spreadsheetPDF(book spreadsheet.Spreadsheet) (File, error) {
-	pages, err := printing.SpreadsheetPages(book)
+	return spreadsheetPDFContext(context.Background(), book)
+}
+
+func spreadsheetPDFContext(ctx context.Context, book spreadsheet.Spreadsheet) (File, error) {
+	pages, err := printing.SpreadsheetPagesContext(ctx, book)
 	if err != nil {
 		return File{}, err
 	}
@@ -29,6 +39,9 @@ func spreadsheetPDF(book spreadsheet.Spreadsheet) (File, error) {
 	}
 	file := File{Font: "courier"}
 	for _, sheetPage := range pages {
+		if err := ctx.Err(); err != nil {
+			return File{}, err
+		}
 		page := PDFPage{WidthMM: width, HeightMM: height}
 		// Center borders in the existing inter-column and inter-line spacing.
 		y := (float64(sheetPage.GridTopRow) + 0.2) * lineHeightMM

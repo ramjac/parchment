@@ -105,7 +105,10 @@ type keyboardCaptureModel struct {
 func (*keyboardCaptureModel) Init() tea.Cmd { return nil }
 func (*keyboardCaptureModel) View() string  { return "" }
 func (m *keyboardCaptureModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
-	if key, ok := normalizeTerminalKey(message).(tea.KeyMsg); ok {
+	switch key := normalizeTerminalKey(message).(type) {
+	case shiftEnterMsg:
+		m.keys = append(m.keys, "shift+enter")
+	case tea.KeyMsg:
 		m.keys = append(m.keys, key.String())
 		if key.String() == "ctrl+c" {
 			return m, tea.Quit
@@ -118,8 +121,8 @@ func TestModifiedKeyboardPreservesExistingKeys(t *testing.T) {
 	for _, test := range []struct {
 		name, input, want string
 	}{
-		{"kitty", "\x1b[13;2u\x1b[115;5u\x1b[122;5u\x1b[114;5u\x1b[27u\r\t\x1b[9;2u\x1b[13;3u\x1b[99;5u", "shift+enter,ctrl+s,ctrl+z,ctrl+r,esc,enter,tab,shift+tab,alt+enter,ctrl+c"},
-		{"xterm", "\x1b[27;2;13~\x1b[27;5;115~\x1b[27;5;99~", "shift+enter,ctrl+s,ctrl+c"},
+		{"kitty", "\x1b[13;2u\x1b[115;5u\x1b[122;5u\x1b[114;5u\x1b[122;6u\x1b[27u\r\t\x1b[9;2u\x1b[13;3u\x1b[99;5u", "shift+enter,ctrl+s,ctrl+z,ctrl+r,ctrl+shift+z,esc,enter,tab,shift+tab,alt+enter,ctrl+c"},
+		{"xterm", "\x1b[27;2;13~\x1b[27;5;115~\x1b[27;6;122~\x1b[27;5;99~", "shift+enter,ctrl+s,ctrl+shift+z,ctrl+c"},
 		{"legacy", "\r\x1b\r\x13\x03", "enter,alt+enter,ctrl+s,ctrl+c"},
 		{"lock modifiers", "\x1b[13;66u\x1b[13;130u\x1b[99;197u", "shift+enter,shift+enter,ctrl+c"},
 	} {

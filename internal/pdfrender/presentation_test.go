@@ -2,6 +2,7 @@ package pdfrender
 
 import (
 	"bytes"
+	"context"
 	"image"
 	"image/png"
 	"strings"
@@ -25,7 +26,7 @@ func TestPresentationPDFPagesNotesAndImages(t *testing.T) {
 		Images: []artifact.Image{img},
 		Font:   "helvetica",
 	}
-	file, err := presentationPDF(item)
+	file, err := presentationPDF(context.Background(), item)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +84,7 @@ func TestPresentationTwoUpPDF(t *testing.T) {
 		Source: "# Deck\n\n## First\n\n.image " + img.Name + "\n\n: First reminder\n\n## Second\n\nClosing\n\n: Second reminder\n",
 		Images: []artifact.Image{img},
 	}
-	file, err := presentationTwoUpPDF(item)
+	file, err := presentationTwoUpPDF(context.Background(), item)
 	if err != nil {
 		t.Fatal(err)
 	}

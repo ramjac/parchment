@@ -20,8 +20,8 @@ type pdfExportResult struct {
 }
 
 func writeSpreadsheetPDF(ctx context.Context, store PDFExportStore, path, source string, book spreadsheet.Spreadsheet, overwrite bool) pdfExportResult {
-	return writeRenderedPDF(ctx, store, path, source, overwrite, func(w io.Writer) error {
-		return pdfrender.RenderSpreadsheet(w, book)
+	return writeRenderedPDF(ctx, store, path, source, overwrite, func(ctx context.Context, w io.Writer) error {
+		return pdfrender.RenderSpreadsheetContext(ctx, w, book)
 	})
 }
 
@@ -37,23 +37,26 @@ func pdfDefaultPath(source, lastPath string) string {
 }
 
 func writePDF(ctx context.Context, store PDFExportStore, path, source string, d document.Document, overwrite bool) pdfExportResult {
-	return writeRenderedPDF(ctx, store, path, source, overwrite, func(w io.Writer) error {
-		return pdfrender.Render(w, d)
+	return writeRenderedPDF(ctx, store, path, source, overwrite, func(ctx context.Context, w io.Writer) error {
+		return pdfrender.RenderContext(ctx, w, d)
 	})
 }
 
 func writePresentationPDF(ctx context.Context, store PDFExportStore, path, source string, item presentation.Presentation, overwrite, twoUp bool) pdfExportResult {
-	return writeRenderedPDF(ctx, store, path, source, overwrite, func(w io.Writer) error {
+	return writeRenderedPDF(ctx, store, path, source, overwrite, func(ctx context.Context, w io.Writer) error {
 		if twoUp {
-			return pdfrender.RenderPresentationTwoUp(w, item)
+			return pdfrender.RenderPresentationTwoUpContext(ctx, w, item)
 		}
-		return pdfrender.RenderPresentation(w, item)
+		return pdfrender.RenderPresentationContext(ctx, w, item)
 	})
 }
 
-func writeRenderedPDF(ctx context.Context, store PDFExportStore, path, source string, overwrite bool, render func(io.Writer) error) pdfExportResult {
+func writeRenderedPDF(ctx context.Context, store PDFExportStore, path, source string, overwrite bool, render func(context.Context, io.Writer) error) pdfExportResult {
+	if err := ctx.Err(); err != nil {
+		return pdfExportResult{err: err}
+	}
 	var rendered bytes.Buffer
-	if err := render(&rendered); err != nil {
+	if err := render(ctx, &rendered); err != nil {
 		return pdfExportResult{err: err}
 	}
 	if err := ctx.Err(); err != nil {

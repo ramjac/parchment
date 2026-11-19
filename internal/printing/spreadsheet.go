@@ -1,6 +1,7 @@
 package printing
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -27,6 +28,11 @@ type SpreadsheetPage struct {
 // SpreadsheetPages formats each worksheet across columns, then down rows.
 // Each page contains full cells, with row heights shared across column bands.
 func SpreadsheetPages(book spreadsheet.Spreadsheet) ([]SpreadsheetPage, error) {
+	return SpreadsheetPagesContext(context.Background(), book)
+}
+
+// SpreadsheetPagesContext formats workbook pages while honoring cancellation.
+func SpreadsheetPagesContext(ctx context.Context, book spreadsheet.Spreadsheet) ([]SpreadsheetPage, error) {
 	layout := document.DefaultLayout()
 	layout.PageNumbers = document.NumbersNone
 	g, err := layout.Geometry()
@@ -34,7 +40,11 @@ func SpreadsheetPages(book spreadsheet.Spreadsheet) ([]SpreadsheetPage, error) {
 		return nil, err
 	}
 	var pages []SpreadsheetPage
+	evaluator := spreadsheet.NewEvaluator(&book)
 	for sheetIndex, sheet := range book.Sheets {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		lastRow, lastCol := 0, 0
 		for r, row := range sheet.Rows {
 			for c, cell := range row {
@@ -58,6 +68,9 @@ func SpreadsheetPages(book spreadsheet.Spreadsheet) ([]SpreadsheetPage, error) {
 		values := make([][][]string, lastRow)
 		heights := make([]int, lastRow)
 		for r := 0; r < lastRow; r++ {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			values[r] = make([][]string, lastCol)
 			heights[r] = 1
 			if r >= len(sheet.Rows) {
@@ -69,15 +82,18 @@ func SpreadsheetPages(book spreadsheet.Spreadsheet) ([]SpreadsheetPage, error) {
 				}
 				value := cell.Value
 				if cell.Formula != "" {
-					result, evalErr := spreadsheet.Evaluate(&book, sheetIndex, r+1, c+1)
-					var number float64
-					if evalErr == nil {
-						number, evalErr = result.Float64()
-					}
-					if evalErr != nil {
+					result, evalErr := evaluator.Evaluate(sheetIndex, r+1, c+1)
+					switch {
+					case evalErr != nil, result.Kind == spreadsheet.ErrKind:
 						value = "#ERR"
-					} else {
-						value = strconv.FormatFloat(number, 'f', -1, 64)
+					case result.Kind == spreadsheet.NumKind:
+						value = strconv.FormatFloat(result.Num, 'f', -1, 64)
+					case result.Kind == spreadsheet.StrKind:
+						value = result.Str
+					case result.Kind == spreadsheet.EmptyKind:
+						value = ""
+					default:
+						value = "#ERR"
 					}
 				}
 				values[r][c] = wrapSpreadsheetText(value, spreadsheetPrintColumnWidth)
@@ -88,6 +104,9 @@ func SpreadsheetPages(book spreadsheet.Spreadsheet) ([]SpreadsheetPage, error) {
 			}
 		}
 		for firstRow := 0; firstRow < lastRow; {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			endRow, used := firstRow, 0
 			for endRow < lastRow && used+heights[endRow] <= availableRows {
 				used += heights[endRow]

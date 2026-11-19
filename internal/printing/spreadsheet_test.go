@@ -38,7 +38,7 @@ func TestSpreadsheetPrintAcrossColumnsBeforeRows(t *testing.T) {
 
 func TestSpreadsheetPrintWrappingAndFormula(t *testing.T) {
 	book := spreadsheet.Spreadsheet{Sheets: []spreadsheet.Sheet{{Name: "Values", Rows: [][]spreadsheet.Cell{
-		{{Value: "123456789012long\nlast"}, {Formula: "=2+3"}, {Formula: "=1/0"}},
+		{{Value: "123456789012long\nlast"}, {Formula: "=2+3"}, {Formula: "=1/0"}, {Formula: `="hello"`}},
 		{{Value: "next"}},
 	}}}}
 	pages, err := SpreadsheetPages(book)
@@ -46,7 +46,7 @@ func TestSpreadsheetPrintWrappingAndFormula(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := strings.Join(pages[0].Lines, "\n")
-	for _, want := range []string{"123456789012", "long", "last", "5", "#ERR", "next"} {
+	for _, want := range []string{"123456789012", "long", "last", "5", "#ERR", "hello", "next"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q:\n%s", want, text)
 		}

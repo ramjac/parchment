@@ -541,18 +541,24 @@ func newPrintCmd(kind artifact.Kind, streams output) *cobra.Command {
 			path, _ := cmd.Flags().GetString("output")
 			if path != "" {
 				if format == "text" {
-					sourceInfo, err := os.Stat(args[0])
-					if err != nil {
-						return fmt.Errorf("inspect source file: %w", err)
+					err := repo.WriteTextExport(cmd.Context(), path, args[0], data, false)
+					if errors.Is(err, fs.ErrExist) {
+						force, _ := cmd.Flags().GetBool("force")
+						if !force {
+							if !streamsInteractive(cmd.InOrStdin(), cmd.ErrOrStderr()) {
+								return fmt.Errorf("file %q already exists (use --force to overwrite)", path)
+							}
+							confirmed, promptErr := confirmOutputOverwrite(cmd.InOrStdin(), cmd.ErrOrStderr(), path)
+							if promptErr != nil {
+								return promptErr
+							}
+							if !confirmed {
+								return nil
+							}
+						}
+						err = repo.WriteTextExport(cmd.Context(), path, args[0], data, true)
 					}
-					targetInfo, err := os.Stat(path)
-					if err != nil && !errors.Is(err, fs.ErrNotExist) {
-						return fmt.Errorf("inspect print output: %w", err)
-					}
-					if err == nil && os.SameFile(sourceInfo, targetInfo) {
-						return errors.New("print output cannot overwrite the source file")
-					}
-					return os.WriteFile(path, data, 0o644)
+					return err
 				}
 				err := repo.WritePDFExport(cmd.Context(), path, args[0], data, false)
 				if errors.Is(err, fs.ErrExist) {
@@ -596,6 +602,17 @@ func confirmPDFOverwrite(in io.Reader, out io.Writer, path string) (bool, error)
 	if _, err := fmt.Fprintf(out, "PDF file %q already exists. Overwrite? [y/N] ", path); err != nil {
 		return false, err
 	}
+	return readOverwriteConfirmation(in)
+}
+
+func confirmOutputOverwrite(in io.Reader, out io.Writer, path string) (bool, error) {
+	if _, err := fmt.Fprintf(out, "File %q already exists. Overwrite? [y/N] ", path); err != nil {
+		return false, err
+	}
+	return readOverwriteConfirmation(in)
+}
+
+func readOverwriteConfirmation(in io.Reader) (bool, error) {
 	response, err := bufio.NewReader(in).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return false, err

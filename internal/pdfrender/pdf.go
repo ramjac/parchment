@@ -3,6 +3,7 @@ package pdfrender
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"image"
 	"image/draw"
@@ -42,6 +43,14 @@ type imageAsset struct {
 // page breaks, columns, headers, footers, and page numbers consistent with
 // text printing while the PDF formatter preserves Markdown presentation.
 func Render(w io.Writer, d document.Document) error {
+	return RenderContext(context.Background(), w, d)
+}
+
+// RenderContext renders a document while honoring cancellation.
+func RenderContext(ctx context.Context, w io.Writer, d document.Document) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := d.Layout.Validate(); err != nil {
 		return err
 	}
@@ -64,7 +73,7 @@ func Render(w io.Writer, d document.Document) error {
 	textWidth := pageWidth - float64(d.Layout.Margins.Left+d.Layout.Margins.Right)
 	measure.SetFont(font, "", printerFontSize)
 	gutterWidth := measure.GetStringWidth(strings.Repeat(" ", document.ColumnGutter))
-	pages, err := document.PaginateWithFormatter(d, markdownFormatter(assets, &refs, measure, d.Layout.Font, textWidth))
+	pages, err := document.PaginateWithFormatterContext(ctx, d, markdownFormatter(assets, &refs, measure, d.Layout.Font, textWidth))
 	if err != nil {
 		return err
 	}
@@ -76,8 +85,14 @@ func Render(w io.Writer, d document.Document) error {
 	file := File{Font: d.Layout.Font, Images: images}
 
 	for _, page := range pages {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		pdfPage := PDFPage{WidthMM: pageWidth, HeightMM: pageHeight}
 		for row, line := range page.Lines {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			baseline := float64(row+1) * lineHeightMM
 			if row == geometry.TopRows && d.Layout.Header != "" {
 				measure.SetFont(font, "", printerFontSize)
@@ -153,7 +168,7 @@ func Render(w io.Writer, d document.Document) error {
 		}
 		file.Pages = append(file.Pages, pdfPage)
 	}
-	return Write(w, file)
+	return WriteContext(ctx, w, file)
 }
 
 func expandRunningLine(spec string, d document.Document, page, total int) string {

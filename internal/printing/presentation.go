@@ -1,6 +1,7 @@
 package printing
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,11 @@ import (
 
 // PresentationSlides prepares the title page and slides for printing.
 func PresentationSlides(item presentation.Presentation) ([]presentation.Slide, error) {
+	return PresentationSlidesContext(context.Background(), item)
+}
+
+// PresentationSlidesContext resolves slide content while honoring cancellation.
+func PresentationSlidesContext(ctx context.Context, item presentation.Presentation) ([]presentation.Slide, error) {
 	deck, err := presentation.Parse(item.Source)
 	if err != nil {
 		return nil, err
@@ -26,7 +32,10 @@ func PresentationSlides(item presentation.Presentation) ([]presentation.Slide, e
 		baseDir = filepath.Dir(item.Path)
 	}
 	for i := range slides {
-		body, err := presentation.ExpandDirectives(slides[i].Body, baseDir, item.Images)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		body, err := presentation.ExpandDirectivesContext(ctx, slides[i].Body, baseDir, item.Images)
 		if err != nil {
 			return nil, fmt.Errorf("slide %d: %w", i, err)
 		}

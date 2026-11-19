@@ -3,6 +3,7 @@ package presentation
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -54,6 +55,11 @@ func ValidateDirectives(p Presentation) error {
 // ExpandDirectives resolves .image and .code directives within a presentation's slide content.
 // baseDir is the presentation file's directory, used to confine .code inclusions.
 func ExpandDirectives(source string, baseDir string, images []artifact.Image) (string, error) {
+	return ExpandDirectivesContext(context.Background(), source, baseDir, images)
+}
+
+// ExpandDirectivesContext expands directives while honoring cancellation.
+func ExpandDirectivesContext(ctx context.Context, source string, baseDir string, images []artifact.Image) (string, error) {
 	imageMap := make(map[string]bool, len(images))
 	for _, img := range images {
 		imageMap[img.Name] = true
@@ -62,8 +68,13 @@ func ExpandDirectives(source string, baseDir string, images []artifact.Image) (s
 	var out strings.Builder
 	scanner := bufio.NewScanner(strings.NewReader(source))
 	first := true
+	var fence byte
+	fenceLength := 0
 
 	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
 
@@ -72,6 +83,18 @@ func ExpandDirectives(source string, baseDir string, images []artifact.Image) (s
 		}
 		first = false
 
+		if fence != 0 {
+			out.WriteString(line)
+			if isClosingFence(line, fence, fenceLength) {
+				fence, fenceLength = 0, 0
+			}
+			continue
+		}
+		if marker, length := openingFence(line); marker != 0 {
+			fence, fenceLength = marker, length
+			out.WriteString(line)
+			continue
+		}
 		if match := imageDirectiveRE.FindStringSubmatch(line); match != nil && strings.HasPrefix(trimmed, ".image") {
 			name := match[1]
 			// Format as standard markdown image tag
@@ -102,6 +125,42 @@ func ExpandDirectives(source string, baseDir string, images []artifact.Image) (s
 	}
 
 	return out.String(), nil
+}
+
+func openingFence(line string) (byte, int) {
+	spaces := len(line) - len(strings.TrimLeft(line, " "))
+	if spaces > 3 {
+		return 0, 0
+	}
+	line = strings.TrimLeft(line, " ")
+	if len(line) < 3 {
+		return 0, 0
+	}
+	marker := line[0]
+	if marker != '`' && marker != '~' {
+		return 0, 0
+	}
+	length := 0
+	for length < len(line) && line[length] == marker {
+		length++
+	}
+	if length < 3 || marker == '`' && strings.Contains(line[length:], "`") {
+		return 0, 0
+	}
+	return marker, length
+}
+
+func isClosingFence(line string, marker byte, minimumLength int) bool {
+	spaces := len(line) - len(strings.TrimLeft(line, " "))
+	if spaces > 3 {
+		return false
+	}
+	line = strings.TrimLeft(line, " ")
+	length := 0
+	for length < len(line) && line[length] == marker {
+		length++
+	}
+	return length >= minimumLength && strings.TrimSpace(line[length:]) == ""
 }
 
 func loadCodeSnippet(baseDir, relpath, bounds string) (string, error) {

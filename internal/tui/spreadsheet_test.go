@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -323,7 +324,7 @@ func TestSpreadsheetShiftEnterContinuesDownColumn(t *testing.T) {
 	driveSheet(t, m, sheetKey("right"))
 	driveSheet(t, m, sheetKey("enter"))
 	m.input.SetValue("first")
-	driveSheet(t, m, sheetKey("shift+enter"))
+	_, _ = m.Update(shiftEnterMsg{})
 	if got := m.cell(0, 1); got.Value != "first" {
 		t.Fatalf("staged cell = %#v", got)
 	}
@@ -342,6 +343,49 @@ func TestSpreadsheetShiftEnterContinuesDownColumn(t *testing.T) {
 	driveSheet(t, m, sheetKey("ctrl+s"))
 	if got := storedCell(t, service, path, 2, 2); got.Value != "second" {
 		t.Fatalf("saved cell = %#v", got)
+	}
+}
+
+func TestSpreadsheetAutosaveRestartsAroundPDFExport(t *testing.T) {
+	h := newHarness(t, artifact.SpreadsheetKind)
+	m := h.m.sheet
+	if !m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+		return spreadsheet.SetCellInBook(book, spreadsheet.SetCellOptions{
+			Sheet: book.Sheets[0].Name, Row: 1, Column: 1, Cell: spreadsheet.Cell{Value: "draft"},
+		})
+	}) {
+		t.Fatal(m.errMessage)
+	}
+	m.syncAutosave()
+	if !m.autosaveActive {
+		t.Fatal("autosave did not start for dirty workbook")
+	}
+
+	existing := filepath.Join(t.TempDir(), "existing.pdf")
+	if err := os.WriteFile(existing, []byte("existing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := m.exportPDF(existing, false)
+	if cmd == nil || !m.pending || m.autosaveActive {
+		t.Fatal("export did not pause autosave")
+	}
+	message := cmd().(spreadsheetPDFExportedMsg)
+	m.spreadsheetPDFExported(message)
+	if m.pdfPrompt != promptPDFOverwrite || !m.autosaveActive {
+		t.Fatalf("overwrite prompt state: prompt=%v autosave=%v", m.pdfPrompt, m.autosaveActive)
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if m.pdfPrompt != promptNone || !m.autosaveActive {
+		t.Fatalf("cancelled overwrite state: prompt=%v autosave=%v", m.pdfPrompt, m.autosaveActive)
+	}
+
+	cmd = m.exportPDF(filepath.Join(t.TempDir(), "cancelled.pdf"), false)
+	if cmd == nil || m.autosaveActive {
+		t.Fatal("second export did not pause autosave")
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if !m.autosaveActive || m.pending {
+		t.Fatalf("cancelled export state: pending=%v autosave=%v", m.pending, m.autosaveActive)
 	}
 }
 

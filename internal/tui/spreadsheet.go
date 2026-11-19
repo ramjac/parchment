@@ -329,6 +329,8 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.scheduleAutosave(msg.session)
 		}
 		return m, m.syncAutosave()
+	case shiftEnterMsg:
+		return m, m.updateEditKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("shift+enter")})
 	case tea.KeyMsg:
 		if m.pdfPrompt != promptNone {
 			return m, m.updatePDFPrompt(msg)

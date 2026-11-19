@@ -21,6 +21,8 @@ type keyboardTerminalOutput struct {
 	*os.File
 }
 
+type shiftEnterMsg struct{}
+
 func (w keyboardTerminalOutput) Write(p []byte) (int, error) {
 	return (keyboardOutput{w.File}).Write(p)
 }
@@ -99,7 +101,13 @@ func normalizeTerminalKey(message tea.Msg) tea.Msg {
 		return message
 	}
 	if code == 13 && mods == 1 {
-		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("shift+enter")}
+		return shiftEnterMsg{}
+	}
+	if mods&5 == 5 && code >= 'A' && code <= 'Z' {
+		code += 'a' - 'A'
+	}
+	if mods&5 == 5 && code >= 'a' && code <= 'z' {
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ctrl+shift+" + string(rune(code)))}
 	}
 	key := tea.KeyMsg{Alt: mods&2 != 0}
 	if mods&4 != 0 {

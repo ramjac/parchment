@@ -47,6 +47,16 @@ func (r *Repository) SavePDFPath(ctx context.Context, path string) error {
 // WritePDFExport writes a PDF without replacing an existing file unless
 // overwrite is true. It never replaces the source artifact.
 func (r *Repository) WritePDFExport(ctx context.Context, path, source string, data []byte, overwrite bool) error {
+	return r.writeExport(ctx, "PDF", path, source, data, overwrite)
+}
+
+// WriteTextExport writes a text export without replacing an existing file
+// unless overwrite is true. It never replaces the source artifact.
+func (r *Repository) WriteTextExport(ctx context.Context, path, source string, data []byte, overwrite bool) error {
+	return r.writeExport(ctx, "text", path, source, data, overwrite)
+}
+
+func (r *Repository) writeExport(ctx context.Context, format, path, source string, data []byte, overwrite bool) error {
 	return r.withLock(ctx, func() error {
 		target, err := resolve(path)
 		if err != nil {
@@ -55,7 +65,7 @@ func (r *Repository) WritePDFExport(ctx context.Context, path, source string, da
 		if !overwrite {
 			if err := createAtomic(ctx, target, data, 0o600); err != nil {
 				if errors.Is(err, fs.ErrExist) {
-					return fmt.Errorf("PDF file %q already exists: %w", path, fs.ErrExist)
+					return fmt.Errorf("%s file %q already exists: %w", format, path, fs.ErrExist)
 				}
 				return err
 			}
@@ -63,17 +73,17 @@ func (r *Repository) WritePDFExport(ctx context.Context, path, source string, da
 		}
 		info, err := os.Stat(target)
 		if err != nil {
-			return fmt.Errorf("inspect PDF file: %w", err)
+			return fmt.Errorf("inspect %s file: %w", format, err)
 		}
 		if !info.Mode().IsRegular() {
-			return fmt.Errorf("PDF file %q is not a regular file", path)
+			return fmt.Errorf("%s file %q is not a regular file", format, path)
 		}
 		sourceInfo, err := os.Stat(source)
 		if err != nil {
 			return fmt.Errorf("inspect source file: %w", err)
 		}
 		if os.SameFile(info, sourceInfo) {
-			return errors.New("PDF output cannot overwrite the source file")
+			return fmt.Errorf("%s output cannot overwrite the source file", format)
 		}
 		return writeAtomic(ctx, target, data, info.Mode().Perm())
 	})

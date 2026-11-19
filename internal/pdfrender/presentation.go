@@ -1,6 +1,7 @@
 package pdfrender
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -21,25 +22,35 @@ const (
 // RenderPresentation writes a landscape PDF with a title page and one page
 // per slide, placing speaker notes at the bottom of their slide's page.
 func RenderPresentation(w io.Writer, item presentation.Presentation) error {
-	file, err := presentationPDF(item)
+	return RenderPresentationContext(context.Background(), w, item)
+}
+
+// RenderPresentationContext renders slides while honoring cancellation.
+func RenderPresentationContext(ctx context.Context, w io.Writer, item presentation.Presentation) error {
+	file, err := presentationPDF(ctx, item)
 	if err != nil {
 		return err
 	}
-	return Write(w, file)
+	return WriteContext(ctx, w, file)
 }
 
 // RenderPresentationTwoUp writes portrait pages with two framed slides and
 // their speaker notes per page, including the title page as the first slide.
 func RenderPresentationTwoUp(w io.Writer, item presentation.Presentation) error {
-	file, err := presentationTwoUpPDF(item)
+	return RenderPresentationTwoUpContext(context.Background(), w, item)
+}
+
+// RenderPresentationTwoUpContext renders two-up slides while honoring cancellation.
+func RenderPresentationTwoUpContext(ctx context.Context, w io.Writer, item presentation.Presentation) error {
+	file, err := presentationTwoUpPDF(ctx, item)
 	if err != nil {
 		return err
 	}
-	return Write(w, file)
+	return WriteContext(ctx, w, file)
 }
 
-func presentationTwoUpPDF(item presentation.Presentation) (File, error) {
-	slides, err := printing.PresentationSlides(item)
+func presentationTwoUpPDF(ctx context.Context, item presentation.Presentation) (File, error) {
+	slides, err := printing.PresentationSlidesContext(ctx, item)
 	if err != nil {
 		return File{}, err
 	}
@@ -68,6 +79,9 @@ func presentationTwoUpPDF(item presentation.Presentation) (File, error) {
 	boxX := (width - boxWidth) / 2
 	var refs []imageRef
 	for i, slide := range slides {
+		if err := ctx.Err(); err != nil {
+			return File{}, err
+		}
 		if i%2 == 0 {
 			file.Pages = append(file.Pages, PDFPage{WidthMM: width, HeightMM: height})
 		}
@@ -78,7 +92,7 @@ func presentationTwoUpPDF(item presentation.Presentation) (File, error) {
 			Color: [3]uint8{200, 200, 200}, LineWidthMM: 0.25,
 		})
 		content, contentHeight, err := presentationSection(
-			"# "+slide.Title+"\n\n"+slide.Body, boxWidth-2*padding, item.Font, measure, assets, &refs,
+			ctx, "# "+slide.Title+"\n\n"+slide.Body, boxWidth-2*padding, item.Font, measure, assets, &refs,
 		)
 		if err != nil {
 			return File{}, fmt.Errorf("slide %d: %w", i, err)
@@ -93,7 +107,7 @@ func presentationTwoUpPDF(item presentation.Presentation) (File, error) {
 		page.Elements = append(page.Elements, positionPresentationElements(content, boxX+padding, boxY+padding, contentScale)...)
 		if slide.Notes != "" {
 			notes, notesHeight, err := presentationSection(
-				"## Speaker notes\n\n"+slide.Notes, width-2*presentationMarginMM, item.Font, measure, assets, &refs,
+				ctx, "## Speaker notes\n\n"+slide.Notes, width-2*presentationMarginMM, item.Font, measure, assets, &refs,
 			)
 			if err != nil {
 				return File{}, fmt.Errorf("slide %d speaker notes: %w", i, err)
@@ -109,8 +123,8 @@ func presentationTwoUpPDF(item presentation.Presentation) (File, error) {
 	return file, nil
 }
 
-func presentationPDF(item presentation.Presentation) (File, error) {
-	slides, err := printing.PresentationSlides(item)
+func presentationPDF(ctx context.Context, item presentation.Presentation) (File, error) {
+	slides, err := printing.PresentationSlidesContext(ctx, item)
 	if err != nil {
 		return File{}, err
 	}
@@ -137,8 +151,11 @@ func presentationPDF(item presentation.Presentation) (File, error) {
 	pageHeight := height - 2*presentationMarginMM
 	var refs []imageRef
 	for i, slide := range slides {
+		if err := ctx.Err(); err != nil {
+			return File{}, err
+		}
 		content, contentHeight, err := presentationSection(
-			"# "+slide.Title+"\n\n"+slide.Body, textWidth, item.Font, measure, assets, &refs,
+			ctx, "# "+slide.Title+"\n\n"+slide.Body, textWidth, item.Font, measure, assets, &refs,
 		)
 		if err != nil {
 			return File{}, fmt.Errorf("slide %d: %w", i, err)
@@ -147,7 +164,7 @@ func presentationPDF(item presentation.Presentation) (File, error) {
 		var notesHeight float64
 		if slide.Notes != "" {
 			notes, notesHeight, err = presentationSection(
-				"## Speaker notes\n\n"+slide.Notes, textWidth, item.Font, measure, assets, &refs,
+				ctx, "## Speaker notes\n\n"+slide.Notes, textWidth, item.Font, measure, assets, &refs,
 			)
 			if err != nil {
 				return File{}, fmt.Errorf("slide %d speaker notes: %w", i, err)
@@ -176,14 +193,23 @@ func presentationPDF(item presentation.Presentation) (File, error) {
 	return file, nil
 }
 
-func presentationSection(body string, width float64, font string, measure *fpdf.Fpdf, assets map[string]imageAsset, refs *[]imageRef) ([]Element, float64, error) {
+func presentationSection(ctx context.Context, body string, width float64, font string, measure *fpdf.Fpdf, assets map[string]imageAsset, refs *[]imageRef) ([]Element, float64, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
 	formatter := markdownFormatter(assets, refs, measure, font, width)
 	lines := formatter(strings.Split(body, "\n"), int(width/2.54), 1, body)
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
 	for len(lines) > 0 && lines[0] == "" {
 		lines = lines[1:]
 	}
 	var elements []Element
 	for i, line := range lines {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
 		row, err := renderRichLine(measure, line, 0, float64(i+1)*lineHeightMM, width, font, *refs, assets, 10000, 0)
 		if err != nil {
 			return nil, 0, err

@@ -73,6 +73,17 @@ func TestExpandDirectives_Image(t *testing.T) {
 	}
 }
 
+func TestExpandDirectivesPreservesFencedExamples(t *testing.T) {
+	source := "````markdown\n.code missing.go\n.image missing.png\n````\n\n~~~text\n.code also-missing.go\n~~~"
+	got, err := ExpandDirectives(source, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != source {
+		t.Fatalf("fenced directives changed:\n got: %q\nwant: %q", got, source)
+	}
+}
+
 func TestExpandDirectives_Code(t *testing.T) {
 	dir := t.TempDir()
 	codeContent := `package main
