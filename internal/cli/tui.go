@@ -14,6 +14,7 @@ import (
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/filerepo"
+	"example.com/parchment/internal/imageedit"
 	"example.com/parchment/internal/note"
 	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/spreadsheet"
@@ -28,7 +29,7 @@ func tuiCommand() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "tui <file>",
 		Short: "Edit a file interactively",
-		Long: "Opens one note, document, spreadsheet, or presentation file in the interactive editor.\n" +
+		Long: "Opens one note, document, spreadsheet, presentation, or PNG/JPEG image file.\n" +
 			"Plain Markdown files open as notes. A missing file is created; without --kind, the\n" +
 			"editor asks which kind to create.",
 		Args: cobra.ExactArgs(1),
@@ -64,6 +65,7 @@ func runTUI(cmd *cobra.Command, arg string, requested artifact.Kind, edit bool) 
 		Documents:     document.NewService(repo, settings.UndoLimit),
 		Spreadsheets:  spreadsheet.NewService(repo, settings.UndoLimit),
 		Presentations: presentation.NewService(repo, settings.UndoLimit),
+		Images:        imageedit.NewService(repo),
 		Recovery:      repo,
 		Theme:         settings.Theme,
 		UndoLimit:     settings.UndoLimit,
@@ -92,9 +94,16 @@ func resolveTUITarget(arg string, requested artifact.Kind) (string, artifact.Kin
 	} else if err != nil {
 		return "", "", err
 	}
-	kind, err := filerepo.Kind(path)
-	if errors.Is(err, filerepo.ErrNotArtifact) {
-		kind, err = artifact.NoteKind, nil
+	format, err := filerepo.ImageFormat(path)
+	if err != nil {
+		return "", "", err
+	}
+	kind := artifact.ImageKind
+	if format == "" {
+		kind, err = filerepo.Kind(path)
+		if errors.Is(err, filerepo.ErrNotArtifact) {
+			kind, err = artifact.NoteKind, nil
+		}
 	}
 	if err != nil {
 		return "", "", err
@@ -102,7 +111,7 @@ func resolveTUITarget(arg string, requested artifact.Kind) (string, artifact.Kin
 	if requested != "" && requested != kind {
 		return "", "", fmt.Errorf("%s is a %s, not a %s", path, kind, requested)
 	}
-	if !validEditorKind(kind) {
+	if !validEditorKind(kind) && kind != artifact.ImageKind {
 		return "", "", fmt.Errorf("%s is a %s; the interactive editor cannot open it", path, kind)
 	}
 	return path, kind, nil

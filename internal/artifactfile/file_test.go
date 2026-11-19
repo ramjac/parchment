@@ -21,6 +21,31 @@ func testArtifact() artifact.Artifact {
 	}
 }
 
+func TestImageEnvelopesAreRejected(t *testing.T) {
+	item := testArtifact()
+	item.Kind, item.ID = artifact.ImageKind, "i1"
+	if _, err := Encode(item, "", nil); err == nil {
+		t.Fatal("encoded an image envelope")
+	}
+	data, err := Encode(testArtifact(), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = bytes.Replace(data, []byte(`"kind": "note"`), []byte(`"kind": "image"`), 1)
+	for name, read := range map[string]func() error{
+		"decode":   func() error { _, err := Decode(data); return err },
+		"blocks":   func() error { _, _, err := DecodeBlocks(data); return err },
+		"metadata": func() error { _, err := ReadMetadata(data); return err },
+		"stream":   func() error { _, err := ReadMetadataFrom(bytes.NewReader(data)); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := read(); err == nil {
+				t.Fatal("accepted an image envelope")
+			}
+		})
+	}
+}
+
 func TestEncodeDecodePreservesMarkdownAndStructuredBlocks(t *testing.T) {
 	body := "# Example\n\nText.\n\n```go\n```parchment-not-a-payload\nignored\n```\n"
 	data, err := Encode(testArtifact(), body, map[string]any{

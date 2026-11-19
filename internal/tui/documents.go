@@ -15,6 +15,7 @@ import (
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/tui/editor"
+	"example.com/parchment/internal/tui/termimg"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -239,6 +240,7 @@ type documentReaderState struct {
 // documentsScreen edits one document file and reviews its proposed changes.
 // It owns UI state only; document rules live in the document service.
 type documentsScreen struct {
+	imageState     documentImageState
 	service        *document.Service
 	path           string
 	width, height  int
@@ -316,6 +318,9 @@ func newDocumentsScreen(service *document.Service, path string, newContext func(
 }
 
 func (s *documentsScreen) resize(width, height int) {
+	if s.width != width || s.height != height {
+		s.imageState.frame++
+	}
 	s.width, s.height = width, height
 	s.resizeChangeReview()
 	s.layoutEditor()
@@ -334,6 +339,13 @@ func (s *documentsScreen) resumeAutosave() tea.Cmd {
 }
 
 func (s *documentsScreen) update(message tea.Msg) tea.Cmd {
+	previous := s.documentImageFrame()
+	cmd := s.updateDocument(message)
+	s.invalidateDocumentImages(previous)
+	return cmd
+}
+
+func (s *documentsScreen) updateDocument(message tea.Msg) tea.Cmd {
 	switch msg := message.(type) {
 	case documentDraftDiscardedMsg:
 		s.draftDiscarded(msg)
@@ -782,6 +794,14 @@ func pageText(page document.Page, width int) string {
 
 // view renders the document screen below the shared header.
 func (s *documentsScreen) view(header string) string {
+	view := s.renderDocumentImages(s.documentView(header), max(s.width, 1))
+	if s.imageState.graphicsUsed && termimg.DetectProtocol() != termimg.ProtocolNone {
+		view = repaintImageFrame(view, s.imageState.frame)
+	}
+	return s.clearDocumentImages() + view
+}
+
+func (s *documentsScreen) documentView(header string) string {
 	if s.showChanges {
 		return s.viewChanges(header)
 	}

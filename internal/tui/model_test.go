@@ -27,6 +27,31 @@ import (
 	"example.com/parchment/internal/tui/editor"
 )
 
+type terminalRenderOutput chan string
+
+func (out terminalRenderOutput) Write(data []byte) (int, error) {
+	out <- string(data)
+	return len(data), nil
+}
+
+func readTerminalOutputUntil(t *testing.T, out <-chan string, needle string) string {
+	t.Helper()
+	var output strings.Builder
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case chunk := <-out:
+			output.WriteString(chunk)
+			if strings.Contains(output.String(), needle) {
+				return output.String()
+			}
+		case <-deadline:
+			t.Fatal("terminal renderer did not produce the expected frame")
+			return ""
+		}
+	}
+}
+
 // harness wires the editor to real services over files in temporary
 // directories: one for the artifact and one standing in for ~/.parchment.
 type harness struct {

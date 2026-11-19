@@ -15,6 +15,7 @@ parchment note create ~/Documents/ideas.md --body "Markdown stays readable on di
 parchment note show ~/Documents/ideas.md
 parchment ~/Documents/report.md
 parchment examples/budget.md
+parchment ~/Pictures/photo.jpg
 ```
 
 Every command takes the artifact's file path; there is nothing to initialize.
@@ -39,7 +40,7 @@ with any other file.
 
 ## Storage
 
-Every artifact is one Markdown file at the path you choose; Parchment adds no
+Every Markdown artifact is one file at the path you choose; Parchment adds no
 sidecar files next to it. Writes go to a temporary file in the same directory,
 then sync and rename, preserving the file's permissions; edits made in another
 editor since Parchment loaded the file are detected rather than overwritten.
@@ -54,10 +55,9 @@ renderers hide these reserved blocks while ordinary Markdown remains readable.
 Metadata timestamps are UTC RFC 3339 values. Back up, copy, move, or version
 artifacts with the same tools you use for any other file.
 
-Initial artifact metadata recognizes the `note`, `document`, `spreadsheet`,
-`presentation`, and `image` kinds. Notes, documents, spreadsheets, and
-presentations have application behavior; standalone image editing is not yet
-implemented.
+Artifact metadata recognizes the `note`, `document`, `spreadsheet`, and
+`presentation` kinds. Standalone images remain ordinary PNG/JPEG binary files,
+without Markdown envelopes.
 
 ### Documents
 
@@ -211,6 +211,56 @@ printing support Go present `.image` and `.code` directives. Presentations store
 document-wide core-font choice (`courier`, `helvetica`, or `times`); it never
 changes terminal output.
 
+### Standalone images
+
+Crop and resize PNG/JPEG files without opening the TUI:
+
+```sh
+parchment image crop photo.jpg --x 100 --y 50 --width 640 --height 480 -o cropped.jpg
+parchment image resize photo.jpg --width 800 -o smaller.png
+parchment image resize photo.jpg --width 800 --in-place --yes
+```
+
+Choose exactly one of `-o/--output` or `--in-place`. New files are created with
+owner-only permissions (`0600`); `--force` permits replacing a distinct output,
+preserving its permissions. Even with `--force`, output paths must not alias
+the input through a path, symlink, or hard link: use `--in-place` to change the
+source. In-place editing asks for confirmation on a terminal and requires
+`--yes` in scripts. Symlinks are preserved and their targets updated; concurrent
+external edits detected before saving are rejected.
+
+Crop coordinates are zero-based, measured after JPEG EXIF orientation is
+normalized. All four crop flags are required; rectangles outside the image are
+rejected. Resizing with one dimension preserves proportions (rounded to the
+nearest pixel, minimum one); specifying both produces that exact size.
+Resampling uses CatmullRom. Input format is detected from content; output format
+follows `.png`, `.jpg`, or `.jpeg`, while in-place saves retain the input format.
+PNG keeps transparency; JPEG composites transparency over white.
+`resize --quality 1-100` controls JPEG output quality (default `90`, ignored for
+PNG).
+
+Inputs are limited to 128 MiB; input and output dimensions are limited to
+16,384 pixels per axis and 100 megapixels total. EXIF orientations 1–8 are
+supported; malformed orientation metadata is rejected. Re-encoding drops
+metadata.
+
+Open an existing image with `parchment photo.jpg` or `parchment tui photo.jpg`.
+PNG/JPEG files are recognized by their contents, regardless of extension.
+The image screen fits the whole image to the terminal using Kitty, Sixel,
+iTerm2, or ANSI half-blocks, and shows its dimensions, format, and last saved
+file size.
+
+Use `c` for numeric crop coordinates, `r` for resize, and Tab/Shift+Tab to move
+between fields; Enter applies and Esc cancels. Leave one resize dimension blank
+to preserve proportions. `u` undoes and `Ctrl+R` redoes session edits, bounded by
+`undo_limit` and 256 MiB of retained image history; very large edits may have no
+undo. History is not persisted and images do not have recovery drafts.
+`Ctrl+S` confirms an in-place save; `s` saves to a `.png`, `.jpg`, or `.jpeg`
+path, confirming existing-output replacement. Save-as switches the active file
+while retaining undo/redo; TUI JPEG saves use quality 90. `q`, Esc, or Ctrl+C
+quits, asking before discarding unsaved edits. Missing files still use the
+Markdown-kind picker; the image screen does not create images from scratch.
+
 ## Examples
 
 The [`examples/`](examples/) directory contains complete Markdown artifact
@@ -358,12 +408,13 @@ scaffolding that does not yet meet its acceptance criteria remains incomplete.
 - [x] **PRs 22–23:** Add Document/Presentation printer font selection (`"courier"` default, `"helvetica"`, `"times"` in `document.Layout` at `LayoutVersion = 1` and the existing `parchment-presentation` v1 block), plus the pure-Go `internal/pdfrender` renderer and `document print --format text|pdf` with page layout and embedded images; terminal fonts remain unchanged.
 
 ### Phase 4: Extended Domain Engines (PRs 24–30)
-- **PRs 24–25:** Zero-dependency recursive-descent spreadsheet formula Lexer, AST, span rewriter, and cross-sheet references (`Sheet2!A1`) in `internal/spreadsheet/formula` (**PR 24**), followed by rectangular ranges (`A1:B10`), `""`-escaped `StringLiteral`s with Excel/Calc coercion, `SUM`, `AVERAGE`, `COUNT`, `MIN`, `MAX`, nested calls, and persisted runtime error propagation (`#REF!`, `#DIV/0!`, `#NAME?`, `#VALUE!`, `#CIRCULAR!`) (**PR 25**)
-- **PRs 26–28:** Presentation media, directives, and export
-  - **PR 26:** Embedded images in `parchment-presentation` with CLI parity (`presentation image`, `images`, `image-extract`, `image-remove`) and TUI slide rendering
-  - **PR 27:** Go `present` `.image <embedded-name> [height] [width]` and directory-confined `.code <relpath> [bounds]` directives (`<= 1 MiB`, no `..`/symlink escape, line numbers and `/regex/` bounds)
-  - **PR 28:** Pure-Go standalone `presentation export <file> --format html|pdf -o <output> [--notes] [--force]` (single-file HTML with inline CSS/JS and base64 `data:` URIs; shared pure-Go PDF writer; speaker notes omitted unless `--notes`)
-- **PRs 29–30:** Standalone PNG/JPEG image editing (`parchment image crop` and `parchment image resize` with `-o [--force]` or confirmed `--in-place [--yes]`) using `golang.org/x/image/draw` (`CatmullRom`, JPEG quality `90`, `<= 16384px` cap) and removing Markdown-envelope `artifact.ImageKind` (**PR 29**), followed by PNG/JPEG magic-byte detection in `resolveTUITarget` and a basic TUI image viewer with crop/resize prompts (**PR 30**)
+**Completed:** PRs 24–27 and 29–30.
+
+- [x] **PRs 24–25:** Zero-dependency recursive-descent spreadsheet formula Lexer, AST, span rewriter, and cross-sheet references (`Sheet2!A1`) in `internal/spreadsheet/formula` (**PR 24**), followed by rectangular ranges (`A1:B10`), `""`-escaped `StringLiteral`s with Excel/Calc coercion, `SUM`, `AVERAGE`, `COUNT`, `MIN`, `MAX`, nested calls, and persisted runtime error propagation (`#REF!`, `#DIV/0!`, `#NAME?`, `#VALUE!`, `#CIRCULAR!`) (**PR 25**).
+- [x] **PR 26:** Embedded images in `parchment-presentation` with CLI parity (`presentation image`, `images`, `image-extract`, `image-remove`) and TUI slide rendering via Kitty, Sixel, iTerm2, or ANSI half-blocks.
+- [x] **PR 27:** Go `present` `.image <embedded-name> [height] [width]` and directory-confined `.code <relpath> [bounds]` directives (`<= 1 MiB`, no `..`/symlink escape, line numbers and `/regex/` bounds).
+- [x] **PR 29:** Standalone PNG/JPEG image editing (`parchment image crop` and `parchment image resize` with `-o [--force]` or confirmed `--in-place [--yes]`) using `golang.org/x/image/draw` (`CatmullRom`, JPEG quality `90`, `<= 16384px` cap) and rejecting Markdown-envelope `artifact.ImageKind`.
+- [x] **PR 30:** PNG/JPEG magic-byte routing and a native TUI image viewer/editor with crop/resize forms, bounded session undo/redo, and confirmed save/save-as.
 
 ### Phase 5: External Interop & Persistent History (PRs 31–38)
 - **PRs 31–35:** Import and export ODF (`.odt`) and DOCX (`.docx`) documents via pure-Go stdlib `archive/zip` + `encoding/xml` adapters (`parchment document import` / `export`) with lossy approximation warnings on `stderr` ([`docs/ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md))

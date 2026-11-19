@@ -1,7 +1,7 @@
 # TUI Design Contract
 
 This document defines the visual and interaction contract for Parchment's
-Bubble Tea screens. Apply it to Note, Document, Spreadsheet, and Presentation
+Bubble Tea screens. Apply it to Note, Document, Spreadsheet, Presentation, and Image
 views, including readers, editors, previews, and dialogs.
 
 ## Semantic styling
@@ -56,6 +56,8 @@ Document outline and in-document links apply only to Documents.
 In text editors, show embedded images as canonical Markdown links or
 placeholders. Reader and preview views may render images graphically, with
 terminal-protocol detection and the documented ANSI fallback behavior.
+The standalone PNG/JPEG image screen fits the image to its content pane and uses
+the same protocols. Pixel edits use numeric forms, not Markdown editing.
 
 ## Visual verification
 

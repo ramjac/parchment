@@ -316,34 +316,45 @@ keeping images as ordinary binary files at user-chosen paths (never wrapped in
 Markdown envelopes or accompanied by sidecar files).
 
 - **Standalone Image Detection & Removal of Envelope `ImageKind`:**
-  - Remove Markdown-envelope `artifact.ImageKind` validation from
+  - Reject Markdown-envelope `artifact.ImageKind` in
     `internal/artifactfile` (retaining runtime `artifact.ImageKind` solely to
     route standalone PNG/JPEG files in the CLI/TUI).
-  - In `resolveTUITarget` (`internal/cli/tui.go`), when `filerepo.Kind(path)`
-    returns `ErrNotArtifact`, sniff magic bytes (`PNG` and `JPEG` headers)
-    before falling back to plain-Markdown `NoteKind` so `parchment photo.png`
-    opens the TUI image screen cleanly.
+  - In `resolveTUITarget` (`internal/cli/tui.go`), probe a bounded PNG/JPEG
+    header before Markdown metadata detection, so `parchment photo.png` opens
+    the image screen without scanning binary contents as Markdown. Retain the
+    plain-Markdown `NoteKind` fallback for non-image files.
 - **Image Processing Backend (`internal/imageedit`):**
   - Use Go's `image/png`, `image/jpeg`, and `golang.org/x/image/draw`
     (`draw.CatmullRom` default resampling; default JPEG quality `90`).
   - Enforce `image.DecodeConfig` safety bounds before full pixel allocation
-    (rejecting dimensions `> 16384 × 16384` or `> 100` megapixels). Normalize
+    (rejecting dimensions `> 16384 × 16384` or `> 100` megapixels), with a
+    `128 MiB` compressed input limit. Normalize
     JPEG EXIF orientation tags if present, and composite alpha over opaque white
-    if saving a transparent PNG to a `.jpg`/`.jpeg` output path.
+    if saving a transparent PNG to a `.jpg`/`.jpeg` output path. Reject malformed
+    orientation metadata and drop metadata when re-encoding.
 - **CLI Subcommands (`parchment image`):**
   - `parchment image crop <input> --x <px> --y <px> --width <px> --height <px> (-o <output> | --in-place [--yes]) [--force]`
   - `parchment image resize <input> [--width <px>] [--height <px>] (-o <output> | --in-place [--yes]) [--quality 1-100] [--force]`
   - When only one of `--width` or `--height` is passed to `resize`, compute the
-    other dimension proportionally (minimum `1 px`).
+    other dimension proportionally (nearest pixel, minimum `1 px`); when both
+    are passed, produce the exact requested dimensions. Crop coordinates are
+    measured after orientation normalization; reject out-of-bounds rectangles.
   - Require either `-o <output>` (refusing to overwrite an existing file unless
     `--force` is set; creating new files `0600`) or `--in-place` (prompting
     `[y/N]` on a TTY or requiring `--yes` when non-interactive, writing
     atomically while preserving existing permissions and symlink targets).
+    Reject output paths aliasing the source even with `--force`; detect
+    intervening source/destination edits before committing replacements.
 - **Basic TUI Image Screen:**
   - Display image dimensions, format, byte size, and graphical preview (reusing
     `internal/tui/termimg`), with keyboard prompts (`c` crop, `r` resize,
     `Ctrl+S` confirmed in-place save or `s` save-as output path, `u`/`Ctrl+R`
     in-session undo/redo, `Esc`/`q` quit with dirty confirmation).
+  - Numeric forms use Tab/Shift+Tab, Enter, and Esc; blank resize dimensions
+    preserve proportions. History obeys `undo_limit` and a 256 MiB retained
+    pixel budget. Save-as switches the active file while preserving history;
+    successful saves refresh file snapshots for subsequent conflict-safe saves.
+    No persistent history, recovery drafts, zoom/pan, or image creation.
 
 ### PR Breakdown
 - **PR 29:** Remove Markdown-envelope `ImageKind` from `internal/artifactfile`,
@@ -622,11 +633,11 @@ document artifacts.
 **Acceptance:** Users can inspect, extract, and safely remove embedded document
 images from the CLI without manual JSON editing or broken pending proposals.
 
-## 13. Presentation media, directives, and export
+## 13. Presentation media and directives
 
 Extend presentations (building on the existing `parchment-presentation` v1
-block, which gains a `font` field for printer font selection in **Section 14**) with embedded images,
-Go `present` directives, and pure-Go standalone HTML and PDF exports.
+block, which gains a `font` field for printer font selection in **Section 14**) with embedded images
+and Go `present` directives.
 
 - **Embedded Images & CLI Parity (`parchment-presentation`):**
   - Store embedded `PNG`, `JPEG`, and `GIF` images (`<= 10 MiB`, named
@@ -640,9 +651,8 @@ Go `present` directives, and pure-Go standalone HTML and PDF exports.
 - **Go `present` Directives (`.image` & `.code`):**
   - `.image <embedded-name> [height] [width]`: Require `<embedded-name>` to
     reference an embedded payload in `parchment-presentation` so slide decks
-    remain single-file portable; honor optional pixel height/width (`_` for
-    proportional scaling) in HTML/PDF export and proportional cell scaling in
-    TUI slide previews.
+    remain single-file portable; honor optional height/width (`_` for
+    proportional scaling) with proportional cell scaling in TUI slide previews.
   - `.code <relpath> [bounds]`: Allow reading source files strictly confined
     within the presentation file's parent directory (rejecting absolute paths,
     `..` traversal, symlinks resolving outside the parent directory, and files
@@ -650,16 +660,6 @@ Go `present` directives, and pure-Go standalone HTML and PDF exports.
     and Go `present` `/START/,/END/` or `/regexp/` bounds. Lines ending with
     `// OMIT` are stripped, and `// HL` highlighting markers are removed.
     Flags like `-numbers`, `-edit`, and `.play` are excluded.
-- **Pure-Go Standalone Export (`presentation export`):**
-  - `parchment presentation export <file> --format html|pdf -o <output-path> [--notes] [--force]`
-  - Require `-o`, refuse overwriting an existing file unless `--force` is set,
-    and omit speaker notes unless `--notes` is passed.
-  - **HTML:** Emit a single self-contained `.html` file with inline CSS,
-    minimal offline keyboard/click slide navigation JS, the deck's configured
-    `font` family (`courier`, `helvetica`, `times`), and base64 `data:` URIs
-    for all embedded images (zero external CDN links).
-  - **PDF:** Render slides in landscape using `internal/pdfrender` (**Section
-    14**, zero headless browser or LibreOffice dependencies).
 
 ### PR Breakdown
 - **PR 26:** Extend `parchment-presentation` with embedded `PNG`/`JPEG`/`GIF`
@@ -670,13 +670,9 @@ Go `present` directives, and pure-Go standalone HTML and PDF exports.
   directory-confined `.code <relpath> [bounds]` (`<= 1 MiB`, no `..`/symlink
   escape, line-number and `/regex/` bounds) in `internal/presentation` and TUI
   slide previews.
-- **PR 28:** Implement `parchment presentation export <file> --format html|pdf -o <output> [--notes] [--force]`
-  using self-contained single-file HTML (`data:` URIs + inline CSS/JS) and
-  landscape PDF via `internal/pdfrender`.
 
 **Acceptance:** Presentations embed images, safely render `.image` and
-directory-confined `.code` directives, and export offline to standalone single-file
-HTML and PDF decks.
+directory-confined `.code` directives.
 
 ## 14. Document and presentation printer font selection
 
@@ -710,8 +706,8 @@ Glamour views bound strictly to the user's terminal emulator font.
       selected PostScript/PDF core font family `Courier`, `Helvetica`, or
       `Times-Roman`), with Markdown heading/inline styles and embedded
       inline/reference-style images, via a pure-Go PDF writer in
-      `internal/pdfrender` (shared with Phase 4 `presentation export --format
-      pdf`), writing to `-o` (refusing overwrite without `--force`) or `stdout`.
+      `internal/pdfrender`, writing to `-o` (refusing overwrite without
+      `--force`) or `stdout`.
 
 ### PR Breakdown
 - **PR 22:** Add validated `Font` (`courier`|`helvetica`|`times`) to
@@ -789,8 +785,6 @@ flowchart TD
         PR13 --> PR26["PR 26: Presentation Embedded Images"]
         PR22 --> PR26
         PR26 --> PR27["PR 27: .image & Sandboxed .code Directives"]
-        PR27 --> PR28["PR 28: Standalone HTML & PDF Slide Export"]
-        PR23 --> PR28
         PR15 --> PR29["PR 29: internal/imageedit & Image CLI"]
         PR29 --> PR30["PR 30: Magic-Byte Routing & TUI Image View"]
     end
@@ -798,7 +792,6 @@ flowchart TD
     subgraph Phase5["Phase 5: Interop & Persistent History (PRs 31–38)"]
         PR23 --> PR31["PR 31–35: ODF / DOCX Import & Export"]
         PR25 --> PR36["PR 36–38: Persistent Chunked Undo/Redo"]
-        PR28 --> PR36
     end
 ```
 
@@ -842,9 +835,8 @@ flowchart TD
 - [ ] **PR 25b — Formula String Coercion & Runtime Error Propagation (Section 11):** Add `""`-escaped `StringLiteral`s with Excel/Calc coercion, and persisted `#DIV/0!`, `#CIRCULAR!`, `#VALUE!`, `#NAME?`, `#REF!` propagation.
 - [x] **PR 26 — Presentation Embedded Images & CLI/TUI Parity (Section 13):** Add embedded `PNG`/`JPEG`/`GIF` payloads to `parchment-presentation`, `presentation image|images|image-extract|image-remove` CLI commands, and graphical TUI slide image rendering.
 - [ ] **PR 27 — Presentation `.image` & Sandboxed `.code` Directives (Section 13):** Support `.image <embedded-name> [h] [w]` and directory-confined `.code <relpath> [bounds]` (whole file, `N`, `N,M`, `/regexp/`, `/START/,/END/`, stripping `// OMIT` and `// HL`, `<= 1 MiB`, no `..`/symlink escape).
-- [ ] **PR 28 — Standalone Pure-Go Presentation HTML & PDF Export (Section 13):** Add `presentation export <file> --format html|pdf -o <output> [--notes] [--force]` (self-contained HTML with `data:` URIs + landscape PDF via `internal/pdfrender`).
-- [ ] **PR 29 — `internal/imageedit` Service & Image CLI (Section 8):** Remove Markdown-envelope `ImageKind` from `internal/artifactfile`, implement `golang.org/x/image/draw` (`CatmullRom`) crop & proportional resize (`<= 16384px`, EXIF orientation, PNG->JPEG white matte), and add `parchment image crop|resize`.
-- [ ] **PR 30 — Magic-Byte Image Routing & TUI Image View (Section 8):** Sniff PNG/JPEG magic bytes in `resolveTUITarget` before plain-note fallback and add the TUI image screen (`termimg` preview, crop/resize prompts, undo/redo, confirmed save/save-as).
+- [x] **PR 29 — `internal/imageedit` Service & Image CLI (Section 8):** Reject Markdown-envelope `ImageKind` in `internal/artifactfile`, implement `golang.org/x/image/draw` (`CatmullRom`) crop & proportional resize (`<= 16384px`, EXIF orientation, PNG->JPEG white matte), and add `parchment image crop|resize`.
+- [x] **PR 30 — Magic-Byte Image Routing & TUI Image View (Section 8):** Sniff PNG/JPEG magic bytes in `resolveTUITarget` before Markdown detection and add the TUI image screen (`termimg` preview, numeric crop/resize forms, count/memory-bounded undo/redo, confirmed save/save-as, refreshed save snapshots).
 
 ### Phase 5: External Interop & Persistent History (PRs 31–38)
 - [x] **PR 31 — `internal/docinterop` Foundation, Safety & Markdown Bridge ([`ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md)):** Bounded ZIP/XML safety reader (`128 MiB` / `1000` entries / no entities), `stderr` warning collector, Goldmark AST parser for export, and canonical Markdown emitter for import.

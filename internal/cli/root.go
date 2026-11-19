@@ -34,6 +34,7 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 		Long: "Each Parchment artifact is an ordinary Markdown file that you name and place anywhere.\n" +
 			"`parchment <file>` opens the file in the interactive editor, like `parchment tui <file>`.\n" +
 			"Plain Markdown files open as notes and stay plain Markdown.\n" +
+			"Existing PNG/JPEG files open in the native image viewer/editor.\n" +
 			"Configuration is read from ~/.parchment/parchment.toml, which is created on first use.",
 		Example:       "  parchment ~/Documents/ideas.md\n  parchment note create ~/Documents/ideas.md\n  parchment note show ~/Documents/ideas.md",
 		Args:          cobra.MaximumNArgs(1),
@@ -113,6 +114,7 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 	addDocumentCommands(root, streams)
 	addSpreadsheetCommands(root, streams)
 	addPresentationCommands(root, streams)
+	addImageCommands(root, streams)
 
 	root.AddCommand(newConvertCmd(streams))
 	root.AddCommand(tuiCommand())

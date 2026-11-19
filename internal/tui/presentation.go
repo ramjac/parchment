@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -19,6 +22,7 @@ import (
 	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/recovery"
 	"example.com/parchment/internal/tui/editor"
+	"example.com/parchment/internal/tui/termimg"
 )
 
 // presentationChromeLines counts the header, status, and help lines.
@@ -75,6 +79,31 @@ type presentationEditorState struct {
 	discardWarning bool
 }
 
+type renderedPresentationImage struct {
+	output string
+	pixels *image.NRGBA
+	cols   int
+	rows   int
+}
+
+type presentationImageRow struct {
+	image renderedPresentationImage
+	row   int
+}
+
+type presentationImageSlot struct {
+	name   string
+	height string
+	width  string
+}
+
+type presentationImageViewState struct {
+	page, scroll, width, height int
+	showNotes                   bool
+	pdfPrompt                   promptKind
+	revision                    uint64
+}
+
 // presentationModel is a single-deck slide viewer and Markdown source editor.
 // It owns only UI state; it reads and edits the deck file through the
 // presentation service.
@@ -99,6 +128,12 @@ type presentationModel struct {
 	pdfPending        bool
 	pdfTwoUp          bool
 	find              findBar
+	imageRenderCache  map[string]renderedPresentationImage
+	imageRowMarkers   map[rune]presentationImageRow
+	nextImageMarker   rune
+	imageGraphicsUsed bool
+	imageFrame        uint64
+	imageRevision     uint64
 
 	presentationOpState
 	presentationViewState
@@ -115,11 +150,12 @@ func newPresentationModel(service *presentation.Service, path string, theme Them
 	pdfInput := textinput.New()
 	pdfInput.CharLimit = 64 << 10
 	return &presentationModel{
-		service:  service,
-		path:     path,
-		theme:    theme,
-		pdfInput: pdfInput,
-		find:     newFindBar(theme),
+		service:          service,
+		path:             path,
+		theme:            theme,
+		pdfInput:         pdfInput,
+		find:             newFindBar(theme),
+		imageRenderCache: make(map[string]renderedPresentationImage),
 		presentationEditorState: presentationEditorState{
 			editor: body,
 		},
@@ -135,6 +171,15 @@ func newPresentationModel(service *presentation.Service, path string, theme Them
 func (m *presentationModel) Init() tea.Cmd { return m.load() }
 
 func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	previous := m.imageViewState()
+	model, cmd := m.updatePresentation(message)
+	if previous != m.imageViewState() {
+		m.imageFrame++
+	}
+	return model, cmd
+}
+
+func (m *presentationModel) updatePresentation(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -220,16 +265,17 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.loadedStatus = msg.description
 		return m, cmd
 	case tea.KeyMsg:
+		var cmd tea.Cmd
 		if m.pdfPrompt != promptNone {
-			return m, m.updatePDFPrompt(msg)
+			cmd = m.updatePDFPrompt(msg)
+		} else if m.editing {
+			cmd = m.updateEditKey(msg)
+		} else if m.find.active {
+			cmd = m.updateFindKey(msg)
+		} else {
+			cmd = m.updateBrowseKey(msg)
 		}
-		if m.editing {
-			return m, m.updateEditKey(msg)
-		}
-		if m.find.active {
-			return m, m.updateFindKey(msg)
-		}
-		return m, m.updateBrowseKey(msg)
+		return m, cmd
 	case tea.MouseMsg:
 		if m.editing && !m.pending && m.pdfPrompt == promptNone {
 			mouseMsg := msg
@@ -820,6 +866,9 @@ func (m *presentationModel) setItem(item presentation.Presentation) {
 		return
 	}
 	m.item, m.deck, m.loaded = item, deck, true
+	m.imageGraphicsUsed = m.imageGraphicsUsed || len(item.Images) > 0
+	m.imageRevision++
+	clear(m.imageRenderCache)
 	m.find.close()
 	m.editor.ClearSearch()
 	m.searchMatches, m.searchMatch = nil, -1
@@ -833,17 +882,30 @@ func (m *presentationModel) pageLines() []string {
 	if !m.loaded {
 		return nil
 	}
+	m.imageRowMarkers = make(map[rune]presentationImageRow)
+	m.nextImageMarker = 0xf0000
 	width := max(1, m.width-4)
 	var text strings.Builder
 	var title string
+	imageSlots := make(map[string]presentationImageSlot)
 	if m.page == 0 {
 		title = m.deck.Title
 		text.WriteString(m.deck.Header)
 	} else {
 		slide := m.deck.Slides[m.page-1]
 		title = slide.Title
+		nextSlot := 0
+		expanded, err := presentation.ExpandDirectivesContextWithImageRenderer(
+			context.Background(), slide.Body, filepath.Dir(m.path), m.item.Images,
+			func(name, height, imageWidth string) string {
+				slot := fmt.Sprintf("PIMG%d__", nextSlot)
+				nextSlot++
+				imageSlots[slot] = presentationImageSlot{name: name, height: height, width: imageWidth}
+				return slot
+			},
+		)
 		body := slide.Body
-		if expanded, err := presentation.ExpandDirectives(slide.Body, filepath.Dir(m.path), m.item.Images); err == nil {
+		if err == nil {
 			body = expanded
 		}
 		text.WriteString(body)
@@ -865,9 +927,139 @@ func (m *presentationModel) pageLines() []string {
 	body := strings.ReplaceAll(sanitizeTerminalText(strings.Trim(text.String(), "\n")), "\t", "    ")
 	if body != "" {
 		rendered := renderMarkdown(body, width, m.theme)
-		lines = append(lines, strings.Split(rendered, "\n")...)
+		for _, line := range strings.Split(rendered, "\n") {
+			plainLine := ansi.Strip(line)
+			matchedSlot := false
+			for slot, directive := range imageSlots {
+				if strings.Contains(plainLine, slot) {
+					remainingRows := max(m.visibleLines()-len(lines), 1)
+					slotAt := strings.Index(line, slot)
+					prefixWidth := ansi.StringWidth(line[:slotAt])
+					availableCols := max(1, width-prefixWidth)
+					image := m.renderPresentationImage(
+						directive.name, directive.height, directive.width, remainingRows, availableCols,
+					)
+					if termimg.IsGraphicsOutput(termimg.DetectProtocol(), image.output) && image.pixels != nil {
+						marker := m.nextPresentationImageMarker(body, image, 0)
+						lines = append(lines, strings.Replace(line, slot, string(marker), 1))
+						for row := 1; row < max(image.rows, 1); row++ {
+							marker := m.nextPresentationImageMarker(body, image, row)
+							lines = append(lines, strings.Repeat(" ", prefixWidth)+string(marker))
+						}
+					} else {
+						outputLines := strings.Split(image.output, "\n")
+						lines = append(lines, strings.Replace(line, slot, outputLines[0], 1))
+						for row := 1; row < max(image.rows, 1); row++ {
+							if row < len(outputLines) {
+								lines = append(lines, strings.Repeat(" ", prefixWidth)+outputLines[row])
+							} else {
+								lines = append(lines, strings.Repeat(" ", prefixWidth))
+							}
+						}
+					}
+					matchedSlot = true
+					break
+				}
+			}
+			if !matchedSlot {
+				lines = append(lines, line)
+			}
+		}
 	}
 	return lines
+}
+
+func (m *presentationModel) nextPresentationImageMarker(
+	source string,
+	rendered renderedPresentationImage,
+	row int,
+) rune {
+	if m.nextImageMarker < 0xf0000 {
+		m.nextImageMarker = 0xf0000
+	}
+	for {
+		marker := m.nextImageMarker
+		m.nextImageMarker++
+		if !strings.ContainsRune(source, marker) {
+			m.imageRowMarkers[marker] = presentationImageRow{image: rendered, row: row}
+			return marker
+		}
+	}
+}
+
+func (m *presentationModel) renderPresentationImage(
+	name, heightText, widthText string,
+	availableRows, availableCols int,
+) renderedPresentationImage {
+	var data []byte
+	for _, img := range m.item.Images {
+		if img.Name == name {
+			data = img.Data
+			break
+		}
+	}
+	if data == nil {
+		return renderedPresentationImage{
+			output: m.theme.Image.Render("[missing presentation image " + name + "]"),
+			rows:   1,
+		}
+	}
+
+	maxCols := min(max(1, m.width-4), max(availableCols, 1))
+	maxRows := max(availableRows, 1)
+	if heightText != "" && heightText != "_" {
+		height, err := strconv.Atoi(heightText)
+		if err != nil || height < 1 {
+			return renderedPresentationImage{
+				output: m.theme.Image.Render("[invalid image height " + heightText + "]"),
+				rows:   1,
+			}
+		}
+		maxRows = min(maxRows, height)
+	}
+	if widthText != "" && widthText != "_" {
+		width, err := strconv.Atoi(widthText)
+		if err != nil || width < 1 {
+			return renderedPresentationImage{
+				output: m.theme.Image.Render("[invalid image width " + widthText + "]"),
+				rows:   1,
+			}
+		}
+		maxCols = min(maxCols, width)
+	}
+	maxRows = max(maxRows, 1)
+
+	cacheKey := fmt.Sprintf("%s:%d:%d:%d", name, maxCols, maxRows, termimg.DetectProtocol())
+	if rendered, ok := m.imageRenderCache[cacheKey]; ok {
+		return rendered
+	}
+	img, err := termimg.DecodeImage(data)
+	if err != nil {
+		rendered := renderedPresentationImage{
+			output: m.theme.Image.Render("[could not render image " + name + ": " + err.Error() + "]"),
+			rows:   1,
+		}
+		m.imageRenderCache[cacheKey] = rendered
+		return rendered
+	}
+	cols, rows := termimg.CellSize(img, maxCols, maxRows)
+	output, rows := termimg.RenderPixels(img, maxCols, maxRows, termimg.DetectProtocol())
+	rendered := renderedPresentationImage{output: output, cols: cols, rows: max(rows, 1)}
+	if termimg.IsGraphicsOutput(termimg.DetectProtocol(), output) {
+		scaled := image.NewNRGBA(image.Rect(0, 0,
+			cols*documentImagePixelScale, rows*2*documentImagePixelScale))
+		bounds := img.Bounds()
+		for y := 0; y < scaled.Bounds().Dy(); y++ {
+			for x := 0; x < scaled.Bounds().Dx(); x++ {
+				sourceX := bounds.Min.X + x*bounds.Dx()/scaled.Bounds().Dx()
+				sourceY := bounds.Min.Y + y*bounds.Dy()/scaled.Bounds().Dy()
+				scaled.Set(x, y, img.At(sourceX, sourceY))
+			}
+		}
+		rendered.pixels = scaled
+	}
+	m.imageRenderCache[cacheKey] = rendered
+	return rendered
 }
 
 func (m *presentationModel) visibleLines() int {
@@ -884,8 +1076,98 @@ func (m *presentationModel) clampScroll() {
 }
 
 func (m *presentationModel) View() string {
+	view := m.presentationView()
+	if m.imageGraphicsUsed && termimg.DetectProtocol() != termimg.ProtocolNone {
+		view = m.paintPresentationImages(view)
+		view = repaintImageFrame(view, m.imageFrame)
+	}
+	return view
+}
+
+func (m *presentationModel) paintPresentationImages(view string) string {
+	type placement struct {
+		top, last, x, width, sourceRow int
+		image                          renderedPresentationImage
+	}
+	var images []placement
+	lines := strings.Split(view, "\n")
+	for row, line := range lines {
+		var painted strings.Builder
+		for offset := 0; offset < len(line); {
+			marker, size := utf8.DecodeRuneInString(line[offset:])
+			rowInfo, found := m.imageRowMarkers[marker]
+			if !found {
+				painted.WriteString(line[offset : offset+size])
+				offset += size
+				continue
+			}
+			x := ansi.StringWidth(line[:offset])
+			width := min(rowInfo.image.cols, max(m.width-x-1, 0))
+			painted.WriteByte(' ')
+			if width == 0 {
+				offset += size
+				continue
+			}
+			merged := false
+			for p := range images {
+				previous := &images[p]
+				if previous.image.pixels == rowInfo.image.pixels && previous.x == x && previous.width == width &&
+					previous.sourceRow+previous.last-previous.top+1 == rowInfo.row &&
+					previous.last+1 == row {
+					previous.last = row
+					merged = true
+					break
+				}
+			}
+			if !merged {
+				images = append(images, placement{
+					top: row, last: row, x: x, width: width,
+					sourceRow: rowInfo.row, image: rowInfo.image,
+				})
+			}
+			offset += size
+		}
+		lines[row] = painted.String()
+	}
+	for _, img := range images {
+		scale := documentImagePixelScale
+		top := img.sourceRow * 2 * scale
+		height := (img.last - img.top + 1) * 2 * scale
+		cropped := img.image.pixels.SubImage(image.Rect(0, top,
+			img.width*scale, top+height))
+		var output string
+		switch termimg.DetectProtocol() {
+		case termimg.ProtocolKitty:
+			output = termimg.RenderKitty(cropped, img.width, img.last-img.top+1)
+		case termimg.ProtocolITerm2:
+			output = termimg.RenderITerm2(cropped, img.width, img.last-img.top+1)
+		case termimg.ProtocolSixel:
+			output = termimg.RenderSixel(cropped, img.width, img.last-img.top+1)
+		}
+		if output == "" {
+			continue
+		}
+		// Text repaints erase Sixel and iTerm2 pixels. Paint only after the
+		// entire image rectangle, including its blank rows, has been written.
+		position := "\r"
+		if img.last > img.top {
+			position += fmt.Sprintf("\x1b[%dA", img.last-img.top)
+		}
+		if img.x > 0 {
+			position += fmt.Sprintf("\x1b[%dC", img.x)
+		}
+		lines[img.last] += "\x1b[s" + position + output + "\x1b[u"
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *presentationModel) presentationView() string {
+	clearImages := ""
+	if m.imageGraphicsUsed && termimg.DetectProtocol() == termimg.ProtocolKitty {
+		clearImages = termimg.ClearKittyPlacements()
+	}
 	if m.width < 20 || m.height < presentationChromeLines+2 {
-		return "Terminal too small. Press q to quit."
+		return clearImages + "Terminal too small. Press q to quit."
 	}
 	muted := m.theme.Muted
 	var content string
@@ -903,7 +1185,31 @@ func (m *presentationModel) View() string {
 	} else if m.find.visible && !m.editing {
 		status = m.find.view(len(m.searchMatches), m.searchMatch, m.width)
 	}
-	return chromeLayout(m.width, m.height, m.renderHeader(m.theme.Chrome), m.renderHelp(muted), content, status, m.theme.BorderColor)
+	return clearImages + chromeLayout(m.width, m.height, m.renderHeader(m.theme.Chrome), m.renderHelp(muted), content, status, m.theme.BorderColor)
+}
+
+func (m *presentationModel) pageHasImageDirective() bool {
+	if !m.loaded || m.page <= 0 || m.page > len(m.deck.Slides) {
+		return false
+	}
+	for _, line := range strings.Split(m.deck.Slides[m.page-1].Body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), ".image ") {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *presentationModel) imageViewState() presentationImageViewState {
+	if m.editing || !m.imageGraphicsUsed || !m.pageHasImageDirective() ||
+		m.width < 20 || m.height < presentationChromeLines+2 ||
+		termimg.DetectProtocol() == termimg.ProtocolNone {
+		return presentationImageViewState{}
+	}
+	return presentationImageViewState{
+		page: m.page, scroll: m.scroll, width: m.width, height: m.height,
+		showNotes: m.showNotes, pdfPrompt: m.pdfPrompt, revision: m.imageRevision,
+	}
 }
 
 func (m *presentationModel) renderHeader(chrome lipgloss.Style) string {

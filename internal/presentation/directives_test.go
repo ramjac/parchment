@@ -1,6 +1,7 @@
 package presentation
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,6 +71,28 @@ func TestExpandDirectives_Image(t *testing.T) {
 	want := "## Slide\n\n![diagram.png](diagram.png)\n\nSome caption"
 	if got != want {
 		t.Fatalf("ExpandDirectives = %q, want %q", got, want)
+	}
+}
+
+func TestExpandDirectivesWithImageRenderer(t *testing.T) {
+	source := "## Slide\n\n.image diagram.png 12 30\n\n````text\n.image fenced.png\n````"
+	var gotName, gotHeight, gotWidth string
+	got, err := ExpandDirectivesContextWithImageRenderer(
+		context.Background(), source, t.TempDir(), nil,
+		func(name, height, width string) string {
+			gotName, gotHeight, gotWidth = name, height, width
+			return "IMAGE_SLOT"
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotName != "diagram.png" || gotHeight != "12" || gotWidth != "30" {
+		t.Fatalf("image renderer arguments = (%q, %q, %q)", gotName, gotHeight, gotWidth)
+	}
+	want := "## Slide\n\nIMAGE_SLOT\n\n````text\n.image fenced.png\n````"
+	if got != want {
+		t.Fatalf("expanded source = %q, want %q", got, want)
 	}
 }
 
