@@ -313,7 +313,9 @@ presentations. Detailed PR-by-PR implementation plans are in
 and [`docs/Persistent_Undo_Redo_Plan.md`](docs/Persistent_Undo_Redo_Plan.md).
 Work is organized into five sequential implementation phases broken down into
 **38 reviewable Pull Requests (`PR 1`–`PR 38`)**. The main branch has completed
-milestones **1–14, 15a, 16–19, 22, 24a–b, 26, and 31–35**. Detailed
+milestones **1–14, 15b–c, 16–23, 24a–b, 26, and 31–35**. Phase 3 image
+rendering is still incomplete: the `termimg` renderers exist, but are not wired
+into the Document reader or Note preview. Detailed
 acceptance criteria and an accompanying progress checklist are in
 [`FutureWork.md`](FutureWork.md). The Phase 2 status below includes the merged
 spreadsheet editing and recovery work; its PR 7–8 checklist entries there are
@@ -344,14 +346,16 @@ scaffolding that does not yet meet its acceptance criteria remains incomplete.
 - [x] **PR 13 — Complete:** Document embedded image management: `document images <file>` (`<name>\t<format>\t<WxH>\t<bytes>\t<referenced|unreferenced>`), `document image-extract <file> <image-name> -o <output> [--force]` (`0600`), and `document image-remove <file> <image-name> [--strip-references]` (refusing removal when referenced in `Body` without `--strip-references` or when referenced by a pending proposal).
 
 ### Phase 3: Rendering & TUI Features (PRs 14–23)
-- **PRs 14–16:** Overall visual improvements
-  - **PRs 14–15:** Render Note `F5` previews, Document reader/preview pages, and Presentation slides via [Glamour](https://github.com/charmbracelet/glamour) (**PR 14**, keeping CLI `document print` plain text and editor images as literal `![alt](image-...)` Markdown). Render embedded images graphically in TUI previews/readers via env-detected Kitty/Sixel/iTerm2 protocols with automatic 24-bit ANSI half-block fallback in multi-column sections or partially clipped viewports (**PR 15**)
-  - **PR 16:** Unify bordered content panes and visually separated top header/help and bottom status/undo/redo chrome across Note, Document, Spreadsheet, and Presentation screens
-- **PRs 17–19:** Document navigation pane and in-document link navigation (strictly for Documents; does not apply to Notes or Presentations)
-  - **PRs 17–18:** Heading slugging (`-1`/`-2` suffixes) and `#id` anchor parsing (**PR 17**), plus a left-side outline pane in the Document editor and reader (`Ctrl+O` toggles visibility; `F6` focuses the editor outline pane, freeing `Tab` in the body to insert 2 spaces while `F2` focuses the toolbar), displaying H1–H6 headings, untitled section breaks (`── Section (N cols)`), and `#id` anchors (**PR 18**)
-  - **PR 19:** Pre-render rewritten and coordinate-mapped clickable internal links in Document preview and reader views (suppressing raw destination URLs in Glamour and tracking ordered post-render ANSI line spans)
-- **PRs 20–21:** In-editor search and find across all artifact viewers and editors (`Ctrl+F` everywhere plus `/` in read-only/grid browse views; modal bottom find bar + text-editor match highlighting in **PR 20**, extended with `n`/`N`, smart-case matching, ANSI stripping, and full multi-sheet + auto-revealed presentation speaker-note search in **PR 21**)
-- **PRs 22–23:** Document and presentation printer font selection (`"courier"` default, `"helvetica"`, `"times"` in `document.Layout` at `LayoutVersion = 1` and a new `font` field in the existing `parchment-presentation` v1 block in **PR 22**), plus a pure-Go core-font PDF renderer (`internal/pdfrender`) and `document print --format text|pdf` (default `text`) with page layout and embedded images (**PR 23**); terminal fonts remain unchanged
+**Completed:** PRs 14, 15b–15c, 16–19, and 20–23. **Outstanding:** PR 15a image-renderer wiring.
+
+- [x] **PR 14:** Render Note `F5` previews, Document reader/preview pages, and Presentation slides via [Glamour](https://github.com/charmbracelet/glamour), keeping CLI `document print` plain text and editor images as literal `![alt](image-...)` Markdown.
+- [ ] **PR 15a (outstanding):** Wire embedded-image rendering into Document reader/preview and Note preview, using environment-detected protocols and the 24-bit ANSI half-block fallback for multi-column or clipped views.
+- [x] **PRs 15b–15c:** Implement the Kitty/iTerm2 renderers and pure-Go Sixel encoder in `internal/tui/termimg`.
+- [x] **PR 16:** Unify bordered content panes and visually separated top header/help and bottom status/undo/redo chrome across Note, Document, Spreadsheet, and Presentation screens.
+- [x] **PRs 17–18:** Add GitHub-style heading slugs (`-1`/`-2` suffixes), `#id` anchor parsing, and the Document editor/reader outline pane (`Ctrl+O` toggles visibility; `F6` focuses the editor outline pane, freeing `Tab` in the body to insert 2 spaces while `F2` focuses the toolbar), displaying H1–H6 headings, untitled section breaks (`── Section (N cols)`), and `#id` anchors.
+- [x] **PR 19:** Add pre-render rewritten and coordinate-mapped clickable internal links in Document preview and reader views, suppressing raw destination URLs in Glamour and tracking ordered post-render ANSI line spans.
+- [x] **PRs 20–21:** Add smart-case find across editors and viewers (`Ctrl+F` everywhere plus `/` in read-only/grid browse views), match highlighting, `n`/`N`, ANSI-aware search, multi-sheet/formula search, and presentation speaker-note search that reveals matching notes.
+- [x] **PRs 22–23:** Add Document/Presentation printer font selection (`"courier"` default, `"helvetica"`, `"times"` in `document.Layout` at `LayoutVersion = 1` and the existing `parchment-presentation` v1 block), plus the pure-Go `internal/pdfrender` renderer and `document print --format text|pdf` with page layout and embedded images; terminal fonts remain unchanged.
 
 ### Phase 4: Extended Domain Engines (PRs 24–30)
 - **PRs 24–25:** Zero-dependency recursive-descent spreadsheet formula Lexer, AST, span rewriter, and cross-sheet references (`Sheet2!A1`) in `internal/spreadsheet/formula` (**PR 24**), followed by rectangular ranges (`A1:B10`), `""`-escaped `StringLiteral`s with Excel/Calc coercion, `SUM`, `AVERAGE`, `COUNT`, `MIN`, `MAX`, nested calls, and persisted runtime error propagation (`#REF!`, `#DIV/0!`, `#NAME?`, `#VALUE!`, `#CIRCULAR!`) (**PR 25**)

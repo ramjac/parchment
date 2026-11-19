@@ -205,6 +205,48 @@ func TestFormulaReferenceShiftsPreserveDecimalExponents(t *testing.T) {
 	}
 }
 
+func TestFormulaReferenceShiftsPreserveSheetQualifiersAndBounds(t *testing.T) {
+	book := &Spreadsheet{Sheets: []Sheet{{Name: "Summary"}, {Name: "Data"}}}
+	for _, test := range []struct {
+		name        string
+		formula     string
+		row, column int
+		want        string
+	}{
+		{"qualified scalar", "=Data!A2", 1, 0, "=Data!A3"},
+		{"second endpoint qualifier", "=SUM(A1:Data!A2)", 1, 0, "=SUM(Data!A2:A3)"},
+		{"range exceeds row limit", "=SUM(Data!A1:A1000)", 1, 0, "=SUM(#REF!)"},
+		{"scalar exceeds row limit", "=Data!A1000", 999, 0, "=#REF!"},
+		{"range exceeds column limit", "=SUM(Data!IV1:IV2)", 0, MaxColumns, "=SUM(#REF!)"},
+		{"scalar exceeds column limit", "=Data!IV1", 0, MaxColumns, "=#REF!"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := shiftCellReferencesForSheet(book, 0, 1, test.formula, test.row, test.column, false)
+			if got != test.want {
+				t.Errorf("shifted formula = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestInsertRowAtSheetLimitKeepsOutOfBoundsRangesValid(t *testing.T) {
+	book := formulaChain(0)
+	book.Sheets = []Sheet{
+		{Name: "Summary", Rows: [][]Cell{{{Formula: "=SUM(Data!A1:A1000)"}}}},
+		{Name: "Data", Rows: [][]Cell{{{Value: "1"}}}},
+	}
+
+	if err := InsertRowInBook(&book, "Data", 1); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := book.Sheets[0].Rows[0][0].Formula, "=SUM(#REF!)"; got != want {
+		t.Fatalf("range formula after insertion = %q, want %q", got, want)
+	}
+	if err := Normalize(&book); err != nil {
+		t.Fatalf("Normalize rejected the inserted row: %v", err)
+	}
+}
+
 func TestNormalizeRejectsDeepFormulaChainsRegardlessOfCacheOrder(t *testing.T) {
 	book := formulaChain(maxFormulaDepth + 1)
 	if err := Normalize(&book); err == nil || !strings.Contains(err.Error(), "dependency depth") {
@@ -606,5 +648,62 @@ func TestSpreadsheetDeletions(t *testing.T) {
 	}
 	if len(book.Sheets) != 1 {
 		t.Fatalf("expected 1 sheet, got %d", len(book.Sheets))
+	}
+}
+
+func TestDeleteRowShiftsRangesReferencingChangedSheet(t *testing.T) {
+	book := &Spreadsheet{Sheets: []Sheet{
+		{Name: "Summary", Rows: [][]Cell{{
+			{Formula: "=SUM('Data Sheet'!A1:A4)"},
+			{Formula: "=SUM(Other!A1:A4)"},
+		}}},
+		{Name: "Data Sheet", Rows: [][]Cell{
+			{{Value: "1"}, {Formula: "=SUM(A1:A4)"}},
+			{{Value: "2"}},
+			{{Value: "3"}},
+			{{Value: "4"}},
+		}},
+		{Name: "Other", Rows: [][]Cell{
+			{{Value: "10"}},
+			{{Value: "20"}},
+			{{Value: "30"}},
+			{{Value: "40"}},
+		}},
+	}}
+
+	if err := DeleteRowFromBook(book, "Data Sheet", 2); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := book.Sheets[0].Rows[0][0].Formula, "=SUM('Data Sheet'!A1:A3)"; got != want {
+		t.Errorf("range referencing deleted row = %q, want %q", got, want)
+	}
+	if got, want := book.Sheets[0].Rows[0][1].Formula, "=SUM(Other!A1:A4)"; got != want {
+		t.Errorf("range referencing another sheet = %q, want unchanged %q", got, want)
+	}
+	if got, want := book.Sheets[1].Rows[0][1].Formula, "=SUM(A1:A3)"; got != want {
+		t.Errorf("unqualified range on changed sheet = %q, want %q", got, want)
+	}
+
+	for _, test := range []struct {
+		sheet, cell string
+		want        float64
+	}{
+		{"Summary", "A1", 8},
+		{"Summary", "B1", 100},
+		{"Data Sheet", "B1", 8},
+	} {
+		sheet, err := SheetIndex(*book, test.sheet)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row, column, err := CellCoordinates(test.cell)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := Evaluate(book, sheet, row, column)
+		if err != nil || got.Kind != NumKind || got.Num != test.want {
+			t.Errorf("%s!%s = %+v, %v; want %v", test.sheet, test.cell, got, err, test.want)
+		}
 	}
 }
