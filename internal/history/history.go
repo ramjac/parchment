@@ -37,10 +37,11 @@ type Manifest struct {
 
 // Journal describes an interrupted persistent-history transition.
 type Journal struct {
-	TransitionID string `json:"transition_id"`
-	FromDigest   string `json:"from_digest"`
-	ToDigest     string `json:"to_digest"`
-	TargetHead   int    `json:"target_head"`
+	TransitionID   string `json:"transition_id"`
+	FromDigest     string `json:"from_digest"`
+	ToDigest       string `json:"to_digest"`
+	TargetHead     int    `json:"target_head"`
+	ManifestDigest string `json:"manifest_digest,omitempty"`
 }
 
 // Store persists saved-file history. Paths identify artifacts; IDs are internal

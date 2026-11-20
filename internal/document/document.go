@@ -480,6 +480,26 @@ func (s *Service) CanUndo() bool {
 	return s.history.CanUndo()
 }
 
+// HistoryAvailability reports whether saved changes to the active document
+// can be undone or redone, and can be canceled while waiting for storage.
+func (s *Service) HistoryAvailability(ctx context.Context) (bool, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, false, err
+	}
+	if s.store == nil || s.activePath == "" {
+		return s.history.CanUndo(), s.history.CanRedo(), nil
+	}
+	canUndo, err := s.store.CanUndo(ctx, s.activePath)
+	if err != nil {
+		return false, false, err
+	}
+	canRedo, err := s.store.CanRedo(ctx, s.activePath)
+	if err != nil {
+		return false, false, err
+	}
+	return canUndo, canRedo, nil
+}
+
 // CanRedo reports whether a redo operation is available.
 func (s *Service) CanRedo() bool {
 	if s.store != nil && s.activePath != "" {

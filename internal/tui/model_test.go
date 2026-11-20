@@ -1277,6 +1277,25 @@ func TestModelUpdateFileOpenedMsg(t *testing.T) {
 	})
 }
 
+func TestOpeningNoteRefreshesPersistentHistoryAfterLoad(t *testing.T) {
+	h := newHarness(t, artifact.NoteKind)
+	if _, err := h.notes.Update(context.Background(), h.path, "edited"); err != nil {
+		t.Fatal(err)
+	}
+	otherPath := filepath.Join(t.TempDir(), "other.md")
+	if _, err := h.notes.Create(context.Background(), otherPath, "other"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.notes.Get(context.Background(), otherPath); err != nil {
+		t.Fatal(err)
+	}
+
+	h.open(artifact.NoteKind)
+	if !h.m.canUndo {
+		t.Fatal("opening the edited note did not refresh persistent undo availability")
+	}
+}
+
 func TestModelUpdateNoteSavedMsg(t *testing.T) {
 	t.Run("successful save with cleanup error", func(t *testing.T) {
 		h := newHarness(t, artifact.NoteKind)

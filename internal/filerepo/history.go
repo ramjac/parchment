@@ -23,6 +23,7 @@ import (
 )
 
 const historySchemaVersion = 1
+const pendingHistoryManifest = "index.pending.json"
 
 var _ history.Store = (*Repository)(nil)
 
@@ -66,17 +67,32 @@ func (r *Repository) readHistoryManifest(dir, path string) (history.Manifest, er
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return history.Manifest{}, fmt.Errorf("decode history manifest: %w", err)
 	}
-	if manifest.SchemaVersion != historySchemaVersion || manifest.ArtifactPath != path ||
-		manifest.HeadIndex < 0 || manifest.HeadIndex >= len(manifest.Entries) {
-		return history.Manifest{}, errors.New("invalid history manifest")
+	if err := validateHistoryManifest(manifest, path); err != nil {
+		return history.Manifest{}, err
 	}
 	return manifest, nil
 }
 
-func (r *Repository) writeHistoryManifest(ctx context.Context, dir string, manifest history.Manifest) error {
+func validateHistoryManifest(manifest history.Manifest, path string) error {
+	if manifest.SchemaVersion != historySchemaVersion || manifest.ArtifactPath != path ||
+		manifest.HeadIndex < 0 || manifest.HeadIndex >= len(manifest.Entries) {
+		return errors.New("invalid history manifest")
+	}
+	return nil
+}
+
+func encodeHistoryManifest(manifest history.Manifest) ([]byte, error) {
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encode history manifest: %w", err)
+		return nil, fmt.Errorf("encode history manifest: %w", err)
+	}
+	return data, nil
+}
+
+func (r *Repository) writeHistoryManifest(ctx context.Context, dir string, manifest history.Manifest) error {
+	data, err := encodeHistoryManifest(manifest)
+	if err != nil {
+		return err
 	}
 	if err := writeAtomic(ctx, filepath.Join(dir, "index.json"), data, 0o600); err != nil {
 		return fmt.Errorf("write history manifest: %w", err)
@@ -306,31 +322,28 @@ func nextHistoryID(manifest *history.Manifest) string {
 	return id
 }
 
-func (r *Repository) recordHistoryUnlocked(ctx context.Context, path string, before, after []byte, description string, create bool) error {
+func (r *Repository) prepareHistoryUnlocked(ctx context.Context, path string, before, after []byte, description string, create bool) (history.Manifest, string, bool, error) {
 	canonical, dir, err := r.historyPaths(path)
 	if err != nil {
-		return err
+		return history.Manifest{}, "", false, err
 	}
 	if err := ensureDirectory(dir); err != nil {
-		return fmt.Errorf("create per-file history directory: %w", err)
+		return history.Manifest{}, "", false, fmt.Errorf("create per-file history directory: %w", err)
 	}
 	manifest, err := r.readHistoryManifest(dir, canonical)
 	if err != nil {
-		return err
+		return history.Manifest{}, "", false, err
 	}
 	limitChanged := manifest.UndoLimit != r.historyLimit
 	manifest.UndoLimit = r.historyLimit
 	if create {
-		if len(manifest.Entries) != 0 {
-			return errors.New("history already exists for a newly created file")
-		}
 		snapshot, err := r.snapshotHistory(ctx, after)
 		if err != nil {
-			return err
+			return history.Manifest{}, "", false, err
 		}
 		manifest.Entries = []history.Entry{{ID: nextHistoryID(&manifest), Timestamp: time.Now().UTC(), Description: "Initial state", Snapshot: snapshot}}
 		manifest.HeadIndex = 0
-		return r.writeHistoryManifest(ctx, dir, manifest)
+		return manifest, dir, true, nil
 	}
 	if len(manifest.Entries) > 0 && manifest.HeadIndex < len(manifest.Entries)-1 {
 		manifest.Entries = manifest.Entries[:manifest.HeadIndex+1]
@@ -338,7 +351,7 @@ func (r *Repository) recordHistoryUnlocked(ctx context.Context, path string, bef
 	if len(manifest.Entries) > 0 && manifest.Entries[manifest.HeadIndex].Snapshot.FileDigest != historyDigest(before) {
 		snapshot, err := r.snapshotHistory(ctx, before)
 		if err != nil {
-			return err
+			return history.Manifest{}, "", false, err
 		}
 		manifest.Entries = append(manifest.Entries[:manifest.HeadIndex+1], history.Entry{
 			ID: nextHistoryID(&manifest), Timestamp: time.Now().UTC(),
@@ -350,7 +363,7 @@ func (r *Repository) recordHistoryUnlocked(ctx context.Context, path string, bef
 	if len(manifest.Entries) == 0 {
 		snapshot, err := r.snapshotHistory(ctx, before)
 		if err != nil {
-			return err
+			return history.Manifest{}, "", false, err
 		}
 		manifest.Entries = append(manifest.Entries, history.Entry{
 			ID: nextHistoryID(&manifest), Timestamp: time.Now().UTC(),
@@ -360,21 +373,18 @@ func (r *Repository) recordHistoryUnlocked(ctx context.Context, path string, bef
 	}
 	if manifest.Entries[manifest.HeadIndex].Snapshot.FileDigest == historyDigest(after) {
 		if !limitChanged {
-			return nil
+			return manifest, dir, false, nil
 		}
 		if len(manifest.Entries) > manifest.UndoLimit+1 {
 			drop := len(manifest.Entries) - (manifest.UndoLimit + 1)
 			manifest.Entries = append([]history.Entry(nil), manifest.Entries[drop:]...)
 			manifest.HeadIndex -= drop
 		}
-		if err := r.writeHistoryManifest(ctx, dir, manifest); err != nil {
-			return err
-		}
-		return r.gcUnlocked(ctx)
+		return manifest, dir, true, nil
 	}
 	snapshot, err := r.snapshotHistory(ctx, after)
 	if err != nil {
-		return err
+		return history.Manifest{}, "", false, err
 	}
 	if description == "" {
 		description = "Update artifact"
@@ -389,10 +399,95 @@ func (r *Repository) recordHistoryUnlocked(ctx context.Context, path string, bef
 		manifest.Entries = append([]history.Entry(nil), manifest.Entries[drop:]...)
 		manifest.HeadIndex -= drop
 	}
+	return manifest, dir, true, nil
+}
+
+func (r *Repository) commitHistoryTransition(ctx context.Context, dir string, from, to []byte, manifest history.Manifest, writeArtifact func() error) error {
+	pendingBytes, err := encodeHistoryManifest(manifest)
+	if err != nil {
+		return err
+	}
+	pendingPath := filepath.Join(dir, pendingHistoryManifest)
+	if err := writeAtomic(ctx, pendingPath, pendingBytes, 0o600); err != nil {
+		return fmt.Errorf("prepare history manifest: %w", err)
+	}
+	journal := history.Journal{
+		TransitionID: strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
+		FromDigest:   historyDigest(from), ToDigest: historyDigest(to),
+		TargetHead: manifest.HeadIndex, ManifestDigest: historyDigest(pendingBytes),
+	}
+	journalBytes, err := json.Marshal(journal)
+	if err != nil {
+		_ = os.Remove(pendingPath)
+		return err
+	}
+	journalPath := filepath.Join(dir, "journal.json")
+	if err := writeAtomic(ctx, journalPath, journalBytes, 0o600); err != nil {
+		return fmt.Errorf("prepare history transition: %w", err)
+	}
+	if err := writeArtifact(); err != nil {
+		return err
+	}
 	if err := r.writeHistoryManifest(ctx, dir, manifest); err != nil {
 		return err
 	}
-	return r.gcUnlocked(ctx)
+	r.finishHistoryTransition(ctx, dir)
+	return nil
+}
+
+func (r *Repository) finishHistoryTransition(ctx context.Context, dir string) {
+	journalPath := filepath.Join(dir, "journal.json")
+	if err := os.Remove(journalPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		r.addWarning(fmt.Errorf("finalize history transition: %w", err))
+		return
+	}
+	pendingPath := filepath.Join(dir, pendingHistoryManifest)
+	if err := os.Remove(pendingPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		r.addWarning(fmt.Errorf("remove committed history manifest: %w", err))
+	}
+	if err := r.gcUnlocked(ctx); err != nil {
+		r.addWarning(fmt.Errorf("history garbage collection failed: %w", err))
+	}
+}
+
+func boundRestoreManifest(manifest *history.Manifest, targetHead, checkpointHead, limit int) (int, int) {
+	manifest.UndoLimit = limit
+	maxEntries := limit + 1
+	if maxEntries < 2 && checkpointHead >= 0 {
+		maxEntries = 2
+	}
+	if len(manifest.Entries) <= maxEntries {
+		return targetHead, checkpointHead
+	}
+	keep := make([]bool, len(manifest.Entries))
+	keep[targetHead] = true
+	remaining := maxEntries - 1
+	if checkpointHead >= 0 {
+		keep[checkpointHead] = true
+		remaining--
+	}
+	for i := len(manifest.Entries) - 1; i >= 0 && remaining > 0; i-- {
+		if !keep[i] {
+			keep[i] = true
+			remaining--
+		}
+	}
+	entries := make([]history.Entry, 0, maxEntries)
+	newTarget, newCheckpoint := -1, -1
+	for i, entry := range manifest.Entries {
+		if !keep[i] {
+			continue
+		}
+		if i == targetHead {
+			newTarget = len(entries)
+		}
+		if i == checkpointHead {
+			newCheckpoint = len(entries)
+		}
+		entries = append(entries, entry)
+	}
+	manifest.Entries = entries
+	return newTarget, newCheckpoint
 }
 
 func queryHistory[T any](r *Repository, ctx context.Context, path string, query func(history.Manifest) (T, error)) (result T, resultErr error) {
@@ -477,32 +572,18 @@ func (r *Repository) moveHistoryHead(ctx context.Context, path string, delta int
 		if err != nil {
 			return err
 		}
-		journal := history.Journal{
-			TransitionID: strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
-			FromDigest:   historyDigest(current), ToDigest: historyDigest(target),
-			TargetHead: targetHead,
-		}
-		journalBytes, err := json.Marshal(journal)
-		if err != nil {
-			return err
-		}
-		journalPath := filepath.Join(dir, "journal.json")
-		if err := writeAtomic(ctx, journalPath, journalBytes, 0o600); err != nil {
-			return fmt.Errorf("prepare history transition: %w", err)
-		}
 		info, err := os.Stat(canonical)
 		if err != nil {
 			return err
 		}
-		if err := writeAtomic(ctx, canonical, target, info.Mode().Perm()); err != nil {
-			return fmt.Errorf("apply history transition: %w", err)
-		}
 		manifest.HeadIndex = targetHead
-		if err := r.writeHistoryManifest(ctx, dir, manifest); err != nil {
+		if err := r.commitHistoryTransition(ctx, dir, current, target, manifest, func() error {
+			if err := writeAtomic(ctx, canonical, target, info.Mode().Perm()); err != nil {
+				return fmt.Errorf("apply history transition: %w", err)
+			}
+			return nil
+		}); err != nil {
 			return err
-		}
-		if err := os.Remove(journalPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("finalize history transition: %w", err)
 		}
 		if delta < 0 {
 			description = currentDescription
@@ -543,6 +624,7 @@ func (r *Repository) Restore(ctx context.Context, path, stepID string) (string, 
 		if err != nil {
 			return err
 		}
+		manifest.UndoLimit = r.historyLimit
 		if historyDigest(current) != manifest.Entries[manifest.HeadIndex].Snapshot.FileDigest {
 			checkpoint, err := r.snapshotHistory(ctx, current)
 			if err != nil {
@@ -552,10 +634,7 @@ func (r *Repository) Restore(ctx context.Context, path, stepID string) (string, 
 				ID: nextHistoryID(&manifest), Timestamp: time.Now().UTC(),
 				Description: "External edit", Snapshot: checkpoint,
 			})
-			manifest.HeadIndex = len(manifest.Entries) - 1
-			if err := r.writeHistoryManifest(ctx, dir, manifest); err != nil {
-				return err
-			}
+			checkpointHead := len(manifest.Entries) - 1
 			targetHead = -1
 			for i, entry := range manifest.Entries {
 				if entry.ID == stepID {
@@ -571,11 +650,22 @@ func (r *Repository) Restore(ctx context.Context, path, stepID string) (string, 
 				manifest.Entries = append(manifest.Entries, targetEntry)
 				targetHead = len(manifest.Entries) - 1
 			}
+			targetHead, checkpointHead = boundRestoreManifest(&manifest, targetHead, checkpointHead, r.historyLimit)
+			manifest.HeadIndex = checkpointHead
+			if err := r.writeHistoryManifest(ctx, dir, manifest); err != nil {
+				return err
+			}
+		} else {
+			targetHead, _ = boundRestoreManifest(&manifest, targetHead, -1, r.historyLimit)
 		}
+		targetEntry = manifest.Entries[targetHead]
 		if targetEntry.Snapshot.FileDigest == historyDigest(current) {
 			manifest.HeadIndex = targetHead
 			if err := r.writeHistoryManifest(ctx, dir, manifest); err != nil {
 				return err
+			}
+			if err := r.gcUnlocked(ctx); err != nil {
+				r.addWarning(fmt.Errorf("history garbage collection failed: %w", err))
 			}
 			description = targetEntry.Description
 			return nil
@@ -584,32 +674,18 @@ func (r *Repository) Restore(ctx context.Context, path, stepID string) (string, 
 		if err != nil {
 			return err
 		}
-		journal := history.Journal{
-			TransitionID: strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
-			FromDigest:   historyDigest(current), ToDigest: targetEntry.Snapshot.FileDigest,
-			TargetHead: targetHead,
-		}
-		journalBytes, err := json.Marshal(journal)
-		if err != nil {
-			return err
-		}
-		journalPath := filepath.Join(dir, "journal.json")
-		if err := writeAtomic(ctx, journalPath, journalBytes, 0o600); err != nil {
-			return fmt.Errorf("prepare history restore: %w", err)
-		}
 		info, err := os.Stat(canonical)
 		if err != nil {
 			return err
 		}
-		if err := writeAtomic(ctx, canonical, content, info.Mode().Perm()); err != nil {
-			return fmt.Errorf("apply history restore: %w", err)
-		}
 		manifest.HeadIndex = targetHead
-		if err := r.writeHistoryManifest(ctx, dir, manifest); err != nil {
+		if err := r.commitHistoryTransition(ctx, dir, current, content, manifest, func() error {
+			if err := writeAtomic(ctx, canonical, content, info.Mode().Perm()); err != nil {
+				return fmt.Errorf("apply history restore: %w", err)
+			}
+			return nil
+		}); err != nil {
 			return err
-		}
-		if err := os.Remove(journalPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("finalize history restore: %w", err)
 		}
 		description = targetEntry.Description
 		return nil
@@ -696,6 +772,10 @@ func (r *Repository) recoverHistoryJournal(ctx context.Context, path, dir string
 	journalPath := filepath.Join(dir, "journal.json")
 	data, err := os.ReadFile(journalPath)
 	if errors.Is(err, fs.ErrNotExist) {
+		pendingPath := filepath.Join(dir, pendingHistoryManifest)
+		if removeErr := os.Remove(pendingPath); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+			r.addWarning(fmt.Errorf("remove orphaned history manifest: %w", removeErr))
+		}
 		return nil
 	}
 	if err != nil {
@@ -712,25 +792,47 @@ func (r *Repository) recoverHistoryJournal(ctx context.Context, path, dir string
 	digest := historyDigest(current)
 	switch digest {
 	case journal.ToDigest:
-		manifest, err := r.readHistoryManifest(dir, path)
-		if err != nil {
-			return err
-		}
-		if journal.TargetHead < 0 || journal.TargetHead >= len(manifest.Entries) ||
-			manifest.Entries[journal.TargetHead].Snapshot.FileDigest != journal.ToDigest {
-			return errors.New("history journal target does not match manifest")
-		}
-		manifest.HeadIndex = journal.TargetHead
-		if err := r.writeHistoryManifest(ctx, dir, manifest); err != nil {
-			return err
+		if journal.ManifestDigest != "" {
+			manifestBytes, err := os.ReadFile(filepath.Join(dir, pendingHistoryManifest))
+			if err != nil {
+				return fmt.Errorf("read pending history manifest: %w", err)
+			}
+			if historyDigest(manifestBytes) != journal.ManifestDigest {
+				return errors.New("pending history manifest digest mismatch")
+			}
+			var manifest history.Manifest
+			if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+				return fmt.Errorf("decode pending history manifest: %w", err)
+			}
+			if err := validateHistoryManifest(manifest, path); err != nil {
+				return err
+			}
+			if journal.TargetHead != manifest.HeadIndex ||
+				manifest.Entries[journal.TargetHead].Snapshot.FileDigest != journal.ToDigest {
+				return errors.New("history journal target does not match pending manifest")
+			}
+			if err := r.writeHistoryManifest(ctx, dir, manifest); err != nil {
+				return err
+			}
+		} else {
+			manifest, err := r.readHistoryManifest(dir, path)
+			if err != nil {
+				return err
+			}
+			if journal.TargetHead < 0 || journal.TargetHead >= len(manifest.Entries) ||
+				manifest.Entries[journal.TargetHead].Snapshot.FileDigest != journal.ToDigest {
+				return errors.New("history journal target does not match manifest")
+			}
+			manifest.HeadIndex = journal.TargetHead
+			if err := r.writeHistoryManifest(ctx, dir, manifest); err != nil {
+				return err
+			}
 		}
 	case journal.FromDigest:
 	default:
 		return errors.New("File modified externally during persistent history transition; history preserved.")
 	}
-	if err := os.Remove(journalPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("remove recovered history journal: %w", err)
-	}
+	r.finishHistoryTransition(ctx, dir)
 	return nil
 }
 

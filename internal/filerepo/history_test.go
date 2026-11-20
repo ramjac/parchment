@@ -124,6 +124,80 @@ func TestPersistentHistoryBaselineUndoRedoAndExternalEditGuard(t *testing.T) {
 	}
 }
 
+func TestPersistentHistoryPreparationFailureDoesNotReplaceArtifact(t *testing.T) {
+	ctx := context.Background()
+	state := t.TempDir()
+	repo, err := New(state, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "prepare-failure.md")
+	service := note.NewService(repo, 5)
+	if _, err := service.Create(ctx, path, "before"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobs := filepath.Join(repo.historyDir(), "blobs")
+	if err := os.RemoveAll(blobs); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blobs, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Update(ctx, path, "after"); err == nil {
+		t.Fatal("update succeeded without being able to prepare its history snapshot")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("artifact changed when history preparation failed")
+	}
+}
+
+func TestPersistentHistoryResetsWhenCreatingAtReusedPath(t *testing.T) {
+	ctx := context.Background()
+	repo, err := New(t.TempDir(), Options{UndoLimit: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "reused.md")
+	service := note.NewService(repo, 3)
+	if _, err := service.Create(ctx, path, "old artifact"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Update(ctx, path, "old edit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Create(ctx, path, "new artifact"); err != nil {
+		t.Fatalf("create at reused path: %v", err)
+	}
+	entries, head, err := repo.Log(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || head != 0 || entries[0].Description != "Initial state" {
+		t.Fatalf("history after path reuse = %#v at %d; want one fresh baseline", entries, head)
+	}
+	if _, err := service.Update(ctx, path, "new edit"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Undo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	current, err := service.Get(ctx, path)
+	if err != nil || current.Body != "new artifact" {
+		t.Fatalf("undo after path reuse = %q, %v; want new artifact", current.Body, err)
+	}
+}
+
 func TestPersistentHistoryDetachesEmbeddedImageChunks(t *testing.T) {
 	ctx := context.Background()
 	state := t.TempDir()
@@ -330,6 +404,136 @@ func TestPersistentHistoryRecoversInterruptedTransition(t *testing.T) {
 	}
 }
 
+func TestPersistentHistoryRecoversStagedManifestAfterArtifactWrite(t *testing.T) {
+	ctx := context.Background()
+	repo, err := New(t.TempDir(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "staged-journal.md")
+	service := note.NewService(repo, 5)
+	if _, err := service.Create(ctx, path, "before"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Update(ctx, path, "after"); err != nil {
+		t.Fatal(err)
+	}
+	canonical, dir, err := repo.historyPaths(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := repo.readHistoryManifest(dir, canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := repo.reconstructHistorySnapshot(ctx, manifest.Entries[0].Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := repo.reconstructHistorySnapshot(ctx, manifest.Entries[1].Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.HeadIndex = 0
+	pending, err := encodeHistoryManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, pendingHistoryManifest), pending, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := json.Marshal(history.Journal{
+		TransitionID: "staged-interrupted",
+		FromDigest:   historyDigest(after), ToDigest: historyDigest(before),
+		TargetHead: 0, ManifestDigest: historyDigest(pending),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "journal.json"), journal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(canonical, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if canUndo, err := repo.CanUndo(ctx, path); err != nil || canUndo {
+		t.Fatalf("CanUndo() after staged recovery = %t, %v; want false, nil", canUndo, err)
+	}
+	if canRedo, err := repo.CanRedo(ctx, path); err != nil || !canRedo {
+		t.Fatalf("CanRedo() after staged recovery = %t, %v; want true, nil", canRedo, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, pendingHistoryManifest)); !os.IsNotExist(err) {
+		t.Fatalf("pending manifest remains after recovery: %v", err)
+	}
+}
+
+func TestPersistentHistoryExternalRestorePersistsTruncatedTargetBeforeTransition(t *testing.T) {
+	ctx := context.Background()
+	repo, err := New(t.TempDir(), Options{UndoLimit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "restore-target.md")
+	service := note.NewService(repo, 5)
+	for _, body := range []string{"zero", "one", "two"} {
+		if body == "zero" {
+			if _, err := service.Create(ctx, path, body); err != nil {
+				t.Fatal(err)
+			}
+		} else if _, err := service.Update(ctx, path, body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, _, err := repo.Log(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetID := entries[2].ID
+	if _, err := repo.Undo(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("external edit"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, dir, err := repo.historyPaths(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingPath := filepath.Join(dir, pendingHistoryManifest)
+	if err := os.Mkdir(pendingPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pendingPath, "blocker"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Restore(ctx, path, targetID); err == nil {
+		t.Fatal("restore succeeded despite the blocked transition manifest path")
+	}
+	if err := os.Remove(filepath.Join(pendingPath, "blocker")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(pendingPath); err != nil {
+		t.Fatal(err)
+	}
+	entries, head, err := repo.Log(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head < 0 || head >= len(entries) || entries[head].Description != "External edit" {
+		t.Fatalf("staged history head = %d in %#v; want external checkpoint", head, entries)
+	}
+	if canRedo, err := repo.CanRedo(ctx, path); err != nil || !canRedo {
+		t.Fatalf("CanRedo() after interrupted restore = %t, %v; want true, nil", canRedo, err)
+	}
+	if _, err := repo.Redo(ctx, path); err != nil {
+		t.Fatalf("redo persisted restore target: %v", err)
+	}
+	current, err := service.Get(ctx, path)
+	if err != nil || current.Body != "two" {
+		t.Fatalf("redo restored %q, %v; want two", current.Body, err)
+	}
+}
+
 func TestPersistentHistoryCheckpointsExternalContentOnNewEdit(t *testing.T) {
 	ctx := context.Background()
 	repo, err := New(t.TempDir(), Options{})
@@ -367,6 +571,63 @@ func TestPersistentHistoryCheckpointsExternalContentOnNewEdit(t *testing.T) {
 	current, err := service.Get(ctx, path)
 	if err != nil || current.Body != "edited outside parchment" {
 		t.Fatalf("undo did not restore external checkpoint: %q, %v", current.Body, err)
+	}
+}
+
+func TestPersistentHistoryRestorePreservesExternalCheckpointAndIsBounded(t *testing.T) {
+	ctx := context.Background()
+	repo, err := New(t.TempDir(), Options{UndoLimit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "restore-bounded.md")
+	service := note.NewService(repo, 1)
+	if _, err := service.Create(ctx, path, "zero"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Update(ctx, path, "one"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Update(ctx, path, "two"); err != nil {
+		t.Fatal(err)
+	}
+	entries, _, err := repo.Log(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetID := entries[0].ID
+	if _, err := repo.Undo(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, external := range []string{"external one", "external two", "external three"} {
+		if err := os.WriteFile(path, []byte(external), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.Restore(ctx, path, targetID); err != nil {
+			t.Fatalf("restore after %q: %v", external, err)
+		}
+		current, err := service.Get(ctx, path)
+		if err != nil || current.Body != "one" {
+			t.Fatalf("restored content = %q, %v; want one", current.Body, err)
+		}
+		entries, head, err := repo.Log(ctx, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) > 2 || head != 0 || len(entries) < 2 {
+			t.Fatalf("bounded history = %d entries at head %d; want 2 entries at head 0", len(entries), head)
+		}
+		if _, err := repo.Redo(ctx, path); err != nil {
+			t.Fatalf("redo to external checkpoint: %v", err)
+		}
+		current, err = service.Get(ctx, path)
+		if err != nil || current.Body != external {
+			t.Fatalf("redo restored %q, %v; want external checkpoint %q", current.Body, err, external)
+		}
+		if _, err := repo.Undo(ctx, path); err != nil {
+			t.Fatalf("undo to restore target: %v", err)
+		}
 	}
 }
 

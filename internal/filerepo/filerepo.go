@@ -222,11 +222,17 @@ func (r *Repository) update(ctx context.Context, path string, create bool, notFo
 		if err != nil {
 			return err
 		}
-		err = writeUpdate(ctx, resolved, path, create, data, mode)
+		manifest, historyDir, tracked, err := r.prepareHistoryUnlocked(ctx, resolved, current, data, history.DescriptionFromContext(ctx), create)
+		if err != nil {
+			return fmt.Errorf("prepare history for %s: %w", path, err)
+		}
+		writeArtifact := func() error { return writeUpdate(ctx, resolved, path, create, data, mode) }
+		if tracked {
+			err = r.commitHistoryTransition(ctx, historyDir, current, data, manifest, writeArtifact)
+		} else {
+			err = writeArtifact()
+		}
 		if err == nil {
-			if err := r.recordHistoryUnlocked(ctx, resolved, current, data, history.DescriptionFromContext(ctx), create); err != nil {
-				return fmt.Errorf("record history for %s: %w", path, err)
-			}
 			if r.backupDir != "" {
 				r.createBackup(ctx, path, data)
 			}

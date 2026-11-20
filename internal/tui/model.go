@@ -76,6 +76,7 @@ type fileOpenedMsg struct {
 	document document.Document
 	book     spreadsheet.Spreadsheet
 	deck     presentation.Presentation
+	history  *historyAvailability
 	image    *imageedit.Image
 	created  bool
 	draft    recovery.Draft
@@ -83,8 +84,15 @@ type fileOpenedMsg struct {
 	err      error
 }
 
+type historyAvailability struct {
+	canUndo bool
+	canRedo bool
+	err     error
+}
+
 type noteSavedMsg struct {
 	note       note.Note
+	history    *historyAvailability
 	err        error
 	cleanupErr error
 }
@@ -92,6 +100,7 @@ type noteSavedMsg struct {
 type historyChangedMsg struct {
 	description string
 	note        note.Note
+	history     *historyAvailability
 	err         error
 }
 
@@ -162,9 +171,6 @@ func NewModel(config Config) Model {
 	}
 	m.noteEditor.pdfStore = config.PDFStore
 	m.noteEditor.lastPDFPath = config.LastPDFPath
-	if m.service != nil {
-		m.canUndo, m.canRedo = m.service.CanUndo(), m.service.CanRedo()
-	}
 	if config.Documents != nil {
 		m.documents = newDocumentsScreen(config.Documents, config.Path, m.newOperationContext, m.theme, undoLimit)
 		m.documents.recoveryStore = config.Recovery
@@ -233,6 +239,14 @@ func (m *Model) openFile(kind artifact.Kind) tea.Cmd {
 			}
 		default:
 			msg.err = fmt.Errorf("the interactive editor cannot open %s artifacts", kind)
+		}
+		if msg.err == nil {
+			switch kind {
+			case artifact.NoteKind:
+				msg.history = queryHistoryAvailability(ctx, notes.HistoryAvailability)
+			case artifact.DocumentKind:
+				msg.history = queryHistoryAvailability(ctx, documents.HistoryAvailability)
+			}
 		}
 		if msg.err == nil && store != nil && kind != artifact.ImageKind {
 			msg.draft, msg.hasDraft, msg.err = store.LoadRecovery(ctx, path)
@@ -306,6 +320,24 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *Model) applyHistoryAvailability(availability *historyAvailability) {
+	if availability == nil {
+		return
+	}
+	if availability.err != nil {
+		if !errors.Is(availability.err, context.Canceled) {
+			m.status = "History unavailable: " + availability.err.Error()
+		}
+		return
+	}
+	m.canUndo, m.canRedo = availability.canUndo, availability.canRedo
+}
+
+func queryHistoryAvailability(ctx context.Context, query func(context.Context) (bool, bool, error)) *historyAvailability {
+	canUndo, canRedo, err := query(ctx)
+	return &historyAvailability{canUndo: canUndo, canRedo: canRedo, err: err}
+}
+
 func (m *Model) handleFileOpened(msg fileOpenedMsg) (tea.Model, tea.Cmd) {
 	m.finishOperation()
 	m.pending = false
@@ -316,6 +348,11 @@ func (m *Model) handleFileOpened(msg fileOpenedMsg) (tea.Model, tea.Cmd) {
 	m.opened = msg
 	if msg.created {
 		m.status = "Created " + m.path
+	}
+	if msg.kind == artifact.NoteKind {
+		m.applyHistoryAvailability(msg.history)
+	} else if msg.kind == artifact.DocumentKind && m.documents != nil {
+		m.documents.applyHistoryAvailability(msg.history)
 	}
 	if msg.hasDraft {
 		m.stage = stageRecovery
@@ -362,7 +399,7 @@ func (m *Model) handleAutosaveFinished(msg autosaveFinishedMsg) (tea.Model, tea.
 func (m *Model) handleNoteSaved(msg noteSavedMsg) (tea.Model, tea.Cmd) {
 	m.finishOperation()
 	m.pending = false
-	m.refreshHistoryAvailability()
+	m.applyHistoryAvailability(msg.history)
 	if msg.err != nil {
 		if errors.Is(msg.err, context.Canceled) {
 			m.errMessage, m.status = "", "Save cancelled; unsaved changes remain"
@@ -378,6 +415,7 @@ func (m *Model) handleNoteSaved(msg noteSavedMsg) (tea.Model, tea.Cmd) {
 	if msg.cleanupErr != nil {
 		m.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
 	}
+	m.applyHistoryAvailability(msg.history)
 	m.startAutosaveSession()
 	return m, m.scheduleAutosave(m.autosaveSession)
 }
@@ -385,13 +423,14 @@ func (m *Model) handleNoteSaved(msg noteSavedMsg) (tea.Model, tea.Cmd) {
 func (m *Model) handleHistoryChanged(msg historyChangedMsg) (tea.Model, tea.Cmd) {
 	m.finishOperation()
 	m.pending = false
-	m.refreshHistoryAvailability()
+	m.applyHistoryAvailability(msg.history)
 	if msg.err != nil {
 		m.errMessage = msg.err.Error()
 		return m, nil
 	}
 	m.loadNote(msg.note)
 	m.errMessage, m.status = "", msg.description
+	m.applyHistoryAvailability(msg.history)
 	return m, nil
 }
 
@@ -674,10 +713,13 @@ func (m *Model) history(undo bool) tea.Cmd {
 		}
 		description, err := run(ctx)
 		if err != nil {
-			return historyChangedMsg{err: err}
+			return historyChangedMsg{history: queryHistoryAvailability(ctx, service.HistoryAvailability), err: err}
 		}
 		n, err := service.Get(ctx, path)
-		return historyChangedMsg{description: prefix + strings.ToLower(description), note: n, err: err}
+		return historyChangedMsg{
+			description: prefix + strings.ToLower(description), note: n,
+			history: queryHistoryAvailability(ctx, service.HistoryAvailability), err: err,
+		}
 	}
 }
 
@@ -804,11 +846,6 @@ func (m Model) statusLine() string {
 	return sanitizeTerminalLine(message) + "  ·  " + undo + "  ·  " + redo
 }
 
-func (m *Model) refreshHistoryAvailability() {
-	m.canUndo = m.service.CanUndo()
-	m.canRedo = m.service.CanRedo()
-}
-
 // startEdit loads n into the editor, refusing notes the editor widgets would
 // truncate or alter.
 func (m *Model) startEdit(n note.Note) bool {
@@ -851,7 +888,10 @@ func (m *Model) saveNote() tea.Cmd {
 		if err == nil && store != nil {
 			cleanupErr = store.DeleteRecovery(context.Background(), path)
 		}
-		return noteSavedMsg{note: n, err: err, cleanupErr: cleanupErr}
+		return noteSavedMsg{
+			note: n, history: queryHistoryAvailability(ctx, service.HistoryAvailability),
+			err: err, cleanupErr: cleanupErr,
+		}
 	}
 }
 
