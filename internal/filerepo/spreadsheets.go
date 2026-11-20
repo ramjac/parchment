@@ -19,6 +19,9 @@ func (r *Repository) GetSpreadsheet(ctx context.Context, path string) (spreadshe
 	if err != nil {
 		return spreadsheet.Spreadsheet{}, err
 	}
+	if err := r.recoverHistory(ctx, path); err != nil {
+		return spreadsheet.Spreadsheet{}, err
+	}
 	content, err := readContent(path, artifact.SpreadsheetKind, spreadsheet.ErrNotFound)
 	if err != nil {
 		return spreadsheet.Spreadsheet{}, err

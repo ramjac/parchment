@@ -117,6 +117,7 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 	addImageCommands(root, streams)
 
 	root.AddCommand(newConvertCmd(streams))
+	root.AddCommand(newHistoryCmd())
 	root.AddCommand(tuiCommand())
 	return root
 }
@@ -154,8 +155,7 @@ func openPresentations(cmd *cobra.Command) (*filerepo.Repository, *presentation.
 }
 
 // openStore resolves ~/.parchment/parchment.toml (or PARCHMENT_CONFIG) and
-// returns a repository for standalone artifact files. The state directory
-// holds only configuration, recovery drafts, and the write lock.
+// returns a repository for standalone artifact files and application history.
 func openStore() (*filerepo.Repository, config.Settings, error) {
 	configPath, err := config.Path()
 	if err != nil {
@@ -189,7 +189,10 @@ func openStore() (*filerepo.Repository, config.Settings, error) {
 	globalCloser = closer
 	slog.SetDefault(logger)
 
-	repo, err := filerepo.New(stateDir, filerepo.Options{LocalBackup: settings.LocalBackup})
+	repo, err := filerepo.New(stateDir, filerepo.Options{
+		LocalBackup: settings.LocalBackup,
+		UndoLimit:   settings.UndoLimit,
+	})
 	if err != nil {
 		return nil, config.Settings{}, err
 	}

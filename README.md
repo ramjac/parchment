@@ -271,10 +271,11 @@ payload.
 ## Configuration
 
 `~/.parchment/` holds only Parchment's own files: configuration, a write lock,
-and autosave recovery drafts. It never contains artifacts. Configuration
-is read from `~/.parchment/parchment.toml`, which is created with owner-only
-permissions on first use. Set `PARCHMENT_CONFIG` to read a different, existing
-configuration file. The file is TOML and requires `version = 1`. For example:
+autosave recovery drafts, and persistent undo/redo history. It never contains
+artifacts. Configuration is read from `~/.parchment/parchment.toml`, which is
+created with owner-only permissions on first use. Set `PARCHMENT_CONFIG` to
+read a different, existing configuration file. The file is TOML and requires
+`version = 1`. For example:
 
 ```toml
 version = 1
@@ -352,8 +353,10 @@ reopening offers recovery, and saving a recovered draft reports a conflict if
 the file changed externally. Saving or normally closing the spreadsheet
 removes its recovery draft.
 
-Undo and redo cover edits made in the running process; creating a file is not undoable. The bounded history is in memory and
-does not survive a restart.
+Saved-file undo and redo persist across restarts under `~/.parchment/history/`;
+creating a file is not undoable. Unsaved editor keystrokes remain in-memory and
+are cleared after a successful save. Use `parchment history undo|redo|log|restore|clean|gc`
+to manage saved-file history.
 
 ## Future work
 
@@ -363,7 +366,7 @@ presentations. Detailed PR-by-PR implementation plans are in
 and [`docs/Persistent_Undo_Redo_Plan.md`](docs/Persistent_Undo_Redo_Plan.md).
 Work is organized into five sequential implementation phases broken down into
 **38 reviewable Pull Requests (`PR 1`–`PR 38`)**. The main branch has completed
-milestones **1–14, 15b–c, 16–23, 24a–b, 26, and 31–35**. Phase 3 image
+milestones **1–14, 15b–c, 16–23, 24a–b, 26, and 31–38**. Phase 3 image
 rendering is still incomplete: the `termimg` renderers exist, but are not wired
 into the Document reader or Note preview. Detailed
 acceptance criteria and an accompanying progress checklist are in
@@ -417,8 +420,8 @@ scaffolding that does not yet meet its acceptance criteria remains incomplete.
 - [x] **PR 30:** PNG/JPEG magic-byte routing and a native TUI image viewer/editor with crop/resize forms, bounded session undo/redo, and confirmed save/save-as.
 
 ### Phase 5: External Interop & Persistent History (PRs 31–38)
-- **PRs 31–35:** Import and export ODF (`.odt`) and DOCX (`.docx`) documents via pure-Go stdlib `archive/zip` + `encoding/xml` adapters (`parchment document import` / `export`) with lossy approximation warnings on `stderr` ([`docs/ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md))
-- **PRs 36–38:** Persistent, chunk-deduplicated undo/redo storage under `~/.parchment/history/` (`history.Store` + `parchment history undo|redo|log|restore|clean|gc`) replacing in-memory service stacks across CLI and TUI ([`docs/Persistent_Undo_Redo_Plan.md`](docs/Persistent_Undo_Redo_Plan.md))
+- **Complete — PRs 31–35:** Import and export ODF (`.odt`) and DOCX (`.docx`) documents via pure-Go stdlib `archive/zip` + `encoding/xml` adapters (`parchment document import` / `export`) with lossy approximation warnings on `stderr` ([`docs/ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md))
+- **Complete — PRs 36–38:** Persistent, chunk-deduplicated undo/redo storage under `~/.parchment/history/` (`history.Store` + `parchment history undo|redo|log|restore|clean|gc`) across services and CLI/TUI ([`docs/Persistent_Undo_Redo_Plan.md`](docs/Persistent_Undo_Redo_Plan.md))
 
 ## Architecture & Planning
 

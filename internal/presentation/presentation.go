@@ -68,22 +68,27 @@ type Repository interface {
 	TransitionPresentation(context.Context, string, *Presentation, *Presentation) error
 }
 
-// Service applies presentation changes and tracks undo and redo in memory.
+// Service applies presentation changes and records them in saved-file history.
 type Service struct {
 	repository Repository
 	history    *history.Stack
+	store      history.Store
+	activePath string
 	now        func() time.Time
 }
 
 func NewService(repository Repository, undoLimit int) *Service {
-	return &Service{
+	service := &Service{
 		repository: repository, history: history.New(undoLimit),
 		now: func() time.Time { return time.Now().UTC() },
 	}
+	service.store, _ = repository.(history.Store)
+	return service
 }
 
 // Get loads the presentation stored at path.
 func (s *Service) Get(ctx context.Context, path string) (Presentation, error) {
+	s.activePath = path
 	return s.repository.GetPresentation(ctx, path)
 }
 
@@ -159,8 +164,32 @@ func (s *Service) Update(ctx context.Context, expected Presentation, source stri
 	return clonePresentation(after), nil
 }
 
-func (s *Service) Undo(ctx context.Context) (string, error) { return s.history.Undo(ctx) }
-func (s *Service) Redo(ctx context.Context) (string, error) { return s.history.Redo(ctx) }
+func (s *Service) Undo(ctx context.Context) (string, error) {
+	if s.store != nil {
+		return s.store.Undo(ctx, s.activePath)
+	}
+	return s.history.Undo(ctx)
+}
+func (s *Service) Redo(ctx context.Context) (string, error) {
+	if s.store != nil {
+		return s.store.Redo(ctx, s.activePath)
+	}
+	return s.history.Redo(ctx)
+}
+func (s *Service) CanUndo() bool {
+	if s.store != nil && s.activePath != "" {
+		canUndo, err := s.store.CanUndo(context.Background(), s.activePath)
+		return err == nil && canUndo
+	}
+	return s.history.CanUndo()
+}
+func (s *Service) CanRedo() bool {
+	if s.store != nil && s.activePath != "" {
+		canRedo, err := s.store.CanRedo(context.Background(), s.activePath)
+		return err == nil && canRedo
+	}
+	return s.history.CanRedo()
+}
 
 type parser struct {
 	deck            Deck
@@ -664,6 +693,10 @@ func Equal(left, right Presentation) bool {
 }
 
 func (s *Service) change(ctx context.Context, before, after *Presentation, description string) error {
+	s.activePath = before.Path
+	if s.store != nil {
+		return s.repository.TransitionPresentation(history.WithDescription(ctx, description), before.Path, before, after)
+	}
 	return s.history.Execute(ctx, presentationOperation{
 		repository: s.repository, before: clonePresentationPointer(before),
 		after: clonePresentationPointer(after), description: description,

@@ -87,16 +87,21 @@ type Repository interface {
 type Service struct {
 	repository Repository
 	history    *history.Stack
+	store      history.Store
+	activePath string
 	now        func() time.Time
 }
 
 // NewService returns a document service backed by the given repository.
 func NewService(repository Repository, undoLimit int) *Service {
-	return &Service{repository: repository, history: history.New(undoLimit), now: func() time.Time { return time.Now().UTC() }}
+	service := &Service{repository: repository, history: history.New(undoLimit), now: func() time.Time { return time.Now().UTC() }}
+	service.store, _ = repository.(history.Store)
+	return service
 }
 
 // Get loads the document stored at path, including embedded images.
 func (s *Service) Get(ctx context.Context, path string) (Document, error) {
+	s.activePath = path
 	return s.repository.GetDocument(ctx, path)
 }
 
@@ -189,10 +194,17 @@ func (s *Service) Accept(ctx context.Context, path, changeID string) (Document, 
 	resolved.Status = ChangeAccepted
 	now := s.now().UTC()
 	resolved.ResolvedAt = &now
-	if err := s.history.Execute(ctx, &documentChangeAcceptance{
+	operation := &documentChangeAcceptance{
 		repository: s.repository, changeID: changeID, beforeChange: change, afterChange: resolved,
 		before: *cloneDocument(&before), after: *cloneDocument(after),
-	}); err != nil {
+	}
+	s.activePath = path
+	if s.store != nil {
+		err = operation.Apply(history.WithDescription(ctx, operation.Description()))
+	} else {
+		err = s.history.Execute(ctx, operation)
+	}
+	if err != nil {
 		return Document{}, err
 	}
 	return *cloneDocument(after), nil
@@ -444,16 +456,38 @@ func (s *Service) RemoveImage(ctx context.Context, path, imageName string, strip
 }
 
 // Undo reverses the most recent document change.
-func (s *Service) Undo(ctx context.Context) (string, error) { return s.history.Undo(ctx) }
+func (s *Service) Undo(ctx context.Context) (string, error) {
+	if s.store != nil {
+		return s.store.Undo(ctx, s.activePath)
+	}
+	return s.history.Undo(ctx)
+}
 
 // Redo reapplies the most recently undone document change.
-func (s *Service) Redo(ctx context.Context) (string, error) { return s.history.Redo(ctx) }
+func (s *Service) Redo(ctx context.Context) (string, error) {
+	if s.store != nil {
+		return s.store.Redo(ctx, s.activePath)
+	}
+	return s.history.Redo(ctx)
+}
 
 // CanUndo reports whether an undo operation is available.
-func (s *Service) CanUndo() bool { return s.history.CanUndo() }
+func (s *Service) CanUndo() bool {
+	if s.store != nil && s.activePath != "" {
+		canUndo, err := s.store.CanUndo(context.Background(), s.activePath)
+		return err == nil && canUndo
+	}
+	return s.history.CanUndo()
+}
 
 // CanRedo reports whether a redo operation is available.
-func (s *Service) CanRedo() bool { return s.history.CanRedo() }
+func (s *Service) CanRedo() bool {
+	if s.store != nil && s.activePath != "" {
+		canRedo, err := s.store.CanRedo(context.Background(), s.activePath)
+		return err == nil && canRedo
+	}
+	return s.history.CanRedo()
+}
 
 // WithImage returns the document with img added, replacing any image of the
 // same name.
@@ -521,6 +555,10 @@ func normalize(d *Document) error {
 }
 
 func (s *Service) change(ctx context.Context, before, after *Document, description string) error {
+	s.activePath = before.Path
+	if s.store != nil {
+		return s.repository.TransitionDocument(history.WithDescription(ctx, description), before.Path, before, after)
+	}
 	return s.history.Execute(ctx, &documentOperation{
 		repository: s.repository, before: cloneDocument(before), after: cloneDocument(after), description: description,
 	})

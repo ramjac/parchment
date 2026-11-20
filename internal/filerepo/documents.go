@@ -139,6 +139,9 @@ func (r *Repository) readDocument(ctx context.Context, path string) (document.Do
 	if err != nil {
 		return document.Document{}, nil, err
 	}
+	if err := r.recoverHistory(ctx, path); err != nil {
+		return document.Document{}, nil, err
+	}
 	content, err := readContent(path, artifact.DocumentKind, document.ErrNotFound)
 	if err != nil {
 		return document.Document{}, nil, err
