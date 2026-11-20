@@ -74,7 +74,7 @@ func TestTUIRenderGoldens(t *testing.T) {
 			t.Fatal(err)
 		}
 		h.openWithTheme(artifact.DocumentKind, false, darkTheme)
-		assertRenderedDocumentMarkdown(t, h.m.documents.readerPages)
+		assertRenderedDocumentMarkdown(t, []document.Page{{Lines: h.m.documents.readerLines}})
 		prepareGoldenView(h, 120, 40)
 		assertTUIViewGolden(t, "document-reader", h.m.View().Content, 120, 40)
 	})
@@ -107,7 +107,7 @@ func TestTUIRenderGoldens(t *testing.T) {
 				_, row := firstDocumentImageRow(t, s, s.editPages)
 				s.editPageLine = max(row-5, 0)
 			default:
-				_, row := firstDocumentImageRow(t, s, s.readerPages)
+				_, row := firstDocumentImageRow(t, s, []document.Page{{Lines: s.readerLines}})
 				s.reader.SetYOffset(max(row-5, 0))
 			}
 			view := h.m.View().Content
@@ -324,6 +324,34 @@ func TestMarkdownContentColors(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestArtifactEditorsUseViewerMarkdownColors(t *testing.T) {
+	previousProfile := compat.Profile
+	compat.Profile = colorprofile.TrueColor
+	t.Cleanup(func() { compat.Profile = previousProfile })
+	styles := tuitheme.Resolve(config.Theme{Mode: "dark", Primary: "#123456"})
+
+	note := newNoteEditor(10, styles)
+	document := newDocumentEditorState(10, styles)
+	presentation := newPresentationModel(nil, "", styles)
+	for _, tt := range []struct {
+		name string
+		set  func(string)
+		view func() string
+	}{
+		{"note", note.bodyInput.SetValue, func() string { return note.bodyInput.View() }},
+		{"document", document.body.SetValue, func() string { return document.body.View() }},
+		{"presentation", presentation.editor.SetValue, func() string { return presentation.editor.View() }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.set("# Colored heading")
+			want := lipgloss.NewStyle().Foreground(lipgloss.Color(*styles.Markdown.H1.Color)).Render(" Colored heading")
+			if view := tt.view(); !strings.Contains(view, want) {
+				t.Fatalf("heading does not use viewer color: %q", view)
+			}
+		})
 	}
 }
 

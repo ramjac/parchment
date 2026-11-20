@@ -233,11 +233,13 @@ type documentReaderState struct {
 	// reading reports that the reader, not the editor, is shown.
 	reading       bool
 	reader        viewport.Model
-	readerPages   []document.Page
+	readerLines   []string
 	readerLinks   []linkHitBox
-	readerPage    int
+	readerRows    []int
+	readerSection int
 	readerMatches []renderedMatch
 	readerMatch   int
+	readerClicks  mouseClickTracker
 	outline       []document.Section
 }
 
@@ -302,7 +304,8 @@ func newDocumentChangesState() documentChangesState {
 
 func newDocumentReaderState() documentReaderState {
 	return documentReaderState{
-		reader: viewport.New(),
+		reader:        viewport.New(),
+		readerSection: -1,
 	}
 }
 
@@ -385,8 +388,7 @@ func (s *documentsScreen) updateDocument(message tea.Msg) tea.Cmd {
 		return cmd
 	case mouseEvent:
 		if s.reading && !s.pending && !s.showChanges {
-			s.updateReaderMouse(msg)
-			return nil
+			return s.updateReaderMouse(msg)
 		}
 		cmd := s.updateMouse(msg)
 		s.layoutEditor()

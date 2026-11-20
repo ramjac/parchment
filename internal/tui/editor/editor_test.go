@@ -40,6 +40,25 @@ func TestEditorCursorAtWrapBoundaryAndResize(t *testing.T) {
 	}
 }
 
+func TestSetCursorAtRowScrollsWrappedText(t *testing.T) {
+	ed := New()
+	ed.SetWidth(5)
+	ed.SetHeight(3)
+	ed.SetValue("before\nabcdefghijklmno\nlast")
+	ed.SetCursorAtRow(Point{Line: 1, Col: 11}, 1)
+	if ed.TopLine != 1 || ed.TopRowOffset != 1 || ed.Cursor != (Point{Line: 1, Col: 11}) {
+		t.Fatalf("wrapped viewport: top=%d/%d cursor=%+v", ed.TopLine, ed.TopRowOffset, ed.Cursor)
+	}
+	if !strings.HasPrefix(ansi.Strip(ed.View()), "fghij\nklmno") || ed.StickyCol != 1 {
+		t.Fatalf("wrapped viewport content or sticky column incorrect: %q, %d", ed.View(), ed.StickyCol)
+	}
+
+	ed.SetCursorAtRow(Point{Line: 2, Col: 4}, 99)
+	if ed.TopLine != 1 || ed.TopRowOffset != 2 || !strings.Contains(ansi.Strip(ed.View()), "last") {
+		t.Fatalf("clamped viewport: top=%d/%d view=%q", ed.TopLine, ed.TopRowOffset, ed.View())
+	}
+}
+
 func TestSearchUsesSmartCaseAndWrapsMatches(t *testing.T) {
 	ed := New()
 	ed.SetValue("alpha ALPHA alpha")
@@ -83,6 +102,109 @@ func TestSearchHighlightsAndScrollsToWrappedMatch(t *testing.T) {
 	}
 	if !strings.Contains(view, "48;2;133;77;14") {
 		t.Fatalf("search match lacks the theme match style: %q", view)
+	}
+}
+
+func TestMarkdownColorsPreserveSourceAndUseViewerPalette(t *testing.T) {
+	previousProfile := compat.Profile
+	compat.Profile = colorprofile.TrueColor
+	t.Cleanup(func() { compat.Profile = previousProfile })
+
+	styles := theme.Resolve(config.Theme{Mode: "dark", Primary: "#123456"})
+	ed := New()
+	ed.SetTheme(styles)
+	ed.Blur()
+	source := "# Heading\n\n> quoted\n- item\n1. item\n[link](url) ![image](file) `code`\n"
+	ed.SetValue(source)
+	view := ed.View()
+	if got := ansi.Strip(view); got != source {
+		t.Fatalf("editor source changed: got %q want %q", got, source)
+	}
+	for _, tt := range []struct {
+		text  string
+		color *string
+	}{
+		{"# Heading", styles.Markdown.H1.Color},
+		{"> quoted", styles.Markdown.BlockQuote.Color},
+		{"-", styles.Markdown.Item.Color},
+		{"1.", styles.Markdown.Enumeration.Color},
+		{"[link](url)", styles.Markdown.LinkText.Color},
+		{"![image](file)", styles.Markdown.ImageText.Color},
+		{"`code`", styles.Markdown.Code.Color},
+	} {
+		if tt.color == nil {
+			t.Fatalf("no viewer color for %q", tt.text)
+		}
+		want := lipgloss.NewStyle().Foreground(lipgloss.Color(*tt.color)).Render(tt.text)
+		if !strings.Contains(view, want) {
+			t.Errorf("%q does not use viewer color %s in %q", tt.text, *tt.color, view)
+		}
+	}
+	if strings.Contains(view, "\x1b[1m") || strings.Contains(view, "\x1b[4m") || strings.Contains(view, "48;") {
+		t.Fatalf("Markdown introduced non-color styling: %q", view)
+	}
+	if ed.Value() != source {
+		t.Fatal("rendering changed the editor buffer")
+	}
+}
+
+func TestMarkdownColorsRespectFencesSelectionAndEdits(t *testing.T) {
+	previousProfile := compat.Profile
+	compat.Profile = colorprofile.TrueColor
+	t.Cleanup(func() { compat.Profile = previousProfile })
+
+	styles := theme.Resolve(config.Theme{Mode: "dark"})
+	ed := New()
+	ed.SetTheme(styles)
+	ed.Blur()
+	ed.SetHeight(2)
+	ed.SetValue("```go\n# not a heading\n```\n# actual heading")
+	ed.SetCursorAtRow(Point{Line: 1}, 0)
+	view := ed.View()
+	heading := lipgloss.NewStyle().Foreground(lipgloss.Color(*styles.Markdown.H1.Color))
+	if strings.Contains(view, heading.Render("# not a heading")) {
+		t.Fatalf("code fence was parsed as Markdown heading: %q", view)
+	}
+	ed.SetCursorAtRow(Point{Line: 3}, 0)
+	if !strings.Contains(ed.View(), heading.Render("# actual heading")) {
+		t.Fatalf("heading after code fence lacks color: %q", ed.View())
+	}
+	ed.Selection = Selection{Anchor: Point{Line: 3, Col: 2}, Active: true}
+	ed.Cursor = Point{Line: 3, Col: 8}
+	if !strings.Contains(ed.View(), styles.Selection.Render("actual")) {
+		t.Fatalf("selection does not override Markdown foreground: %q", ed.View())
+	}
+	ed.DeleteSelection()
+	if strings.Contains(ansi.Strip(ed.View()), "actual") || !strings.Contains(ansi.Strip(ed.View()), "#  heading") {
+		t.Fatalf("editing colored source failed: %q", ed.View())
+	}
+	ed.Undo()
+	if !strings.Contains(ed.View(), heading.Render("# actual heading")) {
+		t.Fatalf("undo did not restore Markdown color: %q", ed.View())
+	}
+}
+
+func TestMarkdownColorsRespectQuotedFencesAndHeadingLevels(t *testing.T) {
+	previousProfile := compat.Profile
+	compat.Profile = colorprofile.TrueColor
+	t.Cleanup(func() { compat.Profile = previousProfile })
+	styles := theme.Resolve(config.Theme{Mode: "dark"})
+	h2 := "#123456"
+	styles.Markdown.H2.Color = &h2
+
+	ed := New()
+	ed.SetTheme(styles)
+	ed.Blur()
+	ed.SetValue("> ```\n> ## code\n> ```\n\n## heading\n")
+	ed.SetHeight(3)
+	ed.SetCursorAtRow(Point{Line: 1}, 0)
+	color := lipgloss.NewStyle().Foreground(lipgloss.Color(h2))
+	if strings.Contains(ed.View(), color.Render("## code")) {
+		t.Fatalf("quoted code fence rendered as a heading: %q", ed.View())
+	}
+	ed.SetCursorAtRow(Point{Line: 4}, 0)
+	if !strings.Contains(ed.View(), color.Render("## heading")) {
+		t.Fatalf("second-level heading did not use H2 viewer color: %q", ed.View())
 	}
 }
 

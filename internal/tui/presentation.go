@@ -77,6 +77,7 @@ type presentationViewState struct {
 	width, height int
 	searchMatches []renderedMatch
 	searchMatch   int
+	browseClicks  mouseClickTracker
 }
 
 type presentationEditorState struct {
@@ -291,6 +292,7 @@ func (m *presentationModel) updatePresentation(message tea.Msg) (tea.Model, tea.
 		m.loadedStatus = msg.description
 		return m, cmd
 	case tea.KeyPressMsg:
+		m.browseClicks.reset()
 		var cmd tea.Cmd
 		if m.pdfPrompt != promptNone {
 			cmd = m.updatePDFPrompt(msg)
@@ -310,6 +312,35 @@ func (m *presentationModel) updatePresentation(message tea.Msg) (tea.Model, tea.
 			var cmd tea.Cmd
 			m.editor, cmd = m.editor.Update(toTeaMouseMessage(mouseMsg))
 			return m, cmd
+		}
+		if !m.editing && !m.pending && m.pdfPrompt == promptNone && !m.find.active &&
+			!m.active && msg.Action == mousePress && msg.Button == mouseLeft {
+			if msg.Y < 2 || msg.Y >= m.height-3 || msg.X < 2 || msg.X >= m.width-2 {
+				m.browseClicks.reset()
+				return m, nil
+			}
+			row := msg.Y - 2 + m.scroll
+			lines := m.pageLines()
+			if row >= 0 && row < len(lines) {
+				clickColumn := msg.X - 2
+				if _, start, ok := renderedWordHit(lines[row], clickColumn); ok {
+					clickColumn = start
+				}
+				if m.browseClicks.click(clickColumn, row, time.Now()) {
+					preferredLine := slideSourceLine(m.item.Source, m.page)
+					line, column, found := sourcePositionForRenderedWord(lines[row], msg.X-2, m.item.Source, preferredLine)
+					if !found {
+						line, column = preferredLine, 0
+					}
+					cmd := m.beginEdit()
+					m.editor.SetCursorAtRow(editor.Point{Line: line, Col: column}, row-m.scroll)
+					return m, cmd
+				}
+			} else {
+				m.browseClicks.reset()
+			}
+		} else if !m.editing && msg.Action == mousePress {
+			m.browseClicks.reset()
 		}
 		return m, nil
 	}
@@ -680,10 +711,18 @@ func (m *presentationModel) moveSearchMatch(step int) tea.Cmd {
 }
 
 func (m *presentationModel) beginEdit() tea.Cmd {
+	line, col, row := slideSourceLine(m.item.Source, m.page), 0, 0
+	if m.scroll > 0 {
+		if mappedLine, mappedCol, mappedRow, found := sourcePositionAtViewport(
+			m.pageLines(), m.scroll, m.visibleLines(), m.item.Source, line,
+		); found {
+			line, col, row = mappedLine, mappedCol, mappedRow
+		}
+	}
 	m.editing, m.discardWarning = true, false
 	m.status, m.errMessage = "", ""
 	m.editor.SetValue(m.item.Source)
-	m.moveEditorToLine(slideSourceLine(m.item.Source, m.page))
+	m.editor.SetCursorAtRow(editor.Point{Line: line, Col: col}, row)
 	m.startAutosaveSession()
 	return tea.Batch(m.editor.Focus(), m.scheduleAutosave(m.autosaveSession))
 }
@@ -768,13 +807,7 @@ func (m *presentationModel) close() tea.Cmd {
 }
 
 func (m *presentationModel) moveEditorToLine(line int) {
-	if len(m.editor.Lines) > 0 {
-		m.editor.Cursor.Line = min(max(line, 0), len(m.editor.Lines)-1)
-	} else {
-		m.editor.Cursor.Line = 0
-	}
-	m.editor.Cursor.Col = 0
-	m.editor.StickyCol = 0
+	m.editor.SetCursorAtRow(editor.Point{Line: line}, 0)
 }
 
 func trimLeftSpaces(s string) string {

@@ -87,6 +87,76 @@ func TestDocumentEditorPastesClipboardText(t *testing.T) {
 	}
 }
 
+func TestDocumentReaderDoubleClickOpensEditorAtClickedWord(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{})
+	s := h.m.documents
+	s.width = 70
+	s.snapshot = document.Document{
+		Body:   "# Heading\n\nThis paragraph contains targetword for editing.",
+		Layout: document.DefaultLayout(),
+	}
+	s.startReading(s.snapshot)
+
+	row, column := renderedWordPosition(s.readerLines, "targetword")
+	x, y := column+2, row+3
+	msg := mouseEvent{X: x, Y: y, Action: mousePress, Button: mouseLeft}
+	s.updateReaderMouse(msg)
+	if !s.reading {
+		t.Fatal("single click unexpectedly opened the editor")
+	}
+	msg.X += 3
+	s.updateReaderMouse(msg)
+	if s.reading {
+		t.Fatal("double click did not open the editor")
+	}
+	if got, want := s.body.Cursor, (editor.Point{Line: 2, Col: len("This paragraph contains ")}); got != want {
+		t.Fatalf("editor cursor = %+v, want %+v", got, want)
+	}
+}
+
+func TestDocumentReaderOpeningEditorPreservesScrolledLocation(t *testing.T) {
+	for _, action := range []string{"double click", "keyboard"} {
+		t.Run(action, func(t *testing.T) {
+			h := newDocumentHarness(t, document.Draft{})
+			s := h.m.documents
+			s.resize(70, 18)
+			var body strings.Builder
+			body.WriteString("# Heading\n\n")
+			for i := range 60 {
+				fmt.Fprintf(&body, "unique%03d content\n\n", i)
+			}
+			s.startReading(document.Document{Body: body.String(), Layout: document.DefaultLayout()})
+			topRow, _ := renderedWordPosition(s.readerLines, "unique040")
+			clickRow, column := renderedWordPosition(s.readerLines, "unique045")
+			s.reader.SetYOffset(topRow)
+			if s.reader.YOffset() != topRow {
+				t.Fatal("reader did not scroll to the test location")
+			}
+			if action == "keyboard" {
+				s.updateReaderKey(tea.KeyPressMsg{Code: 'e', Text: "e"})
+				if !strings.Contains(strings.Split(ansi.Strip(s.body.View()), "\n")[0], "unique040") {
+					t.Fatalf("editor did not preserve the reader's scrolled content: %q", s.body.View())
+				}
+			} else {
+				msg := mouseEvent{X: column + 2, Y: 3 + clickRow - topRow, Action: mousePress, Button: mouseLeft}
+				s.updateReaderMouse(msg)
+				s.updateReaderMouse(msg)
+				viewLines := strings.Split(ansi.Strip(s.body.View()), "\n")
+				wantRow := min(clickRow-topRow, s.body.Height-1)
+				if wantRow >= len(viewLines) || !strings.Contains(viewLines[wantRow], "unique045") {
+					t.Fatalf("clicked text is not visible in editor: %q", s.body.View())
+				}
+				if got := string(s.body.Lines[s.body.Cursor.Line]); !strings.Contains(got, "unique045") {
+					t.Fatalf("cursor landed on %q", got)
+				}
+			}
+			if s.reading || s.body.TopLine == 0 {
+				t.Fatalf("editor not scrolled: reading=%t top=%d", s.reading, s.body.TopLine)
+			}
+		})
+	}
+}
+
 func TestDocumentEditorFindBarUsesSharedMatchHighlighting(t *testing.T) {
 	h := newDocumentHarness(t, document.Draft{Body: "alpha ALPHA alpha"})
 	s := h.m.documents
@@ -929,7 +999,8 @@ func TestDocumentPreviewFitsTerminalAndScrolls(t *testing.T) {
 func TestDocumentOpensInReaderWithOutline(t *testing.T) {
 	h := newHarness(t, "")
 	brk := "\n\n" + document.PageBreakMarkup + "\n\n"
-	body := "# Intro\n\nHello." + brk + "# Middle\n\nMore." + brk + "## Detail\n\nEnd."
+	body := "# Intro\n\nHello.\n\n" + strings.Repeat("First paragraph.\n\n", 15) + brk +
+		"# Middle\n\nMore.\n\n" + strings.Repeat("Middle paragraph.\n\n", 15) + brk + "## Detail\n\nEnd."
 	if _, err := h.docs.Create(context.Background(), h.path, document.Draft{Body: body}); err != nil {
 		t.Fatal(err)
 	}
@@ -939,7 +1010,7 @@ func TestDocumentOpensInReaderWithOutline(t *testing.T) {
 		t.Fatalf("stage = %d, reading = %v", h.m.stage, s.reading)
 	}
 	view := h.m.View().Content
-	for _, want := range []string{"Outline", "› Intro", "Middle", "Detail", "Page 1/", "Hello."} {
+	for _, want := range []string{"Outline", "› Intro", "Middle", "Detail", "Hello."} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("reader is missing %q:\n%s", want, view)
 		}
@@ -947,34 +1018,25 @@ func TestDocumentOpensInReaderWithOutline(t *testing.T) {
 	if lines := strings.Count(view, "\n") + 1; lines > h.m.height {
 		t.Fatalf("reader view has %d lines for a %d-line terminal", lines, h.m.height)
 	}
-	if len(s.readerPages) < 3 {
-		t.Fatalf("pages = %d", len(s.readerPages))
+	if strings.Contains(view, "Page 1/") || len(s.readerLines) < s.reader.Height()*2 {
+		t.Fatal("reader still uses pages or did not retain the entire document")
 	}
 	h.key("}")
-	if s.readerPage != s.outline[1].Page-1 || !strings.Contains(h.m.View().Content, "› Middle") {
-		t.Fatalf("} moved to page %d", s.readerPage+1)
+	if s.reader.YOffset() != s.readerRows[1] || !strings.Contains(h.m.View().Content, "› Middle") {
+		t.Fatalf("} moved to row %d", s.reader.YOffset())
 	}
 	h.key("{")
-	if s.readerPage != 0 {
-		t.Fatalf("{ moved to page %d", s.readerPage+1)
-	}
-	h.key("]")
-	if s.readerPage != 1 {
-		t.Fatalf("] moved to page %d", s.readerPage+1)
-	}
-	h.key("[")
-	h.key("[")
-	if s.readerPage != len(s.readerPages)-1 {
-		t.Fatalf("[ did not wrap to the last page: %d", s.readerPage+1)
+	if s.reader.YOffset() != s.readerRows[0] {
+		t.Fatalf("{ moved to row %d", s.reader.YOffset())
 	}
 	_, targets := s.outlineLines()
 	for row, target := range targets {
 		if target == 1 {
-			h.send(mouseEvent{X: 3, Y: row + 2, Action: mousePress, Button: mouseLeft})
+			h.send(mouseEvent{X: 3, Y: row + 3, Action: mousePress, Button: mouseLeft})
 		}
 	}
-	if s.readerPage != s.outline[1].Page-1 {
-		t.Fatalf("clicking the outline moved to page %d", s.readerPage+1)
+	if s.reader.YOffset() != s.readerRows[1] {
+		t.Fatalf("clicking the outline moved to row %d", s.reader.YOffset())
 	}
 
 	h.key("e")
@@ -988,6 +1050,91 @@ func TestDocumentOpensInReaderWithOutline(t *testing.T) {
 	h.key("q")
 	if !h.quit {
 		t.Fatal("q did not quit the reader")
+	}
+}
+
+func TestDocumentReaderContinuousRenderingAndNavigation(t *testing.T) {
+	h := newHarness(t, "")
+	layout := document.DefaultLayout()
+	layout.Header, layout.Footer = "PRINT HEADER", "PRINT FOOTER"
+	body := "# Repeated\n\nFirst.\n\n" + document.PageBreakMarkup + "\n\nSecond.\n\n" +
+		document.SectionBreakMarkup(2, false) + "\n\nThird.\n\n" +
+		"```text\n" + document.PageBreakMarkup + "\n```\n\n" +
+		"```parchment-private\nhidden payload\n```\n\n" +
+		strings.Repeat("Long paragraph for scrolling.\n\n", 25) +
+		"<a id=\"destination\"></a>\n\n# Repeated\n\n[Back](#repeated)\n\n" +
+		strings.Repeat("Trailing text.\n\n", 25)
+	if _, err := h.docs.Create(context.Background(), h.path, document.Draft{Body: body, Layout: layout}); err != nil {
+		t.Fatal(err)
+	}
+	h.open(artifact.DocumentKind)
+	h.send(tea.WindowSizeMsg{Width: 100, Height: 20})
+	s := h.m.documents
+	text := ansi.Strip(strings.Join(s.readerLines, "\n"))
+	for _, want := range []string{"First.", "Second.", "Third.", "Trailing text."} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("continuous reader omitted %q", want)
+		}
+	}
+	if strings.Contains(text, "PRINT HEADER") || strings.Contains(text, "PRINT FOOTER") ||
+		strings.Contains(text, "hidden payload") || strings.Count(text, "parchment:page-break") != 1 {
+		t.Fatalf("reader included print layout or altered fenced code:\n%s", text)
+	}
+	if strings.Index(text, "Second.")-strings.Index(text, "First.") > 200 {
+		t.Fatal("explicit page break inserted a page-sized gap")
+	}
+	var anchor, duplicate int = -1, -1
+	for i, sec := range s.outline {
+		switch sec.Slug {
+		case "destination":
+			anchor = i
+		case "repeated-1":
+			duplicate = i
+		}
+	}
+	if anchor < 0 || duplicate < 0 || s.readerRows[anchor] < 0 || s.readerRows[duplicate] < 0 {
+		t.Fatalf("missing anchor or duplicate heading positions: %+v rows=%v", s.outline, s.readerRows)
+	}
+	s.navigateToTarget("destination")
+	if s.reader.YOffset() != s.readerRows[anchor] {
+		t.Fatalf("anchor navigation landed on %d, want %d", s.reader.YOffset(), s.readerRows[anchor])
+	}
+	s.navigateToTarget("repeated-1")
+	if s.reader.YOffset() != s.readerRows[duplicate] {
+		t.Fatalf("duplicate heading navigation landed on %d, want %d", s.reader.YOffset(), s.readerRows[duplicate])
+	}
+	if len(s.readerLinks) != 1 {
+		t.Fatalf("reader links = %+v", s.readerLinks)
+	}
+	box := s.readerLinks[0]
+	outlineWidth, _ := s.readerPaneWidths()
+	h.send(mouseEvent{X: outlineWidth + 3 + box.startCol, Y: box.row + 3 - s.reader.YOffset(), Action: mousePress, Button: mouseLeft})
+	if s.reader.YOffset() != s.readerRows[0] {
+		t.Fatalf("scrolled link did not navigate to first heading: %d", s.reader.YOffset())
+	}
+	stored, err := h.docs.Get(context.Background(), h.path)
+	if err != nil || stored.Body != body {
+		t.Fatalf("reader changed canonical Markdown: %v", err)
+	}
+}
+
+func TestDocumentReaderSectionNavigationInShortDocument(t *testing.T) {
+	h := newHarness(t, "")
+	if _, err := h.docs.Create(context.Background(), h.path, document.Draft{
+		Body: "# First\n\nText.\n\n# Second\n\nText.\n\n# Third\n",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.open(artifact.DocumentKind)
+	s := h.m.documents
+	h.key("}")
+	h.key("}")
+	if s.currentSection() != 2 {
+		t.Fatalf("section navigation stopped at %d", s.currentSection())
+	}
+	h.key("{")
+	if s.currentSection() != 1 {
+		t.Fatalf("reverse section navigation stopped at %d", s.currentSection())
 	}
 }
 

@@ -373,7 +373,9 @@ func TestViewerResizePreservesSearchResultAndScroll(t *testing.T) {
 	t.Run("document reader", func(t *testing.T) {
 		h := newHarness(t, "")
 		if _, err := h.docs.Create(context.Background(), h.path, document.Draft{
-			Body: "needle\n\n" + document.PageBreakMarkup + "\n\nneedle", Layout: document.DefaultLayout(),
+			Body: strings.Repeat("A long line of words that wraps differently when the document reader changes width.\n\n", 25) +
+				"needle\n\n" + document.PageBreakMarkup + "\n\n" + strings.Repeat("Filler.\n\n", 20) + "needle\n\n" +
+				strings.Repeat("End.\n\n", 20), Layout: document.DefaultLayout(),
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -382,12 +384,13 @@ func TestViewerResizePreservesSearchResultAndScroll(t *testing.T) {
 		h.typeText("needle")
 		h.key("enter")
 		s := h.m.documents
-		current, page, offset := s.readerMatch, s.readerPage, s.reader.YOffset()
-		for _, size := range []tea.WindowSizeMsg{{Width: 100, Height: 25}, {Width: 90, Height: 25}} {
+		current := s.readerMatch
+		for _, size := range []tea.WindowSizeMsg{{Width: 100, Height: 25}, {Width: 60, Height: 25}, {Width: 90, Height: 25}} {
 			h.send(size)
-			if s.readerMatch != current || s.readerPage != page || s.reader.YOffset() != offset {
-				t.Fatalf("resize reset reader: match=%d/%d page=%d/%d offset=%d/%d",
-					s.readerMatch, current, s.readerPage, page, s.reader.YOffset(), offset)
+			row := s.readerMatches[s.readerMatch].row
+			if s.readerMatch != current || row < s.reader.YOffset() || row >= s.reader.YOffset()+s.reader.Height() {
+				t.Fatalf("resize lost reader match %d/%d at row %d, viewport %d:%d",
+					s.readerMatch, current, row, s.reader.YOffset(), s.reader.YOffset()+s.reader.Height())
 			}
 		}
 	})

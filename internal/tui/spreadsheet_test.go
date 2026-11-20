@@ -1317,6 +1317,21 @@ func TestSpreadsheetUpdateMouseMsgEdgeCases(t *testing.T) {
 	}
 }
 
+func TestSpreadsheetDoubleClickEditsSelectedCell(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "existing"}}})
+	msg := mouseEvent{
+		X: m.rowHeaderWidth() + 3, Y: 4, Action: mousePress, Button: mouseLeft,
+	}
+	m.Update(msg)
+	if m.editing {
+		t.Fatal("single click unexpectedly started editing")
+	}
+	m.Update(msg)
+	if !m.editing || m.input.Value() != "existing" {
+		t.Fatalf("double click did not edit the selected cell: editing=%t input=%q", m.editing, m.input.Value())
+	}
+}
+
 func TestSpreadsheetView_TerminalTooSmall(t *testing.T) {
 	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "data"}}})
 

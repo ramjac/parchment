@@ -47,6 +47,9 @@ parchment presentation create ~/Documents/tour.md
 Create commands refuse to overwrite existing files. Run
 `parchment <command> --help` for command-specific options.
 
+The note, document, and presentation source editors color Markdown using the
+viewer palette while keeping its syntax visible and unchanged.
+
 ## Notes
 
 Notes are flat Markdown for quick capture. They do not have a document outline,
@@ -75,9 +78,10 @@ layout, printing, and embedded media.
 
 ### Navigate and edit
 
-An existing document opens in its reader, with an outline beside the rendered
-pages. Use `↑` / `↓` to scroll across pages, `←` / `→` or `[` / `]` to change
-pages, `{` / `}` to move between sections, and click an outline entry to jump.
+An existing document opens in its continuously scrolling reader, with an outline
+beside the rendered text on wide terminals. Use `↑` / `↓` to scroll, `{` / `}`
+to move between sections, and click an outline entry to jump. Print layout and
+page breaks are shown only in print preview and printed output.
 Press `e` to edit, `v` to list tracked changes, `u` or `Ctrl+R` to undo or redo, and
 `Esc` or `q` to leave the reader.
 

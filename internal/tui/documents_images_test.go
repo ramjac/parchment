@@ -32,13 +32,13 @@ func TestDocumentImagesRendererUpdates(t *testing.T) {
 			documentImageEnv(t, protocol)
 			img := documentTestImage(t)
 			h := newDocumentHarness(t, document.Draft{
-				Body:   "![Diagram](" + img.Name + ")\n\n" + document.PageBreakMarkup + "\n\nText only.",
+				Body:   "![Diagram](" + img.Name + ")\n\n" + document.PageBreakMarkup + "\n\n" + strings.Repeat("More text.\n\n", 30) + "Text only.",
 				Images: []artifact.Image{img},
 			})
 			h.key("esc")
 			prepareGoldenView(h, 96, 30)
 			s := h.m.documents
-			_, row := firstDocumentImageRow(t, s, s.readerPages)
+			_, row := firstDocumentImageRow(t, s, []document.Page{{Lines: s.readerLines}})
 			s.reader.SetYOffset(row)
 			staleSession := s.autosaveSession + 1
 			out := make(terminalRenderOutput, 128)
@@ -64,11 +64,11 @@ func TestDocumentImagesRendererUpdates(t *testing.T) {
 			if strings.Contains(output, "\x1b[2J") || strings.Count(output, prefix) != 1 {
 				t.Fatal("scrolling cleared the terminal or transmitted separate image strips")
 			}
-			program.Send(tea.KeyPressMsg{Code: tea.KeyRight})
+			program.Send(tea.KeyPressMsg{Code: tea.KeyEnd})
 			output = readTerminalOutputUntil(t, out, "Text only.")
 			if strings.Contains(output, "\x1b[2J") || strings.Contains(output, prefix) ||
 				strings.Count(output, "\n") < 29 {
-				t.Fatal("leaving the image page did not repaint its old rows without clearing")
+				t.Fatal("scrolling past the image did not repaint its old rows without clearing")
 			}
 		})
 	}
@@ -132,9 +132,7 @@ func TestDocumentImagesReaderAndDraftPreview(t *testing.T) {
 	h.key("esc")
 	s := h.m.documents
 	saved := s.snapshot
-	page, row := firstDocumentImageRow(t, s, s.readerPages)
-	s.readerPage = page
-	s.showReaderPage()
+	_, row := firstDocumentImageRow(t, s, []document.Page{{Lines: s.readerLines}})
 	s.reader.SetYOffset(row)
 	view := h.m.View().Content
 	if !strings.Contains(ansi.Strip(view), "▀") {
@@ -144,7 +142,7 @@ func TestDocumentImagesReaderAndDraftPreview(t *testing.T) {
 		t.Fatalf("image broke internal links: %+v", s.readerLinks)
 	}
 	box := s.readerLinks[0]
-	if !strings.Contains(ansi.Strip(s.readerPages[box.page].Lines[box.row]), "Continue") {
+	if !strings.Contains(ansi.Strip(s.readerLines[box.row]), "Continue") {
 		t.Fatal("link hitbox no longer points at its label")
 	}
 	h.key("e")
@@ -164,7 +162,7 @@ func TestDocumentImagesReaderAndDraftPreview(t *testing.T) {
 	s.images = append(s.images, draftImage)
 	s.body.SetValue("# Unsaved\n\n![Draft diagram][picture]\n\n[picture]: " + draftImage.Name + " \"Draft title\"")
 	h.key("f5")
-	page, row = firstDocumentImageRow(t, s, s.editPages)
+	page, row := firstDocumentImageRow(t, s, s.editPages)
 	s.editPage, s.editPageLine = page, row
 	if view := h.m.View().Content; !strings.Contains(ansi.Strip(view), "▀") {
 		t.Fatalf("draft preview has no graphical image:\n%s", view)
@@ -284,14 +282,12 @@ func TestDocumentImagesProtocolsAndTransitions(t *testing.T) {
 			documentImageEnv(t, protocol)
 			img := documentTestImage(t)
 			h := newDocumentHarness(t, document.Draft{
-				Body:   "# Image\n\n![Diagram](" + img.Name + ")\n\n" + document.PageBreakMarkup + "\n\nText only.",
+				Body:   "# Image\n\n![Diagram](" + img.Name + ")\n\n" + document.PageBreakMarkup + "\n\n" + strings.Repeat("More text.\n\n", 30) + "Text only.",
 				Images: []artifact.Image{img},
 			})
 			h.key("esc")
 			s := h.m.documents
-			page, row := firstDocumentImageRow(t, s, s.readerPages)
-			s.readerPage = page
-			s.showReaderPage()
+			_, row := firstDocumentImageRow(t, s, []document.Page{{Lines: s.readerLines}})
 			s.reader.SetYOffset(row)
 			view := h.m.View().Content
 			prefix := map[string]string{"kitty": "\x1b_Ga=T", "iterm": "\x1b]1337;File=", "sixel": "\x1bP0;1;0q"}[protocol]
@@ -347,11 +343,11 @@ func TestDocumentImagesProtocolsAndTransitions(t *testing.T) {
 				t.Fatal("undersized terminal did not clear Kitty placements")
 			}
 			prepareGoldenView(h, 96, 30)
-			h.key("right")
+			h.key("end")
 			if strings.Contains(h.m.View().Content, prefix) {
-				t.Fatal("changing to a text-only page retained image graphics")
+				t.Fatal("scrolling to text retained image graphics")
 			}
-			h.key("left")
+			h.key("home")
 			_, cmd = h.m.Update(tea.KeyPressMsg{Code: []rune(string("e"))[0], Text: string("e")})
 			h.run(cmd)
 			view = h.m.View().Content
@@ -362,7 +358,7 @@ func TestDocumentImagesProtocolsAndTransitions(t *testing.T) {
 				t.Fatal("editor transition did not clear Kitty placements")
 			}
 			h.key("f5")
-			page, row = firstDocumentImageRow(t, s, s.editPages)
+			page, row := firstDocumentImageRow(t, s, s.editPages)
 			s.editPage, s.editPageLine = page, row
 			if !strings.Contains(h.m.View().Content, prefix) {
 				t.Fatal("print preview omitted image graphics")

@@ -107,6 +107,73 @@ func TestPresentationSourceFindBarSearchAndClose(t *testing.T) {
 	}
 }
 
+func TestPresentationDoubleClickOpensEditorAtClickedWord(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+	m.setItem(presentation.Presentation{
+		Source: "# Deck\n\n## Slide\n\nThis paragraph contains targetword for editing.\n",
+	})
+	m.goToPage(1)
+	row, column := renderedWordPosition(m.pageLines(), "targetword")
+	msg := mouseEvent{X: column + 2, Y: row + 2, Action: mousePress, Button: mouseLeft}
+	drivePresentation(t, m, msg)
+	if m.editing {
+		t.Fatal("single click unexpectedly opened the editor")
+	}
+	msg.X += 3
+	drivePresentation(t, m, msg)
+	if !m.editing {
+		t.Fatal("double click did not open the editor")
+	}
+	if got, want := m.editor.Cursor, (editor.Point{Line: 4, Col: len("This paragraph contains ")}); got != want {
+		t.Fatalf("editor cursor = %+v, want %+v", got, want)
+	}
+}
+
+func TestPresentationOpeningEditorPreservesScrolledLocation(t *testing.T) {
+	for _, action := range []string{"double click", "keyboard"} {
+		t.Run(action, func(t *testing.T) {
+			m, _, _ := newPresentationTestModel(t)
+			m.Update(tea.WindowSizeMsg{Width: 70, Height: 18})
+			var source strings.Builder
+			source.WriteString("# Deck\n\n## Slide\n\n")
+			for i := range 60 {
+				fmt.Fprintf(&source, "unique%03d content\n\n", i)
+			}
+			m.setItem(presentation.Presentation{Source: source.String()})
+			m.goToPage(1)
+			lines := m.pageLines()
+			topRow, _ := renderedWordPosition(lines, "unique040")
+			clickRow, column := renderedWordPosition(lines, "unique045")
+			m.scroll = topRow
+			m.clampScroll()
+			if m.scroll != topRow {
+				t.Fatal("slide did not scroll to the test location")
+			}
+			if action == "keyboard" {
+				drivePresentation(t, m, tea.KeyPressMsg{Code: 'e', Text: "e"})
+				if !strings.Contains(strings.Split(ansi.Strip(m.editor.View()), "\n")[0], "unique040") {
+					t.Fatalf("editor did not preserve the slide's scrolled content: %q", m.editor.View())
+				}
+			} else {
+				msg := mouseEvent{X: column + 2, Y: 2 + clickRow - topRow, Action: mousePress, Button: mouseLeft}
+				drivePresentation(t, m, msg)
+				drivePresentation(t, m, msg)
+				viewLines := strings.Split(ansi.Strip(m.editor.View()), "\n")
+				wantRow := min(clickRow-topRow, m.editor.Height-1)
+				if wantRow >= len(viewLines) || !strings.Contains(viewLines[wantRow], "unique045") {
+					t.Fatalf("clicked text is not visible in editor: %q", m.editor.View())
+				}
+				if got := string(m.editor.Lines[m.editor.Cursor.Line]); !strings.Contains(got, "unique045") {
+					t.Fatalf("cursor landed on %q", got)
+				}
+			}
+			if !m.editing || m.editor.TopLine == 0 {
+				t.Fatalf("editor not scrolled: editing=%t top=%d", m.editing, m.editor.TopLine)
+			}
+		})
+	}
+}
+
 func advancePresentationTransition(m *presentationModel, frames int) {
 	for range frames {
 		if !m.active {

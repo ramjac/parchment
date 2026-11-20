@@ -45,14 +45,15 @@ type documentImagePlacement struct {
 }
 
 type documentImageState struct {
-	rows         map[rune]documentImageRow
-	nextMarker   rune
-	graphicsUsed bool
-	prepared     map[string][]string
-	outline      []document.Section
-	navigation   map[rune]int
-	source       string
-	frame        uint64
+	rows           map[rune]documentImageRow
+	nextMarker     rune
+	graphicsUsed   bool
+	prepared       map[string][]string
+	outline        []document.Section
+	navigation     map[rune]int
+	markNavigation bool
+	source         string
+	frame          uint64
 }
 
 var documentImageAnchorRE = regexp.MustCompile(`(?i)<a\s+(?:id|name)=["']([^"']+)["'][^>]*>`)
@@ -81,6 +82,7 @@ func (s *documentsScreen) documentMarkdownFormatter(doc document.Document) docum
 		var images []*ast.Image
 		var headings []*ast.Heading
 		var anchors []*ast.RawHTML
+		var htmlBlocks []*ast.HTMLBlock
 		_ = ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
 			if entering {
 				switch node := node.(type) {
@@ -90,11 +92,13 @@ func (s *documentsScreen) documentMarkdownFormatter(doc document.Document) docum
 					headings = append(headings, node)
 				case *ast.RawHTML:
 					anchors = append(anchors, node)
+				case *ast.HTMLBlock:
+					htmlBlocks = append(htmlBlocks, node)
 				}
 			}
 			return ast.WalkContinue, nil
 		})
-		if len(assets) > 0 {
+		if len(assets) > 0 || s.imageState.markNavigation {
 			for _, heading := range headings {
 				if heading.Parent() != root {
 					continue
@@ -115,6 +119,25 @@ func (s *documentsScreen) documentMarkdownFormatter(doc document.Document) docum
 				for i := 0; i < anchor.Segments.Len(); i++ {
 					segment := anchor.Segments.At(i)
 					raw.Write(segment.Value(source))
+				}
+				if s.imageState.markNavigation {
+					for _, block := range htmlBlocks {
+						for _, match := range documentImageAnchorRE.FindAllStringSubmatch(string(block.Text(source)), -1) {
+							for index, section := range s.imageState.outline {
+								if !section.Anchor || section.Slug != match[1] || s.documentSectionMarked(index) {
+									continue
+								}
+								marker := s.nextDocumentImageMarker()
+								s.imageState.navigation[marker] = index
+								start := len(source)
+								source = append(source, []byte(string(marker))...)
+								paragraph := ast.NewParagraph()
+								paragraph.AppendChild(paragraph, ast.NewTextSegment(text.NewSegment(start, len(source))))
+								block.Parent().InsertBefore(block.Parent(), block, paragraph)
+								break
+							}
+						}
+					}
 				}
 				match := documentImageAnchorRE.FindStringSubmatch(raw.String())
 				if len(match) == 0 {

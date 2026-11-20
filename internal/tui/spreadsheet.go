@@ -74,6 +74,7 @@ type spreadsheetGrid struct {
 	find          findBar
 	searchMatches []spreadsheetSearchMatch
 	searchMatch   int
+	gridClicks    mouseClickTracker
 }
 
 // spreadsheetAsync holds status, error messages, and async operation tracking.
@@ -391,6 +392,7 @@ func (m *spreadsheetModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case shiftEnterMsg:
 		return m, m.updateEditKey(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
 	case tea.KeyPressMsg:
+		m.gridClicks.reset()
 		if m.charts.mode != chartClosed {
 			return m, m.updateCharts(msg)
 		}
@@ -418,8 +420,17 @@ func (m *spreadsheetModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 					m.column = min(m.columnOffset+column, spreadsheet.MaxColumns-1)
 					m.normalizeSpanCursor()
 					m.scrollToSelection()
+					if !m.selecting && m.gridClicks.click(m.row, m.column, time.Now()) {
+						return m, m.beginEdit(cellDraft(m.cell(m.row, m.column)))
+					}
+				} else {
+					m.gridClicks.reset()
 				}
+			} else {
+				m.gridClicks.reset()
 			}
+		} else if msg.Action == mousePress {
+			m.gridClicks.reset()
 		}
 		return m, nil
 	}

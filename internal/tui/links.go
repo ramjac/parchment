@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
+	"example.com/parchment/internal/artifactfile"
 	"example.com/parchment/internal/document"
 )
 
@@ -60,6 +61,7 @@ func extractAndRewriteLinks(lines []string) ([]string, []linkRef) {
 // so raw URLs are not printed, styles links with the shared link role,
 // and computes hit-test boxes for mouse navigation in reader and preview.
 func (s *documentsScreen) paginateDocumentWithLinks(doc document.Document) ([]document.Page, []linkHitBox, error) {
+	s.imageState.markNavigation = false
 	s.imageState.rows = make(map[rune]documentImageRow)
 	s.imageState.prepared = make(map[string][]string)
 	s.imageState.nextMarker = 0
@@ -73,11 +75,50 @@ func (s *documentsScreen) paginateDocumentWithLinks(doc document.Document) ([]do
 		return nil, nil, err
 	}
 	s.locateDocumentSections(pages)
+	return pages, s.styleDocumentLinks(pages, allLinks), nil
+}
 
-	if len(allLinks) == 0 {
-		return pages, nil, nil
+func (s *documentsScreen) renderReaderDocument(doc document.Document, width int) ([]string, []document.Section, []int, []linkHitBox, error) {
+	doc.Body = artifactfile.StripPrivateBlocks(doc.Body)
+	outline, err := document.Outline(doc)
+	if err != nil {
+		return nil, nil, nil, nil, err
 	}
+	filtered := outline[:0]
+	for _, section := range outline {
+		if !section.SectionBreak {
+			filtered = append(filtered, section)
+		}
+	}
+	outline = filtered
+	s.imageState.rows = make(map[rune]documentImageRow)
+	s.imageState.prepared = make(map[string][]string)
+	s.imageState.nextMarker = 0
+	s.imageState.outline = outline
+	s.imageState.navigation = make(map[rune]int)
+	s.imageState.source = doc.Body
+	s.imageState.markNavigation = true
+	lines := s.documentMarkdownFormatter(doc)(strings.Split(doc.Body, "\n"), width, 0, "")
+	rows := make([]int, len(outline))
+	for i := range rows {
+		rows[i] = -1
+	}
+	for row, line := range lines {
+		lines[row] = strings.Map(func(r rune) rune {
+			if index, ok := s.imageState.navigation[r]; ok {
+				rows[index] = row
+				return -1
+			}
+			return r
+		}, line)
+	}
+	_, links := extractAndRewriteLinks(strings.Split(doc.Body, "\n"))
+	pages := []document.Page{{Lines: lines}}
+	boxes := s.styleDocumentLinks(pages, links)
+	return lines, outline, rows, boxes, nil
+}
 
+func (s *documentsScreen) styleDocumentLinks(pages []document.Page, allLinks []linkRef) []linkHitBox {
 	var hitBoxes []linkHitBox
 	linkStyle := s.theme.Link
 
@@ -93,7 +134,8 @@ func (s *documentsScreen) paginateDocumentWithLinks(doc document.Document) ([]do
 				label := curLink.label
 				idx := strings.Index(clean[searchOffset:], label)
 				if idx >= 0 {
-					startCol := searchOffset + idx
+					startByte := searchOffset + idx
+					startCol := runewidth.StringWidth(clean[:startByte])
 					endCol := startCol + runewidth.StringWidth(label)
 
 					hitBoxes = append(hitBoxes, linkHitBox{
@@ -110,7 +152,7 @@ func (s *documentsScreen) paginateDocumentWithLinks(doc document.Document) ([]do
 					line = prefix + linkStyle.Render(ansi.Strip(middle)) + suffix
 					pages[p].Lines[r] = line
 
-					searchOffset = endCol
+					searchOffset = startByte + len(label)
 					linkIdx++
 				} else {
 					if r+1 < len(pages[p].Lines) {
@@ -125,10 +167,10 @@ func (s *documentsScreen) paginateDocumentWithLinks(doc document.Document) ([]do
 								idx1 := strings.Index(clean[searchOffset:], part1)
 								idx2 := strings.Index(nextClean, part2)
 								if idx1 >= 0 && idx2 >= 0 {
-									startCol1 := searchOffset + idx1
+									startCol1 := runewidth.StringWidth(clean[:searchOffset+idx1])
 									endCol1 := startCol1 + runewidth.StringWidth(part1)
 
-									startCol2 := idx2
+									startCol2 := runewidth.StringWidth(nextClean[:idx2])
 									endCol2 := startCol2 + runewidth.StringWidth(part2)
 
 									hitBoxes = append(hitBoxes, linkHitBox{
@@ -173,5 +215,5 @@ func (s *documentsScreen) paginateDocumentWithLinks(doc document.Document) ([]do
 		}
 	}
 
-	return pages, hitBoxes, nil
+	return hitBoxes
 }
