@@ -1,9 +1,9 @@
 # Future Work
 
-This document turns the items in the README's **Future work** section into
-step-by-step, PR-sized implementation plans across five sequential phases (**38
-focused Pull Requests** total, with Phase 5's external interop and persistent
-history specifications detailed in
+This document records the remaining work and acceptance criteria from
+Parchment's original five-phase implementation plan (**38 focused Pull
+Requests** total, with Phase 5's external interop and persistent history
+specifications detailed in
 [`docs/ODF_DOCX_Interop_Plan.md`](docs/ODF_DOCX_Interop_Plan.md) and
 [`docs/Persistent_Undo_Redo_Plan.md`](docs/Persistent_Undo_Redo_Plan.md)).
 Every PR is scoped (`~200–600` LOC) so `main` stays buildable and passes
@@ -233,8 +233,8 @@ respect `undo_limit`, and hand off undo/redo cleanly on save.
 
 ### 5.1 Render Markdown and graphical images in viewers and previews
 - Integrate `github.com/charmbracelet/glamour` across **Note `F5` previews,
-  Document reader/preview pages, and Presentation slide views** (updating the
-  Note preview description in `README.md` to reflect rendered Markdown), styled dynamically
+  Document reader/preview pages, and Presentation slide views** (documenting
+  rendered Markdown behavior in the user guide), styled dynamically
   from Parchment's active theme (**Section 9**).
 - **Hybrid Document Pagination:**
   - In Document reader and `F5` preview, split the Markdown body into runs at
@@ -804,8 +804,8 @@ flowchart TD
 - [x] **PR 6 — Editor `go-runewidth` Soft Wrapping (Section 4):** Implement CJK/emoji-aware soft line wrapping, visual row `Up`/`Down` with `StickyCol`, and wrapped mouse/selection coordinate mapping in `internal/tui/editor`.
 
 ### Phase 2: State Safety & CLI Core (PRs 7–13)
-- [ ] **PR 7 — Buffered `Ctrl+S` Spreadsheet TUI Editing (Section 3; implemented in current branch, pending merge):** Convert `spreadsheetModel` from immediate per-cell disk writes on `Enter` to buffered workbook editing with `Ctrl+S` save committing 1 service history entry, in-session buffer undo/redo (`u`/`Ctrl+Z`/`Ctrl+R`), clean handoff to service undo/redo, and `Esc`/`q` dirty-close confirmation.
-- [ ] **PR 8 — Spreadsheet Autosave Recovery Drafts (Section 3; implemented in current branch, pending merge):** Add `spreadsheetRecoveryData` snapshot schema (`baseline`, `dirty`, cursor, pending cell input), cancellable autosave ticks, reopen prompts, and conflict checks after PR 7 provides buffered dirty workbook state.
+- [x] **PR 7 — Buffered `Ctrl+S` Spreadsheet TUI Editing (Section 3):** Convert `spreadsheetModel` from immediate per-cell disk writes on `Enter` to buffered workbook editing with `Ctrl+S` save committing 1 service history entry, in-session buffer undo/redo (`u`/`Ctrl+Z`/`Ctrl+R`), clean handoff to service undo/redo, and `Esc`/`q` dirty-close confirmation.
+- [x] **PR 8 — Spreadsheet Autosave Recovery Drafts (Section 3):** Add `spreadsheetRecoveryData` snapshot schema (`baseline`, `dirty`, cursor, pending cell input), cancellable autosave ticks, reopen prompts, and conflict checks after PR 7 provides buffered dirty workbook state.
 - [x] **PR 9 — Presentation Autosave Recovery Drafts (Section 3):** Add `presentationRecoveryData` snapshot schema (`baseline`, `source`), cancellable autosave ticks, reopen directly into Markdown source editing (`editing = true`), and conflict checks.
 - [x] **PR 10 — Explicit Plain Markdown CLI Conversion (Section 2):** Add `parchment convert <file> [--kind document|note|presentation] [--yes]` (default `document`, TTY `[y/N]` prompt, `created_at` from file `mtime` UTC).
 - [x] **PR 11 — `#REF!` Persistence & Spreadsheet Deletion (Section 11):** Add `spreadsheet.ErrorValue("#REF!")` sentinel allowing error formulas to evaluate and save cleanly while rejecting malformed syntax; add 1-based `delete-row`, `delete-column`, and `delete-sheet` (CLI + TUI shortcuts) with formula shifting.
@@ -831,10 +831,10 @@ flowchart TD
 ### Phase 4: Extended Domain Engines (PRs 24–30)
 - [x] **PR 24a — Tagged `Value` Union & Evaluator Migration (Section 11):** Define `type Value struct { Kind ValueKind; Num float64; Str string; Err ErrorCode }`, migrate `Evaluate` return type and callers across CLI, TUI, and CSV export, providing `Value.Float64()`.
 - [x] **PR 24b — Formula Lexer, AST, Span Rewriter & Cross-Sheet Refs (Section 11):** Implement zero-dependency recursive-descent Lexer/AST in `internal/spreadsheet/formula` with byte spans for reference shifting, cross-sheet references (`Sheet2!A1`), and `#REF!` rewriting on sheet deletion.
-- [ ] **PR 25a — Formula Ranges & Aggregate Functions (Section 11):** Add rectangular ranges (`A1:B10`) with range shrinking/collapsing on deletion, and `SUM`, `AVERAGE`, `COUNT`, `MIN`, `MAX` with nested calls.
-- [ ] **PR 25b — Formula String Coercion & Runtime Error Propagation (Section 11):** Add `""`-escaped `StringLiteral`s with Excel/Calc coercion, and persisted `#DIV/0!`, `#CIRCULAR!`, `#VALUE!`, `#NAME?`, `#REF!` propagation.
+- [x] **PR 25a — Formula Ranges & Aggregate Functions (Section 11):** Add rectangular ranges (`A1:B10`) with range shrinking/collapsing on deletion, and `SUM`, `AVERAGE`, `COUNT`, `MIN`, `MAX` with nested calls.
+- [x] **PR 25b — Formula String Coercion & Runtime Error Propagation (Section 11):** Add `""`-escaped `StringLiteral`s with Excel/Calc coercion, and persisted `#DIV/0!`, `#CIRCULAR!`, `#VALUE!`, `#NAME?`, `#REF!` propagation.
 - [x] **PR 26 — Presentation Embedded Images & CLI/TUI Parity (Section 13):** Add embedded `PNG`/`JPEG`/`GIF` payloads to `parchment-presentation`, `presentation image|images|image-extract|image-remove` CLI commands, and graphical TUI slide image rendering.
-- [ ] **PR 27 — Presentation `.image` & Sandboxed `.code` Directives (Section 13):** Support `.image <embedded-name> [h] [w]` and directory-confined `.code <relpath> [bounds]` (whole file, `N`, `N,M`, `/regexp/`, `/START/,/END/`, stripping `// OMIT` and `// HL`, `<= 1 MiB`, no `..`/symlink escape).
+- [x] **PR 27 — Presentation `.image` & Sandboxed `.code` Directives (Section 13):** Support `.image <embedded-name> [h] [w]` and directory-confined `.code <relpath> [bounds]` (whole file, `N`, `N,M`, `/regexp/`, `/START/,/END/`, stripping `// OMIT` and `// HL`, `<= 1 MiB`, no `..`/symlink escape).
 - [x] **PR 29 — `internal/imageedit` Service & Image CLI (Section 8):** Reject Markdown-envelope `ImageKind` in `internal/artifactfile`, implement `golang.org/x/image/draw` (`CatmullRom`) crop & proportional resize (`<= 16384px`, EXIF orientation, PNG->JPEG white matte), and add `parchment image crop|resize`.
 - [x] **PR 30 — Magic-Byte Image Routing & TUI Image View (Section 8):** Sniff PNG/JPEG magic bytes in `resolveTUITarget` before Markdown detection and add the TUI image screen (`termimg` preview, numeric crop/resize forms, count/memory-bounded undo/redo, confirmed save/save-as, refreshed save snapshots).
 

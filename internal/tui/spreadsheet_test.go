@@ -14,6 +14,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/filerepo"
@@ -1230,6 +1231,9 @@ func TestSpreadsheetView_HeaderAndStatus(t *testing.T) {
 	if strings.Contains(view, "— Sheet1") {
 		t.Fatalf("single Sheet1 workbook should not append sheet suffix, view:\n%s", view)
 	}
+	if strings.Contains(view, "Sheet 1/1") {
+		t.Fatalf("single-sheet workbook should not show a sheet indicator, view:\n%s", view)
+	}
 
 	// Add second sheet and verify suffix appears
 	if _, err := service.AddSheet(context.Background(), id, "Sheet2"); err != nil {
@@ -1239,6 +1243,22 @@ func TestSpreadsheetView_HeaderAndStatus(t *testing.T) {
 	viewMulti := m.View()
 	if !strings.Contains(viewMulti, "— Sheet1") {
 		t.Fatalf("multi-sheet workbook should append sheet suffix '— Sheet1', view:\n%s", viewMulti)
+	}
+	viewLines := strings.Split(viewMulti, "\n")
+	statusLine := viewLines[len(viewLines)-1]
+	indicator := "Sheet 1/2"
+	if index := strings.Index(statusLine, indicator); index < 0 ||
+		ansi.StringWidth(statusLine[:index]) != (m.width-len(indicator))/2 {
+		t.Fatalf("sheet indicator is not centered:\n%s", statusLine)
+	}
+	if !strings.Contains(statusLine, "2×2") {
+		t.Fatalf("sheet dimensions missing beside centered indicator: %q", statusLine)
+	}
+	driveSheet(t, m, sheetKey("tab"))
+	viewLines = strings.Split(m.View(), "\n")
+	statusLine = viewLines[len(viewLines)-1]
+	if !strings.Contains(statusLine, "Sheet 2/2") {
+		t.Fatalf("sheet indicator did not follow active sheet: %q", statusLine)
 	}
 }
 

@@ -4,151 +4,119 @@
   "kind": "document",
   "format_version": 2,
   "created_at": "2026-01-15T09:00:00Z",
-  "modified_at": "2026-11-19T17:47:16.687167476Z"
+  "modified_at": "2026-11-20T00:41:00.989507972Z"
 }
 ```
 
 <!-- parchment-body -->
 
-# Community Garden Project Brief
+# Parchment: a file-first guide
 
-## Purpose and goal
+Parchment is a local-first terminal workspace for notes, documents,
+spreadsheets, and presentations. Each artifact remains an ordinary file at the
+path you choose. This document demonstrates Markdown and document features;
+the complete
+[artifact overview](#four-kinds-of-artifact) is also available as a
+[presentation](presentation.md).
 
-This brief shows Markdown supported by
-[CommonMark](https://spec.commonmark.org/0.31.2/ "version 0.31.2") in the
-document body. It is still ordinary Markdown: **bold**, *emphasis*,
-***both together***, _alternate emphasis_, __alternate bold__, and `inline
-code` remain readable in any compatible editor.
+<a id="file-first"></a>
+## Files, not a vault
 
-Turn the unused lot on Cedar Street into a shared garden with accessible paths,
-raised beds, and a shaded seating area.
+Open or create one file by path. Parchment does not require `init`, a workspace,
+or a Parchment-owned library:
 
-The garden is a place for everyone.\
-This line ends with a hard break; this next sentence follows on a new line.
-
-An ampersand can be written as `&amp;` (&amp;), and a plant can be shown with
-a numeric character reference: &#x1F331;.
-
-Escapes keep punctuation literal: \*not emphasis\*, \[not a link\], and \#
-not a heading. In a code span, use double backticks to include a backtick:
-`` ` ``.
-
-## Plan and materials
-
-1. Confirm access and water with the property owner.
-2. Invite neighbors to a weekend cleanup.
-3. Build the first four beds:
-   * Set out the cedar boards.
-   + Fill each bed with compost and soil.
-4. Publish a volunteer schedule.
-
-The first weekend has a few simple jobs:
-
-- Clear litter and mark the accessible route.
-
-- Prepare the beds:
-
-  1) Measure and assemble the frames.
-  2) Leave room for the paved path.
-
-- Plant seeds and label each row.
-
-The list above is loose because its items contain paragraphs and a nested list.
-This continuation line belongs to the same item.
-
-> **Access first:** keep the route level and wide enough for a wheelchair.
->
-> Ask the property owner before changing the water connection.
-The water tap must remain clear during the work.
->
-> > A nested quote can preserve a note from the planning meeting.
->
->     Bring gloves, a trowel, and a water bottle.
-
-A short setext heading
-----------------------
-
-This paragraph follows a setext heading. The next thematic break separates
-the plan from the measures.
-
-***
-
-A level-one section heading
-=========================
-
-This heading uses the other setext underline.
-
-## Success measures
-
-- At least twelve households participate in the first season.
-- Keep one bed reachable from the paved path.
-- Share a short harvest update with the neighborhood each month.
-
-For background, see the [project brief][brief], the [brief][] again, or the
-shortcut reference [brief]. An inline link can include a destination title:
-[CommonMark's home page](https://commonmark.org/ "CommonMark").
-
-![Raised beds in the garden plan](image-04509606a67711eb.png "Garden plan")
-
-The same embedded illustration also works as a reference image:
-
-![Garden beds and accessible path][garden-plan]
-
-An automatic link recognizes <https://example.org/garden> and an email address
-such as <garden@example.org>. Raw inline HTML is also part of CommonMark:
-<kbd>Ctrl</kbd> is a planning shortcut, and <span>inline markup</span> stays
-in the source.
-
-### Fenced and indented code
-
-Fenced blocks can carry an info string:
-
-```text
-Bed 1: herbs
-Bed 2: tomatoes
+```sh
+parchment ~/Documents/launch-brief.md
+parchment tui ~/Documents/launch-brief.md --kind document
 ```
 
-Tildes can fence a block too:
+The hidden metadata and structured data stay in that same Markdown file. The
+body below the `parchment-body` marker remains canonical Markdown that other
+editors can inspect and change.
 
-~~~json
-{"beds": 4, "accessible_path": true}
-~~~
+## Four kinds of artifact
 
-Four leading spaces create an indented code block:
+### Notes stay lightweight
 
-    water = "shared tap"
-    volunteers = 12
+Notes are flat, unstructured text. Use them for quick capture, then search or
+preview Markdown in the native editor. Document outline navigation and
+in-document link jumps are deliberately **Document-only**.
 
-### Raw HTML blocks
+### Documents add structure
 
-CommonMark leaves HTML blocks available when a document needs them.
+Documents add a page layout, a heading outline, and clickable internal links
+in the reader and preview. Markdown links remain ordinary editable source:
+[jump to printing](#print-and-share).
 
-<section>
-  <p>A block-level HTML element can contain ordinary HTML.</p>
-</section>
+> **Try it:** open this file in Parchment, press `e` to edit, `Ctrl+O` to
+> toggle the outline, and `F5` to preview. `Ctrl+S` saves; saved changes can
+> be undone and redone.
 
-<!-- A comment block is preserved in the Markdown source. -->
+### Spreadsheets keep formulas explicit
 
-<?planning note="processing instruction block"?>
+Workbooks store named sheets and formula cells in a structured block; plain
+text that looks like a formula is not evaluated unless it is marked as one.
+Open [`budget.md`](budget.md) to inspect a multi-sheet planning example.
 
-<!DOCTYPE garden-brief>
+### Presentations turn Markdown into slides
 
-<![CDATA[Garden notes can include a CDATA block.]]>
+Presentations use `#` for the deck title, `##` for slides, and `: ` for
+speaker notes. Open [`presentation.md`](presentation.md) for a walkthrough
+of Parchment itself.
 
-<script>
-const beds = 4;
-</script>
+## Markdown remains portable
 
-<custom-garden-note>
-  A custom element is an HTML block as well.
-</custom-garden-note>
+Common Markdown stays legible in any editor: **bold**, *emphasis*,
+***both together***, `inline code`, nested lists, block quotes, and links.
+This document also uses an explicit anchor and a heading-generated link target.
 
-#### Fourth-level heading
-##### Fifth-level heading
-###### Sixth-level heading
+- Page breaks and section breaks control document pagination.
+- Headers, footers, page numbers, margins, columns, and a document-wide print
+  font are stored in the document layout.
+- Reserved `parchment-*` data blocks are hidden by Parchment renderers; ordinary
+  code fences and the source body are preserved.
 
-[brief]: https://example.org/garden-brief "Community garden brief"
-[garden-plan]: image-04509606a67711eb.png "Raised-bed plan"
+<!-- parchment:section-break columns=2 continuous -->
+
+## Print and share
+
+Documents can print as plain text or PDF. PDF output supports Markdown styling,
+embedded images, page geometry, columns, and running headers and footers.
+Document import and export support the documented ODT and DOCX subset, with
+warnings when conversion is lossy.
+
+```sh
+parchment document print examples/document.md
+parchment document print examples/document.md --format pdf -o /tmp/guide.pdf
+parchment document export examples/document.md --format docx -o /tmp/guide.docx
+```
+
+### Embedded media
+
+Images can live in the document's own structured payload and be referenced
+with ordinary Markdown. This illustration is an example of an embedded asset;
+its bytes travel with the Markdown file.
+
+![Example image embedded in the document](image-04509606a67711eb.png "Embedded media")
+
+The same payload can be referenced by name:
+
+![The embedded image can be reused][embedded-example]
+
+## Review and recover
+
+`F3` records unsaved document edits as a proposal; `F4` reviews proposals, and
+accepting one updates the live document. Saving or editing in another program
+does not silently overwrite external changes. Recovery drafts protect unsaved
+note and document edits, while persistent service undo and redo survive
+restarts.
+
+For the configuration and filesystem model, see the
+[Technical Guide](../docs/Technical_Guide.md). All examples are ordinary files:
+copy one before experimenting if you want to keep the checked-in version
+unchanged.
+
+[embedded-example]: image-04509606a67711eb.png "Example embedded asset"
 
 <!-- parchment-blocks -->
 
@@ -165,9 +133,10 @@ const beds = 4;
       "left": 25
     },
     "columns": 1,
-    "header": "",
-    "footer": "",
-    "page_numbers": "center"
+    "header": "Parchment|{title}|{page}",
+    "footer": "Local-first files||Page {page}/{pages}",
+    "page_numbers": "right",
+    "font": "times"
   },
   "images": [
     {
