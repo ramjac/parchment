@@ -5,10 +5,11 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/compat"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 
 	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/tui/theme"
@@ -34,7 +35,7 @@ func TestEditorCursorAtWrapBoundaryAndResize(t *testing.T) {
 	}
 	ed.SetWidth(5)
 	ed.SetValue("new")
-	if ed.TopRowOffset != 0 || !strings.Contains(ed.View(), "new") {
+	if ed.TopRowOffset != 0 || !strings.Contains(ansi.Strip(ed.View()), "new") {
 		t.Fatalf("loading text retained stale wrap offset: offset=%d view=%q", ed.TopRowOffset, ed.View())
 	}
 }
@@ -62,10 +63,10 @@ func TestSearchUsesSmartCaseAndWrapsMatches(t *testing.T) {
 }
 
 func TestSearchHighlightsAndScrollsToWrappedMatch(t *testing.T) {
-	previousProfile := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
+	previousProfile := compat.Profile
+	compat.Profile = colorprofile.TrueColor
 	t.Cleanup(func() {
-		lipgloss.SetColorProfile(previousProfile)
+		compat.Profile = previousProfile
 	})
 
 	ed := New()
@@ -291,7 +292,7 @@ func TestEditorValue(t *testing.T) {
 		}
 
 		// Delete '!' using backspace
-		ed.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		ed.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
 		if got, want := ed.Value(), "Hello\nWorld"; got != want {
 			t.Errorf("Value() after Backspace = %q, want %q", got, want)
 		}
@@ -383,7 +384,7 @@ func TestEditorShiftSelectionAndCollapse(t *testing.T) {
 
 	// Shift+Right 5 times -> select "Hello"
 	for range 5 {
-		ed.Update(tea.KeyMsg{Type: tea.KeyShiftRight})
+		ed.Update(tea.KeyPressMsg{Code: tea.KeyRight, Mod: tea.ModShift})
 	}
 	if !ed.Selection.Active {
 		t.Fatalf("Selection should be active after Shift+Right")
@@ -393,7 +394,7 @@ func TestEditorShiftSelectionAndCollapse(t *testing.T) {
 	}
 
 	// Unshifted Left moves to start (0) and collapses
-	ed.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	ed.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
 	if ed.Selection.Active {
 		t.Fatalf("Selection should collapse on unshifted Left")
 	}
@@ -403,10 +404,10 @@ func TestEditorShiftSelectionAndCollapse(t *testing.T) {
 
 	// Select again
 	for range 5 {
-		ed.Update(tea.KeyMsg{Type: tea.KeyShiftRight})
+		ed.Update(tea.KeyPressMsg{Code: tea.KeyRight, Mod: tea.ModShift})
 	}
 	// Unshifted Right moves to end (5) and collapses
-	ed.Update(tea.KeyMsg{Type: tea.KeyRight})
+	ed.Update(tea.KeyPressMsg{Code: tea.KeyRight})
 	if ed.Selection.Active {
 		t.Fatalf("Selection should collapse on unshifted Right")
 	}
@@ -421,7 +422,7 @@ func TestEditorDestructiveOperations(t *testing.T) {
 	ed.SetValue("Hello World")
 	ed.Selection = Selection{Anchor: Point{Line: 0, Col: 5}, Active: true}
 	ed.Cursor = Point{Line: 0, Col: 11}
-	ed.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	ed.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if ed.Value() != "Hello\n" {
 		t.Fatalf("Value() after Enter = %q, want %q", ed.Value(), "Hello\n")
 	}
@@ -431,7 +432,7 @@ func TestEditorDestructiveOperations(t *testing.T) {
 	ed.SetValue("Hello World")
 	ed.Selection = Selection{Anchor: Point{Line: 0, Col: 5}, Active: true}
 	ed.Cursor = Point{Line: 0, Col: 11}
-	ed.Update(tea.KeyMsg{Type: tea.KeyTab})
+	ed.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	if ed.Value() != "Hello  " {
 		t.Fatalf("Value() after Tab = %q, want %q", ed.Value(), "Hello  ")
 	}
@@ -441,7 +442,7 @@ func TestEditorDestructiveOperations(t *testing.T) {
 	ed.SetValue("Hello World")
 	ed.Selection = Selection{Anchor: Point{Line: 0, Col: 0}, Active: true}
 	ed.Cursor = Point{Line: 0, Col: 6}
-	ed.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	ed.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
 	if ed.Value() != "World" {
 		t.Fatalf("Value() after Backspace = %q, want %q", ed.Value(), "World")
 	}
@@ -453,12 +454,12 @@ func TestEditorMouseClickAndSelection(t *testing.T) {
 	ed.SetWidth(40)
 	ed.SetHeight(10)
 
-	ed.handleMouse(tea.MouseMsg{X: 3, Y: 0, Action: tea.MouseActionPress})
+	ed.handleMouse(mouseEvent{X: 3, Y: 0, Action: mousePress})
 	if ed.Cursor.Line != 0 || ed.Cursor.Col != 3 {
 		t.Fatalf("Cursor after press = %+v, want Line 0 Col 3", ed.Cursor)
 	}
 
-	ed.handleMouse(tea.MouseMsg{X: 8, Y: 0, Action: tea.MouseActionMotion})
+	ed.handleMouse(mouseEvent{X: 8, Y: 0, Action: mouseMotion})
 	if !ed.Selection.Active {
 		t.Fatalf("Selection not active after drag")
 	}
@@ -476,7 +477,7 @@ func TestEditorDoubleTripleClick(t *testing.T) {
 	ed.lastClickPos = Point{Line: 0, Col: 2}
 	ed.clickCount = 1
 
-	ed.handleMouse(tea.MouseMsg{X: 2, Y: 0, Action: tea.MouseActionPress})
+	ed.handleMouse(mouseEvent{X: 2, Y: 0, Action: mousePress})
 	if ed.clickCount != 2 {
 		t.Fatalf("clickCount = %d, want 2", ed.clickCount)
 	}
@@ -484,7 +485,7 @@ func TestEditorDoubleTripleClick(t *testing.T) {
 		t.Fatalf("SelectedText() on double click = %q, want %q", sel, "Hello")
 	}
 
-	ed.handleMouse(tea.MouseMsg{X: 2, Y: 0, Action: tea.MouseActionPress})
+	ed.handleMouse(mouseEvent{X: 2, Y: 0, Action: mousePress})
 	if ed.clickCount != 3 {
 		t.Fatalf("clickCount = %d, want 3", ed.clickCount)
 	}
@@ -522,12 +523,12 @@ func TestEditorUndoAndRedo(t *testing.T) {
 	}
 
 	// Test key handling
-	ed.Update(tea.KeyMsg{Type: tea.KeyCtrlZ})
+	ed.Update(tea.KeyPressMsg{Code: 'z', Mod: tea.ModCtrl})
 	if ed.Value() != "Hello" {
 		t.Fatalf("Ctrl+Z failed: Value = %q, want %q", ed.Value(), "Hello")
 	}
 
-	ed.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	ed.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 	if ed.Value() != "Hello World" {
 		t.Fatalf("Ctrl+R failed: Value = %q, want %q", ed.Value(), "Hello World")
 	}
@@ -681,22 +682,22 @@ func TestEditorCanRedo(t *testing.T) {
 		ed.Focus()
 		ed.InsertString(" Added")
 
-		ed.Update(tea.KeyMsg{Type: tea.KeyCtrlZ})
+		ed.Update(tea.KeyPressMsg{Code: 'z', Mod: tea.ModCtrl})
 		if !ed.CanRedo() {
 			t.Errorf("CanRedo() after Ctrl+Z = false, want true")
 		}
 
-		ed.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+		ed.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 		if ed.CanRedo() {
 			t.Errorf("CanRedo() after Ctrl+R = true, want false")
 		}
 
-		ed.Update(tea.KeyMsg{Type: tea.KeyCtrlZ})
+		ed.Update(tea.KeyPressMsg{Code: 'z', Mod: tea.ModCtrl})
 		if !ed.CanRedo() {
 			t.Errorf("CanRedo() after Ctrl+Z = false, want true")
 		}
 
-		ed.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+		ed.Update(tea.KeyPressMsg{Code: 'y', Mod: tea.ModCtrl})
 		if ed.CanRedo() {
 			t.Errorf("CanRedo() after Ctrl+Y = true, want false")
 		}
@@ -745,21 +746,21 @@ func TestEditorCanUndo(t *testing.T) {
 
 		ed.SetValue("Line1")
 		ed.Cursor = Point{Line: 0, Col: 5}
-		ed.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		ed.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 		if !ed.CanUndo() {
 			t.Errorf("CanUndo() = false, want true after Enter key")
 		}
 
 		ed.SetValue("Line1\nLine2")
 		ed.Cursor = Point{Line: 1, Col: 0}
-		ed.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		ed.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
 		if !ed.CanUndo() {
 			t.Errorf("CanUndo() = false, want true after Backspace key")
 		}
 
 		ed.SetValue("Line1\nLine2")
 		ed.Cursor = Point{Line: 0, Col: 5}
-		ed.Update(tea.KeyMsg{Type: tea.KeyDelete})
+		ed.Update(tea.KeyPressMsg{Code: tea.KeyDelete})
 		if !ed.CanUndo() {
 			t.Errorf("CanUndo() = false, want true after Delete key")
 		}
@@ -910,14 +911,14 @@ func TestEditorRedoDirectAndEdgeCases(t *testing.T) {
 	}
 
 	// Test ctrl+y key
-	ed.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	ed.Update(tea.KeyPressMsg{Code: 'y', Mod: tea.ModCtrl})
 	if ed.Value() != "Start End" {
 		t.Fatalf("Ctrl+Y Redo failed: Value = %q, want %q", ed.Value(), "Start End")
 	}
 
 	ed.Undo()
 	// Test ctrl+shift+z key
-	ed.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ctrl+shift+z")})
+	ed.Update(tea.KeyPressMsg{Code: 'z', Mod: tea.ModCtrl | tea.ModShift})
 	if ed.Value() != "Start End" {
 		t.Fatalf("Ctrl+Shift+Z Redo failed: Value = %q, want %q", ed.Value(), "Start End")
 	}
@@ -934,7 +935,7 @@ func TestEditorMouseWheelAndPageUpDown(t *testing.T) {
 	ed.Focus()
 
 	// Mouse wheel down
-	ed.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	ed.Update(mouseEvent{Button: mouseWheelDown})
 	if ed.TopLine != 3 {
 		t.Fatalf("TopLine after WheelDown = %d, want 3", ed.TopLine)
 	}
@@ -943,19 +944,19 @@ func TestEditorMouseWheelAndPageUpDown(t *testing.T) {
 	}
 
 	// Mouse wheel up
-	ed.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp})
+	ed.Update(mouseEvent{Button: mouseWheelUp})
 	if ed.TopLine != 0 {
 		t.Fatalf("TopLine after WheelUp = %d, want 0", ed.TopLine)
 	}
 
 	// PgDn
-	ed.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	ed.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 	if ed.Cursor.Line != 10 {
 		t.Fatalf("Cursor.Line after PgDn = %d, want 10", ed.Cursor.Line)
 	}
 
 	// PgUp
-	ed.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	ed.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 	if ed.Cursor.Line != 0 {
 		t.Fatalf("Cursor.Line after PgUp = %d, want 0", ed.Cursor.Line)
 	}
@@ -969,7 +970,7 @@ func TestEditorViewRendering(t *testing.T) {
 	ed.Focus()
 
 	view := ed.View()
-	if !strings.Contains(view, "Hello") {
+	if !strings.Contains(ansi.Strip(view), "Hello") {
 		t.Fatalf("View() missing text: %q", view)
 	}
 
@@ -1146,7 +1147,7 @@ func TestEditorLine(t *testing.T) {
 
 		// Inserting newline via Enter key moves cursor to line 1
 		ed.Focus()
-		ed.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		ed.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 		if got := ed.Line(); got != 1 {
 			t.Errorf("Line() after Enter = %d, want 1", got)
 		}
@@ -1158,7 +1159,7 @@ func TestEditorLine(t *testing.T) {
 
 		// Backspace at Col 0 of line 2 merges line 2 into line 1
 		ed.Cursor = Point{Line: 2, Col: 0}
-		ed.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		ed.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
 		if got := ed.Line(); got != 1 {
 			t.Errorf("Line() after Backspace line merge = %d, want 1", got)
 		}
@@ -1177,17 +1178,17 @@ func TestEditorLine(t *testing.T) {
 		ed.SetHeight(10)
 		ed.Focus()
 
-		ed.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+		ed.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 		if got := ed.Line(); got != 10 {
 			t.Errorf("Line() after PgDown = %d, want 10", got)
 		}
 
-		ed.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+		ed.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 		if got := ed.Line(); got != 20 {
 			t.Errorf("Line() after second PgDown = %d, want 20", got)
 		}
 
-		ed.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+		ed.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 		if got := ed.Line(); got != 10 {
 			t.Errorf("Line() after PgUp = %d, want 10", got)
 		}
@@ -1568,7 +1569,7 @@ func TestUndo(t *testing.T) {
 			t.Fatalf("Value = %q, want %q", ed.Value(), "Text Extra")
 		}
 
-		ed.Update(tea.KeyMsg{Type: tea.KeyCtrlZ})
+		ed.Update(tea.KeyPressMsg{Code: 'z', Mod: tea.ModCtrl})
 		if ed.Value() != "Text" {
 			t.Errorf("Value() after ctrl+z = %q, want %q", ed.Value(), "Text")
 		}
@@ -1788,15 +1789,15 @@ func TestRedo(t *testing.T) {
 		}{
 			{
 				name: "ctrl+r",
-				msg:  tea.KeyMsg{Type: tea.KeyCtrlR},
+				msg:  tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl},
 			},
 			{
 				name: "ctrl+y",
-				msg:  tea.KeyMsg{Type: tea.KeyCtrlY},
+				msg:  tea.KeyPressMsg{Code: 'y', Mod: tea.ModCtrl},
 			},
 			{
 				name: "ctrl+shift+z",
-				msg:  tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ctrl+shift+z")},
+				msg:  tea.KeyPressMsg{Code: 'z', Mod: tea.ModCtrl | tea.ModShift},
 			},
 		}
 

@@ -13,12 +13,12 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/tui/editor"
 	"example.com/parchment/internal/tui/termimg"
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
@@ -296,13 +296,13 @@ func newDocumentEditorState(undoLimit int, theme Theme) documentEditorState {
 
 func newDocumentChangesState() documentChangesState {
 	return documentChangesState{
-		changeReview: viewport.New(0, 0),
+		changeReview: viewport.New(),
 	}
 }
 
 func newDocumentReaderState() documentReaderState {
 	return documentReaderState{
-		reader: viewport.New(0, 0),
+		reader: viewport.New(),
 	}
 }
 
@@ -368,11 +368,22 @@ func (s *documentsScreen) updateDocument(message tea.Msg) tea.Cmd {
 		return s.documentPDFExported(msg)
 	case imageLoadedMsg:
 		return s.imageLoaded(msg)
-	case tea.KeyMsg:
+	case tea.PasteMsg:
+		if s.find.active {
+			break
+		}
+		if s.prompt != promptNone || s.pending || s.reading || s.previewing || s.showChanges {
+			return nil
+		}
+		var cmd tea.Cmd
+		s.body, cmd = s.body.Update(msg)
+		s.layoutEditor()
+		return cmd
+	case tea.KeyPressMsg:
 		cmd := s.updateKey(msg)
 		s.layoutEditor()
 		return cmd
-	case tea.MouseMsg:
+	case mouseEvent:
 		if s.reading && !s.pending && !s.showChanges {
 			s.updateReaderMouse(msg)
 			return nil
@@ -562,7 +573,7 @@ func (s *documentsScreen) documentPDFExported(msg documentPDFExportedMsg) tea.Cm
 	return s.resumeAutosave()
 }
 
-func (s *documentsScreen) updateKey(msg tea.KeyMsg) tea.Cmd {
+func (s *documentsScreen) updateKey(msg tea.KeyPressMsg) tea.Cmd {
 	key := msg.String()
 	if s.width < 40 || s.height < 10 {
 		if key == "q" && !s.pending && !s.dirty() {
@@ -630,7 +641,7 @@ func (s *documentsScreen) reload(showChanges bool, run func(context.Context) (st
 	}
 }
 
-func (s *documentsScreen) updateChangesKey(msg tea.KeyMsg) tea.Cmd {
+func (s *documentsScreen) updateChangesKey(msg tea.KeyPressMsg) tea.Cmd {
 	key := msg.String()
 	if s.reviewing {
 		switch key {
@@ -694,9 +705,9 @@ func (s *documentsScreen) resolveTracked(id string, accept bool) tea.Cmd {
 }
 
 func (s *documentsScreen) resizeChangeReview() {
-	offset := s.changeReview.YOffset
-	s.changeReview.Width = max(s.width-4, 1)
-	s.changeReview.Height = max(s.height-8, 1)
+	offset := s.changeReview.YOffset()
+	s.changeReview.SetWidth(max(s.width-4, 1))
+	s.changeReview.SetHeight(max(s.height-8, 1))
 	if s.reviewing {
 		s.setChangeReviewContent()
 		s.changeReview.SetYOffset(offset)
@@ -719,7 +730,7 @@ func (s *documentsScreen) setChangeReviewContent() {
 			}
 		}
 	}
-	s.changeReview.SetContent(wrapReviewText(content, max(s.changeReview.Width, 1)))
+	s.changeReview.SetContent(wrapReviewText(content, max(s.changeReview.Width(), 1)))
 	s.changeReview.GotoTop()
 }
 

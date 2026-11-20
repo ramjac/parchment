@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2/compat"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/config"
@@ -48,9 +48,9 @@ func TestExtractAndRewriteLinks(t *testing.T) {
 }
 
 func TestDocumentReaderClickableInternalLinks(t *testing.T) {
-	previousProfile := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(previousProfile) })
+	previousProfile := compat.Profile
+	compat.Profile = colorprofile.TrueColor
+	t.Cleanup(func() { compat.Profile = previousProfile })
 
 	h := newHarness(t, "")
 	brk := "\n\n" + document.PageBreakMarkup + "\n\n"
@@ -73,7 +73,7 @@ func TestDocumentReaderClickableInternalLinks(t *testing.T) {
 		t.Fatalf("expected initial readerPage 0, got %d", s.readerPage)
 	}
 
-	view := h.m.View()
+	view := h.m.View().Content
 	clean := ansi.Strip(view)
 
 	// Glamour must not print raw (#section-two) URL
@@ -106,14 +106,14 @@ func TestDocumentReaderClickableInternalLinks(t *testing.T) {
 	// Calculate terminal click position
 	outlineWidth, _ := s.readerPaneWidths()
 	clickX := (outlineWidth + 2) + targetBox.startCol + 1
-	clickY := targetBox.row + 4 - s.reader.YOffset
+	clickY := targetBox.row + 4 - s.reader.YOffset()
 
 	// Click on link
-	h.send(tea.MouseMsg{
+	h.send(mouseEvent{
 		X:      clickX,
 		Y:      clickY,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonLeft,
+		Action: mousePress,
+		Button: mouseLeft,
 	})
 
 	if s.readerPage != 1 {
@@ -150,7 +150,7 @@ func TestDocumentPreviewClickableInternalLinks(t *testing.T) {
 		t.Fatalf("expected editPage 0, got %d", s.editPage)
 	}
 
-	view := h.m.View()
+	view := h.m.View().Content
 	clean := ansi.Strip(view)
 	if strings.Contains(clean, "(#second-page)") {
 		t.Fatalf("raw target URL leaked into preview view:\n%s", clean)
@@ -170,11 +170,11 @@ func TestDocumentPreviewClickableInternalLinks(t *testing.T) {
 	clickX := targetBox.startCol + 1
 	clickY := targetBox.row + 2 - s.editPageLine
 
-	h.send(tea.MouseMsg{
+	h.send(mouseEvent{
 		X:      clickX,
 		Y:      clickY,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonLeft,
+		Action: mousePress,
+		Button: mouseLeft,
 	})
 
 	if s.editPage != 1 {
@@ -209,13 +209,13 @@ func TestUnresolvedAndExternalLinksDoNotNavigate(t *testing.T) {
 
 	outlineWidth, _ := s.readerPaneWidths()
 	clickX := (outlineWidth + 2) + brokenBox.startCol + 1
-	clickY := brokenBox.row + 4 - s.reader.YOffset
+	clickY := brokenBox.row + 4 - s.reader.YOffset()
 
-	h.send(tea.MouseMsg{
+	h.send(mouseEvent{
 		X:      clickX,
 		Y:      clickY,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonLeft,
+		Action: mousePress,
+		Button: mouseLeft,
 	})
 
 	if s.readerPage != initialPage {

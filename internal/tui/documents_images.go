@@ -11,8 +11,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"charm.land/lipgloss/v2/compat"
 	glamouransi "github.com/charmbracelet/glamour/ansi"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
@@ -167,7 +167,7 @@ func (s *documentsScreen) documentMarkdownFormatter(doc document.Document) docum
 		}
 		ar := glamouransi.NewRenderer(glamouransi.Options{
 			WordWrap: width, PreserveNewLines: true,
-			ColorProfile: lipgloss.ColorProfile(), Styles: s.theme.Markdown,
+			ColorProfile: glamourColorProfile(compat.Profile), Styles: s.theme.Markdown,
 		})
 		md.SetRenderer(renderer.NewRenderer(renderer.WithNodeRenderers(util.Prioritized(ar, 1000))))
 		var out bytes.Buffer

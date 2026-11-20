@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"example.com/parchment/internal/artifact"
 )
@@ -20,7 +20,7 @@ func TestPresentationPDFExportViewerAndUnsavedEditor(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := filepath.Join(t.TempDir(), "slides.pdf")
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	if deck.pdfPrompt != promptPDF {
 		t.Fatal("viewer did not open PDF prompt")
 	}
@@ -31,7 +31,7 @@ func TestPresentationPDFExportViewerAndUnsavedEditor(t *testing.T) {
 	}
 	h.key("e")
 	deck.editor.SetValue("# Unsaved title\n\n## Draft slide\n\nUnsaved content\n\n: Draft reminder\n")
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	if deck.pdfInput.Value() != output {
 		t.Fatalf("remembered path = %q", deck.pdfInput.Value())
 	}
@@ -47,7 +47,7 @@ func TestPresentationPDFExportViewerAndUnsavedEditor(t *testing.T) {
 	if pdf, err := os.ReadFile(output); err != nil || !bytes.Equal(pdf, before) {
 		t.Fatalf("declining overwrite changed PDF: %v", err)
 	}
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	h.key("enter")
 	h.key("y")
 	pdf, err := os.ReadFile(output)
@@ -58,7 +58,7 @@ func TestPresentationPDFExportViewerAndUnsavedEditor(t *testing.T) {
 		t.Fatalf("export changed source or closed editor: %v", err)
 	}
 	h.open(artifact.PresentationKind)
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	if h.m.deck.pdfInput.Value() != output {
 		t.Fatalf("reopened remembered path = %q", h.m.deck.pdfInput.Value())
 	}
@@ -72,7 +72,7 @@ func TestPresentationPDFExportErrorsAndCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	deck.pdfInput.SetValue(h.path)
 	h.key("enter")
 	h.key("y")
@@ -83,7 +83,7 @@ func TestPresentationPDFExportErrorsAndCancellation(t *testing.T) {
 	h.key("e")
 	deck.editor.SetValue("not a presentation")
 	output := filepath.Join(t.TempDir(), "invalid.pdf")
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	deck.pdfInput.SetValue(output)
 	h.key("enter")
 	if deck.errMessage == "" {
@@ -93,7 +93,7 @@ func TestPresentationPDFExportErrorsAndCancellation(t *testing.T) {
 		t.Fatalf("invalid draft created output: %v", err)
 	}
 	deck.editor.SetValue("# Title\n\n## Slide\n\n" + strings.Repeat(": Excessive speaker notes.\n", 500))
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	deck.pdfInput.SetValue(output)
 	h.key("enter")
 	if !strings.Contains(deck.errMessage, "fit on one PDF page") {
@@ -107,7 +107,7 @@ func TestPresentationPDFExportErrorsAndCancellation(t *testing.T) {
 	if cmd == nil || !deck.pending {
 		t.Fatal("export did not start")
 	}
-	_, _ = deck.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	_, _ = deck.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	msg := cmd()
 	_, _ = deck.Update(msg)
 	if deck.pending || deck.pdfPending || deck.status != "PDF export cancelled" {
@@ -127,7 +127,7 @@ func TestPresentationPDFTwoUpFromEditorAndOverwrite(t *testing.T) {
 	if err := os.WriteFile(output, []byte("existing"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	if !strings.Contains(deck.pdfInput.Prompt, "1 slide, landscape") {
 		t.Fatalf("default PDF layout prompt = %q", deck.pdfInput.Prompt)
 	}

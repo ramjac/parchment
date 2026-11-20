@@ -12,9 +12,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
@@ -264,7 +264,7 @@ func (m *presentationModel) updatePresentation(message tea.Msg) (tea.Model, tea.
 		cmd := m.load()
 		m.loadedStatus = msg.description
 		return m, cmd
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		var cmd tea.Cmd
 		if m.pdfPrompt != promptNone {
 			cmd = m.updatePDFPrompt(msg)
@@ -276,13 +276,13 @@ func (m *presentationModel) updatePresentation(message tea.Msg) (tea.Model, tea.
 			cmd = m.updateBrowseKey(msg)
 		}
 		return m, cmd
-	case tea.MouseMsg:
+	case mouseEvent:
 		if m.editing && !m.pending && m.pdfPrompt == promptNone {
 			mouseMsg := msg
 			mouseMsg.Y = msg.Y - 2
 			mouseMsg.X = msg.X - 2
 			var cmd tea.Cmd
-			m.editor, cmd = m.editor.Update(mouseMsg)
+			m.editor, cmd = m.editor.Update(toTeaMouseMessage(mouseMsg))
 			return m, cmd
 		}
 		return m, nil
@@ -298,7 +298,7 @@ func (m *presentationModel) updatePresentation(message tea.Msg) (tea.Model, tea.
 	return m, nil
 }
 
-func (m *presentationModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
+func (m *presentationModel) updateEditKey(msg tea.KeyPressMsg) tea.Cmd {
 	key := msg.String()
 	if m.find.active {
 		return m.updateFindKey(msg)
@@ -398,7 +398,7 @@ func (m *presentationModel) updateFindKey(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
-func (m *presentationModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
+func (m *presentationModel) updateBrowseKey(msg tea.KeyPressMsg) tea.Cmd {
 	key := msg.String()
 	if m.find.visible && !m.pending {
 		switch key {
@@ -451,7 +451,7 @@ func (m *presentationModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 	switch key {
 	case "ctrl+p":
 		return m.openPDFPrompt()
-	case "right", "l", "n", " ", "pgdown":
+	case "right", "l", "n", "space", "pgdown":
 		m.goToPage(m.page + 1)
 	case "left", "h", "p", "pgup":
 		m.goToPage(m.page - 1)
@@ -1075,7 +1075,11 @@ func (m *presentationModel) clampScroll() {
 	m.scroll = min(max(m.scroll, 0), limit)
 }
 
-func (m *presentationModel) View() string {
+func (m *presentationModel) View() tea.View {
+	return tea.NewView(m.viewContent())
+}
+
+func (m *presentationModel) viewContent() string {
 	view := m.presentationView()
 	if m.imageGraphicsUsed && termimg.DetectProtocol() != termimg.ProtocolNone {
 		view = m.paintPresentationImages(view)

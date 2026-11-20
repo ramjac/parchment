@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"example.com/parchment/internal/artifact"
 )
@@ -23,8 +23,8 @@ func TestNotePDFExportUsesUnsavedEditsAndRemembersPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := filepath.Join(t.TempDir(), "note.pdf")
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
-	if h.m.pdfPrompt != promptPDF || !strings.Contains(h.m.View(), "PDF output path:") {
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
+	if h.m.pdfPrompt != promptPDF || !strings.Contains(h.m.View().Content, "PDF output path:") {
 		t.Fatal("Ctrl+P did not open the note PDF prompt")
 	}
 	h.m.pdfInput.SetValue(output)
@@ -41,12 +41,12 @@ func TestNotePDFExportUsesUnsavedEditsAndRemembersPath(t *testing.T) {
 		t.Fatalf("PDF export changed the note or editor state: %v", err)
 	}
 	h.key("f5")
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	if h.m.pdfInput.Value() != output {
 		t.Fatalf("remembered path = %q", h.m.pdfInput.Value())
 	}
 	h.key("enter")
-	if h.m.pdfPrompt != promptPDFOverwrite || !strings.Contains(h.m.View(), "Overwrite?") {
+	if h.m.pdfPrompt != promptPDFOverwrite || !strings.Contains(h.m.View().Content, "Overwrite?") {
 		t.Fatal("note preview did not offer overwrite confirmation")
 	}
 	h.key("n")
@@ -56,14 +56,14 @@ func TestNotePDFExportUsesUnsavedEditsAndRemembersPath(t *testing.T) {
 	if err := os.WriteFile(output, []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	h.key("enter")
 	h.key("y")
 	if data, err := os.ReadFile(output); err != nil || !bytes.HasPrefix(data, []byte("%PDF-")) {
 		t.Fatalf("confirmed overwrite failed: %v", err)
 	}
 	h.open(artifact.NoteKind)
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	if got := h.m.pdfInput.Value(); got != output {
 		t.Fatalf("reopened note PDF path = %q", got)
 	}
@@ -90,7 +90,7 @@ func TestNotePDFExportCannotOverwriteSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	h.m.pdfInput.SetValue(h.path)
 	h.key("enter")
 	h.key("y")

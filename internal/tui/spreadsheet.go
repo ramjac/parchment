@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
@@ -256,10 +256,10 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.input.Width = max(1, m.width-12)
+		m.input.SetWidth(max(1, m.width-12))
 		m.resizePDFPrompt()
 		if m.charts.mode == chartForm || m.charts.mode == chartExportPath {
-			m.charts.input.Width = max(1, m.width-6-runewidth.StringWidth(m.charts.input.Prompt))
+			m.charts.input.SetWidth(max(1, m.width-6-runewidth.StringWidth(m.charts.input.Prompt)))
 		}
 		m.scrollToSelection()
 		if m.charts.mode == chartPreview {
@@ -369,8 +369,8 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.syncAutosave()
 	case shiftEnterMsg:
-		return m, m.updateEditKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("shift+enter")})
-	case tea.KeyMsg:
+		return m, m.updateEditKey(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
+	case tea.KeyPressMsg:
 		if m.charts.mode != chartClosed {
 			return m, m.updateCharts(msg)
 		}
@@ -384,8 +384,8 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.updateEditKey(msg)
 		}
 		return m, m.updateBrowseKey(msg)
-	case tea.MouseMsg:
-		if m.charts.mode == chartClosed && !m.pending && m.pdfPrompt == promptNone && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+	case mouseEvent:
+		if m.charts.mode == chartClosed && !m.pending && m.pdfPrompt == promptNone && msg.Action == mousePress && msg.Button == mouseLeft {
 			if m.editing {
 				if msg.Y == 1 {
 					m.input.SetCursor(max(msg.X-len(spreadsheet.CellName(m.row+1, m.column+1))-3, 0))
@@ -413,7 +413,7 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *spreadsheetModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
+func (m *spreadsheetModel) updateEditKey(msg tea.KeyPressMsg) tea.Cmd {
 	key := msg.String()
 	if key == "ctrl+c" {
 		m.cancelPending()
@@ -468,7 +468,7 @@ func (m *spreadsheetModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
 	return tea.Batch(cmd, m.syncAutosave())
 }
 
-func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
+func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyPressMsg) tea.Cmd {
 	key := msg.String()
 	if key != "esc" && key != "q" && key != "ctrl+c" {
 		m.closeWarning = false
@@ -1300,7 +1300,11 @@ func (m *spreadsheetModel) renderHelp() string {
 	return muted.Render(runewidth.Truncate(help, m.width, "…"))
 }
 
-func (m *spreadsheetModel) View() string {
+func (m *spreadsheetModel) View() tea.View {
+	return tea.NewView(m.viewContent())
+}
+
+func (m *spreadsheetModel) viewContent() string {
 	if m.charts.mode != chartClosed {
 		return m.viewCharts()
 	}

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
@@ -356,7 +356,7 @@ func (s *documentsScreen) editorDocument() document.Document {
 	return d
 }
 
-func (s *documentsScreen) updatePreviewKey(msg tea.KeyMsg) tea.Cmd {
+func (s *documentsScreen) updatePreviewKey(msg tea.KeyPressMsg) tea.Cmd {
 	if s.find.active {
 		return s.updatePreviewFindKey(msg)
 	}
@@ -450,7 +450,7 @@ func (s *documentsScreen) updatePreviewFindKey(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
-func (s *documentsScreen) updateEditorShortcuts(msg tea.KeyMsg, key string) (tea.Cmd, bool) {
+func (s *documentsScreen) updateEditorShortcuts(msg tea.KeyPressMsg, key string) (tea.Cmd, bool) {
 	switch key {
 	case "ctrl+s":
 		return s.save(), true
@@ -501,7 +501,7 @@ func (s *documentsScreen) updateEditorShortcuts(msg tea.KeyMsg, key string) (tea
 	return nil, false
 }
 
-func (s *documentsScreen) updateEditorKey(msg tea.KeyMsg) tea.Cmd {
+func (s *documentsScreen) updateEditorKey(msg tea.KeyPressMsg) tea.Cmd {
 	key := msg.String()
 	if s.prompt != promptNone {
 		return s.updatePrompt(msg)
@@ -580,21 +580,21 @@ func (s *documentsScreen) updateToolbarKey(key string) tea.Cmd {
 		s.toolbarIndex = 0
 	case "end":
 		s.toolbarIndex = count - 1
-	case "enter", " ":
+	case "enter", "space":
 		return s.act(s.toolbarButtons()[s.toolbarIndex].action)
 	}
 	return nil
 }
 
-func (s *documentsScreen) updateMouse(msg tea.MouseMsg) tea.Cmd {
-	if s.previewing && msg.Action == tea.MouseActionPress {
+func (s *documentsScreen) updateMouse(msg mouseEvent) tea.Cmd {
+	if s.previewing && msg.Action == mousePress {
 		switch msg.Button {
-		case tea.MouseButtonLeft:
+		case mouseLeft:
 			s.clickPreviewLink(msg.X, msg.Y)
 			return nil
-		case tea.MouseButtonWheelDown:
+		case mouseWheelDown:
 			s.editPageLine += 3
-		case tea.MouseButtonWheelUp:
+		case mouseWheelUp:
 			s.editPageLine -= 3
 		}
 		s.clampPreviewLine()
@@ -605,7 +605,7 @@ func (s *documentsScreen) updateMouse(msg tea.MouseMsg) tea.Cmd {
 	}
 	placed, _ := s.buttonLayout(max(s.width, 20))
 	buttons := s.toolbarButtons()
-	if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+	if msg.Action == mousePress && msg.Button == mouseLeft {
 		for _, p := range placed {
 			if msg.Y == toolbarTop+p.row && msg.X >= p.x && msg.X < p.x+p.width {
 				s.toolbarIndex = p.index
@@ -619,33 +619,33 @@ func (s *documentsScreen) updateMouse(msg tea.MouseMsg) tea.Cmd {
 		outlineWidth, _ := s.readerPaneWidths()
 		editorLeft += outlineWidth
 		if msg.X >= 2 && msg.X < editorLeft && editorY >= 0 && editorY < s.body.Height {
-			if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			if msg.Action == mousePress && msg.Button == mouseLeft {
 				s.clickEditorOutline(msg.X, editorY)
 				return nil
 			}
-			if msg.Action == tea.MouseActionPress {
+			if msg.Action == mousePress {
 				return nil
 			}
 		}
 	}
 	editorX := msg.X - editorLeft
 	inside := editorX >= 0 && editorX < s.body.Width && editorY >= 0 && editorY < s.body.Height
-	if msg.Action == tea.MouseActionPress && (!inside || msg.Button != tea.MouseButtonLeft) &&
-		msg.Button != tea.MouseButtonWheelUp && msg.Button != tea.MouseButtonWheelDown {
+	if msg.Action == mousePress && (!inside || msg.Button != mouseLeft) &&
+		msg.Button != mouseWheelUp && msg.Button != mouseWheelDown {
 		return nil
 	}
-	if !inside && msg.Action == tea.MouseActionPress {
+	if !inside && msg.Action == mousePress {
 		return nil
 	}
 	mouseMsg := msg
 	mouseMsg.X = min(max(editorX, 0), s.body.Width-1)
 	mouseMsg.Y = min(max(editorY, 0), s.body.Height-1)
 	var focusCmd tea.Cmd
-	if inside && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+	if inside && msg.Action == mousePress && msg.Button == mouseLeft {
 		focusCmd = s.focusBody()
 	}
 	var cmd tea.Cmd
-	s.body, cmd = s.body.Update(mouseMsg)
+	s.body, cmd = s.body.Update(toTeaMouseMessage(mouseMsg))
 	return tea.Batch(cmd, focusCmd)
 }
 
@@ -893,7 +893,7 @@ func (s *documentsScreen) openPrompt(kind promptKind, label, value string) tea.C
 	return s.promptInput.Focus()
 }
 
-func (s *documentsScreen) updatePrompt(msg tea.KeyMsg) tea.Cmd {
+func (s *documentsScreen) updatePrompt(msg tea.KeyPressMsg) tea.Cmd {
 	if s.prompt == promptPDFOverwrite {
 		switch msg.String() {
 		case "y", "Y":
@@ -977,7 +977,7 @@ func (s *documentsScreen) finishPrompt(kind promptKind, value string) tea.Cmd {
 
 func (s *documentsScreen) moveLeft(n int) {
 	for range n {
-		s.body, _ = s.body.Update(tea.KeyMsg{Type: tea.KeyLeft})
+		s.body, _ = s.body.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
 	}
 }
 

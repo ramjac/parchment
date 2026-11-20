@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"

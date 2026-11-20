@@ -10,11 +10,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2/compat"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/mattn/go-runewidth"
-	"github.com/muesli/termenv"
 
 	"example.com/parchment/internal/chartrender"
 	"example.com/parchment/internal/pdfrender"
@@ -97,7 +97,7 @@ func (m *spreadsheetModel) setChartFormField() tea.Cmd {
 	values := []string{c.Type, c.Sheet, spreadsheet.CellName(c.FirstRow, c.FirstColumn) + ":" +
 		spreadsheet.CellName(c.LastRow, c.LastColumn), strconv.FormatBool(c.Header), strconv.FormatBool(c.Labels), c.Title}
 	ui.input.Prompt = prompts[ui.stage]
-	ui.input.Width = max(1, m.width-6-runewidth.StringWidth(ui.input.Prompt))
+	ui.input.SetWidth(max(1, m.width-6-runewidth.StringWidth(ui.input.Prompt)))
 	ui.input.SetValue(values[ui.stage])
 	ui.input.CursorEnd()
 	return ui.input.Focus()
@@ -179,7 +179,7 @@ func (m *spreadsheetModel) advanceChartForm() tea.Cmd {
 	return m.setChartFormField()
 }
 
-func (m *spreadsheetModel) updateCharts(msg tea.KeyMsg) tea.Cmd {
+func (m *spreadsheetModel) updateCharts(msg tea.KeyPressMsg) tea.Cmd {
 	ui := &m.charts
 	key := msg.String()
 	if key == "ctrl+c" {
@@ -277,7 +277,7 @@ func (m *spreadsheetModel) updateCharts(msg tea.KeyMsg) tea.Cmd {
 			ui.input = textinput.New()
 			ui.input.CharLimit = 64 << 10
 			ui.input.Prompt = strings.ToUpper(ui.exportFormat) + " output path: "
-			ui.input.Width = max(1, m.width-6-runewidth.StringWidth(ui.input.Prompt))
+			ui.input.SetWidth(max(1, m.width-6-runewidth.StringWidth(ui.input.Prompt)))
 			ui.input.SetValue(strings.TrimSuffix(m.path, filepath.Ext(m.path)) + "-chart." + ui.exportFormat)
 			ui.input.CursorEnd()
 			return ui.input.Focus()
@@ -297,7 +297,7 @@ func (m *spreadsheetModel) renderChartPreview() tea.Cmd {
 	book, chart := cloneSpreadsheetState(m.book), m.selectedChart()
 	cols, rows := min(70, m.width-6), min(16, m.height-9)
 	protocol := termimg.DetectProtocol()
-	monochrome := lipgloss.ColorProfile() == termenv.Ascii
+	monochrome := compat.Profile == colorprofile.Ascii
 	m.status = "Preparing chart…"
 	if protocol == termimg.ProtocolKitty {
 		ui.clearGraphics = true

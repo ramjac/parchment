@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"example.com/parchment/internal/artifact"
@@ -42,8 +42,8 @@ func TestDocumentImagesRendererUpdates(t *testing.T) {
 			s.reader.SetYOffset(row)
 			staleSession := s.autosaveSession + 1
 			out := make(terminalRenderOutput, 128)
-			program := tea.NewProgram(documentImageRenderModel{h.m},
-				tea.WithInput(nil), tea.WithOutput(out), tea.WithAltScreen(), tea.WithoutSignals())
+			program := tea.NewProgram(terminalModel{Model: documentImageRenderModel{h.m}},
+				tea.WithInput(nil), tea.WithOutput(keyboardOutput{out}), tea.WithoutSignals())
 			done := make(chan error, 1)
 			go func() {
 				_, err := program.Run()
@@ -57,17 +57,17 @@ func TestDocumentImagesRendererUpdates(t *testing.T) {
 			}()
 			prefix := map[string]string{"kitty": "\x1b_Ga=T", "iterm": "\x1b]1337;File=", "sixel": "\x1bP0;1;0q"}[protocol]
 			readTerminalOutputUntil(t, out, prefix)
-			program.Send(tea.MouseMsg{Action: tea.MouseActionMotion, Button: tea.MouseButtonNone})
+			program.Send(mouseEvent{Action: mouseMotion, Button: mouseNone})
 			program.Send(documentAutosaveTickMsg{session: staleSession})
-			program.Send(tea.KeyMsg{Type: tea.KeyDown})
+			program.Send(tea.KeyPressMsg{Code: tea.KeyDown})
 			output := readTerminalOutputUntil(t, out, prefix)
 			if strings.Contains(output, "\x1b[2J") || strings.Count(output, prefix) != 1 {
 				t.Fatal("scrolling cleared the terminal or transmitted separate image strips")
 			}
-			program.Send(tea.KeyMsg{Type: tea.KeyRight})
+			program.Send(tea.KeyPressMsg{Code: tea.KeyRight})
 			output = readTerminalOutputUntil(t, out, "Text only.")
 			if strings.Contains(output, "\x1b[2J") || strings.Contains(output, prefix) ||
-				strings.Count(output, "\r\n") < 29 {
+				strings.Count(output, "\n") < 29 {
 				t.Fatal("leaving the image page did not repaint its old rows without clearing")
 			}
 		})
@@ -136,7 +136,7 @@ func TestDocumentImagesReaderAndDraftPreview(t *testing.T) {
 	s.readerPage = page
 	s.showReaderPage()
 	s.reader.SetYOffset(row)
-	view := h.m.View()
+	view := h.m.View().Content
 	if !strings.Contains(ansi.Strip(view), "▀") {
 		t.Fatalf("reader has no graphical image:\n%s", view)
 	}
@@ -148,7 +148,7 @@ func TestDocumentImagesReaderAndDraftPreview(t *testing.T) {
 		t.Fatal("link hitbox no longer points at its label")
 	}
 	h.key("e")
-	if !strings.Contains(h.m.View(), img.Name) || strings.Contains(h.m.View(), "▀") {
+	if !strings.Contains(h.m.View().Content, img.Name) || strings.Contains(h.m.View().Content, "▀") {
 		t.Fatal("source editor did not retain the canonical image link")
 	}
 	var draftData bytes.Buffer
@@ -166,7 +166,7 @@ func TestDocumentImagesReaderAndDraftPreview(t *testing.T) {
 	h.key("f5")
 	page, row = firstDocumentImageRow(t, s, s.editPages)
 	s.editPage, s.editPageLine = page, row
-	if view := h.m.View(); !strings.Contains(ansi.Strip(view), "▀") {
+	if view := h.m.View().Content; !strings.Contains(ansi.Strip(view), "▀") {
 		t.Fatalf("draft preview has no graphical image:\n%s", view)
 	}
 	if !reflect.DeepEqual(s.snapshot, saved) {
@@ -293,7 +293,7 @@ func TestDocumentImagesProtocolsAndTransitions(t *testing.T) {
 			s.readerPage = page
 			s.showReaderPage()
 			s.reader.SetYOffset(row)
-			view := h.m.View()
+			view := h.m.View().Content
 			prefix := map[string]string{"kitty": "\x1b_Ga=T", "iterm": "\x1b]1337;File=", "sixel": "\x1bP0;1;0q"}[protocol]
 			if !strings.Contains(view, prefix) || !strings.Contains(view, "\x1b[s") || !strings.Contains(view, "\x1b[u") {
 				t.Fatal("reader did not preserve the cursor around graphical output")
@@ -314,16 +314,16 @@ func TestDocumentImagesProtocolsAndTransitions(t *testing.T) {
 			}
 			frame := s.imageState.frame
 			for _, message := range []tea.Msg{
-				tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")},
-				tea.MouseMsg{Action: tea.MouseActionMotion, Button: tea.MouseButtonNone},
+				tea.KeyPressMsg{Code: []rune(string("?"))[0], Text: string("?")},
+				mouseEvent{Action: mouseMotion, Button: mouseNone},
 				documentAutosaveTickMsg{session: s.autosaveSession + 1},
 			} {
 				_, cmd := h.m.Update(message)
-				if cmd != nil || frame != s.imageState.frame || h.m.View() != view {
+				if cmd != nil || frame != s.imageState.frame || h.m.View().Content != view {
 					t.Fatal("unrelated input or background update repainted the image")
 				}
 			}
-			_, cmd := h.m.Update(tea.KeyMsg{Type: tea.KeyDown})
+			_, cmd := h.m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 			if cmd != nil || s.imageState.frame == frame {
 				t.Fatal("scrolling must invalidate the frame without clearing the screen")
 			}
@@ -335,11 +335,11 @@ func TestDocumentImagesProtocolsAndTransitions(t *testing.T) {
 				t.Fatal("graphical output changed the terminal frame height")
 			}
 			prepareGoldenView(h, 60, 16)
-			if view := h.m.View(); tuiScreenWidth(view) > 60 || strings.Count(ansi.Strip(view), "\n")+1 != 16 {
+			if view := h.m.View().Content; tuiScreenWidth(view) > 60 || strings.Count(ansi.Strip(view), "\n")+1 != 16 {
 				t.Fatal("resizing an image overflowed the terminal")
 			}
 			prepareGoldenView(h, 30, 8)
-			view = h.m.View()
+			view = h.m.View().Content
 			if !strings.Contains(view, "terminal too small") || strings.Contains(view, prefix) {
 				t.Fatal("undersized terminal retained graphical output")
 			}
@@ -348,13 +348,13 @@ func TestDocumentImagesProtocolsAndTransitions(t *testing.T) {
 			}
 			prepareGoldenView(h, 96, 30)
 			h.key("right")
-			if strings.Contains(h.m.View(), prefix) {
+			if strings.Contains(h.m.View().Content, prefix) {
 				t.Fatal("changing to a text-only page retained image graphics")
 			}
 			h.key("left")
-			_, cmd = h.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+			_, cmd = h.m.Update(tea.KeyPressMsg{Code: []rune(string("e"))[0], Text: string("e")})
 			h.run(cmd)
-			view = h.m.View()
+			view = h.m.View().Content
 			if strings.Contains(view, prefix) {
 				t.Fatal("editor retained reader image graphics")
 			}
@@ -364,11 +364,11 @@ func TestDocumentImagesProtocolsAndTransitions(t *testing.T) {
 			h.key("f5")
 			page, row = firstDocumentImageRow(t, s, s.editPages)
 			s.editPage, s.editPageLine = page, row
-			if !strings.Contains(h.m.View(), prefix) {
+			if !strings.Contains(h.m.View().Content, prefix) {
 				t.Fatal("print preview omitted image graphics")
 			}
 			h.key("esc")
-			if strings.Contains(h.m.View(), prefix) {
+			if strings.Contains(h.m.View().Content, prefix) {
 				t.Fatal("leaving print preview retained image graphics")
 			}
 		})

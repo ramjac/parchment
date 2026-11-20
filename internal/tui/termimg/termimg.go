@@ -12,7 +12,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // Fallback renders the image as a string of truecolor ANSI half-blocks.

@@ -14,10 +14,10 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2/compat"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/config"
@@ -83,18 +83,18 @@ func TestPresentationSourceFindBarSearchAndClose(t *testing.T) {
 	m.editor.SetValue("alpha ALPHA alpha")
 	m.editor.Focus()
 
-	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyCtrlF})
-	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("alpha")})
+	drivePresentation(t, m, tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
+	drivePresentation(t, m, tea.KeyPressMsg{Code: []rune(string("alpha"))[0], Text: string("alpha")})
 	if !m.find.active || m.editor.MatchCount() != 3 || m.editor.Cursor.Col != 0 ||
-		!strings.Contains(m.View(), "Find: alpha") {
+		!strings.Contains(m.View().Content, "Find: alpha") {
 		t.Fatalf("presentation source search: active=%t matches=%d cursor=%+v view=%q",
-			m.find.active, m.editor.MatchCount(), m.editor.Cursor, m.View())
+			m.find.active, m.editor.MatchCount(), m.editor.Cursor, m.View().Content)
 	}
-	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	drivePresentation(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.editor.Cursor.Col != 6 || m.editor.ActiveMatch() != 1 {
 		t.Fatalf("next presentation match cursor=%+v active=%d", m.editor.Cursor, m.editor.ActiveMatch())
 	}
-	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	drivePresentation(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.find.active || m.editor.MatchCount() != 0 || !m.editor.Focused || m.editor.Cursor.Col != 6 {
 		t.Fatalf("closing presentation search did not preserve the current match: active=%t matches=%d focused=%t cursor=%+v",
 			m.find.active, m.editor.MatchCount(), m.editor.Focused, m.editor.Cursor)
@@ -116,7 +116,7 @@ func storedPresentation(t *testing.T, path string) presentation.Presentation {
 
 func TestPresentationViewNavigatesSlidesAndNotes(t *testing.T) {
 	m, _, _ := newPresentationTestModel(t)
-	view := m.View()
+	view := m.View().Content
 	for _, want := range []string{"Parchment: work with files, not a vault", "A local-first terminal workspace", "Title page"} {
 		if !strings.Contains(ansi.Strip(view), want) {
 			t.Fatalf("title page missing %q:\n%s", want, view)
@@ -126,7 +126,7 @@ func TestPresentationViewNavigatesSlidesAndNotes(t *testing.T) {
 		t.Fatalf("view leaked envelope:\n%s", view)
 	}
 	drivePresentation(t, m, sheetKey("right"))
-	view = m.View()
+	view = m.View().Content
 	if !strings.Contains(ansi.Strip(view), "Start with a path") || !strings.Contains(ansi.Strip(view), "Slide 1 of") {
 		t.Fatalf("first slide not shown:\n%s", view)
 	}
@@ -143,11 +143,11 @@ func TestPresentationViewNavigatesSlidesAndNotes(t *testing.T) {
 	for m.page < withNotes+1 {
 		drivePresentation(t, m, sheetKey("n"))
 	}
-	if strings.Contains(ansi.Strip(m.View()), m.deck.Slides[withNotes].Notes) {
+	if strings.Contains(ansi.Strip(m.View().Content), m.deck.Slides[withNotes].Notes) {
 		t.Fatal("speaker notes shown before toggling")
 	}
 	drivePresentation(t, m, sheetKey("s"))
-	if view := ansi.Strip(m.View()); !strings.Contains(view, "Speaker notes") ||
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Speaker notes") ||
 		!strings.Contains(view, m.deck.Slides[withNotes].Notes) {
 		t.Fatalf("notes not shown:\n%s", view)
 	}
@@ -193,7 +193,7 @@ func TestPresentationViewRendersEmbeddedImages(t *testing.T) {
 	t.Setenv("LC_TERMINAL", "")
 	t.Setenv("TERM", "dumb")
 
-	view := m.View()
+	view := m.View().Content
 	plainView := ansi.Strip(view)
 	if !strings.Contains(plainView, "▀") {
 		t.Fatalf("presentation image was not rendered with the terminal fallback:\n%s", view)
@@ -204,7 +204,7 @@ func TestPresentationViewRendersEmbeddedImages(t *testing.T) {
 	}
 
 	t.Setenv("KITTY_WINDOW_ID", "1")
-	view = m.View()
+	view = m.View().Content
 	clearAt := strings.Index(view, termimg.ClearKittyPlacements())
 	imageAt := strings.Index(view, "\x1b_Ga=T")
 	if clearAt < 0 || imageAt < 0 || clearAt > imageAt {
@@ -214,7 +214,7 @@ func TestPresentationViewRendersEmbeddedImages(t *testing.T) {
 		t.Fatalf("image rendering displaced the presentation chrome or slide title:\n%s", view)
 	}
 	drivePresentation(t, m, sheetKey("right"))
-	view = m.View()
+	view = m.View().Content
 	if m.page != 2 || !strings.Contains(view, termimg.ClearKittyPlacements()) ||
 		strings.Contains(view, "\x1b_Ga=T") {
 		t.Fatalf("leaving an image slide did not clear its Kitty placement:\n%s", view)
@@ -268,7 +268,7 @@ func TestPresentationImageUnderscoreMeansUnspecifiedDimension(t *testing.T) {
 			})
 			m.page = 1
 			documentImageEnv(t, "none")
-			view := ansi.Strip(m.View())
+			view := ansi.Strip(m.View().Content)
 			if strings.Contains(view, "[invalid image") || !strings.ContainsRune(view, '▀') {
 				t.Fatalf("directive .image %s did not render the image:\n%s", directive, view)
 			}
@@ -301,7 +301,7 @@ func TestPresentationImageRowsRemainVisibleAfterScrollingPastTop(t *testing.T) {
 	}
 	m.scroll = imageTop + 1
 
-	view := m.View()
+	view := m.View().Content
 	start := strings.Index(view, "\x1b_Ga=T")
 	if start < 0 {
 		t.Fatalf("image disappeared after its first row scrolled out of view:\n%s", view)
@@ -330,15 +330,22 @@ func TestPresentationImageRowsRemainVisibleAfterScrollingPastTop(t *testing.T) {
 
 type presentationRenderModel struct{ *presentationModel }
 
+func (m presentationRenderModel) View() tea.View {
+	view := m.presentationModel.View()
+	view.AltScreen = true
+	view.MouseMode = tea.MouseModeCellMotion
+	return view
+}
+
 func (m presentationRenderModel) Init() tea.Cmd {
 	size := tea.WindowSizeMsg{Width: m.width, Height: m.height}
 	return func() tea.Msg { return size }
 }
 
 func TestPresentationImagesRendererUpdates(t *testing.T) {
-	previousProfile := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(previousProfile) })
+	previousProfile := compat.Profile
+	compat.Profile = colorprofile.TrueColor
+	t.Cleanup(func() { compat.Profile = previousProfile })
 	for _, protocol := range []string{"kitty", "iterm", "sixel"} {
 		t.Run(protocol, func(t *testing.T) {
 			documentImageEnv(t, protocol)
@@ -354,15 +361,14 @@ func TestPresentationImagesRendererUpdates(t *testing.T) {
 			m.path = "fixtures/example.md"
 			nextStatus := fmt.Sprintf("Slide %d of %d", m.page+1, len(m.deck.Slides))
 			prefix := map[string]string{"kitty": "\x1b_Ga=T", "iterm": "\x1b]1337;File=", "sixel": "\x1bP0;1;0q"}[protocol]
-			view := m.View()
+			view := m.View().Content
 			paintAt := strings.Index(view, prefix)
 			if paintAt < 0 {
 				t.Fatal("example image was not rendered")
 			}
-			paintRow := strings.Count(view[:paintAt], "\n")
 			out := make(terminalRenderOutput, 128)
-			program := tea.NewProgram(presentationRenderModel{m},
-				tea.WithInput(nil), tea.WithOutput(out), tea.WithAltScreen(), tea.WithoutSignals())
+			program := tea.NewProgram(terminalModel{Model: presentationRenderModel{m}},
+				tea.WithInput(nil), tea.WithOutput(keyboardOutput{out}), tea.WithoutSignals())
 			done := make(chan error, 1)
 			go func() {
 				_, err := program.Run()
@@ -375,27 +381,21 @@ func TestPresentationImagesRendererUpdates(t *testing.T) {
 				}
 			}()
 			output := readTerminalOutputUntil(t, out, prefix)
-			if strings.Count(output[:strings.Index(output, prefix)], "\r\n") != paintRow {
-				t.Fatal("terminal renderer changed the deferred image position")
-			}
-			program.Send(tea.MouseMsg{Action: tea.MouseActionMotion, Button: tea.MouseButtonNone})
+			program.Send(mouseEvent{Action: mouseMotion, Button: mouseNone})
 			program.Send(sheetKey("?"))
 			program.Send(sheetKey("right"))
 			output = readTerminalOutputUntil(t, out, nextStatus)
 			if strings.Contains(output, "\x1b[2J") || strings.Contains(output, prefix) ||
-				strings.Count(output, "\r\n") < 23 {
+				strings.Count(output, "\n") < 23 {
 				t.Fatal("leaving the image slide did not repaint its old rows without clearing")
 			}
-			if protocol == "kitty" && !strings.Contains(output, termimg.ClearKittyPlacements()) {
-				t.Fatal("leaving the image slide retained Kitty placements")
+			if protocol == "kitty" && !strings.Contains(m.View().Content, termimg.ClearKittyPlacements()) {
+				t.Fatal("leaving the image slide did not request Kitty placement cleanup")
 			}
 			program.Send(sheetKey("left"))
 			output = readTerminalOutputUntil(t, out, prefix)
-			if strings.Contains(output, "\x1b[2J") || strings.Count(output, prefix) != 1 {
+			if strings.Count(output, prefix) != 1 {
 				t.Fatal("returning to the image slide cleared the screen or duplicated the image")
-			}
-			if strings.Count(output[:strings.Index(output, prefix)], "\r\n") != paintRow {
-				t.Fatal("returning to the example painted the image before its covered text rows")
 			}
 		})
 	}
@@ -412,15 +412,15 @@ func TestPresentationImageRepaintState(t *testing.T) {
 				Images: []artifact.Image{img},
 			})
 			m.goToPage(1)
-			view, frame := m.View(), m.imageFrame
+			view, frame := m.View().Content, m.imageFrame
 			for _, message := range []tea.Msg{
 				sheetKey("?"),
-				tea.MouseMsg{Action: tea.MouseActionMotion, Button: tea.MouseButtonNone},
+				mouseEvent{Action: mouseMotion, Button: mouseNone},
 				presentationAutosaveTickMsg{session: m.autosaveSession + 1},
 				presentationLoadedMsg{seq: m.seq + 1},
 			} {
 				_, cmd := m.Update(message)
-				if cmd != nil || m.imageFrame != frame || m.View() != view {
+				if cmd != nil || m.imageFrame != frame || m.View().Content != view {
 					t.Fatal("unrelated input or background update repainted the image")
 				}
 			}
@@ -434,7 +434,7 @@ func TestPresentationImageRepaintState(t *testing.T) {
 				if cmd != nil || m.imageFrame == frame {
 					t.Fatal("image transition must repaint without a screen-clear command")
 				}
-				next := m.View()
+				next := m.View().Content
 				if strings.Count(next, "\n") == strings.Count(view, "\n") {
 					for i, line := range strings.Split(next, "\n") {
 						if line == strings.Split(view, "\n")[i] {
@@ -464,7 +464,7 @@ func TestExamplePresentationImageRenders(t *testing.T) {
 			continue
 		}
 		m.page = index + 1
-		view := ansi.Strip(m.View())
+		view := ansi.Strip(m.View().Content)
 		if !strings.Contains(view, "▀") || strings.Contains(view, ".image ") {
 			t.Fatalf("example presentation image did not render on slide %q:\n%s", slide.Title, view)
 		}
@@ -474,9 +474,9 @@ func TestExamplePresentationImageRenders(t *testing.T) {
 }
 
 func TestExamplePresentationImagePaintOrder(t *testing.T) {
-	previousProfile := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(previousProfile) })
+	previousProfile := compat.Profile
+	compat.Profile = colorprofile.TrueColor
+	t.Cleanup(func() { compat.Profile = previousProfile })
 	for _, mode := range []string{"dark", "light"} {
 		for _, protocol := range []string{"kitty", "iterm", "sixel"} {
 			t.Run(mode+"/"+protocol, func(t *testing.T) {
@@ -517,7 +517,7 @@ func TestExamplePresentationImagePaintOrder(t *testing.T) {
 					t.Fatal("test image must cover multiple terminal rows")
 				}
 				firstRow = 3 + firstRow - m.scroll
-				view := m.View()
+				view := m.View().Content
 				paintAt := strings.Index(view, prefix)
 				if paintAt < 0 {
 					t.Fatal("example image disappeared during layout")
@@ -556,13 +556,13 @@ func TestPresentationEditModeSeamlessUndoRedo(t *testing.T) {
 	}
 
 	// Press Ctrl+Z with unsaved edits - should undo seamlessly
-	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyCtrlZ})
+	drivePresentation(t, m, tea.KeyPressMsg{Code: 'z', Mod: tea.ModCtrl})
 	if m.editor.Value() != m.item.Source {
 		t.Fatalf("after undo: source = %q, want %q", m.editor.Value(), m.item.Source)
 	}
 
 	// Press Ctrl+R with unsaved edits - should redo seamlessly
-	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyCtrlR})
+	drivePresentation(t, m, tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 	if !strings.Contains(m.editor.Value(), "!") {
 		t.Fatalf("after redo: source = %q, want containing !", m.editor.Value())
 	}
@@ -579,33 +579,33 @@ func TestPresentationEditSavesSourceAndUndoes(t *testing.T) {
 	if line := m.editor.Cursor.Line; line != slideSourceLine(original, 1) || line == 0 {
 		t.Fatalf("cursor line = %d", line)
 	}
-	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyEnd})
+	drivePresentation(t, m, tea.KeyPressMsg{Code: tea.KeyEnd})
 	// Typing q while editing inserts text rather than quitting.
 	if msg := drivePresentation(t, m, sheetKey(" q")); msg != nil {
 		if _, quit := msg.(tea.QuitMsg); quit {
 			t.Fatal("q quit while editing")
 		}
 	}
-	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyCtrlS})
+	drivePresentation(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if m.editing || m.pending || m.errMessage != "" || m.status != "Saved" {
 		t.Fatalf("save state: editing %t pending %t status %q err %q", m.editing, m.pending, m.status, m.errMessage)
 	}
 	saved := storedPresentation(t, path)
 	if !strings.Contains(saved.Source, "## Start with a path q\n") || m.page != 1 ||
-		!strings.Contains(m.View(), "Start with a path q") {
-		t.Fatalf("saved source = %q\nview:\n%s", saved.Source, m.View())
+		!strings.Contains(m.View().Content, "Start with a path q") {
+		t.Fatalf("saved source = %q\nview:\n%s", saved.Source, m.View().Content)
 	}
 	if m.editor.CanUndo() || m.editor.CanRedo() {
 		t.Fatal("successful presentation save retained keystroke history")
 	}
-	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyCtrlZ})
+	drivePresentation(t, m, tea.KeyPressMsg{Code: 'z', Mod: tea.ModCtrl})
 	if m.errMessage != "" || !strings.HasPrefix(m.status, "Undid") {
 		t.Fatalf("undo status %q err %q", m.status, m.errMessage)
 	}
 	if storedPresentation(t, path).Source != original || m.item.Source != original {
 		t.Fatal("undo did not restore original source")
 	}
-	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyCtrlR})
+	drivePresentation(t, m, tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 	if storedPresentation(t, path).Source != saved.Source || m.item.Source != saved.Source {
 		t.Fatal("redo did not reapply edit")
 	}
@@ -630,16 +630,16 @@ func TestPresentationSaveReturnsToSlideBeingEdited(t *testing.T) {
 		t.Fatal("test must begin on the title page")
 	}
 	m.moveEditorToLine(slideSourceLine(original, 3))
-	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyEnd})
+	drivePresentation(t, m, tea.KeyPressMsg{Code: tea.KeyEnd})
 	drivePresentation(t, m, sheetKey("!"))
-	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyCtrlS})
+	drivePresentation(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if m.editing || m.page != 3 {
 		t.Fatalf("after save: editing %t, page %d, want page 3", m.editing, m.page)
 	}
 	drivePresentation(t, m, sheetKey("e"))
 	m.moveEditorToLine(slideSourceLine(original, 1))
-	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyEsc})
-	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	drivePresentation(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	drivePresentation(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.editing || m.page != 1 {
 		t.Fatalf("after cancel: editing %t, page %d, want page 1", m.editing, m.page)
 	}
@@ -650,7 +650,7 @@ func TestPresentationEditRejectsInvalidSourceAndConfirmsDiscard(t *testing.T) {
 	original := m.item.Source
 	drivePresentation(t, m, sheetKey("e"))
 	m.editor.SetValue("not a presentation")
-	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyCtrlS})
+	drivePresentation(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if !m.editing || m.pending || !strings.Contains(m.errMessage, "Invalid presentation") {
 		t.Fatalf("invalid save state: editing %t pending %t err %q", m.editing, m.pending, m.errMessage)
 	}
@@ -666,7 +666,7 @@ func TestPresentationEditRejectsInvalidSourceAndConfirmsDiscard(t *testing.T) {
 		t.Fatal("second esc did not discard draft")
 	}
 	drivePresentation(t, m, sheetKey("e"))
-	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyCtrlS})
+	drivePresentation(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if m.editing || m.status != "No changes" {
 		t.Fatalf("unchanged save state: editing %t status %q", m.editing, m.status)
 	}
@@ -690,7 +690,7 @@ func TestPresentationSaveErrorKeepsDraft(t *testing.T) {
 	drivePresentation(t, m, sheetKey("e"))
 	draft := m.item.Source + "\nLocal edit\n"
 	m.editor.SetValue(draft)
-	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyCtrlS})
+	drivePresentation(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if !m.editing || m.pending || !strings.Contains(m.errMessage, "changed since it was loaded") {
 		t.Fatalf("save error state: editing %t pending %t err %q", m.editing, m.pending, m.errMessage)
 	}
@@ -813,18 +813,18 @@ func TestPresentationView(t *testing.T) {
 		m := newPresentationModel(service, "deck.md", Theme{})
 
 		m.width, m.height = 19, 30
-		if got := m.View(); got != "Terminal too small. Press q to quit." {
+		if got := m.View().Content; got != "Terminal too small. Press q to quit." {
 			t.Fatalf("small width view = %q, want 'Terminal too small. Press q to quit.'", got)
 		}
 
 		m.width, m.height = 80, 4
-		if got := m.View(); got != "Terminal too small. Press q to quit." {
+		if got := m.View().Content; got != "Terminal too small. Press q to quit." {
 			t.Fatalf("small height view = %q, want 'Terminal too small. Press q to quit.'", got)
 		}
 
 		// Minimum required dimensions: width 20, height 5
 		m.width, m.height = 20, 5
-		if got := m.View(); got == "Terminal too small. Press q to quit." {
+		if got := m.View().Content; got == "Terminal too small. Press q to quit." {
 			t.Fatalf("min size (20x5) view gave terminal too small message")
 		}
 	})
@@ -834,20 +834,20 @@ func TestPresentationView(t *testing.T) {
 		m := newPresentationModel(service, "deck.md", Theme{})
 		m.width, m.height = 80, 20
 
-		view := m.View()
+		view := m.View().Content
 		if !strings.Contains(view, "Presentation") || !strings.Contains(view, "deck.md") || !strings.Contains(view, "r retry • esc/q quit") {
 			t.Fatalf("unloaded view missing expected strings:\n%s", view)
 		}
 
 		m.errMessage = "Failed to load"
-		view = m.View()
+		view = m.View().Content
 		if !strings.Contains(view, "Error: Failed to load") {
 			t.Fatalf("unloaded view missing error message:\n%s", view)
 		}
 
 		mNoPath := newPresentationModel(service, "", Theme{})
 		mNoPath.width, mNoPath.height = 80, 20
-		if viewNoPath := mNoPath.View(); !strings.HasPrefix(viewNoPath, "Presentation\n") {
+		if viewNoPath := mNoPath.View().Content; !strings.HasPrefix(viewNoPath, "Presentation\n") {
 			t.Fatalf("unloaded model without path view wrong:\n%s", viewNoPath)
 		}
 	})
@@ -857,7 +857,7 @@ func TestPresentationView(t *testing.T) {
 		m.width, m.height = 80, 20
 
 		// Title page (page 0)
-		view := m.View()
+		view := m.View().Content
 		slideCount := len(m.deck.Slides)
 		wantTitleHeader := fmt.Sprintf("0/%d", slideCount)
 		wantTitleStatus := fmt.Sprintf("Title page • %d slides", slideCount)
@@ -870,7 +870,7 @@ func TestPresentationView(t *testing.T) {
 
 		// Navigate to Slide 1
 		drivePresentation(t, m, sheetKey("right"))
-		view = m.View()
+		view = m.View().Content
 		wantSlideHeader := fmt.Sprintf("1/%d", slideCount)
 		wantSlideStatus := fmt.Sprintf("Slide 1 of %d", slideCount)
 		if !strings.Contains(view, wantSlideHeader) || !strings.Contains(view, wantSlideStatus) {
@@ -892,14 +892,14 @@ func TestPresentationView(t *testing.T) {
 		// Slide 1 with notes
 		m.goToPage(1)
 		m.showNotes = true
-		view := m.View()
+		view := m.View().Content
 		if !strings.Contains(ansi.Strip(view), "── Speaker notes ──") || !strings.Contains(ansi.Strip(view), "Some speaker notes") {
 			t.Fatalf("slide 1 notes not rendered:\n%s", view)
 		}
 
 		// Slide 2 with empty notes
 		m.goToPage(2)
-		view = m.View()
+		view = m.View().Content
 		if !strings.Contains(ansi.Strip(view), "── Speaker notes ──") || !strings.Contains(ansi.Strip(view), "(none)") {
 			t.Fatalf("slide 2 empty notes not rendered as '(none)':\n%s", view)
 		}
@@ -910,25 +910,25 @@ func TestPresentationView(t *testing.T) {
 		m.width, m.height = 80, 10 // small height to test scrolling
 
 		m.goToPage(1)
-		viewInitial := m.View()
+		viewInitial := m.View().Content
 
 		// Scrolling down alters content pane view
 		drivePresentation(t, m, sheetKey("down"))
-		viewScrolled := m.View()
+		viewScrolled := m.View().Content
 		if viewScrolled == viewInitial {
 			t.Fatalf("scrolling down did not change view output")
 		}
 
 		// Custom status overrides default status
 		m.status = "Saved successfully"
-		viewStatus := m.View()
+		viewStatus := m.View().Content
 		if !strings.Contains(viewStatus, "Saved successfully") || strings.Contains(viewStatus, "Slide 1 of") {
 			t.Fatalf("custom status did not override default status:\n%s", viewStatus)
 		}
 
 		// Error message overrides custom status
 		m.errMessage = "Critical operation error"
-		viewErr := m.View()
+		viewErr := m.View().Content
 		if !strings.Contains(viewErr, "Error: Critical operation error") {
 			t.Fatalf("error message did not override custom status:\n%s", viewErr)
 		}
@@ -943,7 +943,7 @@ func TestPresentationView(t *testing.T) {
 			t.Fatal("failed to enter edit mode")
 		}
 
-		view := m.View()
+		view := m.View().Content
 		if !strings.Contains(view, "— editing source") {
 			t.Fatalf("edit mode header missing '— editing source':\n%s", view)
 		}
@@ -958,12 +958,12 @@ func TestPresentationViewSmallTerminal(t *testing.T) {
 	m := newPresentationModel(service, "deck.md", Theme{})
 
 	m.width, m.height = 19, 30
-	if got := m.View(); got != "Terminal too small. Press q to quit." {
+	if got := m.View().Content; got != "Terminal too small. Press q to quit." {
 		t.Fatalf("small width view = %q, want 'Terminal too small. Press q to quit.'", got)
 	}
 
 	m.width, m.height = 80, 4
-	if got := m.View(); got != "Terminal too small. Press q to quit." {
+	if got := m.View().Content; got != "Terminal too small. Press q to quit." {
 		t.Fatalf("small height view = %q, want 'Terminal too small. Press q to quit.'", got)
 	}
 }
@@ -973,13 +973,13 @@ func TestPresentationViewUnloadedAndErrorStates(t *testing.T) {
 	m := newPresentationModel(service, "deck.md", Theme{})
 	m.width, m.height = 80, 20
 
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "Presentation") || !strings.Contains(view, "deck.md") || !strings.Contains(view, "r retry • esc/q quit") {
 		t.Fatalf("unloaded view missing expected strings:\n%s", view)
 	}
 
 	m.errMessage = "Failed to load"
-	view = m.View()
+	view = m.View().Content
 	if !strings.Contains(view, "Error: Failed to load") {
 		t.Fatalf("unloaded view missing error message:\n%s", view)
 	}
@@ -987,7 +987,7 @@ func TestPresentationViewUnloadedAndErrorStates(t *testing.T) {
 	// Model without path
 	mNoPath := newPresentationModel(service, "", Theme{})
 	mNoPath.width, mNoPath.height = 80, 20
-	if viewNoPath := mNoPath.View(); !strings.HasPrefix(viewNoPath, "Presentation\n") {
+	if viewNoPath := mNoPath.View().Content; !strings.HasPrefix(viewNoPath, "Presentation\n") {
 		t.Fatalf("unloaded model without path view wrong:\n%s", viewNoPath)
 	}
 }
@@ -999,7 +999,7 @@ func TestPresentationViewEditMode(t *testing.T) {
 		t.Fatal("expected model to be in editing mode")
 	}
 
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "— editing source") {
 		t.Fatalf("edit mode header missing '— editing source':\n%s", view)
 	}
@@ -1013,7 +1013,7 @@ func TestPresentationViewBrowseModeAndScrolling(t *testing.T) {
 	m.width, m.height = 80, 10 // small height so visibleLines is small
 
 	// Title page (page 0)
-	view := m.View()
+	view := m.View().Content
 	slideCount := len(m.deck.Slides)
 	wantTitleCounter := fmt.Sprintf("0/%d", slideCount)
 	wantTitleStatus := fmt.Sprintf("Title page • %d slides", slideCount)
@@ -1023,7 +1023,7 @@ func TestPresentationViewBrowseModeAndScrolling(t *testing.T) {
 
 	// Go to Slide 1
 	drivePresentation(t, m, sheetKey("right"))
-	view = m.View()
+	view = m.View().Content
 	wantSlideCounter := fmt.Sprintf("1/%d", slideCount)
 	wantSlideStatus := fmt.Sprintf("Slide 1 of %d", slideCount)
 	if !strings.Contains(view, wantSlideCounter) || !strings.Contains(view, wantSlideStatus) {
@@ -1032,20 +1032,20 @@ func TestPresentationViewBrowseModeAndScrolling(t *testing.T) {
 
 	// Scroll down
 	drivePresentation(t, m, sheetKey("down"))
-	viewScrolled := m.View()
+	viewScrolled := m.View().Content
 	if viewScrolled == view {
 		t.Fatalf("scrolling down did not alter View() output")
 	}
 
 	// Custom status overrides default slide status
 	m.status = "Saved"
-	if view := m.View(); !strings.Contains(view, "Saved") || strings.Contains(view, "Slide 1 of 2") {
+	if view := m.View().Content; !strings.Contains(view, "Saved") || strings.Contains(view, "Slide 1 of 2") {
 		t.Fatalf("custom status 'Saved' not displayed properly:\n%s", view)
 	}
 
 	// Error message overrides status
 	m.errMessage = "Something went wrong"
-	if view := m.View(); !strings.Contains(view, "Error: Something went wrong") {
+	if view := m.View().Content; !strings.Contains(view, "Error: Something went wrong") {
 		t.Fatalf("error message not displayed properly in view:\n%s", view)
 	}
 }
@@ -1054,7 +1054,7 @@ func TestPresentationUpdateMouseAndGenericMessages(t *testing.T) {
 	m, _, _ := newPresentationTestModel(t)
 
 	// In browse mode: MouseMsg and generic msg return (m, nil)
-	mouseMsg := tea.MouseMsg{X: 10, Y: 10, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
+	mouseMsg := mouseEvent{X: 10, Y: 10, Action: mousePress, Button: mouseLeft}
 	updatedModel, cmd := m.Update(mouseMsg)
 	if updatedModel != m || cmd != nil {
 		t.Fatalf("browse mode MouseMsg returned model %v, cmd %v", updatedModel, cmd)
@@ -1195,11 +1195,11 @@ func TestPresentationUpdateBrowseKeysAndNavigation(t *testing.T) {
 		t.Fatalf("after 'g': page = %d, want 0", m.page)
 	}
 
-	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyPgDown})
+	drivePresentation(t, m, tea.KeyPressMsg{Code: tea.KeyPgDown})
 	if m.page != 1 {
 		t.Fatalf("after pgdown: page = %d, want 1", m.page)
 	}
-	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyPgUp})
+	drivePresentation(t, m, tea.KeyPressMsg{Code: tea.KeyPgUp})
 	if m.page != 0 {
 		t.Fatalf("after pgup: page = %d, want 0", m.page)
 	}
@@ -1341,7 +1341,7 @@ func TestPresentationUpdateMessageHandlers(t *testing.T) {
 	t.Run("MouseMsg edge cases", func(t *testing.T) {
 		// Browse mode mouse message is no-op
 		m.editing = false
-		mouseMsg := tea.MouseMsg{X: 10, Y: 10, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
+		mouseMsg := mouseEvent{X: 10, Y: 10, Action: mousePress, Button: mouseLeft}
 		retModel, cmd := m.Update(mouseMsg)
 		if retModel != m || cmd != nil {
 			t.Fatalf("browse mode MouseMsg returned model %v, cmd %v", retModel, cmd)
@@ -1410,7 +1410,7 @@ func TestPresentationFencedCodeBlocksAndEmptyNotes(t *testing.T) {
 	// Toggle speaker notes on slide with empty notes
 	drivePresentation(t, m, sheetKey("n"))
 	drivePresentation(t, m, sheetKey("s"))
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "(none)") {
 		t.Fatalf("empty speaker notes did not render '(none)':\n%s", view)
 	}

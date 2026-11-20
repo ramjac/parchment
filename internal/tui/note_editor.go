@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/artifactfile"
@@ -51,7 +51,7 @@ func newNoteEditor(undoLimit int, theme tuitheme.Theme) noteEditor {
 	pdfInput.CharLimit = 64 << 10
 	return noteEditor{
 		bodyInput:    body,
-		preview:      viewport.New(0, 0),
+		preview:      viewport.New(),
 		previewMatch: -1,
 		pdfInput:     pdfInput,
 		theme:        theme,
@@ -87,15 +87,16 @@ func (n *noteEditor) markSaved(savedNote note.Note) {
 }
 
 func (n *noteEditor) resizePreview(width, height int) {
-	offset, current := n.preview.YOffset, n.previewMatch
+	offset, current := n.preview.YOffset(), n.previewMatch
 	promptRows := 0
 	if n.pdfPrompt != promptNone {
 		promptRows = 1
 	}
-	n.preview.Width, n.preview.Height = max(width-4, 1), max(height-6-promptRows, 1)
+	n.preview.SetWidth(max(width-4, 1))
+	n.preview.SetHeight(max(height-6-promptRows, 1))
 	saved := n.snapshot
 	saved.Body = n.bodyInput.Value()
-	n.previewContent = preview(saved, n.preview.Width, n.theme)
+	n.previewContent = preview(saved, n.preview.Width(), n.theme)
 	n.previewMatches = renderedMatches(strings.Split(n.previewContent, "\n"), n.find.query(), 0)
 	n.previewMatch = min(max(current, 0), len(n.previewMatches)-1)
 	n.renderPreviewContent(offset)
@@ -104,7 +105,7 @@ func (n *noteEditor) resizePreview(width, height int) {
 func (n *noteEditor) resizeEditors(width, height int) {
 	inputWidth := max(width-4, 1)
 	n.bodyInput.SetWidth(inputWidth)
-	n.pdfInput.Width = max(inputWidth-runewidth.StringWidth(n.pdfInput.Prompt), 1)
+	n.pdfInput.SetWidth(max(inputWidth-runewidth.StringWidth(n.pdfInput.Prompt), 1))
 	promptRows := 0
 	if n.pdfPrompt != promptNone {
 		promptRows = 1
@@ -166,7 +167,7 @@ func (n *noteEditor) searchPreview(query string) {
 	if len(n.previewMatches) > 0 {
 		n.previewMatch = 0
 	}
-	n.renderPreviewContent(n.preview.YOffset)
+	n.renderPreviewContent(n.preview.YOffset())
 	if n.previewMatch >= 0 {
 		n.preview.SetYOffset(n.previewMatches[n.previewMatch].row)
 	}

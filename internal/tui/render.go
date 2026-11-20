@@ -4,17 +4,16 @@ import (
 	"strconv"
 	"strings"
 
+	"charm.land/lipgloss/v2/compat"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/glamour"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"example.com/parchment/internal/tui/theme"
 )
 
 func repaintImageFrame(view string, frame uint64) string {
-	// Equivalent SGR resets invalidate Bubble Tea's line cache without
-	// clearing the terminal.
-	bits := strconv.FormatUint(frame, 2)
-	tag := "\x1b[" + strings.NewReplacer("0", "0;", "1", "00;").Replace(bits) + "0m"
+	tag := "\x1b_PARCHMENT-REFRESH:" + strconv.FormatUint(frame, 10) + "\x1b\\"
 	lines := strings.Split(view, "\n")
 	for i := range lines {
 		lines[i] += tag
@@ -26,7 +25,7 @@ func renderMarkdown(content string, width int, theme theme.Theme) string {
 	r, err := glamour.NewTermRenderer(
 		glamour.WithStyles(theme.Markdown),
 		glamour.WithPreservedNewLines(),
-		glamour.WithColorProfile(lipgloss.ColorProfile()),
+		glamour.WithColorProfile(glamourColorProfile(compat.Profile)),
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {
@@ -39,4 +38,17 @@ func renderMarkdown(content string, width int, theme theme.Theme) string {
 	}
 
 	return strings.TrimRight(out, "\n")
+}
+
+func glamourColorProfile(profile colorprofile.Profile) termenv.Profile {
+	switch profile {
+	case colorprofile.TrueColor:
+		return termenv.TrueColor
+	case colorprofile.ANSI256:
+		return termenv.ANSI256
+	case colorprofile.ANSI:
+		return termenv.ANSI
+	default:
+		return termenv.Ascii
+	}
 }

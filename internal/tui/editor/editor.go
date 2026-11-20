@@ -6,9 +6,9 @@ import (
 	"time"
 	"unicode"
 
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/atotto/clipboard"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/tui/theme"
@@ -30,6 +30,54 @@ type Selection struct {
 type MatchSpan struct {
 	Start Point
 	End   Point
+}
+
+type mouseAction uint8
+
+const (
+	mousePress mouseAction = iota
+	mouseMotion
+	mouseRelease
+)
+
+type mouseButton uint8
+
+const (
+	mouseNone mouseButton = iota
+	mouseLeft
+	mouseRight
+	mouseMiddle
+	mouseWheelUp
+	mouseWheelDown
+	mouseWheelLeft
+	mouseWheelRight
+)
+
+type mouseEvent struct {
+	X, Y   int
+	Action mouseAction
+	Button mouseButton
+}
+
+func normalizeMouse(mouse tea.Mouse, action mouseAction) mouseEvent {
+	button := mouseNone
+	switch mouse.Button {
+	case tea.MouseLeft:
+		button = mouseLeft
+	case tea.MouseRight:
+		button = mouseRight
+	case tea.MouseMiddle:
+		button = mouseMiddle
+	case tea.MouseWheelUp:
+		button = mouseWheelUp
+	case tea.MouseWheelDown:
+		button = mouseWheelDown
+	case tea.MouseWheelLeft:
+		button = mouseWheelLeft
+	case tea.MouseWheelRight:
+		button = mouseWheelRight
+	}
+	return mouseEvent{X: mouse.X, Y: mouse.Y, Action: action, Button: button}
 }
 
 type editKind int
@@ -818,17 +866,28 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		return *m, nil
 	}
 	switch k := msg.(type) {
-	case tea.MouseMsg:
+	case mouseEvent:
 		m.handleMouse(k)
-	case tea.KeyMsg:
+	case tea.MouseClickMsg:
+		m.handleMouse(normalizeMouse(k.Mouse(), mousePress))
+	case tea.MouseReleaseMsg:
+		m.handleMouse(normalizeMouse(k.Mouse(), mouseRelease))
+	case tea.MouseMotionMsg:
+		m.handleMouse(normalizeMouse(k.Mouse(), mouseMotion))
+	case tea.MouseWheelMsg:
+		m.handleMouse(normalizeMouse(k.Mouse(), mousePress))
+	case tea.KeyPressMsg:
 		m.handleKey(k)
+	case tea.PasteMsg:
+		m.lastEditType = editNone
+		m.InsertString(k.Content)
 	}
 	return *m, nil
 }
 
-func (m *Model) handleMouse(msg tea.MouseMsg) {
+func (m *Model) handleMouse(msg mouseEvent) {
 	m.lastEditType = editNone
-	if msg.Button == tea.MouseButtonWheelUp {
+	if msg.Button == mouseWheelUp {
 		if m.TopLine > 0 {
 			m.TopLine -= 3
 			if m.TopLine < 0 {
@@ -837,7 +896,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) {
 		}
 		return
 	}
-	if msg.Button == tea.MouseButtonWheelDown {
+	if msg.Button == mouseWheelDown {
 		maxTop := len(m.Lines) - m.Height
 		if maxTop < 0 {
 			maxTop = 0
@@ -857,7 +916,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) {
 	pos := m.pointFromVisual(msg.X, msg.Y)
 
 	switch msg.Action {
-	case tea.MouseActionPress:
+	case mousePress:
 		now := time.Now()
 		if now.Sub(m.lastClickTime) < 400*time.Millisecond && pos.Line == m.lastClickPos.Line {
 			m.clickCount++
@@ -916,7 +975,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) {
 		}
 		m.ensureCursorVisible()
 
-	case tea.MouseActionMotion:
+	case mouseMotion:
 		if m.isDragging {
 			m.Cursor = pos
 			m.updateStickyCol()
@@ -924,7 +983,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) {
 			m.ensureCursorVisible()
 		}
 
-	case tea.MouseActionRelease:
+	case mouseRelease:
 		m.isDragging = false
 		if m.Selection.Anchor == m.Cursor && m.clickCount == 1 {
 			m.Selection.Active = false
@@ -932,19 +991,19 @@ func (m *Model) handleMouse(msg tea.MouseMsg) {
 	}
 }
 
-func isShiftKey(msg tea.KeyMsg) bool {
-	switch msg.Type {
-	case tea.KeyShiftLeft, tea.KeyShiftRight, tea.KeyShiftUp, tea.KeyShiftDown,
-		tea.KeyShiftHome, tea.KeyShiftEnd,
-		tea.KeyCtrlShiftLeft, tea.KeyCtrlShiftRight, tea.KeyCtrlShiftUp, tea.KeyCtrlShiftDown,
-		tea.KeyCtrlShiftHome, tea.KeyCtrlShiftEnd:
-		return true
+func isShiftKey(msg tea.KeyPressMsg) bool {
+	if msg.Mod&tea.ModShift == 0 {
+		return false
 	}
-	keyStr := msg.String()
-	return strings.HasPrefix(keyStr, "shift+") || strings.HasPrefix(keyStr, "ctrl+shift+")
+	switch msg.Code {
+	case tea.KeyLeft, tea.KeyRight, tea.KeyUp, tea.KeyDown, tea.KeyHome, tea.KeyEnd:
+		return true
+	default:
+		return false
+	}
 }
 
-func (m *Model) handleKey(msg tea.KeyMsg) {
+func (m *Model) handleKey(msg tea.KeyPressMsg) {
 	shift := isShiftKey(msg)
 	keyStr := msg.String()
 
@@ -1172,8 +1231,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 		m.InsertString("  ")
 
 	default:
-		if msg.Type == tea.KeyRunes || (len(msg.Runes) > 0 && !unicode.IsControl(msg.Runes[0])) {
-			for _, r := range msg.Runes {
+		if msg.Mod&(tea.ModCtrl|tea.ModAlt) == 0 && msg.Text != "" && !unicode.IsControl([]rune(msg.Text)[0]) {
+			for _, r := range msg.Text {
 				m.InsertRune(r)
 			}
 		}

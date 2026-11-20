@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/printing"
@@ -36,11 +36,11 @@ func (m *Model) resizeNotePDFPrompt() {
 		promptRows = 1
 	}
 	m.bodyInput.SetHeight(max(m.height-6-promptRows, 1))
-	m.preview.Height = max(m.height-6-promptRows, 1)
-	m.pdfInput.Width = max(m.width-4-runewidth.StringWidth(m.pdfInput.Prompt), 1)
+	m.preview.SetHeight(max(m.height-6-promptRows, 1))
+	m.pdfInput.SetWidth(max(m.width-4-runewidth.StringWidth(m.pdfInput.Prompt), 1))
 }
 
-func (m *Model) updateNotePDFPrompt(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) updateNotePDFPrompt(msg tea.KeyPressMsg) tea.Cmd {
 	if m.pdfPrompt == promptPDFOverwrite {
 		switch msg.String() {
 		case "y", "Y":

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
@@ -44,13 +44,14 @@ func (s *documentsScreen) refreshReader() {
 }
 
 func (s *documentsScreen) resizeReader() {
-	offset, current := s.reader.YOffset, s.readerMatch
+	offset, current := s.reader.YOffset(), s.readerMatch
 	width, height := s.width-4, s.height-6
 	if s.wideReader() {
 		_, preview := s.readerPaneWidths()
 		width, height = preview-2, s.height-6
 	}
-	s.reader.Width, s.reader.Height = max(width, 1), max(height, 1)
+	s.reader.SetWidth(max(width, 1))
+	s.reader.SetHeight(max(height, 1))
 	if s.find.visible && s.find.query() != "" {
 		s.rebuildReaderMatches(s.find.query())
 		s.readerMatch = min(max(current, 0), len(s.readerMatches)-1)
@@ -64,7 +65,7 @@ func (s *documentsScreen) showReaderPage() {
 		s.reader.SetContent("")
 		return
 	}
-	content := pageText(s.readerPages[s.readerPage], s.reader.Width)
+	content := pageText(s.readerPages[s.readerPage], s.reader.Width())
 	if s.find.visible && s.find.query() != "" {
 		content = highlightRenderedText(content, s.find.query(), s.theme)
 	}
@@ -85,7 +86,7 @@ func (s *documentsScreen) searchReader(query string) {
 func (s *documentsScreen) rebuildReaderMatches(query string) {
 	s.readerMatches = nil
 	for page, content := range s.readerPages {
-		s.readerMatches = append(s.readerMatches, renderedMatches(strings.Split(pageText(content, s.reader.Width), "\n"), query, page)...)
+		s.readerMatches = append(s.readerMatches, renderedMatches(strings.Split(pageText(content, s.reader.Width()), "\n"), query, page)...)
 	}
 	s.readerMatch = -1
 }
@@ -152,7 +153,7 @@ func (s *documentsScreen) scrollReader(down bool, msg tea.Msg) {
 	s.reader, _ = s.reader.Update(msg)
 }
 
-func (s *documentsScreen) updateReaderKey(msg tea.KeyMsg) tea.Cmd {
+func (s *documentsScreen) updateReaderKey(msg tea.KeyPressMsg) tea.Cmd {
 	if s.prompt != promptNone {
 		return s.updatePrompt(msg)
 	}
@@ -209,7 +210,7 @@ func (s *documentsScreen) updateReaderKey(msg tea.KeyMsg) tea.Cmd {
 		s.stepSection(-1)
 	case "}":
 		s.stepSection(1)
-	case "down", "j", "pgdown", " ":
+	case "down", "j", "pgdown", "space":
 		s.scrollReader(true, msg)
 	case "up", "k", "pgup":
 		s.scrollReader(false, msg)
@@ -219,12 +220,12 @@ func (s *documentsScreen) updateReaderKey(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-func (s *documentsScreen) updateReaderMouse(msg tea.MouseMsg) {
-	if s.prompt != promptNone || msg.Action != tea.MouseActionPress {
+func (s *documentsScreen) updateReaderMouse(msg mouseEvent) {
+	if s.prompt != promptNone || msg.Action != mousePress {
 		return
 	}
 	switch msg.Button {
-	case tea.MouseButtonLeft:
+	case mouseLeft:
 		if s.wideReader() {
 			outlineWidth, _ := s.readerPaneWidths()
 			if msg.X >= 1 && msg.X <= outlineWidth+1 {
@@ -233,9 +234,9 @@ func (s *documentsScreen) updateReaderMouse(msg tea.MouseMsg) {
 			}
 		}
 		s.clickReaderLink(msg.X, msg.Y)
-	case tea.MouseButtonWheelDown:
+	case mouseWheelDown:
 		s.scrollReader(true, msg)
-	case tea.MouseButtonWheelUp:
+	case mouseWheelUp:
 		s.scrollReader(false, msg)
 	}
 }
@@ -244,7 +245,7 @@ func (s *documentsScreen) clickReaderLink(x, y int) {
 	if s.readerPage >= len(s.readerPages) {
 		return
 	}
-	pageRow := (y - 4) + s.reader.YOffset
+	pageRow := (y - 4) + s.reader.YOffset()
 	pageCol := x - 1
 	if s.wideReader() {
 		outlineWidth, _ := s.readerPaneWidths()

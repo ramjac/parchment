@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"example.com/parchment/internal/artifact"
@@ -78,17 +78,26 @@ func TestDocumentEditModeSeamlessUndoRedo(t *testing.T) {
 	}
 }
 
+func TestDocumentEditorPastesClipboardText(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "before"})
+	h.send(tea.KeyPressMsg{Code: tea.KeyEnd})
+	h.send(tea.PasteMsg{Content: " after"})
+	if got := h.m.documents.body.Value(); got != "before after" {
+		t.Fatalf("pasted document body = %q", got)
+	}
+}
+
 func TestDocumentEditorFindBarUsesSharedMatchHighlighting(t *testing.T) {
 	h := newDocumentHarness(t, document.Draft{Body: "alpha ALPHA alpha"})
 	s := h.m.documents
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlF})
+	h.send(tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
 	h.typeText("ALPHA")
 	if !s.find.active || s.body.MatchCount() != 1 || s.body.Cursor.Col != 6 ||
 		!strings.Contains(s.find.view(s.body.MatchCount(), s.body.ActiveMatch(), s.width), "1/1") {
 		t.Fatalf("document editor search: active=%t matches=%d cursor=%+v",
 			s.find.active, s.body.MatchCount(), s.body.Cursor)
 	}
-	h.send(tea.KeyMsg{Type: tea.KeyEsc})
+	h.send(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if s.find.active || s.body.MatchCount() != 0 || !s.body.Focused || s.body.Cursor.Col != 6 {
 		t.Fatalf("closing document search did not preserve the current match: active=%t matches=%d focused=%t cursor=%+v",
 			s.find.active, s.body.MatchCount(), s.body.Focused, s.body.Cursor)
@@ -97,7 +106,7 @@ func TestDocumentEditorFindBarUsesSharedMatchHighlighting(t *testing.T) {
 
 func TestDocumentEditorHasToolbarAndSavesLayout(t *testing.T) {
 	h := newDocumentHarness(t, document.Draft{})
-	view := h.m.View()
+	view := h.m.View().Content
 	for _, label := range []string{"Save", "PDF", "Tracking", "Changes", "Preview", "B", "H1", "Page break", "Section", "Cols: 1", "Margins: Normal", "Header", "Footer", "Image"} {
 		if !strings.Contains(view, label) {
 			t.Fatalf("editor toolbar is missing %q:\n%s", label, view)
@@ -105,7 +114,7 @@ func TestDocumentEditorHasToolbarAndSavesLayout(t *testing.T) {
 	}
 	s := h.m.documents
 	h.typeText("Intro")
-	h.send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b"), Alt: true})
+	h.send(tea.KeyPressMsg{Code: []rune(string("b"))[0], Mod: tea.ModAlt})
 	h.typeText("bold")
 	s.act("pagebreak")
 	s.act("columns")
@@ -223,7 +232,7 @@ func TestDocumentPDFExportFromEditorPreservesUnsavedDraft(t *testing.T) {
 	s := h.m.documents
 	h.typeText(" with unsaved changes")
 	output := filepath.Join(t.TempDir(), "editor.pdf")
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	if s.prompt != promptPDF {
 		t.Fatal("Ctrl+P did not open the PDF path prompt")
 	}
@@ -263,10 +272,10 @@ func TestDocumentPDFExportFromEditorPreservesUnsavedDraft(t *testing.T) {
 	}
 
 	h.key("f5")
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	previewOutput := filepath.Join(t.TempDir(), "preview.pdf")
 	s.promptInput.SetValue(previewOutput)
-	if !strings.Contains(h.m.View(), "PDF output path:") {
+	if !strings.Contains(h.m.View().Content, "PDF output path:") {
 		t.Fatal("print preview did not display the PDF path prompt")
 	}
 	h.key("enter")
@@ -277,13 +286,13 @@ func TestDocumentPDFExportFromEditorPreservesUnsavedDraft(t *testing.T) {
 	if !bytes.HasPrefix(previewPDF, []byte("%PDF-")) {
 		t.Fatalf("preview export does not have a PDF signature: %q", previewPDF[:min(len(previewPDF), 8)])
 	}
-	if !strings.Contains(h.m.View(), "PDF exported to "+previewOutput) {
+	if !strings.Contains(h.m.View().Content, "PDF exported to "+previewOutput) {
 		t.Fatal("print preview did not display the PDF export success status")
 	}
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	s.promptInput.SetValue(previewOutput)
 	h.key("enter")
-	if s.prompt != promptPDFOverwrite || !strings.Contains(h.m.View(), "Overwrite?") {
+	if s.prompt != promptPDFOverwrite || !strings.Contains(h.m.View().Content, "Overwrite?") {
 		t.Fatal("print preview did not display the overwrite confirmation")
 	}
 	h.key("esc")
@@ -297,7 +306,7 @@ func TestDocumentPDFExportWarnsForUnsavedTrackedEdit(t *testing.T) {
 		t.Fatal("tracking was not enabled")
 	}
 	h.typeText(" with unsaved changes")
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	s.promptInput.SetValue(filepath.Join(t.TempDir(), "tracked.pdf"))
 	h.key("enter")
 	if !strings.Contains(s.status, "pending tracked changes not exported") {
@@ -310,7 +319,7 @@ func TestDocumentPDFExportFromReaderAndConfirmsOverwrite(t *testing.T) {
 	s := h.m.documents
 	s.startReading(s.snapshot)
 	output := filepath.Join(t.TempDir(), "reader.pdf")
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	if s.prompt != promptPDF {
 		t.Fatal("Ctrl+P did not open the PDF path prompt in the reader")
 	}
@@ -326,13 +335,13 @@ func TestDocumentPDFExportFromReaderAndConfirmsOverwrite(t *testing.T) {
 
 	h.open(artifact.DocumentKind)
 	s = h.m.documents
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	if got := s.promptInput.Value(); got != output {
 		t.Fatalf("remembered PDF path = %q, want %q", got, output)
 	}
 	h.key("enter")
-	if s.prompt != promptPDFOverwrite || !strings.Contains(h.m.View(), "Overwrite?") {
-		t.Fatalf("missing overwrite confirmation: %s", h.m.View())
+	if s.prompt != promptPDFOverwrite || !strings.Contains(h.m.View().Content, "Overwrite?") {
+		t.Fatalf("missing overwrite confirmation: %s", h.m.View().Content)
 	}
 	h.key("enter")
 	after, err := os.ReadFile(output)
@@ -346,7 +355,7 @@ func TestDocumentPDFExportFromReaderAndConfirmsOverwrite(t *testing.T) {
 	if err := os.WriteFile(output, []byte("old PDF"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	h.key("enter")
 	h.key("y")
 	after, err = os.ReadFile(output)
@@ -356,14 +365,14 @@ func TestDocumentPDFExportFromReaderAndConfirmsOverwrite(t *testing.T) {
 	if !strings.Contains(s.status, "PDF exported") {
 		t.Fatalf("status after confirmed overwrite = %q", s.status)
 	}
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	s.promptInput.SetValue(filepath.Join(t.TempDir(), "missing", "failed.pdf"))
 	h.key("enter")
 	if !strings.Contains(s.errMessage, "PDF export failed") {
 		t.Fatalf("expected export failure, got %q", s.errMessage)
 	}
 	h.open(artifact.DocumentKind)
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	if got := h.m.documents.promptInput.Value(); got != output {
 		t.Fatalf("failed export changed remembered path to %q", got)
 	}
@@ -376,7 +385,7 @@ func TestDocumentPDFExportCannotOverwriteSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	s.promptInput.SetValue(h.path)
 	h.key("enter")
 	h.key("y")
@@ -417,7 +426,7 @@ func TestDocumentEditorPaneAndMouseCoordinates(t *testing.T) {
 			}
 			s.body.SetValue(strings.Repeat("a", width) + "bcdef")
 			y := toolbarTop + s.toolbarRows() + 1
-			lines := strings.Split(ansi.Strip(h.m.View()), "\n")
+			lines := strings.Split(ansi.Strip(h.m.View().Content), "\n")
 			for row, line := range lines {
 				if got := ansi.StringWidth(line); got > tc.width {
 					t.Fatalf("row %d overflows terminal: width=%d line=%q", row, got, line)
@@ -433,16 +442,16 @@ func TestDocumentEditorPaneAndMouseCoordinates(t *testing.T) {
 				t.Fatalf("body not wrapped within the pane:\n%s\n%s", lines[y], lines[y+1])
 			}
 			s.focusToolbar()
-			h.send(tea.MouseMsg{X: left + 2, Y: y + 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+			h.send(mouseEvent{X: left + 2, Y: y + 1, Action: mousePress, Button: mouseLeft})
 			if s.body.Cursor != (editor.Point{Line: 0, Col: width + 2}) || s.focus != focusBody {
 				t.Fatalf("wrapped click: cursor=%+v focus=%v", s.body.Cursor, s.focus)
 			}
-			h.send(tea.MouseMsg{X: left + 4, Y: y + 1, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
-			h.send(tea.MouseMsg{X: left + 4, Y: y + 1, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
+			h.send(mouseEvent{X: left + 4, Y: y + 1, Action: mouseMotion, Button: mouseLeft})
+			h.send(mouseEvent{X: left + 4, Y: y + 1, Action: mouseRelease, Button: mouseLeft})
 			if got := s.body.SelectedText(); got != "de" {
 				t.Fatalf("drag selected %q, want %q", got, "de")
 			}
-			h.send(tea.MouseMsg{X: tc.width - 1, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+			h.send(mouseEvent{X: tc.width - 1, Y: y, Action: mousePress, Button: mouseLeft})
 			if s.body.Cursor != (editor.Point{Line: 0, Col: width + 4}) {
 				t.Fatalf("border click moved cursor: %+v", s.body.Cursor)
 			}
@@ -457,9 +466,9 @@ func TestDocumentEditorFrameAndClickAfterResize(t *testing.T) {
 
 	checkFrame := func(width, height int) []string {
 		t.Helper()
-		lines := strings.Split(ansi.Strip(h.m.View()), "\n")
+		lines := strings.Split(ansi.Strip(h.m.View().Content), "\n")
 		if len(lines) != height {
-			t.Fatalf("view has %d rows, want %d:\n%s", len(lines), height, h.m.View())
+			t.Fatalf("view has %d rows, want %d:\n%s", len(lines), height, h.m.View().Content)
 		}
 		top, bottom := -1, -1
 		for i, line := range lines {
@@ -474,7 +483,7 @@ func TestDocumentEditorFrameAndClickAfterResize(t *testing.T) {
 			}
 		}
 		if top < 0 || bottom <= top {
-			t.Fatalf("missing pane borders:\n%s", h.m.View())
+			t.Fatalf("missing pane borders:\n%s", h.m.View().Content)
 		}
 		for row := top; row <= bottom; row++ {
 			line := lines[row]
@@ -505,8 +514,8 @@ func TestDocumentEditorFrameAndClickAfterResize(t *testing.T) {
 
 	for y, line := range lines {
 		if i := strings.Index(line, "CLICKTARGET"); i >= 0 {
-			x := ansi.StringWidth(line[:i]) + 2
-			h.send(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+			x := ansi.StringWidth(line[:i]) + 3
+			h.send(mouseEvent{X: x, Y: y, Action: mousePress, Button: mouseLeft})
 			h.typeText("!")
 			if got, want := s.body.Value(), strings.Replace(body, "CLICKTARGET", "CL!ICKTARGET", 1); got != want {
 				t.Fatalf("click after resize inserted text at the wrong position: %q", got)
@@ -514,7 +523,7 @@ func TestDocumentEditorFrameAndClickAfterResize(t *testing.T) {
 			return
 		}
 	}
-	t.Fatalf("click target not visible:\n%s", h.m.View())
+	t.Fatalf("click target not visible:\n%s", h.m.View().Content)
 }
 
 func TestDocumentTrackingReviewAndAccept(t *testing.T) {
@@ -536,7 +545,7 @@ func TestDocumentTrackingReviewAndAccept(t *testing.T) {
 	}
 	h.key("f4")
 	h.key("enter")
-	if !s.reviewing || !strings.Contains(h.m.View(), "Inserted") {
+	if !s.reviewing || !strings.Contains(h.m.View().Content, "Inserted") {
 		t.Fatal("review did not display tracked content")
 	}
 	h.key("a")
@@ -594,14 +603,14 @@ func TestDocumentChangeReviewScrollsAndBoundsChangeList(t *testing.T) {
 	s.changes, s.selectedChange, s.showChanges, s.reviewing = []document.TrackedChange{change}, 0, true, true
 	s.resize(100, 12)
 	s.setChangeReviewContent()
-	view := h.m.View()
+	view := h.m.View().Content
 	if strings.Contains(view, "CURRENT-LAST") || strings.Contains(view, "PROPOSED-LAST") {
 		t.Fatalf("review showed content beyond the initial viewport:\n%s", view)
 	}
 	sawCurrent, sawProposed := false, false
 	for i := 0; i < 100 && !(sawCurrent && sawProposed); i++ {
 		h.key("pgdown")
-		view = h.m.View()
+		view = h.m.View().Content
 		sawCurrent = sawCurrent || strings.Contains(view, "CURRENT-LAST")
 		sawProposed = sawProposed || strings.Contains(view, "PROPOSED-LAST")
 	}
@@ -657,7 +666,7 @@ func TestToolbarMouseClickAndUnsavedEscape(t *testing.T) {
 	buttons := s.toolbarButtons()
 	for _, p := range placed {
 		if buttons[p.index].action == "columns" {
-			h.send(tea.MouseMsg{X: p.x + 1, Y: toolbarTop + p.row, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+			h.send(mouseEvent{X: p.x + 1, Y: toolbarTop + p.row, Action: mousePress, Button: mouseLeft})
 		}
 	}
 	if s.layout.Columns != 2 {
@@ -687,7 +696,7 @@ func TestAltFormattingFromToolbarFocusesBody(t *testing.T) {
 	if s.focus != focusToolbar || s.body.Focused {
 		t.Fatal("F2 did not move focus from the body to the toolbar")
 	}
-	h.send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b"), Alt: true})
+	h.send(tea.KeyPressMsg{Code: []rune(string("b"))[0], Mod: tea.ModAlt})
 	h.typeText("x")
 	if !s.body.Focused {
 		t.Fatal("formatting from the toolbar did not focus the body")
@@ -705,7 +714,7 @@ func TestToolbarFormattingOnSelectedText(t *testing.T) {
 	s.body.Cursor = editor.Point{Line: 0, Col: 11}
 
 	// Alt+B triggers "bold" toolbar action
-	h.send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b"), Alt: true})
+	h.send(tea.KeyPressMsg{Code: []rune(string("b"))[0], Mod: tea.ModAlt})
 	if s.body.Value() != "Hello **World**" {
 		t.Fatalf("body after bolding selection = %q, want %q", s.body.Value(), "Hello **World**")
 	}
@@ -890,7 +899,7 @@ func TestDocumentPreviewFitsTerminalAndScrolls(t *testing.T) {
 	if !s.previewing || len(s.editPages) == 0 || len(s.editPages[0].Lines) <= 24 {
 		t.Fatalf("preview: previewing=%t pages=%d", s.previewing, len(s.editPages))
 	}
-	view := h.m.View()
+	view := h.m.View().Content
 	if lines := strings.Count(view, "\n") + 1; lines > 24 {
 		t.Fatalf("preview view has %d lines for a 24-line terminal", lines)
 	}
@@ -898,18 +907,18 @@ func TestDocumentPreviewFitsTerminalAndScrolls(t *testing.T) {
 	if !strings.Contains(cleanView, "Hello") || !strings.Contains(cleanView, "Some text") || !strings.Contains(cleanView, "lines 1–21 of") {
 		t.Fatalf("preview does not show the top of the page:\n%s", view)
 	}
-	h.send(tea.KeyMsg{Type: tea.KeyDown})
-	if !strings.Contains(h.m.View(), "lines 2–22 of") {
-		t.Fatalf("down did not scroll:\n%s", h.m.View())
+	h.send(tea.KeyPressMsg{Code: tea.KeyDown})
+	if !strings.Contains(h.m.View().Content, "lines 2–22 of") {
+		t.Fatalf("down did not scroll:\n%s", h.m.View().Content)
 	}
-	h.send(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
-	if !strings.Contains(h.m.View(), "lines 5–25 of") {
-		t.Fatalf("wheel did not scroll:\n%s", h.m.View())
+	h.send(mouseEvent{Action: mousePress, Button: mouseWheelDown})
+	if !strings.Contains(h.m.View().Content, "lines 5–25 of") {
+		t.Fatalf("wheel did not scroll:\n%s", h.m.View().Content)
 	}
-	h.send(tea.KeyMsg{Type: tea.KeyEnd})
+	h.send(tea.KeyPressMsg{Code: tea.KeyEnd})
 	total := len(s.editPages[0].Lines)
-	if !strings.Contains(h.m.View(), fmt.Sprintf("lines %d–%d of %d", total-20, total, total)) {
-		t.Fatalf("end did not reach the bottom:\n%s", h.m.View())
+	if !strings.Contains(h.m.View().Content, fmt.Sprintf("lines %d–%d of %d", total-20, total, total)) {
+		t.Fatalf("end did not reach the bottom:\n%s", h.m.View().Content)
 	}
 	h.key("esc")
 	if s.previewing || h.m.stage != stageDocument {
@@ -929,7 +938,7 @@ func TestDocumentOpensInReaderWithOutline(t *testing.T) {
 	if h.m.stage != stageDocument || !s.reading {
 		t.Fatalf("stage = %d, reading = %v", h.m.stage, s.reading)
 	}
-	view := h.m.View()
+	view := h.m.View().Content
 	for _, want := range []string{"Outline", "› Intro", "Middle", "Detail", "Page 1/", "Hello."} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("reader is missing %q:\n%s", want, view)
@@ -942,7 +951,7 @@ func TestDocumentOpensInReaderWithOutline(t *testing.T) {
 		t.Fatalf("pages = %d", len(s.readerPages))
 	}
 	h.key("}")
-	if s.readerPage != s.outline[1].Page-1 || !strings.Contains(h.m.View(), "› Middle") {
+	if s.readerPage != s.outline[1].Page-1 || !strings.Contains(h.m.View().Content, "› Middle") {
 		t.Fatalf("} moved to page %d", s.readerPage+1)
 	}
 	h.key("{")
@@ -961,7 +970,7 @@ func TestDocumentOpensInReaderWithOutline(t *testing.T) {
 	_, targets := s.outlineLines()
 	for row, target := range targets {
 		if target == 1 {
-			h.send(tea.MouseMsg{X: 3, Y: row + 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+			h.send(mouseEvent{X: 3, Y: row + 2, Action: mousePress, Button: mouseLeft})
 		}
 	}
 	if s.readerPage != s.outline[1].Page-1 {
@@ -969,7 +978,7 @@ func TestDocumentOpensInReaderWithOutline(t *testing.T) {
 	}
 
 	h.key("e")
-	if s.reading || !strings.Contains(h.m.View(), "Editing document") {
+	if s.reading || !strings.Contains(h.m.View().Content, "Editing document") {
 		t.Fatal("e did not open the editor")
 	}
 	h.key("esc")
@@ -988,15 +997,15 @@ func TestDocumentReaderShowsSavedEditsAndDiscardsDraft(t *testing.T) {
 	h.typeText("New ")
 	h.key("ctrl+s")
 	h.key("esc")
-	if !s.reading || !strings.Contains(h.m.View(), "New") {
-		t.Fatalf("reader does not show the saved edit:\n%s", h.m.View())
+	if !s.reading || !strings.Contains(h.m.View().Content, "New") {
+		t.Fatalf("reader does not show the saved edit:\n%s", h.m.View().Content)
 	}
 	h.key("e")
 	h.typeText("Unsaved ")
 	h.key("esc")
 	h.key("esc")
-	if !s.reading || strings.Contains(h.m.View(), "Unsaved") || !strings.Contains(s.status, "Discarded") {
-		t.Fatalf("discarding did not return to the saved reader: %q\n%s", s.status, h.m.View())
+	if !s.reading || strings.Contains(h.m.View().Content, "Unsaved") || !strings.Contains(s.status, "Discarded") {
+		t.Fatalf("discarding did not return to the saved reader: %q\n%s", s.status, h.m.View().Content)
 	}
 	if h.hasDraft() {
 		t.Fatal("leaving the editor kept the recovery draft")
@@ -1041,7 +1050,7 @@ func TestDocumentReaderFitsTerminalWidth(t *testing.T) {
 	h.key("esc")
 	for _, width := range []int{80, 100, 137} {
 		h.send(tea.WindowSizeMsg{Width: width, Height: 30})
-		for _, line := range strings.Split(h.m.View(), "\n") {
+		for _, line := range strings.Split(h.m.View().Content, "\n") {
 			if got := lipgloss.Width(line); got > width {
 				t.Fatalf("reader line is %d columns in a %d-column terminal: %q", got, width, line)
 			}

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"example.com/parchment/internal/artifact"
 )
@@ -23,8 +23,8 @@ func TestSpreadsheetPDFExportDraftAndOverwrite(t *testing.T) {
 	h.key("enter")
 	m.input.SetValue("unsaved cell")
 	output := filepath.Join(t.TempDir(), "sheet.pdf")
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
-	if m.pdfPrompt != promptPDF || !strings.Contains(m.View(), "PDF output path:") {
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
+	if m.pdfPrompt != promptPDF || !strings.Contains(m.View().Content, "PDF output path:") {
 		t.Fatal("missing PDF prompt")
 	}
 	m.pdfInput.SetValue(output)
@@ -36,7 +36,7 @@ func TestSpreadsheetPDFExportDraftAndOverwrite(t *testing.T) {
 	if saved, err := os.ReadFile(h.path); err != nil || !bytes.Equal(saved, original) || !m.editing {
 		t.Fatalf("export changed source or editing state: %v", err)
 	}
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	if m.pdfInput.Value() != output {
 		t.Fatalf("remembered path = %q", m.pdfInput.Value())
 	}
@@ -48,14 +48,14 @@ func TestSpreadsheetPDFExportDraftAndOverwrite(t *testing.T) {
 	if data, err := os.ReadFile(output); err != nil || !bytes.Equal(data, pdf) {
 		t.Fatalf("declining overwrite changed PDF: %v", err)
 	}
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	h.key("enter")
 	h.key("y")
 	if data, err := os.ReadFile(output); err != nil || !notePDFContains(data, "unsaved cell") {
 		t.Fatalf("confirmed overwrite failed: %v, %s", err, m.errMessage)
 	}
 	h.open(artifact.SpreadsheetKind)
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	if h.m.sheet.pdfInput.Value() != output {
 		t.Fatalf("reopened remembered path = %q", h.m.sheet.pdfInput.Value())
 	}
@@ -68,7 +68,7 @@ func TestSpreadsheetPDFExportCancellationAndSourceProtection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	m.pdfInput.SetValue(h.path)
 	h.key("enter")
 	h.key("y")
@@ -83,7 +83,7 @@ func TestSpreadsheetPDFExportCancellationAndSourceProtection(t *testing.T) {
 	if cmd == nil || !m.pending {
 		t.Fatal("export did not start")
 	}
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	_, _ = m.Update(cmd())
 	if m.pending || m.pdfPending || m.status != "PDF export cancelled" {
 		t.Fatalf("cancellation state: pending=%v pdfPending=%v status=%q", m.pending, m.pdfPending, m.status)

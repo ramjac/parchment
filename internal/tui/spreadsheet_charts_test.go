@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2/compat"
+	"github.com/charmbracelet/colorprofile"
 
 	"example.com/parchment/internal/spreadsheet"
 	"example.com/parchment/internal/tui/termimg"
@@ -99,9 +99,9 @@ func TestSpreadsheetChartUIStagesPreviewAndExport(t *testing.T) {
 
 func TestSpreadsheetChartPreviewGraphicsCleanupAndSmallFallback(t *testing.T) {
 	t.Setenv("KITTY_WINDOW_ID", "1")
-	previous := lipgloss.ColorProfile()
-	t.Cleanup(func() { lipgloss.SetColorProfile(previous) })
-	lipgloss.SetColorProfile(termenv.TrueColor)
+	previous := compat.Profile
+	t.Cleanup(func() { compat.Profile = previous })
+	compat.Profile = colorprofile.TrueColor
 	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "3"}}})
 	_, err := spreadsheet.AddChartToBook(&m.book, spreadsheet.Chart{
 		Type: "bar", Sheet: "Sheet1", FirstRow: 1, LastRow: 1, FirstColumn: 1, LastColumn: 1,
@@ -112,19 +112,19 @@ func TestSpreadsheetChartPreviewGraphicsCleanupAndSmallFallback(t *testing.T) {
 	_, _ = m.Update(sheetKey("g"))
 	_, cmd := m.Update(sheetKey("enter"))
 	_, _ = m.Update(cmd())
-	view := m.View()
+	view := m.View().Content
 	if !strings.HasPrefix(view, termimg.ClearKittyPlacements()) || !strings.Contains(view, "\x1b_G") || !m.charts.previewGraph {
 		t.Fatal("Kitty preview did not paint with graphics cleanup")
 	}
 	_, _ = m.Update(sheetKey("esc"))
-	if !strings.HasPrefix(m.View(), termimg.ClearKittyPlacements()) {
+	if !strings.HasPrefix(m.View().Content, termimg.ClearKittyPlacements()) {
 		t.Fatal("leaving preview did not clear graphics")
 	}
 	_, _ = m.Update(tea.WindowSizeMsg{Width: 25, Height: 10})
-	lipgloss.SetColorProfile(termenv.Ascii)
+	compat.Profile = colorprofile.Ascii
 	_, cmd = m.Update(sheetKey("enter"))
 	_, _ = m.Update(cmd())
-	if m.charts.previewGraph || !strings.Contains(m.View(), "1 categories") {
+	if m.charts.previewGraph || !strings.Contains(m.View().Content, "1 categories") {
 		t.Fatal("small monochrome preview did not show a text summary")
 	}
 }
