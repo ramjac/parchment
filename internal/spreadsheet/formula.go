@@ -119,9 +119,8 @@ type cellCoordinate struct {
 func (e *evaluator) cell(sheetIndex, row, column int) (Value, error) {
 	coordinate := cellCoordinate{sheet: sheetIndex, row: row, column: column}
 	if spill, ok := e.spills[coordinate]; ok {
-		owner, err := e.cell(spill.owner.sheet, spill.owner.row, spill.owner.column)
-		if err != nil || owner.Kind == ErrKind {
-			return owner, err
+		if _, err := e.cell(spill.owner.sheet, spill.owner.row, spill.owner.column); err != nil {
+			return Value{}, err
 		}
 		return spill.value, nil
 	}

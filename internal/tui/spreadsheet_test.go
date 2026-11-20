@@ -1250,6 +1250,36 @@ func TestSpreadsheetUpdateSavedMsgSuccess(t *testing.T) {
 	}
 }
 
+func TestSpreadsheetSavePreservesRangeSelection(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{
+		{{Value: "1"}, {Value: "2"}},
+		{{Value: "3"}, {Value: "4"}},
+	})
+	if !m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+		return spreadsheet.SetCellInBook(book, spreadsheet.SetCellOptions{
+			Sheet: "Sheet1", Row: 1, Column: 1, Cell: spreadsheet.Cell{Value: "saved"},
+		})
+	}) {
+		t.Fatalf("edit failed: %s", m.errMessage)
+	}
+	var copied string
+	m.clipboardWrite = func(text string) error {
+		copied = text
+		return nil
+	}
+	driveSheet(t, m, sheetKey("v"))
+	driveSheet(t, m, sheetKey("right"))
+	driveSheet(t, m, sheetKey("down"))
+	driveSheet(t, m, sheetKey("ctrl+s"))
+	if !m.selecting || m.selectionRow != 0 || m.selectionColumn != 0 {
+		t.Fatalf("save lost selection: active=%t anchor=%d,%d", m.selecting, m.selectionRow, m.selectionColumn)
+	}
+	driveSheet(t, m, sheetKey("y"))
+	if copied != "saved\t2\n3\t4\n" {
+		t.Fatalf("copied range after save = %q", copied)
+	}
+}
+
 func TestSpreadsheetUpdateMouseMsgEdgeCases(t *testing.T) {
 	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{
 		{{Value: "A1"}, {Value: "B1"}},

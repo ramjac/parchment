@@ -34,6 +34,9 @@ func TestSpreadsheetChartPDFPages(t *testing.T) {
 	if !bytes.HasPrefix(output.Bytes(), []byte("%PDF-")) || !spreadsheetPDFContains(output.Bytes(), []byte("Chart title")) {
 		t.Fatal("standalone chart PDF lacks header or title")
 	}
+	if !spreadsheetPDFContains(output.Bytes(), []byte(" l S")) {
+		t.Fatal("chart PDF does not render two-point unfilled shapes as lines")
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := RenderChartContext(ctx, &output, book, chart); err != context.Canceled {

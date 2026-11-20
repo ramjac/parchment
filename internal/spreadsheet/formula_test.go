@@ -465,6 +465,21 @@ func TestDynamicArraySpills(t *testing.T) {
 	}
 }
 
+func TestSpillCellsRemainAvailableWhenAnchorValueIsAnError(t *testing.T) {
+	book := &Spreadsheet{Sheets: []Sheet{{Name: "Sheet1", Rows: [][]Cell{
+		{{Formula: "=SEQUENCE(2)/SEQUENCE(2,1,0)"}},
+	}}}}
+	evaluator := NewEvaluator(book)
+	anchor, err := evaluator.Evaluate(0, 1, 1)
+	if err != nil || anchor.Err != ErrDiv0 {
+		t.Fatalf("anchor = %+v, %v; want #DIV/0!", anchor, err)
+	}
+	spill, err := evaluator.Evaluate(0, 2, 1)
+	if err != nil || spill.Display() != "2" {
+		t.Fatalf("spilled cell = %+v, %v; want 2", spill, err)
+	}
+}
+
 func TestSpillCollisionAndReferences(t *testing.T) {
 	book := &Spreadsheet{Sheets: []Sheet{{Name: "Sheet1", Rows: [][]Cell{
 		{{Formula: "=SEQUENCE(3)"}, {Formula: "=A3*2"}, {Formula: "=SUM(A1:A3)"}},

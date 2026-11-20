@@ -28,6 +28,13 @@ func TestSpreadsheetChartsCLI(t *testing.T) {
 	if _, err := c.run("spreadsheet", "chart", "export", "chart.md", id, "--format", "pdf", "-o", "chart.pdf"); err == nil {
 		t.Fatal("overwriting a chart PDF without force succeeded")
 	}
+	for _, format := range []string{"svg", "pdf"} {
+		output := filepath.Join(t.TempDir(), "new."+format)
+		c.must("spreadsheet", "chart", "export", "chart.md", id, "--format", format, "-o", output, "--force")
+		if info, err := os.Stat(output); err != nil || !info.Mode().IsRegular() {
+			t.Fatalf("forced export to new %s path: info=%v, err=%v", format, info, err)
+		}
+	}
 	if _, err := c.run("spreadsheet", "chart", "export", "chart.md", id, "-o", "chart.md", "--force"); err == nil {
 		t.Fatal("overwriting the workbook succeeded")
 	}

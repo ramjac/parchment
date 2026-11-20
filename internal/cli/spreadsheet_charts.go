@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -210,9 +211,17 @@ func addSpreadsheetChartCommands(group *cobra.Command, streams output) {
 			}
 			force, _ := cmd.Flags().GetBool("force")
 			if format == "pdf" {
-				return repo.WritePDFExport(cmd.Context(), path, book.Path, data, force)
+				err = repo.WritePDFExport(cmd.Context(), path, book.Path, data, false)
+				if errors.Is(err, os.ErrExist) && force {
+					err = repo.WritePDFExport(cmd.Context(), path, book.Path, data, true)
+				}
+				return err
 			}
-			return repo.WriteTextExport(cmd.Context(), path, book.Path, data, force)
+			err = repo.WriteTextExport(cmd.Context(), path, book.Path, data, false)
+			if errors.Is(err, os.ErrExist) && force {
+				err = repo.WriteTextExport(cmd.Context(), path, book.Path, data, true)
+			}
+			return err
 		},
 	}
 	export.Flags().String("format", "svg", "output format: svg or pdf")

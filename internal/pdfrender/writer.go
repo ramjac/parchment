@@ -174,7 +174,11 @@ func WriteContext(ctx context.Context, w io.Writer, file File) error {
 			if polygon.Fill {
 				style = "F"
 			}
-			pdf.Polygon(polygon.Points, style)
+			if len(polygon.Points) == 2 && !polygon.Fill {
+				pdf.Line(polygon.Points[0].X, polygon.Points[0].Y, polygon.Points[1].X, polygon.Points[1].Y)
+			} else {
+				pdf.Polygon(polygon.Points, style)
+			}
 		}
 		for _, element := range page.Elements {
 			if err := ctx.Err(); err != nil {

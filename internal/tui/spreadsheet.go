@@ -287,7 +287,9 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.setError("Save failed", msg.err)
 			return m, m.syncAutosave()
 		}
+		selecting, selectionRow, selectionColumn := m.selecting, m.selectionRow, m.selectionColumn
 		m.setBook(msg.book)
+		m.selecting, m.selectionRow, m.selectionColumn = selecting, selectionRow, selectionColumn
 		m.status = "Saved spreadsheet"
 		m.draftStored = msg.cleanupErr != nil
 		if msg.cleanupErr != nil {
