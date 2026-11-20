@@ -12,12 +12,13 @@ goldens, and PR visual-evidence checklist are already in place. Keep adding
 message-driven regression tests for newly discovered interaction defects and
 update rendering baselines only for intentional, reviewed changes.
 
-- **Enforce styling with automated guards.** Add a lightweight Go test or CI
-  check rejecting new hard-coded UI colors and direct
+- **Make the styling guard syntax-aware.** Replace the existing regular
+  expression scan in `internal/tui/style_guard_test.go` with a Go AST-based
+  check rejecting hard-coded UI colors and direct
   `lipgloss.Color`/`lipgloss.AdaptiveColor` palette declarations outside the
-  approved theme code. Exempt test fixtures, image pixel colors, and
-  user-provided configuration. Verify semantic styling under supported color
-  profiles, including monochrome.
+  approved theme code. Exempt tests and fixtures, and allow runtime-generated
+  image pixel colors. Existing theme tests cover supported color profiles,
+  including monochrome.
 - **Decide on images in Note previews.** Document reader/preview and
   Presentation views already render embedded images with terminal graphics
   protocols and ANSI half-block fallback. Decide whether Note `F5` should
