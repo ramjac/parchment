@@ -35,5 +35,7 @@ Ensure `$(go env GOPATH)/bin` is on your `PATH`. Confirm the installation with
   configuration, and the features shown in the examples.
 - [Technical Guide](docs/Technical_Guide.md) — architecture and the Markdown
   artifact format, including the reserved code-block conventions.
+- [Future Work](FutureWork.md) — remaining roadmap items and acceptance
+  criteria.
 - [Example artifacts](examples/) — complete note, document, spreadsheet, and
   presentation files.

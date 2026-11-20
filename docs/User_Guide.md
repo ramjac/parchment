@@ -112,12 +112,27 @@ parchment document export report.md -o report.docx
 parchment document import draft.docx report.md
 ```
 
+Import and export support ODT and DOCX. The format is inferred from the file
+extension; `--format odt|docx` can specify it explicitly. Import refuses to
+overwrite an existing Markdown file and opens the result for editing in an
+interactive terminal unless `--no-edit` is passed. Export requires `-o` and
+refuses to overwrite an existing destination unless `--force` is passed.
+
+Conversion is intentionally lossy, not a full-fidelity office document
+round-trip. The supported subset includes common Markdown text and formatting,
+lists, blockquotes, code blocks, tables, links, page/section breaks, basic page
+layout, headers/footers, and embedded PNG, JPEG, or GIF images. Unsupported or
+approximated features generate warnings; geometry is rounded or mapped to
+supported page sizes, and per-section fonts collapse to one document font.
+External images and unsupported image formats are skipped with a warning.
+Export uses the accepted document body and warns when pending proposals are
+omitted.
+
 PDF output renders Markdown styling, links, layout, and embedded images.
-Document import and export support the documented ODT and DOCX subsets and
-warn when a conversion is lossy. `Ctrl+P` in the reader or editor exports a
-PDF; the destination defaults to the last successful PDF destination, and
-overwriting an existing file requires confirmation. In non-interactive CLI
-use, pass `--force` to replace an existing PDF.
+`Ctrl+P` in the reader or editor exports a PDF; the destination defaults to
+the last successful PDF destination, and overwriting an existing file
+requires confirmation. In non-interactive CLI use, pass `--force` to replace
+an existing PDF.
 
 Proposal commands are also available through `parchment document propose`,
 `review`, `accept`, and `reject`. A proposal can include Markdown or layout
@@ -272,4 +287,4 @@ Environment overrides include `PARCHMENT_UNDO_LIMIT`, `PARCHMENT_THEME`,
 `error`, or `off`, and format accepts `text` or `json`. Local backup snapshots
 are disabled unless a destination is configured. See the
 [Technical Guide](Technical_Guide.md) for the file format and application-state
-boundaries.
+boundaries, including persistent history storage.
