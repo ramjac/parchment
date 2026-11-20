@@ -62,6 +62,7 @@ func TestNoteCLI(t *testing.T) {
 	if got := strings.TrimSpace(output); got != path {
 		t.Fatalf("create printed %q, want %q", got, path)
 	}
+
 	c.must("note", "edit", path, "--body", "updated content")
 	shown := c.must("note", "show", "ideas.md")
 	if shown != "updated content" {
@@ -86,8 +87,43 @@ func TestNoteCLI(t *testing.T) {
 			t.Fatalf("removed command %v still runs", removed)
 		}
 	}
+
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("note file missing: %v", err)
+	}
+}
+
+func TestHistoryCLI(t *testing.T) {
+	c := newCLI(t)
+	path := filepath.Join(c.dir, "history.md")
+	c.must("note", "create", path, "--body", "first")
+	c.must("note", "edit", path, "--body", "second")
+
+	log := c.must("history", "log", path)
+	if !strings.Contains(log, "Initial state") || !strings.Contains(log, "Edit note") || !strings.Contains(log, "HEAD") {
+		t.Fatalf("history log = %q; want baseline, edit, and HEAD", log)
+	}
+	if output := c.must("history", "undo", path); !strings.Contains(output, "Undo: Edit note") {
+		t.Fatalf("history undo output = %q; want edit description", output)
+	}
+	if got := c.must("note", "show", path); got != "first" {
+		t.Fatalf("note after history undo = %q; want first", got)
+	}
+	c.must("history", "redo", path)
+	if got := c.must("note", "show", path); got != "second" {
+		t.Fatalf("note after history redo = %q; want second", got)
+	}
+	c.must("history", "restore", path, "1")
+	if got := c.must("note", "show", path); got != "first" {
+		t.Fatalf("note after history restore = %q; want first", got)
+	}
+
+	if _, err := c.run("history", "clean"); err == nil {
+		t.Fatal("history clean without a file or --all succeeded")
+	}
+	c.must("history", "clean", "--all")
+	if got := c.must("history", "log", path); got != "" {
+		t.Fatalf("history log after clean = %q; want empty", got)
 	}
 }
 

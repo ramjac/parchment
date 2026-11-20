@@ -3,6 +3,7 @@ package note_test
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -21,7 +22,7 @@ func newService(t *testing.T, undoLimit int) (*note.Service, *filerepo.Repositor
 	return note.NewService(repo, undoLimit), repo, filepath.Join(t.TempDir(), "note.md")
 }
 
-// replace writes n over the stored note without recording history.
+// replace writes a note fixture over the stored file through the repository.
 func replace(t *testing.T, repo *filerepo.Repository, n note.Note) {
 	t.Helper()
 	current, err := repo.Get(context.Background(), n.Path)
@@ -120,7 +121,7 @@ func TestNoOpUpdateDoesNotCreateHistory(t *testing.T) {
 
 func TestUndoRefusesToOverwriteExternalEdits(t *testing.T) {
 	ctx := context.Background()
-	service, repo, path := newService(t, 10)
+	service, _, path := newService(t, 10)
 	if _, err := service.Create(ctx, path, "before"); err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +130,9 @@ func TestUndoRefusesToOverwriteExternalEdits(t *testing.T) {
 		t.Fatal(err)
 	}
 	updated.Body = "edited in a text editor"
-	replace(t, repo, updated)
+	if err := os.WriteFile(path, []byte(updated.Body), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := service.Undo(ctx); err == nil {
 		t.Fatal("undo overwrote an external edit")
 	}

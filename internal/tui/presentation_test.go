@@ -117,7 +117,7 @@ func storedPresentation(t *testing.T, path string) presentation.Presentation {
 func TestPresentationViewNavigatesSlidesAndNotes(t *testing.T) {
 	m, _, _ := newPresentationTestModel(t)
 	view := m.View()
-	for _, want := range []string{"Product Update", "deck.md", "Parchment team", "Title page"} {
+	for _, want := range []string{"Parchment: work with files, not a vault", "A local-first terminal workspace", "Title page"} {
 		if !strings.Contains(ansi.Strip(view), want) {
 			t.Fatalf("title page missing %q:\n%s", want, view)
 		}
@@ -127,7 +127,7 @@ func TestPresentationViewNavigatesSlidesAndNotes(t *testing.T) {
 	}
 	drivePresentation(t, m, sheetKey("right"))
 	view = m.View()
-	if !strings.Contains(ansi.Strip(view), "What shipped") || !strings.Contains(ansi.Strip(view), "Slide 1 of") {
+	if !strings.Contains(ansi.Strip(view), "Start with a path") || !strings.Contains(ansi.Strip(view), "Slide 1 of") {
 		t.Fatalf("first slide not shown:\n%s", view)
 	}
 	withNotes := -1
@@ -591,8 +591,8 @@ func TestPresentationEditSavesSourceAndUndoes(t *testing.T) {
 		t.Fatalf("save state: editing %t pending %t status %q err %q", m.editing, m.pending, m.status, m.errMessage)
 	}
 	saved := storedPresentation(t, path)
-	if !strings.Contains(saved.Source, "## What shipped q\n") || m.page != 1 ||
-		!strings.Contains(m.View(), "What shipped q") {
+	if !strings.Contains(saved.Source, "## Start with a path q\n") || m.page != 1 ||
+		!strings.Contains(m.View(), "Start with a path q") {
 		t.Fatalf("saved source = %q\nview:\n%s", saved.Source, m.View())
 	}
 	if m.editor.CanUndo() || m.editor.CanRedo() {

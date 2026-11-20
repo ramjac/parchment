@@ -1169,6 +1169,21 @@ func (m *spreadsheetModel) renderStatus() string {
 	return runewidth.Truncate(sanitizeTerminalLine(status), m.width, "…")
 }
 
+func (m *spreadsheetModel) centerSheetIndicator(status string) string {
+	if !m.loaded || len(m.book.Sheets) < 2 {
+		return status
+	}
+	indicator := fmt.Sprintf("Sheet %d/%d", m.sheet+1, len(m.book.Sheets))
+	indicatorWidth := runewidth.StringWidth(indicator)
+	indicatorStart := (m.width - indicatorWidth) / 2
+	if indicatorStart < 0 {
+		return ansi.Truncate(indicator, m.width, "…")
+	}
+	left := ansi.Truncate(status, max(indicatorStart-1, 0), "…")
+	padding := max(indicatorStart-ansi.StringWidth(left), 0)
+	return left + strings.Repeat(" ", padding) + indicator
+}
+
 func (m *spreadsheetModel) renderHelp() string {
 	muted := m.theme.Muted
 	help := "arrows move • enter edit • ctrl+s save • del clear • ctrl+p PDF • f formulas • tab sheet • u/ctrl+z undo • ctrl+r redo • d delete • i insert • r reload • esc/q quit"
@@ -1193,5 +1208,6 @@ func (m *spreadsheetModel) View() string {
 	if m.find.visible {
 		status = m.find.view(len(m.searchMatches), m.searchMatch, m.width)
 	}
+	status = m.centerSheetIndicator(status)
 	return chromeLayout(m.width, m.height, m.renderHeader(), shortcuts, content, status, m.theme.BorderColor)
 }

@@ -665,7 +665,10 @@ func (s *documentsScreen) save() tea.Cmd {
 		if err == nil && store != nil {
 			cleanupErr = store.DeleteRecovery(context.Background(), path)
 		}
-		return documentSavedMsg{document: d, err: err, cleanupErr: cleanupErr}
+		return documentSavedMsg{
+			document: d, history: queryHistoryAvailability(ctx, service.HistoryAvailability),
+			err: err, cleanupErr: cleanupErr,
+		}
 	}
 }
 

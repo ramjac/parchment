@@ -6,8 +6,9 @@ Implement persistent, bounded, per-file undo/redo history stored under
 process-local in-memory `history.Stack` across domain services while keeping
 unsaved keystroke undo/redo in `internal/tui/editor`.
 
-**Status:** Not implemented. Undo/redo remains process-local; PRs 36–38 are
-still pending, and open draft PRs do not satisfy these milestones.
+**Status:** Implemented on `main` for PRs 36a, 36b, 37, and 38. Saved-file
+history persists across CLI/TUI sessions, while unsaved editor keystrokes
+remain in memory.
 
 ## Storage Strategy: Chunked Content-Addressable Blobs
 
@@ -190,7 +191,7 @@ two-phase journaled commit:
 Each step below is scoped as one self-contained Pull Request (`~250–500` LOC)
 that compiles cleanly and passes `go test -race ./...`:
 
-1. **PR 36a — `history.Store`, Raw Blob Store & Crash Journal in `filerepo`:**
+1. **Merged — PR 36a — `history.Store`, Raw Blob Store & Crash Journal in `filerepo`:**
    - Define `history.Store` and entry/log types in `internal/history`.
    - Implement `filerepo` raw blob persistence under `~/.parchment/history/`:
      canonical-path SHA-256 directory, `<path-sha256>/index.json` manifest
@@ -199,7 +200,7 @@ that compiles cleanly and passes `go test -race ./...`:
      crash recovery.
    - Wire history recording directly into `filerepo`'s atomic write path. Test
      stateless commit/rollback, journal crash resolution, and concurrent locks.
-2. **PR 36b — Envelope Chunk Decomposition & Exact Fallback:**
+2. **Merged — PR 36b — Envelope Chunk Decomposition & Exact Fallback:**
    - Extend history recording to decompose Parchment envelope files into
      individual `body_blob_hash`, structured block blobs, and detached embedded
      image blobs under `blobs/<sha256>`.
@@ -207,7 +208,7 @@ that compiles cleanly and passes `go test -race ./...`:
      differs (e.g. hand-edited envelope whitespace), automatically fall back to
      storing `raw_blob_hash`. Test chunk deduplication with multi-megabyte images
      across repeated edits.
-3. **PR 37 — Service & TUI Integration + External-Edit Checkpointing:**
+3. **Merged — PR 37 — Service & TUI Integration + External-Edit Checkpointing:**
    - Replace in-memory `*history.Stack` across `note.Service`,
      `document.Service`, `spreadsheet.Service`, and `presentation.Service` with
      `history.Store` (including `CanUndo`/`CanRedo` queries across restarts in
@@ -216,7 +217,7 @@ that compiles cleanly and passes `go test -race ./...`:
      checkpoint when saving new changes atop an externally modified file. Test
      cross-restart TUI undo/redo and external-modification workflows across all
      four artifact kinds.
-4. **PR 38 — `parchment history` CLI & Automatic Blob Garbage Collection:**
+4. **Merged — PR 38 — `parchment history` CLI & Automatic Blob Garbage Collection:**
    - Implement `parchment history undo`, `redo`, `log`, `restore`,
      `clean [<file> | --all]`, and `gc` in `internal/cli`, plus dynamic
      `undo_limit` pruning on write and automatic orphaned-blob reclamation.

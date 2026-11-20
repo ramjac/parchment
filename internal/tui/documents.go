@@ -32,6 +32,7 @@ type documentMessage interface{ isDocumentMessage() }
 
 type documentSavedMsg struct {
 	document   document.Document
+	history    *historyAvailability
 	err        error
 	cleanupErr error
 }
@@ -42,6 +43,7 @@ type documentReloadedMsg struct {
 	description string
 	document    document.Document
 	changes     []document.Change
+	history     *historyAvailability
 	showChanges bool
 	cleanupErr  error
 	err         error
@@ -312,8 +314,6 @@ func newDocumentsScreen(service *document.Service, path string, newContext func(
 		documentChangesState: newDocumentChangesState(),
 		documentReaderState:  newDocumentReaderState(),
 		newOperationContext:  newContext,
-		canUndo:              service.CanUndo(),
-		canRedo:              service.CanRedo(),
 	}
 }
 
@@ -417,7 +417,7 @@ func (s *documentsScreen) autosaveFinished(msg documentAutosaveFinishedMsg) tea.
 func (s *documentsScreen) documentSaved(msg documentSavedMsg) tea.Cmd {
 	s.finishOperation()
 	s.pending = false
-	s.refreshHistory()
+	s.applyHistoryAvailability(msg.history)
 	if msg.err != nil {
 		if errors.Is(msg.err, context.Canceled) {
 			s.errMessage, s.status = "", "Save cancelled; unsaved changes remain"
@@ -432,13 +432,14 @@ func (s *documentsScreen) documentSaved(msg documentSavedMsg) tea.Cmd {
 	if msg.cleanupErr != nil {
 		s.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
 	}
+	s.applyHistoryAvailability(msg.history)
 	return s.resumeAutosave()
 }
 
 func (s *documentsScreen) documentReloaded(msg documentReloadedMsg) tea.Cmd {
 	s.finishOperation()
 	s.pending = false
-	s.refreshHistory()
+	s.applyHistoryAvailability(msg.history)
 	if msg.err != nil {
 		s.errMessage = msg.err.Error()
 		return s.resumeAutosave()
@@ -465,6 +466,7 @@ func (s *documentsScreen) documentReloaded(msg documentReloadedMsg) tea.Cmd {
 	if msg.cleanupErr != nil {
 		s.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
 	}
+	s.applyHistoryAvailability(msg.history)
 	return s.resumeAutosave()
 }
 
@@ -599,14 +601,24 @@ func (s *documentsScreen) reload(showChanges bool, run func(context.Context) (st
 	return func() tea.Msg {
 		description, err := run(ctx)
 		if err != nil {
-			return documentReloadedMsg{err: err}
+			return documentReloadedMsg{
+				history: queryHistoryAvailability(ctx, service.HistoryAvailability),
+				err:     err,
+			}
 		}
 		d, err := service.Get(ctx, path)
 		if err != nil {
-			return documentReloadedMsg{err: err}
+			return documentReloadedMsg{
+				history: queryHistoryAvailability(ctx, service.HistoryAvailability),
+				err:     err,
+			}
 		}
 		changes, err := service.Changes(ctx, path)
-		return documentReloadedMsg{description: description, document: d, changes: changes, showChanges: showChanges, err: err}
+		return documentReloadedMsg{
+			description: description, document: d, changes: changes,
+			history:     queryHistoryAvailability(ctx, service.HistoryAvailability),
+			showChanges: showChanges, err: err,
+		}
 	}
 }
 
@@ -780,8 +792,17 @@ func (s *documentsScreen) cancelPending() {
 	}
 }
 
-func (s *documentsScreen) refreshHistory() {
-	s.canUndo, s.canRedo = s.service.CanUndo(), s.service.CanRedo()
+func (s *documentsScreen) applyHistoryAvailability(availability *historyAvailability) {
+	if availability == nil {
+		return
+	}
+	if availability.err != nil {
+		if !errors.Is(availability.err, context.Canceled) {
+			s.status = "History unavailable: " + availability.err.Error()
+		}
+		return
+	}
+	s.canUndo, s.canRedo = availability.canUndo, availability.canRedo
 }
 
 func pageText(page document.Page, width int) string {

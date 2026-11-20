@@ -143,7 +143,7 @@ func TestArtifactsLiveAmongOtherFilesWithoutSidecars(t *testing.T) {
 	if got := strings.Join(names(t, folder), ","); got != "ideas.md,shopping.txt" {
 		t.Fatalf("folder contents = %s", got)
 	}
-	if got := strings.Join(names(t, state), ","); got != "write.lock" {
+	if got := strings.Join(names(t, state), ","); got != "history,write.lock" {
 		t.Fatalf("state directory contents = %s", got)
 	}
 	data, err := os.ReadFile(path)

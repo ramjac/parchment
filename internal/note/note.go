@@ -31,16 +31,21 @@ type Repository interface {
 type Service struct {
 	repository Repository
 	history    *history.Stack
+	store      history.Store
+	activePath string
 	now        func() time.Time
 }
 
 // NewService returns a note service backed by the given repository.
 func NewService(repository Repository, undoLimit int) *Service {
-	return &Service{repository: repository, history: history.New(undoLimit), now: func() time.Time { return time.Now().UTC() }}
+	service := &Service{repository: repository, history: history.New(undoLimit), now: func() time.Time { return time.Now().UTC() }}
+	service.store, _ = repository.(history.Store)
+	return service
 }
 
 // Get loads the note stored at path.
 func (s *Service) Get(ctx context.Context, path string) (Note, error) {
+	s.activePath = path
 	return s.repository.Get(ctx, path)
 }
 
@@ -87,18 +92,64 @@ func (s *Service) UpdateExpected(ctx context.Context, expected Note, body string
 }
 
 // Undo reverses the most recent note change.
-func (s *Service) Undo(ctx context.Context) (string, error) { return s.history.Undo(ctx) }
+func (s *Service) Undo(ctx context.Context) (string, error) {
+	if s.store != nil {
+		return s.store.Undo(ctx, s.activePath)
+	}
+	return s.history.Undo(ctx)
+}
 
 // Redo reapplies the most recently undone note change.
-func (s *Service) Redo(ctx context.Context) (string, error) { return s.history.Redo(ctx) }
+func (s *Service) Redo(ctx context.Context) (string, error) {
+	if s.store != nil {
+		return s.store.Redo(ctx, s.activePath)
+	}
+	return s.history.Redo(ctx)
+}
 
 // CanUndo reports whether an undo operation is available.
-func (s *Service) CanUndo() bool { return s.history.CanUndo() }
+func (s *Service) CanUndo() bool {
+	if s.store != nil && s.activePath != "" {
+		canUndo, err := s.store.CanUndo(context.Background(), s.activePath)
+		return err == nil && canUndo
+	}
+	return s.history.CanUndo()
+}
+
+// HistoryAvailability reports whether saved changes to the active note can be
+// undone or redone, and can be canceled while waiting for persistent storage.
+func (s *Service) HistoryAvailability(ctx context.Context) (bool, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, false, err
+	}
+	if s.store == nil || s.activePath == "" {
+		return s.history.CanUndo(), s.history.CanRedo(), nil
+	}
+	canUndo, err := s.store.CanUndo(ctx, s.activePath)
+	if err != nil {
+		return false, false, err
+	}
+	canRedo, err := s.store.CanRedo(ctx, s.activePath)
+	if err != nil {
+		return false, false, err
+	}
+	return canUndo, canRedo, nil
+}
 
 // CanRedo reports whether a redo operation is available.
-func (s *Service) CanRedo() bool { return s.history.CanRedo() }
+func (s *Service) CanRedo() bool {
+	if s.store != nil && s.activePath != "" {
+		canRedo, err := s.store.CanRedo(context.Background(), s.activePath)
+		return err == nil && canRedo
+	}
+	return s.history.CanRedo()
+}
 
 func (s *Service) change(ctx context.Context, before, after *Note, description string) error {
+	s.activePath = before.Path
+	if s.store != nil {
+		return s.repository.Transition(history.WithDescription(ctx, description), before.Path, before, after)
+	}
 	return s.history.Execute(ctx, noteOperation{
 		repository: s.repository, before: cloneNote(before), after: cloneNote(after), description: description,
 	})

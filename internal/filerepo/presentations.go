@@ -19,6 +19,9 @@ func (r *Repository) GetPresentation(ctx context.Context, path string) (presenta
 	if err != nil {
 		return presentation.Presentation{}, err
 	}
+	if err := r.recoverHistory(ctx, path); err != nil {
+		return presentation.Presentation{}, err
+	}
 	content, err := readContent(path, artifact.PresentationKind, presentation.ErrNotFound)
 	if err != nil {
 		return presentation.Presentation{}, err

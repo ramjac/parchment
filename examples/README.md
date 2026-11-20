@@ -1,23 +1,42 @@
 # Artifact examples
 
-Each sample is a complete, standalone Markdown artifact file. A leading
-`parchment-meta` code block contains shared metadata. The ordinary Markdown
-body follows `<!-- parchment-body -->`; hidden `parchment-*` data blocks, such
-as document layout, workbook cells, and embedded images, follow the explicit
-`<!-- parchment-blocks -->` marker after the body.
+These four complete Markdown artifacts use Parchment itself as their subject:
 
-Open any example where it is, without setup:
+- `note.md` demonstrates quick, flat note-taking, Markdown preview, search,
+  and saved-file history.
+- `document.md` demonstrates Markdown, document-only outline and link
+  navigation, page layout, printing, and embedded media.
+- `budget.md` is a multi-sheet planning workbook with ranges, aggregate
+  formulas, and cross-sheet references.
+- `presentation.md` is a slide walkthrough of Parchment's file-first model,
+  artifact types, editing, recovery, history, image workflows, and exports.
+
+Each file can be opened directly, without setup:
 
 ```sh
 parchment examples/note.md
 parchment examples/document.md
 parchment examples/budget.md
 parchment examples/presentation.md
-parchment document print examples/document.md
-parchment spreadsheet cell examples/budget.md D2
 ```
 
-Edits save to the opened file. Copy an example elsewhere first if you want to
-keep the checked-in sample unchanged. The garden illustration is embedded in
-the document's hidden JSON payload as base64, so the artifact is still one
-Markdown file.
+Inspect or export the samples with the matching CLI commands:
+
+```sh
+parchment document print examples/document.md --format pdf -o /tmp/guide.pdf
+parchment spreadsheet show examples/budget.md
+parchment spreadsheet export examples/budget.md --csv --sheet "Work Plan"
+parchment presentation preview examples/presentation.md
+parchment presentation print examples/presentation.md --format pdf -o /tmp/tour.pdf
+```
+
+A leading `parchment-meta` block contains shared metadata. The editable
+Markdown body follows `<!-- parchment-body -->`; structured blocks such as
+document layout, workbook cells, and embedded image bytes follow
+`<!-- parchment-blocks -->`. The document and presentation images are embedded
+in their respective hidden JSON payloads, keeping each artifact in one file.
+See the [User Guide](../docs/User_Guide.md) for workflows and the
+[Technical Guide](../docs/Technical_Guide.md) for the complete file format.
+
+Edits save to the opened file. Copy an example to another path before
+experimenting if you want to keep the checked-in sample unchanged.

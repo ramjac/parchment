@@ -23,6 +23,9 @@ func (r *Repository) Get(ctx context.Context, path string) (note.Note, error) {
 	if err != nil {
 		return note.Note{}, err
 	}
+	if err := r.recoverHistory(ctx, path); err != nil {
+		return note.Note{}, err
+	}
 	content, err := readContent(path, artifact.NoteKind, note.ErrNotFound)
 	if errors.Is(err, ErrNotArtifact) {
 		return readPlainNote(path)

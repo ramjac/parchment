@@ -125,6 +125,29 @@ func TestDocumentEditorHasToolbarAndSavesLayout(t *testing.T) {
 	}
 }
 
+func TestOpeningDocumentRefreshesPersistentHistoryAfterLoad(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "before"})
+	current, err := h.docs.Get(context.Background(), h.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.docs.Save(context.Background(), current, document.Draft{Body: "after", Layout: current.Layout}); err != nil {
+		t.Fatal(err)
+	}
+	otherPath := filepath.Join(t.TempDir(), "other-document.md")
+	if _, err := h.docs.Create(context.Background(), otherPath, document.Draft{Body: "other"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.docs.Get(context.Background(), otherPath); err != nil {
+		t.Fatal(err)
+	}
+
+	h.open(artifact.DocumentKind)
+	if !h.m.documents.canUndo {
+		t.Fatal("opening the edited document did not refresh persistent undo availability")
+	}
+}
+
 func TestDocumentSaveHandsOffUndoAndPreservesHistoryOnFailure(t *testing.T) {
 	h := newDocumentHarness(t, document.Draft{Body: "left\tright"})
 	s := h.m.documents

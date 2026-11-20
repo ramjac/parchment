@@ -24,6 +24,7 @@ import (
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/artifactfile"
+	"example.com/parchment/internal/history"
 )
 
 // ErrExists reports that a create operation targeted an existing path.
@@ -35,14 +36,16 @@ var ErrNotArtifact = errors.New("file is not a Parchment artifact")
 // Options configure the repository.
 type Options struct {
 	LocalBackup string
+	UndoLimit   int
 }
 
 // Repository reads and writes artifact files by path.
 type Repository struct {
-	stateDir  string
-	backupDir string
-	warnings  []error
-	mu        sync.Mutex
+	stateDir     string
+	backupDir    string
+	historyLimit int
+	warnings     []error
+	mu           sync.Mutex
 }
 
 // New returns a repository that keeps its write lock and recovery drafts in
@@ -55,7 +58,11 @@ func New(stateDir string, opts Options) (*Repository, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve state directory: %w", err)
 	}
-	repo := &Repository{stateDir: abs}
+	historyLimit := opts.UndoLimit
+	if historyLimit < 1 {
+		historyLimit = 100
+	}
+	repo := &Repository{stateDir: abs, historyLimit: historyLimit}
 	if opts.LocalBackup != "" {
 		backupAbs, err := filepath.Abs(opts.LocalBackup)
 		if err != nil {
@@ -200,6 +207,13 @@ func (r *Repository) update(ctx context.Context, path string, create bool, notFo
 		if err != nil {
 			return err
 		}
+		canonical, historyDir, err := r.historyPaths(resolved)
+		if err != nil {
+			return err
+		}
+		if err := r.recoverHistoryJournal(ctx, canonical, historyDir); err != nil {
+			return err
+		}
 		current, mode, err := loadForUpdate(resolved, path, create, notFound)
 		if err != nil {
 			return err
@@ -208,9 +222,20 @@ func (r *Repository) update(ctx context.Context, path string, create bool, notFo
 		if err != nil {
 			return err
 		}
-		err = writeUpdate(ctx, resolved, path, create, data, mode)
-		if err == nil && r.backupDir != "" {
-			r.createBackup(ctx, path, data)
+		manifest, historyDir, tracked, err := r.prepareHistoryUnlocked(ctx, resolved, current, data, history.DescriptionFromContext(ctx), create)
+		if err != nil {
+			return fmt.Errorf("prepare history for %s: %w", path, err)
+		}
+		writeArtifact := func() error { return writeUpdate(ctx, resolved, path, create, data, mode) }
+		if tracked {
+			err = r.commitHistoryTransition(ctx, historyDir, current, data, manifest, writeArtifact)
+		} else {
+			err = writeArtifact()
+		}
+		if err == nil {
+			if r.backupDir != "" {
+				r.createBackup(ctx, path, data)
+			}
 		}
 		return err
 	})
