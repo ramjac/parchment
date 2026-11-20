@@ -12,12 +12,54 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2/compat"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
 
 	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/tui/termimg"
 )
+
+func TestDocumentChartFallbackKeepsReadableLabels(t *testing.T) {
+	documentImageEnv(t, "none")
+	previous := compat.Profile
+	compat.Profile = colorprofile.TrueColor
+	t.Cleanup(func() { compat.Profile = previous })
+	book, reference := embeddedChartTestWorkbook(t, "line")
+	h := newDocumentHarness(t, document.Draft{Body: reference, Workbook: book})
+	h.openWithTheme(artifact.DocumentKind, false, config.Theme{Mode: "dark"})
+	prepareGoldenView(h, 80, 26)
+	s := h.m.documents
+	rendered := ansi.Strip(strings.Join(s.readerLines, "\n"))
+	for _, label := range []string{"Monthly results", "Planned", "Completed", "Jan", "Feb"} {
+		if !strings.Contains(rendered, label) {
+			t.Fatalf("document chart fallback lost %q: %q", label, rendered)
+		}
+	}
+	if len(s.imageState.rows) != 0 || strings.Contains(rendered, "parchment-chart:") {
+		t.Fatalf("document chart fallback still used a raster image: %q", rendered)
+	}
+	assertTUIViewGolden(t, "document-chart-fallback", h.m.View().Content, 80, 26)
+	prepareGoldenView(h, 40, 14)
+	view := h.m.View().Content
+	viewLines := strings.Split(view, "\n")
+	if len(viewLines) != 14 {
+		t.Fatalf("document chart view has %d rows, want 14", len(viewLines))
+	}
+	for _, line := range viewLines[2 : len(viewLines)-1] {
+		if ansi.StringWidth(line) > 40 {
+			t.Fatalf("document chart overflowed its small-terminal pane: %q", ansi.Strip(line))
+		}
+	}
+	rendered = ansi.Strip(strings.Join(s.readerLines, "\n"))
+	for _, label := range []string{"Monthly results", "Planned", "Completed", "Jan", "Feb"} {
+		if !strings.Contains(rendered, label) {
+			t.Fatalf("small document chart lost %q: %q", label, rendered)
+		}
+	}
+}
 
 type documentImageRenderModel struct{ *Model }
 

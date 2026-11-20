@@ -63,6 +63,7 @@ func (s *documentsScreen) toolbarButtons() []toolbarButton {
 	buttons := []toolbarButton{
 		{"File", "Save", "save", "Ctrl+S"},
 		{"File", "PDF", "pdf", "Ctrl+P"},
+		{"File", "Sheet", "spreadsheet", "Ctrl+Shift+E"},
 		{"File", "Tracking", "tracking", "F3"},
 		{"File", "Changes", "changes", "F4"},
 		{"File", "Preview", "preview", "F5"},
@@ -197,6 +198,7 @@ func (s *documentsScreen) markSaved(d document.Document) {
 		s.layout = document.DefaultLayout()
 	}
 	s.images = d.Images
+	s.workbook = d.Workbook.Clone()
 	s.original = s.currentDraft()
 	s.discardWarning = false
 }
@@ -237,7 +239,7 @@ func (s *documentsScreen) restoreRecovery(data documentRecoveryData) (tea.Cmd, b
 	}
 	s.body.SetValue(draft.Body)
 	s.draftStored = true
-	s.layout, s.images = draft.Layout, draft.Images
+	s.layout, s.images, s.workbook = draft.Layout, draft.Images, draft.Workbook.Clone()
 	if s.layout == (document.Layout{}) {
 		s.layout = document.DefaultLayout()
 	}
@@ -283,9 +285,12 @@ func (s *documentsScreen) saveDocumentRecovery(session uint64) tea.Cmd {
 			return documentAutosaveFinishedMsg{session: session, err: store.DeleteRecovery(context.Background(), path), cleared: true}
 		}
 	}
+	current := s.currentDraft()
 	state := documentAutosaveState{
 		snapshot: s.snapshot,
-		draft:    document.Draft{Body: s.body.Value(), Layout: s.layout, Images: s.images},
+		draft: document.Draft{
+			Body: current.body, Layout: current.layout, Images: s.images, Workbook: current.workbook,
+		},
 	}
 	if s.lastAutosave != nil && s.lastAutosave.equal(state) {
 		return s.scheduleDocumentAutosave(session)
@@ -351,7 +356,9 @@ func (s *documentsScreen) layoutEditor() {
 }
 
 func (s *documentsScreen) editorDocument() document.Document {
-	d := document.Document{Body: s.body.Value(), Layout: s.layout, Images: s.images}
+	d := document.Document{
+		Body: s.body.Value(), Layout: s.layout, Images: s.images, Workbook: s.workbook.Clone(),
+	}
 	d.Title = s.snapshot.Title
 	return d
 }
@@ -454,6 +461,8 @@ func (s *documentsScreen) updateEditorShortcuts(msg tea.KeyPressMsg, key string)
 	switch key {
 	case "ctrl+s":
 		return s.save(), true
+	case "ctrl+shift+e":
+		return s.openEmbeddedSpreadsheet(), true
 	case "f3":
 		return s.toggleTracking(), true
 	case "f4":
@@ -654,7 +663,7 @@ func (s *documentsScreen) save() tea.Cmd {
 		return nil
 	}
 	s.stopDocumentAutosave()
-	draft := document.Draft{Body: s.body.Value(), Layout: s.layout, Images: s.images}
+	draft := document.Draft{Body: s.body.Value(), Layout: s.layout, Images: s.images, Workbook: s.workbook.Clone()}
 	s.pending = true
 	s.errMessage = ""
 	ctx := s.startOperation()
@@ -852,6 +861,8 @@ func (s *documentsScreen) actDocument(action string) (tea.Cmd, bool) {
 	switch action {
 	case "save":
 		return s.save(), true
+	case "spreadsheet":
+		return s.openEmbeddedSpreadsheet(), true
 	case "tracking":
 		return s.toggleTracking(), true
 	case "changes":
@@ -867,6 +878,24 @@ func (s *documentsScreen) actDocument(action string) (tea.Cmd, bool) {
 		return s.requestClose("Close"), true
 	}
 	return nil, false
+}
+
+func (s *documentsScreen) openEmbeddedSpreadsheet() tea.Cmd {
+	if s.snapshot.Tracking && len(s.snapshot.TrackedChanges) > 0 {
+		s.status = "Review pending document changes before editing embedded spreadsheets"
+		return nil
+	}
+	selection, err := selectEmbeddedSheet(s.workbook, sourceLineAt(s.body))
+	if err != nil {
+		s.status, s.errMessage = "", err.Error()
+		return nil
+	}
+	s.embeddedEditor = newEmbeddedSpreadsheetModel(selection.workbook, selection.activeSheet, s.theme, 100)
+	s.embeddedEditor.width, s.embeddedEditor.height = s.width, s.height
+	s.embeddedRef = selection.insertReference
+	s.body.Blur()
+	_, cmd := s.embeddedEditor.Update(tea.WindowSizeMsg{Width: s.width, Height: s.height})
+	return cmd
 }
 
 func (s *documentsScreen) openPDFPrompt() tea.Cmd {

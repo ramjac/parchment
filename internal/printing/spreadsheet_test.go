@@ -1,6 +1,7 @@
 package printing
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -33,6 +34,26 @@ func TestSpreadsheetPrintAcrossColumnsBeforeRows(t *testing.T) {
 		if !strings.Contains(text, check.contains) || strings.Contains(text, check.excludes) {
 			t.Fatalf("page %d has wrong band:\n%s", i+1, text)
 		}
+	}
+}
+
+func TestWorkbookSheetPagesUseSharedWorkbookContext(t *testing.T) {
+	book := spreadsheet.Workbook{Sheets: []spreadsheet.Sheet{
+		{Name: "Sales", Rows: [][]spreadsheet.Cell{{{Value: "3"}}}},
+		{Name: "Summary", Rows: [][]spreadsheet.Cell{{{Formula: "=Sales!A1+1"}}}},
+	}}
+	if err := spreadsheet.NormalizeWorkbook(&book); err != nil {
+		t.Fatal(err)
+	}
+	pages, err := WorkbookSheetPagesContext(context.Background(), book, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pages) == 0 || pages[0].SheetIndex != 1 || !strings.Contains(strings.Join(pages[0].Lines, "\n"), "4") {
+		t.Fatalf("embedded sheet pages = %+v", pages)
+	}
+	if pages, err := WorkbookPagesContext(context.Background(), spreadsheet.Workbook{}); err != nil || len(pages) != 0 {
+		t.Fatalf("empty host workbook pages = %v, %v", pages, err)
 	}
 }
 

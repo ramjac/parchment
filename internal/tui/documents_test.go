@@ -21,6 +21,7 @@ import (
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/pdfrender"
 	"example.com/parchment/internal/recovery"
+	"example.com/parchment/internal/spreadsheet"
 	"example.com/parchment/internal/tui/editor"
 )
 
@@ -75,6 +76,147 @@ func TestDocumentEditModeSeamlessUndoRedo(t *testing.T) {
 	h.key("ctrl+r")
 	if s.body.Value() != "IntroText" {
 		t.Fatalf("after redo: body = %q, want IntroText", s.body.Value())
+	}
+}
+
+func TestDocumentEmbeddedSpreadsheetWorkflow(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "# Budget"})
+	s := h.m.documents
+	h.send(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl | tea.ModShift})
+	if s.embeddedEditor == nil {
+		t.Fatalf("embedded editor did not open: %s", s.status)
+	}
+	if !s.embeddedEditor.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+		return spreadsheet.SetCellInBook(book, spreadsheet.SetCellOptions{
+			Sheet: "Sheet", Row: 1, Column: 1, Cell: spreadsheet.Cell{Value: "Revenue"},
+		})
+	}) {
+		t.Fatalf("edit embedded sheet: %s", s.embeddedEditor.errMessage)
+	}
+	draftBeforeCommit := s.currentDraft()
+	if !strings.Contains(draftBeforeCommit.body, "parchment-sheet:") ||
+		draftBeforeCommit.workbook.Sheets[0].Rows[0][0].Value != "Revenue" {
+		t.Fatalf("autosave draft omitted in-progress sheet state: %+v", draftBeforeCommit)
+	}
+	h.key("ctrl+s")
+	if s.embeddedEditor != nil || len(s.workbook.Sheets) != 1 {
+		t.Fatalf("embedded commit did not return to document editor: editor=%t workbook=%+v", s.embeddedEditor != nil, s.workbook)
+	}
+	if !strings.Contains(s.body.Value(), "parchment-sheet:"+s.workbook.Sheets[0].ID) {
+		t.Fatalf("sheet reference was not inserted into document: %q", s.body.Value())
+	}
+	h.key("ctrl+s")
+	saved, err := h.docs.Get(context.Background(), h.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Workbook.Sheets[0].Rows[0][0].Value != "Revenue" {
+		t.Fatalf("saved embedded cell = %+v", saved.Workbook.Sheets[0].Rows[0][0])
+	}
+}
+
+func TestDocumentEmbeddedSpreadsheetTracksAtomicChange(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "# Budget"})
+	s := h.m.documents
+	tracked, err := h.docs.SetTrackingExpected(context.Background(), s.snapshot, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.markSaved(tracked)
+	h.send(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl | tea.ModShift})
+	if s.embeddedEditor == nil {
+		t.Fatalf("tracked embedded editor did not open: %s", s.status)
+	}
+	if !s.embeddedEditor.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+		return spreadsheet.SetCellInBook(book, spreadsheet.SetCellOptions{
+			Sheet: "Sheet", Row: 1, Column: 1, Cell: spreadsheet.Cell{Value: "4"},
+		})
+	}) {
+		t.Fatalf("edit tracked embedded sheet: %s", s.embeddedEditor.errMessage)
+	}
+	h.key("ctrl+s")
+	h.key("ctrl+s")
+	saved, err := h.docs.Get(context.Background(), h.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workbookChange document.TrackedChange
+	for _, change := range saved.TrackedChanges {
+		if change.Kind == "workbook" {
+			workbookChange = change
+			break
+		}
+	}
+	if workbookChange.ID == "" || workbookChange.Group != workbookChange.ID ||
+		!strings.Contains(document.TrackingSummary(workbookChange), "Spreadsheet editing session") {
+		t.Fatalf("workbook change was not tracked: %+v", saved.TrackedChanges)
+	}
+	for _, change := range saved.TrackedChanges {
+		if change.ID != workbookChange.ID && change.Group != workbookChange.Group {
+			t.Fatalf("spreadsheet reference was not grouped with workbook edit: %+v", saved.TrackedChanges)
+		}
+	}
+	rejected, err := h.docs.ReviewTracked(context.Background(), saved, workbookChange.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rejected.Workbook.Sheets) != 0 || rejected.Body != "# Budget" || len(rejected.TrackedChanges) != 0 {
+		t.Fatalf("rejecting spreadsheet session did not restore atomically: body=%q workbook=%+v changes=%+v",
+			rejected.Body, rejected.Workbook, rejected.TrackedChanges)
+	}
+}
+
+func TestDocumentEmbeddedChartReferenceFromGrid(t *testing.T) {
+	sheet, err := spreadsheet.NewEmbeddedSheet("Data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	book := spreadsheet.Workbook{Sheets: []spreadsheet.Sheet{sheet}}
+	for row, pair := range [][2]string{{"North", "3"}, {"South", "5"}} {
+		for column, value := range pair {
+			if err := book.SetCell(spreadsheet.SetCellOptions{
+				Sheet: "Data", Row: row + 1, Column: column + 1,
+				Cell: spreadsheet.Cell{Value: value},
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	chart, err := book.AddChart(spreadsheet.Chart{
+		ID: "chart-one", Type: "bar", Sheet: "Data", FirstRow: 1, LastRow: 2,
+		FirstColumn: 1, LastColumn: 2, Labels: true,
+		PlaceSheet: "Data", PlaceRow: 1, PlaceColumn: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sheetRef, err := spreadsheet.FormatReference(spreadsheet.Reference{
+		Kind: spreadsheet.SheetReferenceKind, ID: sheet.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newDocumentHarness(t, document.Draft{Body: sheetRef, Workbook: book})
+	h.send(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl | tea.ModShift})
+	if h.m.documents.embeddedEditor == nil {
+		t.Fatal("embedded sheet reference did not open")
+	}
+	h.m.documents.embeddedEditor.column = 3
+	h.send(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl | tea.ModShift})
+	if h.m.documents.embeddedEditor != nil {
+		t.Fatal("chart reference command did not return to document editor")
+	}
+	chartRef, err := spreadsheet.FormatReference(spreadsheet.Reference{
+		Kind: spreadsheet.ChartReferenceKind, ID: chart.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(h.m.documents.body.Value(), chartRef) {
+		t.Fatalf("chart reference was not inserted: %q", h.m.documents.body.Value())
+	}
+	if len(h.m.documents.workbook.Charts) != 1 {
+		t.Fatalf("committed workbook lost its chart: %+v", h.m.documents.workbook.Charts)
 	}
 }
 

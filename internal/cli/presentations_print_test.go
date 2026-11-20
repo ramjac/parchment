@@ -66,8 +66,9 @@ func TestPrintExamplePresentationPDF(t *testing.T) {
 	if pdf := c.must("presentation", "print", example, "--format", "pdf", "--slides-per-page", "2"); !strings.HasPrefix(pdf, "%PDF-") {
 		t.Fatal("example presentation did not produce a two-up PDF")
 	}
-	if text := c.must("presentation", "print", example, "--slides-per-page", "2"); !strings.Contains(text, "Speaker notes") {
-		t.Fatal("example presentation two-up text is missing notes")
+	if _, err := c.run("presentation", "print", example, "--slides-per-page", "2"); err == nil ||
+		!strings.Contains(err.Error(), "speaker notes do not fit") {
+		t.Fatalf("two-up text did not report embedded speaker-note overflow: %v", err)
 	}
 }
 

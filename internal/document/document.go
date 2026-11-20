@@ -15,6 +15,7 @@ import (
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/history"
+	"example.com/parchment/internal/spreadsheet"
 )
 
 // ErrNotFound indicates that the requested document does not exist.
@@ -27,6 +28,7 @@ type Document struct {
 	Body           string
 	Layout         Layout
 	Images         []artifact.Image
+	Workbook       spreadsheet.Workbook
 	Tracking       bool
 	TrackedChanges []TrackedChange
 	Blocks         map[string]json.RawMessage `json:"-"`
@@ -34,9 +36,10 @@ type Document struct {
 
 // Draft is the editable part of a document.
 type Draft struct {
-	Body   string
-	Layout Layout
-	Images []artifact.Image
+	Body     string
+	Layout   Layout
+	Images   []artifact.Image
+	Workbook spreadsheet.Workbook
 }
 
 // Repository is the persistence boundary required by document operations.
@@ -349,6 +352,7 @@ func applyDraft(d *Document, draft Draft) {
 	d.Body = draft.Body
 	d.Layout = draft.Layout
 	d.Images = draft.Images
+	d.Workbook = draft.Workbook.Clone()
 }
 
 // apply edits a clone of expected and records the change if anything differs.
@@ -361,10 +365,40 @@ func (s *Service) applyWithTracking(ctx context.Context, expected Document, desc
 	if err := edit(after); err != nil {
 		return Document{}, err
 	}
+	workbookChanged := !expected.Workbook.Equal(after.Workbook)
+	if workbookChanged {
+		for _, change := range expected.TrackedChanges {
+			if change.Kind == trackedWorkbookKind {
+				return Document{}, errors.New("review pending spreadsheet changes before editing the embedded workbook again")
+			}
+		}
+	}
+	existingChanges := make(map[string]bool, len(expected.TrackedChanges))
+	for _, change := range expected.TrackedChanges {
+		existingChanges[change.ID] = true
+	}
 	body := after.Body
 	after.Body = expected.Body
 	if err := EditTrackedBody(after, body, track, s.now()); err != nil {
 		return Document{}, err
+	}
+	if workbookChanged && track {
+		id, err := newTrackedID()
+		if err != nil {
+			return Document{}, fmt.Errorf("generate tracked spreadsheet change ID: %w", err)
+		}
+		for i := range after.TrackedChanges {
+			if !existingChanges[after.TrackedChanges[i].ID] {
+				after.TrackedChanges[i].Group = id
+			}
+		}
+		after.TrackedChanges = append(after.TrackedChanges, TrackedChange{
+			ID: id, Kind: trackedWorkbookKind, Group: id,
+			Workbook: &TrackedWorkbookChange{
+				Before: expected.Workbook.Clone(), After: after.Workbook.Clone(),
+			},
+			CreatedAt: s.now().UTC(),
+		})
 	}
 	if len(after.TrackedChanges) > 0 {
 		present := make(map[string]bool, len(after.Images))
@@ -402,6 +436,9 @@ func normalize(d *Document) error {
 	if err := ValidateTracking(*d); err != nil {
 		return err
 	}
+	if err := spreadsheet.NormalizeEmbeddedWorkbook(&d.Workbook); err != nil {
+		return fmt.Errorf("validate embedded workbook: %w", err)
+	}
 	referenced := artifact.ReferencedImages(d.Body)
 	seen := map[string]bool{}
 	var images []artifact.Image
@@ -436,10 +473,19 @@ func cloneDocument(d *Document) *Document {
 	}
 	clone := *d
 	clone.TrackedChanges = append([]TrackedChange(nil), d.TrackedChanges...)
+	for i := range clone.TrackedChanges {
+		if d.TrackedChanges[i].Workbook != nil {
+			clone.TrackedChanges[i].Workbook = &TrackedWorkbookChange{
+				Before: d.TrackedChanges[i].Workbook.Before.Clone(),
+				After:  d.TrackedChanges[i].Workbook.After.Clone(),
+			}
+		}
+	}
 	clone.Images = make([]artifact.Image, len(d.Images))
 	for i, img := range d.Images {
 		clone.Images[i] = artifact.Image{Name: img.Name, Data: append([]byte(nil), img.Data...)}
 	}
+	clone.Workbook = d.Workbook.Clone()
 	if d.Blocks != nil {
 		clone.Blocks = make(map[string]json.RawMessage, len(d.Blocks))
 		for name, payload := range d.Blocks {

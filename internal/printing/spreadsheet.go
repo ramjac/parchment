@@ -45,6 +45,28 @@ func SpreadsheetPages(book spreadsheet.Spreadsheet) ([]SpreadsheetPage, error) {
 
 // SpreadsheetPagesContext formats workbook pages while honoring cancellation.
 func SpreadsheetPagesContext(ctx context.Context, book spreadsheet.Spreadsheet) ([]SpreadsheetPage, error) {
+	return WorkbookPagesContext(ctx, book.Workbook())
+}
+
+// WorkbookPagesContext formats every sheet in workbook data without requiring
+// standalone artifact metadata.
+func WorkbookPagesContext(ctx context.Context, book spreadsheet.Workbook) ([]SpreadsheetPage, error) {
+	if len(book.Sheets) == 0 {
+		return nil, nil
+	}
+	return workbookPagesContext(ctx, book, -1)
+}
+
+// WorkbookSheetPagesContext formats one sheet while evaluating formulas and
+// charts against the complete shared workbook.
+func WorkbookSheetPagesContext(ctx context.Context, book spreadsheet.Workbook, sheetIndex int) ([]SpreadsheetPage, error) {
+	if sheetIndex < 0 || sheetIndex >= len(book.Sheets) {
+		return nil, fmt.Errorf("sheet index %d is outside the workbook", sheetIndex)
+	}
+	return workbookPagesContext(ctx, book, sheetIndex)
+}
+
+func workbookPagesContext(ctx context.Context, book spreadsheet.Workbook, onlySheet int) ([]SpreadsheetPage, error) {
 	layout := document.DefaultLayout()
 	layout.PageNumbers = document.NumbersNone
 	g, err := layout.Geometry()
@@ -52,8 +74,11 @@ func SpreadsheetPagesContext(ctx context.Context, book spreadsheet.Spreadsheet) 
 		return nil, err
 	}
 	var pages []SpreadsheetPage
-	evaluator := spreadsheet.NewEvaluator(&book)
+	evaluator := spreadsheet.NewWorkbookEvaluator(&book)
 	for sheetIndex, sheet := range book.Sheets {
+		if onlySheet >= 0 && sheetIndex != onlySheet {
+			continue
+		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -116,7 +141,7 @@ func SpreadsheetPagesContext(ctx context.Context, book spreadsheet.Spreadsheet) 
 					cell = sheet.Rows[r][c]
 				}
 				value := cell.Value
-				if _, ok := spreadsheet.ChartAt(&book, sheet.Name, r+1, c+1); ok {
+				if _, ok := spreadsheet.ChartAtInWorkbook(&book, sheet.Name, r+1, c+1); ok {
 					value = "[Chart]"
 				}
 				_, spilled := spills[[2]int{r + 1, c + 1}]
@@ -248,6 +273,9 @@ func SpreadsheetPagesContext(ctx context.Context, book spreadsheet.Spreadsheet) 
 		}
 	}
 	if len(pages) == 0 {
+		if len(book.Sheets) == 0 && onlySheet < 0 {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("spreadsheet has no sheets")
 	}
 	return pages, nil

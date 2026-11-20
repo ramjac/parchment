@@ -163,6 +163,31 @@ parchment document accept report.md --all
 `parchment document images` lists embedded assets; `image-extract` and
 `image-remove` extract or remove them.
 
+### Embedded spreadsheets and charts
+
+Documents can embed spreadsheet sheets and charts without creating another
+file. In the native editor, place the cursor on a spreadsheet reference and
+press `Ctrl+Shift+E` to open it; use the same shortcut elsewhere to create a
+sheet. Save the sheet editor to return to the document, then save the document.
+When document tracking is enabled, each spreadsheet editing session is one
+tracked change and must be reviewed before another embedded spreadsheet edit.
+
+Charts stay anchored in a sheet, but can be displayed separately from it. In
+the embedded spreadsheet editor, select the chart's anchor cell and press
+`Ctrl+Shift+R` to insert a chart reference into the host document. A chart can
+use data from any sheet in that document's shared workbook.
+
+### Presentations
+
+The existing presentation editing, viewing, and printing workflows also
+support embedded sheets and charts. Press `Ctrl+Shift+E` on a sheet reference
+to edit it or elsewhere to create a sheet. To keep source data in speaker
+notes while showing its chart on the slide, create or open the sheet from a
+`: ` notes line, then put a chart reference in the slide content. A sheet in
+notes is not displayed on the slide unless separately referenced there.
+Presentation sheets and charts share one workbook, so charts can use data
+from a sheet in the notes.
+
 ## Spreadsheets
 
 A spreadsheet is a workbook with named sheets, literal cells, and explicit
@@ -322,6 +347,9 @@ The `presentation image`, `images`, `image-extract`, and `image-remove`
 commands manage embedded assets.
 The presentation-wide print font can be `courier`, `helvetica`, or `times`;
 it does not affect terminal output.
+Embedded spreadsheet sheets appear as bounded tables in text output. PDF
+views render embedded charts graphically; DOCX and ODT document export uses
+visible static approximations and emits a warning for each embedded object.
 Slide navigation animates between text-only slides; slides with embedded images
 and terminals smaller than 40×10 switch immediately.
 

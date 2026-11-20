@@ -561,10 +561,21 @@ func newPrintCmd(kind artifact.Kind, streams output) *cobra.Command {
 			default:
 				return fmt.Errorf("unsupported print kind %q", kind)
 			}
+			format, _ := cmd.Flags().GetString("format")
 			if kind == artifact.DocumentKind {
+				var referenceErrors []error
+				if format == "pdf" {
+					var images []artifact.Image
+					d.Body, images, referenceErrors = printing.ExpandEmbeddedReferencesWithImages(d.Body, d.Workbook)
+					d.Images = append(d.Images, images...)
+				} else {
+					d.Body, referenceErrors = printing.ExpandEmbeddedReferences(d.Body, d.Workbook)
+				}
+				if len(referenceErrors) > 0 {
+					return referenceErrors[0]
+				}
 				warnDocumentTracking(streams.err, d)
 			}
-			format, _ := cmd.Flags().GetString("format")
 			slidesPerPage := 1
 			if kind == artifact.PresentationKind {
 				slidesPerPage, _ = cmd.Flags().GetInt("slides-per-page")
@@ -849,6 +860,16 @@ func newDocumentExportCmd(streams output) *cobra.Command {
 			doc, err := service.Get(cmd.Context(), srcPath)
 			if err != nil {
 				return err
+			}
+			embeddedReferences := printing.EmbeddedReferences(doc.Body)
+			var referenceErrors []error
+			doc.Body, referenceErrors = printing.ExpandEmbeddedReferences(doc.Body, doc.Workbook)
+			if len(referenceErrors) > 0 {
+				return referenceErrors[0]
+			}
+			for _, reference := range embeddedReferences {
+				fmt.Fprintf(streams.err, "Embedded %s %q was exported as a static Markdown approximation; editable office objects are unavailable.\n",
+					reference.Kind, reference.ID)
 			}
 
 			warnDocumentTracking(streams.err, doc)

@@ -8,6 +8,7 @@ import (
 	"image"
 	"math"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -22,7 +23,9 @@ import (
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/presentation"
+	"example.com/parchment/internal/printing"
 	"example.com/parchment/internal/recovery"
+	"example.com/parchment/internal/spreadsheet"
 	"example.com/parchment/internal/tui/editor"
 	"example.com/parchment/internal/tui/termimg"
 )
@@ -125,12 +128,13 @@ type presentationTransitionState struct {
 // It owns only UI state; it reads and edits the deck file through the
 // presentation service.
 type presentationModel struct {
-	service *presentation.Service
-	theme   Theme
-	path    string
-	item    presentation.Presentation
-	deck    presentation.Deck
-	loaded  bool
+	service  *presentation.Service
+	theme    Theme
+	path     string
+	item     presentation.Presentation
+	deck     presentation.Deck
+	workbook spreadsheet.Workbook
+	loaded   bool
 
 	recoveryStore       recovery.Store
 	autosaveScheduler   func(session uint64) tea.Cmd
@@ -147,6 +151,7 @@ type presentationModel struct {
 	pdfTwoUp            bool
 	find                findBar
 	imageRenderCache    map[string]renderedPresentationImage
+	chartImages         map[string]artifact.Image
 	imageRowMarkers     map[rune]presentationImageRow
 	nextImageMarker     rune
 	imageGraphicsUsed   bool
@@ -157,6 +162,10 @@ type presentationModel struct {
 	presentationViewState
 	presentationEditorState
 	presentationTransitionState
+
+	embeddedEditor *spreadsheetModel
+	embeddedRef    string
+	embeddedNotes  bool
 }
 
 func newPresentationModel(service *presentation.Service, path string, theme Theme, undoLimits ...int) *presentationModel {
@@ -180,6 +189,7 @@ func newPresentationModel(service *presentation.Service, path string, theme Them
 			})
 		},
 		imageRenderCache: make(map[string]renderedPresentationImage),
+		chartImages:      make(map[string]artifact.Image),
 		presentationEditorState: presentationEditorState{
 			editor: body,
 		},
@@ -204,11 +214,76 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *presentationModel) updatePresentation(message tea.Msg) (tea.Model, tea.Cmd) {
+	if m.embeddedEditor != nil {
+		if msg, ok := message.(spreadsheetEmbeddedFinishedMsg); ok {
+			if msg.committed {
+				m.workbook = msg.workbook.Clone()
+				if msg.chartReferenceID != "" {
+					reference, err := spreadsheet.FormatReference(spreadsheet.Reference{
+						Kind: spreadsheet.ChartReferenceKind, ID: msg.chartReferenceID,
+					})
+					if err != nil {
+						m.errMessage = err.Error()
+					} else {
+						notePrefix := ""
+						if m.embeddedNotes {
+							notePrefix = ": "
+						}
+						insertEmbeddedReference(&m.editor, reference, notePrefix)
+					}
+				} else if m.embeddedRef != "" {
+					notePrefix := ""
+					if m.embeddedNotes {
+						notePrefix = ": "
+					}
+					insertEmbeddedReference(&m.editor, m.embeddedRef, notePrefix)
+				}
+				m.status = "Embedded spreadsheet updated; save the presentation to keep changes"
+				clear(m.imageRenderCache)
+				clear(m.chartImages)
+			} else {
+				m.status = "Embedded spreadsheet changes discarded"
+			}
+			m.embeddedEditor, m.embeddedRef, m.embeddedNotes = nil, "", false
+			return m, tea.Batch(m.editor.Focus(), m.scheduleAutosave(m.autosaveSession))
+		}
+		switch msg := message.(type) {
+		case presentationAutosaveTickMsg:
+			if msg.session == m.autosaveSession && m.editing {
+				return m, m.saveRecovery(msg.session)
+			}
+		case presentationAutosaveFinishedMsg:
+			if msg.session == m.autosaveSession {
+				if m.autosaveCancel != nil {
+					m.autosaveCancel()
+					m.autosaveCancel = nil
+				}
+				if msg.cleared && msg.err == nil {
+					m.draftStored = false
+				}
+				if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
+					m.errMessage = "Autosave failed: " + msg.err.Error()
+				}
+				return m, m.scheduleAutosave(msg.session)
+			}
+			return m, nil
+		}
+		if _, isResize := message.(tea.WindowSizeMsg); !isResize {
+			child, cmd := m.embeddedEditor.Update(message)
+			if updated, ok := child.(*spreadsheetModel); ok {
+				m.embeddedEditor = updated
+			}
+			return m, cmd
+		}
+	}
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
 		m.cancelPageTransition()
 		m.width, m.height = msg.Width, msg.Height
 		m.editor.SetWidth(max(1, m.width-4))
+		if m.embeddedEditor != nil {
+			_, _ = m.embeddedEditor.Update(msg)
+		}
 		m.resizePDFPrompt()
 		if !m.editing && m.find.visible && m.find.query() != "" {
 			current := m.searchMatch
@@ -395,6 +470,8 @@ func (m *presentationModel) updateEditKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.openPDFPrompt()
 	case "ctrl+s":
 		return m.save()
+	case "ctrl+shift+e":
+		return m.openEmbeddedSpreadsheet()
 	case "ctrl+z", "ctrl+r", "ctrl+y", "ctrl+shift+z":
 		if key == "ctrl+z" && m.editor.CanUndo() {
 			m.editor.Undo()
@@ -727,18 +804,55 @@ func (m *presentationModel) beginEdit() tea.Cmd {
 	return tea.Batch(m.editor.Focus(), m.scheduleAutosave(m.autosaveSession))
 }
 
-func (m *presentationModel) restoreDraft(source string) tea.Cmd {
+func (m *presentationModel) restoreDraft(source string, workbook spreadsheet.Workbook) tea.Cmd {
 	m.editing, m.discardWarning = true, false
 	m.errMessage = ""
 	m.draftStored = true
 	m.editor.SetValue(source)
+	m.workbook = workbook.Clone()
 	m.moveEditorToLine(slideSourceLine(source, m.page))
 	m.startAutosaveSession()
 	return tea.Batch(m.editor.Focus(), m.scheduleAutosave(m.autosaveSession))
 }
 
+func (m *presentationModel) openEmbeddedSpreadsheet() tea.Cmd {
+	if !m.editing || m.pending {
+		return nil
+	}
+	selection, err := selectEmbeddedSheet(m.workbook, sourceLineAt(m.editor))
+	if err != nil {
+		m.status, m.errMessage = "", err.Error()
+		return nil
+	}
+	m.embeddedEditor = newEmbeddedSpreadsheetModel(selection.workbook, selection.activeSheet, m.theme, 100)
+	m.embeddedEditor.width, m.embeddedEditor.height = m.width, m.height
+	m.embeddedRef, m.embeddedNotes = selection.insertReference, selection.speakerNotes
+	m.editor.Blur()
+	_, cmd := m.embeddedEditor.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	return cmd
+}
+
 func (m *presentationModel) dirty() bool {
-	return m.editing && m.editor.Value() != m.item.Source
+	return m.editing && (m.editor.Value() != m.item.Source || !m.pendingWorkbook().Equal(m.item.Workbook))
+}
+
+func (m *presentationModel) pendingWorkbook() spreadsheet.Workbook {
+	if m.embeddedEditor != nil {
+		return m.embeddedEditor.book.Workbook()
+	}
+	return m.workbook.Clone()
+}
+
+func (m *presentationModel) recoverySource() string {
+	source := m.editor.Value()
+	if m.embeddedEditor == nil || m.embeddedRef == "" {
+		return source
+	}
+	notePrefix := ""
+	if m.embeddedNotes {
+		notePrefix = ": "
+	}
+	return sourceWithEmbeddedReference(source, m.editor.Cursor, m.embeddedRef, notePrefix)
 }
 
 func (m *presentationModel) startAutosaveSession() {
@@ -780,7 +894,8 @@ func (m *presentationModel) saveRecovery(session uint64) tea.Cmd {
 	m.draftStored = true
 	data := presentationRecoveryData{
 		Baseline: m.item,
-		Source:   m.editor.Value(),
+		Source:   m.recoverySource(),
+		Workbook: m.pendingWorkbook(),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.autosaveCancel = cancel
@@ -924,7 +1039,7 @@ func (m *presentationModel) leaveEditor() {
 
 func (m *presentationModel) save() tea.Cmd {
 	draft := m.editor.Value()
-	if draft == m.item.Source {
+	if draft == m.item.Source && m.workbook.Equal(m.item.Workbook) {
 		m.leaveEditor()
 		m.status, m.errMessage = "No changes", ""
 		return nil
@@ -936,8 +1051,9 @@ func (m *presentationModel) save() tea.Cmd {
 	ctx, seq := m.startOperation()
 	m.status, m.errMessage = "Saving…", ""
 	service, expected := m.service, m.item
+	workbook := m.workbook.Clone()
 	return func() tea.Msg {
-		item, err := service.Update(ctx, expected, draft)
+		item, err := service.UpdateContent(ctx, expected, draft, workbook)
 		return presentationSavedMsg{seq: seq, item: item, err: err}
 	}
 }
@@ -1009,9 +1125,11 @@ func (m *presentationModel) setItem(item presentation.Presentation) {
 		return
 	}
 	m.item, m.deck, m.loaded = item, deck, true
+	m.workbook = item.Workbook.Clone()
 	m.imageGraphicsUsed = m.imageGraphicsUsed || len(item.Images) > 0
 	m.imageRevision++
 	clear(m.imageRenderCache)
+	clear(m.chartImages)
 	m.find.close()
 	m.editor.ClearSearch()
 	m.searchMatches, m.searchMatch = nil, -1
@@ -1027,27 +1145,29 @@ func (m *presentationModel) pageLines() []string {
 	}
 	m.imageRowMarkers = make(map[rune]presentationImageRow)
 	m.nextImageMarker = 0xf0000
+	clear(m.chartImages)
 	width := max(1, m.width-4)
 	var text strings.Builder
 	var title string
 	imageSlots := make(map[string]presentationImageSlot)
+	terminalCharts := make(map[string]spreadsheet.ChartData)
+	nextSlot := 0
+	slotFor := func(name, height, imageWidth string) string {
+		slot := fmt.Sprintf("PIMG%d__", nextSlot)
+		nextSlot++
+		imageSlots[slot] = presentationImageSlot{name: name, height: height, width: imageWidth}
+		return slot
+	}
 	if m.page == 0 {
 		title = m.deck.Title
-		text.WriteString(m.deck.Header)
+		text.WriteString(m.embeddedImageReferences(m.deck.Header, slotFor, terminalCharts))
 	} else {
 		slide := m.deck.Slides[m.page-1]
 		title = slide.Title
-		nextSlot := 0
+		body := m.embeddedImageReferences(slide.Body, slotFor, terminalCharts)
 		expanded, err := presentation.ExpandDirectivesContextWithImageRenderer(
-			context.Background(), slide.Body, filepath.Dir(m.path), m.item.Images,
-			func(name, height, imageWidth string) string {
-				slot := fmt.Sprintf("PIMG%d__", nextSlot)
-				nextSlot++
-				imageSlots[slot] = presentationImageSlot{name: name, height: height, width: imageWidth}
-				return slot
-			},
+			context.Background(), body, filepath.Dir(m.path), m.item.Images, slotFor,
 		)
-		body := slide.Body
 		if err == nil {
 			body = expanded
 		}
@@ -1057,7 +1177,7 @@ func (m *presentationModel) pageLines() []string {
 			if slide.Notes == "" {
 				text.WriteString("(none)")
 			} else {
-				text.WriteString(strings.TrimSpace(slide.Notes))
+				text.WriteString(strings.TrimSpace(m.embeddedImageReferences(slide.Notes, slotFor, terminalCharts)))
 			}
 		}
 	}
@@ -1079,10 +1199,19 @@ func (m *presentationModel) pageLines() []string {
 					slotAt := strings.Index(line, slot)
 					prefixWidth := ansi.StringWidth(line[:slotAt])
 					availableCols := max(1, width-prefixWidth)
+					if data, ok := terminalCharts[slot]; ok {
+						chart := renderEmbeddedTerminalChart(data, availableCols, remainingRows, m.theme)
+						for _, chartLine := range strings.Split(chart, "\n") {
+							lines = append(lines, strings.Repeat(" ", prefixWidth)+chartLine)
+						}
+						matchedSlot = true
+						break
+					}
 					image := m.renderPresentationImage(
 						directive.name, directive.height, directive.width, remainingRows, availableCols,
 					)
 					if termimg.IsGraphicsOutput(termimg.DetectProtocol(), image.output) && image.pixels != nil {
+						m.imageGraphicsUsed = true
 						marker := m.nextPresentationImageMarker(body, image, 0)
 						lines = append(lines, strings.Replace(line, slot, string(marker), 1))
 						for row := 1; row < max(image.rows, 1); row++ {
@@ -1112,6 +1241,24 @@ func (m *presentationModel) pageLines() []string {
 	return lines
 }
 
+func (m *presentationModel) embeddedImageReferences(source string, slotFor func(string, string, string) string, terminalCharts map[string]spreadsheet.ChartData) string {
+	if termimg.DetectProtocol() == termimg.ProtocolNone {
+		expanded, _ := printing.ExpandEmbeddedReferencesWithChartRenderer(source, m.workbook, func(data spreadsheet.ChartData) string {
+			slot := slotFor("", "", "")
+			terminalCharts[slot] = data
+			return slot
+		})
+		return expanded
+	}
+	expanded, images, _ := printing.ExpandEmbeddedReferencesWithImages(source, m.workbook)
+	for _, img := range images {
+		m.chartImages[img.Name] = img
+		pattern := regexp.MustCompile(`!\[[^]]*\]\(` + regexp.QuoteMeta(img.Name) + `\)`)
+		expanded = pattern.ReplaceAllString(expanded, slotFor(img.Name, "", ""))
+	}
+	return expanded
+}
+
 func (m *presentationModel) nextPresentationImageMarker(
 	source string,
 	rendered renderedPresentationImage,
@@ -1135,7 +1282,13 @@ func (m *presentationModel) renderPresentationImage(
 	availableRows, availableCols int,
 ) renderedPresentationImage {
 	var data []byte
+	if img, ok := m.chartImages[name]; ok {
+		data = img.Data
+	}
 	for _, img := range m.item.Images {
+		if data != nil {
+			break
+		}
 		if img.Name == name {
 			data = img.Data
 			break
@@ -1219,6 +1372,9 @@ func (m *presentationModel) clampScroll() {
 }
 
 func (m *presentationModel) View() tea.View {
+	if m.embeddedEditor != nil {
+		return m.embeddedEditor.View()
+	}
 	return tea.NewView(m.viewContent())
 }
 
@@ -1454,7 +1610,7 @@ func (m *presentationModel) renderStatus() string {
 func (m *presentationModel) renderHelp(muted lipgloss.Style) string {
 	help := "ctrl+p PDF • ←/→ slide • ↑/↓ scroll • e edit • s notes • f font • u undo • ctrl+r redo • r reload • esc/q quit"
 	if m.editing {
-		help = "ctrl+f find • ctrl+p PDF • ctrl+s save • esc cancel • ctrl+c quit"
+		help = "ctrl+f find • ctrl+p PDF • ctrl+s save • esc cancel • ctrl+c quit • ctrl+shift+e sheet"
 	} else if !m.loaded {
 		help = "r retry • esc/q quit"
 	}

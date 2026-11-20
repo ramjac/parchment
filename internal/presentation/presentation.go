@@ -19,6 +19,7 @@ import (
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/artifactfile"
 	"example.com/parchment/internal/history"
+	"example.com/parchment/internal/spreadsheet"
 )
 
 var presentationDirectiveRE = regexp.MustCompile(`(?m)^\.image\s+([^\s]+)`)
@@ -44,11 +45,12 @@ type Deck struct {
 // Presentation stores a complete Markdown presentation in one file.
 type Presentation struct {
 	artifact.Artifact
-	Version int
-	Source  string
-	Font    string
-	Images  []artifact.Image
-	Blocks  map[string]json.RawMessage `json:"-"`
+	Version  int
+	Source   string
+	Font     string
+	Images   []artifact.Image
+	Workbook spreadsheet.Workbook
+	Blocks   map[string]json.RawMessage `json:"-"`
 }
 
 type embeddedImage struct {
@@ -146,14 +148,21 @@ func (s *Service) SetFont(ctx context.Context, path, font string) (Presentation,
 
 // Update replaces the presentation source if expected still matches storage.
 func (s *Service) Update(ctx context.Context, expected Presentation, source string) (Presentation, error) {
+	return s.UpdateContent(ctx, expected, source, expected.Workbook)
+}
+
+// UpdateContent replaces the source and embedded workbook if expected still
+// matches storage.
+func (s *Service) UpdateContent(ctx context.Context, expected Presentation, source string, workbook spreadsheet.Workbook) (Presentation, error) {
 	if _, err := Parse(source); err != nil {
 		return Presentation{}, err
 	}
-	if expected.Source == source {
+	if expected.Source == source && expected.Workbook.Equal(workbook) {
 		return expected, nil
 	}
 	after := clonePresentation(expected)
 	after.Source = source
+	after.Workbook = workbook.Clone()
 	after.ModifiedAt = s.now().UTC()
 	if err := normalize(&after); err != nil {
 		return Presentation{}, err
@@ -535,6 +544,10 @@ func Validate(item Presentation) error {
 	if err := ValidateDirectives(item); err != nil {
 		return err
 	}
+	workbook := item.Workbook.Clone()
+	if err := spreadsheet.NormalizeEmbeddedWorkbook(&workbook); err != nil {
+		return fmt.Errorf("validate embedded workbook: %w", err)
+	}
 	_, err := Parse(item.Source)
 	return err
 }
@@ -542,6 +555,10 @@ func Validate(item Presentation) error {
 func normalize(p *Presentation) error {
 	if err := Validate(*p); err != nil {
 		return err
+	}
+	p.Workbook = p.Workbook.Clone()
+	if err := spreadsheet.NormalizeEmbeddedWorkbook(&p.Workbook); err != nil {
+		return fmt.Errorf("validate embedded workbook: %w", err)
 	}
 	referenced := artifact.ReferencedImages(p.Source)
 	for _, match := range presentationDirectiveRE.FindAllStringSubmatch(p.Source, -1) {
@@ -580,6 +597,13 @@ func Encode(item Presentation) ([]byte, error) {
 		payload.Images = append(payload.Images, embeddedImage{Name: img.Name, Data: img.Data})
 	}
 	blocks["parchment-presentation"] = payload
+	if len(item.Workbook.Sheets) > 0 {
+		workbook, err := spreadsheet.EncodeEmbeddedWorkbook(item.Workbook)
+		if err != nil {
+			return nil, err
+		}
+		blocks["parchment-workbook"] = json.RawMessage(workbook)
+	}
 	return artifactfile.Encode(item.Artifact, item.Source, blocks)
 }
 
@@ -606,7 +630,13 @@ func Decode(data []byte) (Presentation, error) {
 	item := Presentation{
 		Artifact: file.Artifact, Version: payload.Version, Source: file.Body,
 		Font:   payload.Font,
-		Blocks: cloneBlocksExcept(file.Blocks, "parchment-presentation"),
+		Blocks: cloneBlocksExcept(file.Blocks, "parchment-presentation", "parchment-workbook"),
+	}
+	if data, ok := file.Blocks["parchment-workbook"]; ok {
+		item.Workbook, err = spreadsheet.DecodeEmbeddedWorkbook(data)
+		if err != nil {
+			return Presentation{}, fmt.Errorf("decode embedded workbook: %w", err)
+		}
 	}
 	for _, img := range payload.Images {
 		item.Images = append(item.Images, artifact.Image{Name: img.Name, Data: img.Data})
@@ -645,6 +675,7 @@ func Preview(deck Deck) string {
 
 func clonePresentation(item Presentation) Presentation {
 	item.Blocks = cloneBlocks(item.Blocks)
+	item.Workbook = item.Workbook.Clone()
 	images := make([]artifact.Image, len(item.Images))
 	for i, img := range item.Images {
 		images[i] = artifact.Image{Name: img.Name, Data: append([]byte(nil), img.Data...)}

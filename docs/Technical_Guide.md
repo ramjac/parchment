@@ -124,15 +124,36 @@ application.
 | Kind | Body | Structured blocks |
 | --- | --- | --- |
 | Note | Canonical Markdown note text. | No kind-specific block is required. |
-| Document | Canonical Markdown including anchors, links, page/section break comments, and image references. | `parchment-document`: layout, embedded image bytes, and versioned pending tracked changes. |
+| Document | Canonical Markdown including anchors, links, page/section break comments, image references, and embedded spreadsheet/chart references. | `parchment-document`: layout, embedded image bytes, and versioned pending tracked changes; `parchment-workbook`: optional versioned shared sheets and charts. |
 | Spreadsheet | Optional human-readable workbook description. | `parchment-spreadsheet`: versioned sheets, cell arrays, spans, explicit literal/formula cells, and chart definitions with separate placement anchors and source ranges. |
-| Presentation | Go `present`-style Markdown source: title, slides, notes, image/code directives. | `parchment-presentation`: versioned presentation settings and embedded image bytes. |
+| Presentation | Go `present`-style Markdown source: title, slides, notes, image/code directives, and embedded spreadsheet/chart references. | `parchment-presentation`: versioned presentation settings and embedded image bytes; `parchment-workbook`: optional versioned shared sheets and charts. |
 
 The [`document.md`](../examples/document.md) example shows `parchment-document`
 with layout and embedded image content. [`budget.md`](../examples/budget.md)
 shows multiple sheets and formula cells in `parchment-spreadsheet`.
 [`presentation.md`](../examples/presentation.md) shows slide source, speaker
-notes, an image directive, and embedded presentation image data.
+notes, an image directive, embedded presentation image data, and a chart on a
+slide sourced from a sheet in the speaker notes.
+
+Documents and presentations share one optional `parchment-workbook` payload.
+It contains the existing spreadsheet sheet and chart data model, with stable
+sheet IDs for Markdown references. References use the complete block-level
+forms `![Spreadsheet](parchment-sheet:<sheet-id>)` and
+`![Chart](parchment-chart:<chart-id>)`; in presentations, a leading `: ` puts
+the reference in speaker notes. The references determine placement, while a
+chart's existing `sheet` and range fields determine its source. Thus a chart
+can be placed on a slide and use data from a sheet referenced only in that
+slide's notes. All sheets and charts belong to the host's shared workbook, so
+normal cross-sheet formula evaluation and chart range adjustments apply.
+Embedded workbooks may contain up to 32 sheets, and hosts without embedded
+sheets omit this payload. Rendering resolves only complete references outside
+fenced code blocks and does not rewrite canonical Markdown.
+
+Embedded sheets render as bounded previews in document and presentation
+views/prints; embedded charts use chart rendering in graphical views and PDFs.
+Text output and DOCX/ODT document export use visible approximations. Office
+export reports a warning per embedded object because those approximations are
+not editable spreadsheet/chart objects.
 
 In JSON, binary image data is encoded as base64 strings. The image name used
 by a body reference or presentation directive must match the name stored in

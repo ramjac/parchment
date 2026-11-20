@@ -58,6 +58,12 @@ type spreadsheetAutosaveFinishedMsg struct {
 	cleared bool
 }
 
+type spreadsheetEmbeddedFinishedMsg struct {
+	workbook         spreadsheet.Workbook
+	committed        bool
+	chartReferenceID string
+}
+
 type spreadsheetSearchMatch struct {
 	sheet, row, column int
 }
@@ -95,6 +101,7 @@ type spreadsheetModel struct {
 	service          *spreadsheet.Service
 	theme            Theme
 	path             string
+	embedded         bool
 	book             spreadsheet.Spreadsheet
 	baseline         spreadsheet.Spreadsheet
 	loaded           bool
@@ -162,6 +169,25 @@ func newSpreadsheetModel(service *spreadsheet.Service, path string, theme Theme,
 	m.newOperationContext = func() (context.Context, context.CancelFunc) {
 		return context.WithCancel(context.Background())
 	}
+	return m
+}
+
+func newEmbeddedSpreadsheetModel(book spreadsheet.Workbook, activeSheet int, theme Theme, undoLimit int) *spreadsheetModel {
+	m := newSpreadsheetModel(nil, "", theme, undoLimit)
+	m.embedded = true
+	book = book.Clone()
+	m.book = spreadsheet.Spreadsheet{
+		Version: spreadsheet.FileVersion,
+		Sheets:  book.Sheets,
+		Charts:  append([]spreadsheet.Chart(nil), book.Charts...),
+	}
+	m.baseline = cloneSpreadsheetState(m.book)
+	m.loaded = true
+	if len(m.book.Sheets) > 0 {
+		m.sheet = min(max(activeSheet, 0), len(m.book.Sheets)-1)
+	}
+	m.computeValues()
+	m.normalizeSpanCursor()
 	return m
 }
 
@@ -254,7 +280,12 @@ func (m *spreadsheetModel) deleteRecoveryDraft() tea.Cmd {
 	}
 }
 
-func (m *spreadsheetModel) Init() tea.Cmd { return m.load() }
+func (m *spreadsheetModel) Init() tea.Cmd {
+	if m.embedded {
+		return nil
+	}
+	return m.load()
+}
 
 func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	model, cmd := m.update(message)
@@ -448,6 +479,9 @@ func (m *spreadsheetModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 func (m *spreadsheetModel) updateEditKey(msg tea.KeyPressMsg) tea.Cmd {
 	key := msg.String()
 	if key == "ctrl+c" {
+		if m.embedded {
+			return m.requestEmbeddedClose()
+		}
 		m.cancelPending()
 		return tea.Quit
 	}
@@ -490,8 +524,14 @@ func (m *spreadsheetModel) updateEditKey(msg tea.KeyPressMsg) tea.Cmd {
 		if !m.commitCell() {
 			return nil
 		}
+		if m.embedded {
+			return m.finishEmbedded(true)
+		}
 		return m.saveWorkbook()
 	case "ctrl+p":
+		if m.embedded {
+			return nil
+		}
 		return m.openPDFPrompt()
 	}
 	m.closeWarning = false
@@ -507,9 +547,15 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyPressMsg) tea.Cmd {
 	}
 	switch key {
 	case "ctrl+c":
+		if m.embedded {
+			return m.requestEmbeddedClose()
+		}
 		m.cancelPending()
 		return tea.Quit
 	case "esc":
+		if m.embedded {
+			return m.requestEmbeddedClose()
+		}
 		if m.pendingShortcut != "" {
 			m.pendingShortcut = ""
 			m.status = ""
@@ -540,6 +586,9 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyPressMsg) tea.Cmd {
 			m.status = "Working… (esc cancels)"
 			return nil
 		}
+		if m.embedded {
+			return m.requestEmbeddedClose()
+		}
 		return m.requestClose()
 	}
 	if m.pending {
@@ -556,6 +605,9 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyPressMsg) tea.Cmd {
 	}
 	if !m.loaded {
 		return nil
+	}
+	if m.embedded && key == "ctrl+shift+r" {
+		return m.finishEmbeddedChartReference()
 	}
 	if m.find.visible {
 		switch key {
@@ -757,8 +809,17 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyPressMsg) tea.Cmd {
 	case "ctrl+r", "ctrl+y", "ctrl+shift+z":
 		return m.redo()
 	case "ctrl+s":
+		if m.embedded {
+			if m.editing && !m.commitCell() {
+				return nil
+			}
+			return m.finishEmbedded(true)
+		}
 		return m.saveWorkbook()
 	case "ctrl+p":
+		if m.embedded {
+			return nil
+		}
 		return m.openPDFPrompt()
 	}
 	return nil
@@ -855,6 +916,44 @@ func (m *spreadsheetModel) saveWorkbook() tea.Cmd {
 	}
 }
 
+func (m *spreadsheetModel) requestEmbeddedClose() tea.Cmd {
+	if m.dirty() && !m.closeWarning {
+		m.closeWarning = true
+		m.status, m.errMessage = "Unsaved changes: Ctrl+S applies them; Esc/q again discards", ""
+		return nil
+	}
+	return m.finishEmbedded(false)
+}
+
+func (m *spreadsheetModel) finishEmbedded(commit bool) tea.Cmd {
+	if commit && m.editing && !m.commitCell() {
+		return nil
+	}
+	if len(m.book.Sheets) == 0 {
+		m.status = "Cannot edit an empty workbook"
+		return nil
+	}
+	book := m.book.Workbook()
+	return func() tea.Msg {
+		return spreadsheetEmbeddedFinishedMsg{workbook: book, committed: commit}
+	}
+}
+
+func (m *spreadsheetModel) finishEmbeddedChartReference() tea.Cmd {
+	sheet := m.book.Sheets[m.sheet].Name
+	chart, ok := spreadsheet.ChartAt(&m.book, sheet, m.row+1, m.column+1)
+	if !ok {
+		m.status, m.errMessage = "The selected cell does not contain a chart", ""
+		return nil
+	}
+	book := m.book.Workbook()
+	return func() tea.Msg {
+		return spreadsheetEmbeddedFinishedMsg{
+			workbook: book, committed: true, chartReferenceID: chart.ID,
+		}
+	}
+}
+
 func (m *spreadsheetModel) requestClose() tea.Cmd {
 	if m.dirty() && !m.closeWarning {
 		m.closeWarning = true
@@ -865,6 +964,9 @@ func (m *spreadsheetModel) requestClose() tea.Cmd {
 }
 
 func (m *spreadsheetModel) close() tea.Cmd {
+	if m.embedded {
+		return m.finishEmbedded(false)
+	}
 	m.stopAutosave()
 	if m.recoveryStore == nil {
 		m.cancelPending()
@@ -960,6 +1062,12 @@ func (m *spreadsheetModel) dirty() bool {
 	if !m.loaded {
 		return false
 	}
+	if m.embedded {
+		if !m.book.Workbook().Equal(m.baseline.Workbook()) {
+			return true
+		}
+		return m.editing && m.input.Value() != cellDraft(m.cell(m.row, m.column))
+	}
 	if !spreadsheet.Equal(m.book, m.baseline) {
 		return true
 	}
@@ -973,7 +1081,14 @@ func (m *spreadsheetModel) editWorkbook(edit func(*spreadsheet.Spreadsheet) erro
 		m.setError("Edit failed", err)
 		return false
 	}
-	if err := spreadsheet.Normalize(&next); err != nil {
+	if m.embedded {
+		workbook := next.Workbook()
+		if err := spreadsheet.NormalizeWorkbook(&workbook); err != nil {
+			m.setError("Edit failed", err)
+			return false
+		}
+		next.Sheets, next.Charts = workbook.Sheets, workbook.Charts
+	} else if err := spreadsheet.Normalize(&next); err != nil {
 		m.setError("Edit failed", err)
 		return false
 	}
@@ -1020,6 +1135,9 @@ func (m *spreadsheetModel) undo() tea.Cmd {
 	if m.dirty() || len(m.bufferRedo) > 0 {
 		return nil
 	}
+	if m.embedded {
+		return nil
+	}
 	return m.history("Undid", m.service.Undo)
 }
 
@@ -1037,6 +1155,9 @@ func (m *spreadsheetModel) redo() tea.Cmd {
 		return m.syncAutosave()
 	}
 	if m.dirty() || len(m.bufferUndo) > 0 {
+		return nil
+	}
+	if m.embedded {
 		return nil
 	}
 	return m.history("Redid", m.service.Redo)
@@ -1313,7 +1434,7 @@ func (m *spreadsheetModel) renderHeader() string {
 		}
 	}
 	header := sanitizeTerminalLine(title)
-	if m.path != "" {
+	if m.path != "" && !m.embedded {
 		header += "  " + sanitizeTerminalLine(m.path)
 	}
 	return m.theme.Chrome.Render(runewidth.Truncate(header, m.width, "…"))
@@ -1465,6 +1586,9 @@ func (m *spreadsheetModel) centerSheetIndicator(status string) string {
 func (m *spreadsheetModel) renderHelp() string {
 	muted := m.theme.Muted
 	help := "g chart • v select • m span • M split • arrows move • enter edit • ctrl+s save • del clear • y copy • p paste • P text paste • ctrl+p PDF • f formulas • tab sheet • u/ctrl+z undo • ctrl+r redo • d delete • i insert • r reload • esc/q quit"
+	if m.embedded {
+		help = "g chart • ctrl+shift+r insert chart reference • arrows move • enter edit • ctrl+s apply • esc cancel • tab sheet"
+	}
 	if m.editing {
 		help = "enter stage • ctrl+s save • esc cancel • =formula • 'literal • shift+enter/alt+enter down • ctrl+p PDF"
 	} else if !m.loaded {

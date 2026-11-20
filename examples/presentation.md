@@ -128,6 +128,18 @@ parchment presentation print examples/presentation.md --format pdf -o /tmp/parch
 
 : Thank the audience, then invite them to open a file by path and explore.
 
+## A chart from speaker notes
+
+Quarterly revenue grows as the product reaches more users. The chart is on
+the slide; its source sheet is in the speaker notes.
+
+![Chart](parchment-chart:revenue-chart)
+
+: ![Spreadsheet](parchment-sheet:revenue-data)
+
+: In the source editor, open the sheet reference with Ctrl+Shift+E. The chart
+: is anchored at D1; Q2 is a formula based on Q1. Edit Q1 to update the chart.
+
 <!-- parchment-blocks -->
 
 ```parchment-presentation
@@ -137,6 +149,40 @@ parchment presentation print examples/presentation.md --format pdf -o /tmp/parch
     {
       "name": "image-7575944ea8cb624c.png",
       "data": "iVBORw0KGgoAAAANSUhEUgAAAGAAAAAwCAIAAABhdOiYAAAAz0lEQVR42u3arQ3CQBgG4G6CJh0ARkBgugELsAGSHViAVIMiQaGwLNAdSEjw2DP9BHfiCk/yDnB58v1c2mtm84UEaRAAAgSodqD3cyie4XEaC6AISAVFQFosAjKDIiBDOgKyxSIgaz4Ccg+KgFwUv8zYMdrlumwAAaoWaLXZ5QRQdUC3/TWNFgMECNBPA2UO6Xhg5wC97ts0gGoFqrbFAAECVASou/RpJj+kAQHSYoAAWfM+uR6O51JRQf9XQf6LAQIECBAgQN5JAwIEaDL5AJmy43tqjq0cAAAAAElFTkSuQmCC"
+    }
+  ]
+}
+```
+
+```parchment-workbook
+{
+  "version": 1,
+  "sheets": [
+    {
+      "id": "revenue-data",
+      "name": "Revenue",
+      "rows": [
+        [{"value": "Quarter"}, {"value": "Revenue"}],
+        [{"value": "Q1"}, {"value": "42"}],
+        [{"value": "Q2"}, {"formula": "=B2+16"}]
+      ]
+    }
+  ],
+  "charts": [
+    {
+      "id": "revenue-chart",
+      "place_sheet": "Revenue",
+      "place_row": 1,
+      "place_column": 4,
+      "title": "Quarterly revenue",
+      "type": "bar",
+      "sheet": "Revenue",
+      "first_row": 1,
+      "first_column": 1,
+      "last_row": 3,
+      "last_column": 2,
+      "header": true,
+      "labels": true
     }
   ]
 }

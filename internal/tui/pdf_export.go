@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 
+	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/pdfrender"
 	"example.com/parchment/internal/presentation"
+	"example.com/parchment/internal/printing"
 	"example.com/parchment/internal/spreadsheet"
 )
 
@@ -37,6 +39,13 @@ func pdfDefaultPath(source, lastPath string) string {
 }
 
 func writePDF(ctx context.Context, store PDFExportStore, path, source string, d document.Document, overwrite bool) pdfExportResult {
+	var errorsFound []error
+	var images []artifact.Image
+	d.Body, images, errorsFound = printing.ExpandEmbeddedReferencesWithImages(d.Body, d.Workbook)
+	if len(errorsFound) > 0 {
+		return pdfExportResult{err: errorsFound[0]}
+	}
+	d.Images = append(d.Images, images...)
 	return writeRenderedPDF(ctx, store, path, source, overwrite, func(ctx context.Context, w io.Writer) error {
 		return pdfrender.RenderContext(ctx, w, d)
 	})

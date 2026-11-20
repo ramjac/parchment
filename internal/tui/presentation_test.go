@@ -22,6 +22,7 @@ import (
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/presentation"
+	"example.com/parchment/internal/spreadsheet"
 	"example.com/parchment/internal/tui/editor"
 	"example.com/parchment/internal/tui/termimg"
 	tuitheme "example.com/parchment/internal/tui/theme"
@@ -38,7 +39,7 @@ func drivePresentation(t *testing.T, m *presentationModel, message tea.Msg) tea.
 	var last tea.Msg
 	var run func(tea.Cmd)
 	run = func(c tea.Cmd) {
-		if c == nil || (m.editing && !m.pending) {
+		if c == nil || (m.editing && !m.pending && m.embeddedEditor == nil) {
 			return
 		}
 		switch result := c().(type) {
@@ -50,6 +51,7 @@ func drivePresentation(t *testing.T, m *presentationModel, message tea.Msg) tea.
 		case tea.QuitMsg:
 			last = result
 		case presentationLoadedMsg, presentationSavedMsg, presentationHistoryMsg, presentationAutosaveFinishedMsg,
+			spreadsheetEmbeddedFinishedMsg,
 			presentationTransitionTickMsg:
 			last = result
 			_, next := m.Update(result)
@@ -58,6 +60,148 @@ func drivePresentation(t *testing.T, m *presentationModel, message tea.Msg) tea.
 	}
 	run(cmd)
 	return last
+}
+
+func TestPresentationEmbeddedSpreadsheetWorkflowInSpeakerNotes(t *testing.T) {
+	m, service, path := newPresentationTestModel(t)
+	m.editing = true
+	m.editor.SetValue(m.item.Source)
+	noteLine := -1
+	for index, line := range m.editor.Lines {
+		if strings.HasPrefix(string(line), ": ") {
+			noteLine = index
+			break
+		}
+	}
+	if noteLine < 0 {
+		t.Fatal("presentation fixture has no speaker note")
+	}
+	m.editor.SetCursorAtRow(editor.Point{Line: noteLine, Col: 2}, 0)
+	drivePresentation(t, m, tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl | tea.ModShift})
+	if m.embeddedEditor == nil || !m.embeddedNotes {
+		t.Fatal("embedded editor did not open in speaker-note context")
+	}
+	embeddedSheetID := m.embeddedEditor.book.Sheets[m.embeddedEditor.sheet].ID
+	if !m.embeddedEditor.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+		return spreadsheet.SetCellInBook(book, spreadsheet.SetCellOptions{
+			Sheet: "Sheet", Row: 1, Column: 1, Cell: spreadsheet.Cell{Value: "North"},
+		})
+	}) {
+		t.Fatalf("edit embedded sheet: %s", m.embeddedEditor.errMessage)
+	}
+	sheetIndex, err := spreadsheet.SheetIndexByID(m.pendingWorkbook(), embeddedSheetID)
+	if !strings.Contains(m.recoverySource(), ": ![Spreadsheet](parchment-sheet:") ||
+		err != nil || m.pendingWorkbook().Sheets[sheetIndex].Rows[0][0].Value != "North" {
+		t.Fatal("presentation recovery state omitted in-progress speaker-note sheet")
+	}
+	drivePresentation(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if m.embeddedEditor != nil || len(m.workbook.Sheets) != len(m.item.Workbook.Sheets)+1 {
+		t.Fatalf("embedded commit did not return to presentation editor: editor=%t workbook=%+v", m.embeddedEditor != nil, m.workbook)
+	}
+	if !strings.Contains(m.editor.Value(), ": ![Spreadsheet](parchment-sheet:"+m.workbook.Sheets[0].ID+")") {
+		t.Fatalf("speaker-note reference was not inserted: %q", m.editor.Value())
+	}
+	drivePresentation(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	saved, err := service.Get(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sheetIndex, err = spreadsheet.SheetIndexByID(saved.Workbook, embeddedSheetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Workbook.Sheets[sheetIndex].Rows[0][0].Value != "North" {
+		t.Fatalf("saved embedded cell = %+v", saved.Workbook.Sheets[sheetIndex].Rows[0][0])
+	}
+}
+
+func TestPresentationChartReferenceRendersAsEmbeddedImage(t *testing.T) {
+	documentImageEnv(t, "kitty")
+	m, _, _ := newPresentationTestModel(t)
+	sheet, err := spreadsheet.NewEmbeddedSheet("Data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	book := spreadsheet.Workbook{Sheets: []spreadsheet.Sheet{sheet}}
+	for row, pair := range [][2]string{{"North", "3"}, {"South", "5"}} {
+		for column, value := range pair {
+			if err := book.SetCell(spreadsheet.SetCellOptions{
+				Sheet: "Data", Row: row + 1, Column: column + 1,
+				Cell: spreadsheet.Cell{Value: value},
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	chart, err := book.AddChart(spreadsheet.Chart{
+		ID: "chart-one", Type: "bar", Sheet: "Data", FirstRow: 1, LastRow: 2,
+		FirstColumn: 1, LastColumn: 2, Labels: true,
+		PlaceSheet: "Data", PlaceRow: 1, PlaceColumn: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference, err := spreadsheet.FormatReference(spreadsheet.Reference{
+		Kind: spreadsheet.ChartReferenceKind, ID: chart.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.setItem(presentation.Presentation{
+		Source:   "# Deck\n\n## Slide\n\n" + reference,
+		Workbook: book,
+	})
+	m.goToPage(1)
+	rendered := strings.Join(m.pageLines(), "\n")
+	if len(m.chartImages) != 1 || strings.Contains(rendered, "parchment-chart:") {
+		t.Fatalf("embedded chart was not rendered graphically: images=%d view=%q", len(m.chartImages), rendered)
+	}
+}
+
+func TestPresentationChartFallbackKeepsReadableLabels(t *testing.T) {
+	documentImageEnv(t, "none")
+	previous := compat.Profile
+	compat.Profile = colorprofile.TrueColor
+	t.Cleanup(func() { compat.Profile = previous })
+	m, _, _ := newPresentationTestModel(t)
+	m.theme = tuitheme.Resolve(config.Theme{Mode: "dark"})
+	book, reference := embeddedChartTestWorkbook(t, "bar")
+	m.setItem(presentation.Presentation{
+		Source:   "# Deck\n\n## Results\n\n" + reference + "\n\n: Private chart notes",
+		Workbook: book,
+	})
+	m.path = "fixtures/example.md"
+	m.goToPage(1)
+	drivePresentation(t, m, tea.WindowSizeMsg{Width: 80, Height: 26})
+	rendered := ansi.Strip(strings.Join(m.pageLines(), "\n"))
+	for _, label := range []string{"Monthly results", "Planned", "Jan", "Feb"} {
+		if !strings.Contains(rendered, label) {
+			t.Fatalf("presentation chart fallback lost %q: %q", label, rendered)
+		}
+	}
+	if len(m.chartImages) != 0 || strings.Contains(rendered, "parchment-chart:") ||
+		strings.Contains(rendered, "Private chart notes") {
+		t.Fatalf("chart fallback used a raster or exposed notes: %q", rendered)
+	}
+	view := m.View().Content
+	for _, line := range strings.Split(view, "\n") {
+		if ansi.StringWidth(line) > 80 {
+			t.Fatalf("chart view overflows terminal: %q", ansi.Strip(line))
+		}
+	}
+	assertTUIViewGolden(t, "presentation-chart-fallback", view, 80, 26)
+	drivePresentation(t, m, tea.WindowSizeMsg{Width: 40, Height: 14})
+	view = m.View().Content
+	if tuiScreenWidth(view) != 40 || strings.Count(ansi.Strip(view), "\n")+1 != 14 {
+		t.Fatal("presentation chart overflowed the small-terminal view")
+	}
+	drivePresentation(t, m, sheetKey("s"))
+	rendered = ansi.Strip(strings.Join(m.pageLines(), "\n"))
+	for _, label := range []string{"Monthly results", "Planned", "Jan", "Feb", "Private chart notes"} {
+		if !strings.Contains(rendered, label) {
+			t.Fatalf("small presentation chart or notes lost %q: %q", label, rendered)
+		}
+	}
 }
 
 func newPresentationTestModel(t *testing.T) (*presentationModel, *presentation.Service, string) {

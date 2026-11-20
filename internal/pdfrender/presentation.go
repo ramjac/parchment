@@ -50,7 +50,7 @@ func RenderPresentationTwoUpContext(ctx context.Context, w io.Writer, item prese
 }
 
 func presentationTwoUpPDF(ctx context.Context, item presentation.Presentation) (File, error) {
-	slides, err := printing.PresentationSlidesContext(ctx, item)
+	slides, embeddedImages, err := printing.PresentationSlidesWithImagesContext(ctx, item)
 	if err != nil {
 		return File{}, err
 	}
@@ -61,7 +61,7 @@ func presentationTwoUpPDF(ctx context.Context, item presentation.Presentation) (
 	if err != nil {
 		return File{}, err
 	}
-	assets, err := documentImages(document.Document{Images: item.Images})
+	assets, err := documentImages(document.Document{Images: append(item.Images, embeddedImages...)})
 	if err != nil {
 		return File{}, err
 	}
@@ -124,7 +124,7 @@ func presentationTwoUpPDF(ctx context.Context, item presentation.Presentation) (
 }
 
 func presentationPDF(ctx context.Context, item presentation.Presentation) (File, error) {
-	slides, err := printing.PresentationSlidesContext(ctx, item)
+	slides, embeddedImages, err := printing.PresentationSlidesWithImagesContext(ctx, item)
 	if err != nil {
 		return File{}, err
 	}
@@ -137,7 +137,7 @@ func presentationPDF(ctx context.Context, item presentation.Presentation) (File,
 	if err != nil {
 		return File{}, err
 	}
-	assets, err := documentImages(document.Document{Images: item.Images})
+	assets, err := documentImages(document.Document{Images: append(item.Images, embeddedImages...)})
 	if err != nil {
 		return File{}, err
 	}

@@ -98,7 +98,8 @@ func (m *presentationModel) exportPDF(path string, overwrite bool) tea.Cmd {
 	}
 	item := m.item
 	if m.editing {
-		item.Source = m.editor.Value()
+		item.Source = m.recoverySource()
+		item.Workbook = m.pendingWorkbook()
 	}
 	ctx, seq := m.startOperation()
 	m.pdfPending = true

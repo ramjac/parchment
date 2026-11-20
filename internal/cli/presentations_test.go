@@ -53,6 +53,20 @@ func TestPresentationCLI(t *testing.T) {
 	}
 }
 
+func TestPresentationPreviewResolvesEmbeddedChartReferences(t *testing.T) {
+	example, err := filepath.Abs("../../examples/presentation.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := newCLI(t)
+	preview := c.must("presentation", "preview", example)
+	if !strings.Contains(preview, "Quarterly revenue") ||
+		strings.Contains(preview, "parchment-chart:") ||
+		strings.Contains(preview, "Spreadsheet: Revenue") {
+		t.Fatalf("presentation preview did not resolve slide content independently from notes:\n%s", preview)
+	}
+}
+
 func TestPresentationImageCLI(t *testing.T) {
 	c := newCLI(t)
 	must, run := c.must, c.run

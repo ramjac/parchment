@@ -384,10 +384,14 @@ func resolve(path string) (string, error) {
 	return filepath.Join(dir, filepath.Base(abs)), nil
 }
 
-func copyPayloadBlocks(blocks map[string]json.RawMessage, excluded string) map[string]json.RawMessage {
+func copyPayloadBlocks(blocks map[string]json.RawMessage, excluded ...string) map[string]json.RawMessage {
+	exclude := make(map[string]bool, len(excluded))
+	for _, name := range excluded {
+		exclude[name] = true
+	}
 	var copied map[string]json.RawMessage
 	for name, payload := range blocks {
-		if name == excluded {
+		if exclude[name] {
 			continue
 		}
 		if copied == nil {

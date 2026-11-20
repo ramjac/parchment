@@ -24,6 +24,8 @@ import (
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
+	"example.com/parchment/internal/printing"
+	"example.com/parchment/internal/spreadsheet"
 	"example.com/parchment/internal/tui/termimg"
 )
 
@@ -71,6 +73,23 @@ func (s *documentsScreen) documentMarkdownFormatter(doc document.Document) docum
 		assets[img.Name] = img
 	}
 	return func(lines []string, width, _ int, _ string) []string {
+		sourceText := strings.Join(lines, "\n")
+		terminalCharts := make(map[string]spreadsheet.ChartData)
+		var expanded string
+		if termimg.DetectProtocol() == termimg.ProtocolNone {
+			expanded, _ = printing.ExpandEmbeddedReferencesWithChartRenderer(sourceText, doc.Workbook, func(data spreadsheet.ChartData) string {
+				slot := string(s.nextDocumentImageMarker())
+				terminalCharts[slot] = data
+				return "![Chart](" + slot + ")"
+			})
+		} else {
+			var chartImages []artifact.Image
+			expanded, chartImages, _ = printing.ExpandEmbeddedReferencesWithImages(sourceText, doc.Workbook)
+			for _, img := range chartImages {
+				assets[img.Name] = img
+			}
+		}
+		lines = strings.Split(expanded, "\n")
 		rewritten, _ := extractAndRewriteLinks(lines)
 		source := []byte(strings.Join(rewritten, "\n"))
 		context := parser.NewContext()
@@ -166,6 +185,12 @@ func (s *documentsScreen) documentMarkdownFormatter(doc document.Document) docum
 				parent.ReplaceChild(parent, img, ast.NewTextSegment(text.NewSegment(start, len(source))))
 			}
 			name := strings.TrimPrefix(string(img.Destination), "./")
+			if data, ok := terminalCharts[name]; ok {
+				slot := s.nextDocumentImageMarker()
+				slots[slot] = strings.Split(renderEmbeddedTerminalChart(data, max(width-4, 1), 16, s.theme), "\n")
+				replaceImage(string(slot))
+				continue
+			}
 			if path.Base(name) != name || !artifact.IsImageName(name) {
 				continue
 			}
