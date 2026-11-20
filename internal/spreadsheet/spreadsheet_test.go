@@ -197,6 +197,134 @@ func TestCellCoordinates(t *testing.T) {
 	}
 }
 
+func TestCopyPasteRange(t *testing.T) {
+	book := Spreadsheet{Sheets: []Sheet{{Name: "Sheet1", Rows: [][]Cell{
+		{{Value: "=literal"}, {Formula: "=A1+$A$1"}},
+		{{Value: "next"}, {}},
+	}}}}
+	copied, err := CopyRange(book, "Sheet1", 1, 1, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := PasteRange(&book, "Sheet1", 2, 2, copied); err != nil {
+		t.Fatal(err)
+	}
+	rows := book.Sheets[0].Rows
+	if rows[1][1].Value != "=literal" || rows[1][2].Formula != "=B2+$A$1" || rows[2][1].Value != "next" {
+		t.Fatalf("overlapping paste = %#v", rows)
+	}
+	before := cloneSpreadsheet(book)
+	if err := PasteRange(&book, "Sheet1", MaxRows, MaxColumns, copied); err == nil {
+		t.Fatal("out-of-bounds paste succeeded")
+	}
+	if !Equal(before, book) {
+		t.Fatal("failed paste modified the workbook")
+	}
+}
+
+func TestSpillCellsAreReadOnlyAndCopyValues(t *testing.T) {
+	book := formulaChain(0)
+	book.Sheets[0].Rows = [][]Cell{{{Formula: "=SEQUENCE(3)"}}}
+	if err := SetCellInBook(&book, SetCellOptions{Sheet: book.Sheets[0].Name, Row: 2, Column: 1, Cell: Cell{Value: "overwrite"}}); err == nil {
+		t.Fatal("editing spill cell succeeded")
+	}
+	copied, err := CopyRange(book, book.Sheets[0].Name, 2, 1, 3, 1)
+	if err != nil || copied.Cells[0][0].Value != "2" || copied.Cells[1][0].Value != "3" {
+		t.Fatalf("copied spill = %#v, %v", copied, err)
+	}
+	if err := PasteRange(&book, book.Sheets[0].Name, 3, 1, copied); err == nil {
+		t.Fatal("pasting into spill succeeded")
+	}
+	copied, err = CopyRange(book, book.Sheets[0].Name, 1, 1, 3, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := PasteRange(&book, book.Sheets[0].Name, 1, 2, copied); err != nil {
+		t.Fatal(err)
+	}
+	value, err := Evaluate(&book, 0, 3, 2)
+	if err != nil || value.Display() != "3" {
+		t.Fatalf("copied anchor spill = %#v, %v", value, err)
+	}
+}
+
+func TestChartPersistenceAndRangeBinding(t *testing.T) {
+	book := formulaChain(0)
+	book.Sheets[0].Rows = [][]Cell{
+		{{Value: "Month"}, {Value: "Sales"}},
+		{{Value: "Jan"}, {Value: "2"}},
+		{{Value: "Feb"}, {Formula: "=B2*2"}},
+	}
+	chart, err := AddChartToBook(&book, Chart{Title: "Sales", Type: "bar", Sheet: book.Sheets[0].Name,
+		FirstRow: 1, FirstColumn: 1, LastRow: 3, LastColumn: 2, Header: true, Labels: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := EvaluateChart(&book, chart)
+	if err != nil || !reflect.DeepEqual(data.Labels, []string{"Jan", "Feb"}) ||
+		!reflect.DeepEqual(data.Series[0].Values, []float64{2, 4}) {
+		t.Fatalf("chart data = %#v, %v", data, err)
+	}
+	encoded, err := Encode(book)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := Decode(encoded)
+	if err != nil || !reflect.DeepEqual(book.Charts, reloaded.Charts) {
+		t.Fatalf("chart round trip = %#v, %v", reloaded.Charts, err)
+	}
+	if err := InsertRowInBook(&book, chart.Sheet, 2); err != nil {
+		t.Fatal(err)
+	}
+	if book.Charts[0].LastRow != 4 {
+		t.Fatalf("chart range not expanded: %#v", book.Charts[0])
+	}
+}
+
+func TestChartRejectsInvalidPieData(t *testing.T) {
+	book := formulaChain(0)
+	book.Sheets[0].Rows = [][]Cell{{{Value: "0"}}, {{Value: "-1"}}}
+	chart, err := AddChartToBook(&book, Chart{Type: "pie", Sheet: book.Sheets[0].Name,
+		FirstRow: 1, FirstColumn: 1, LastRow: 2, LastColumn: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EvaluateChart(&book, chart); err == nil {
+		t.Fatal("negative pie data accepted")
+	}
+	book.Sheets[0].Rows[1][0].Value = "0"
+	if _, err := EvaluateChart(&book, chart); err == nil {
+		t.Fatal("zero total pie data accepted")
+	}
+}
+
+func TestChartReadsLiveSpillsAfterReopen(t *testing.T) {
+	book := formulaChain(0)
+	book.Sheets[0].Rows = [][]Cell{{{Formula: "=SEQUENCE(3,1,2)"}}}
+	chart, err := AddChartToBook(&book, Chart{Type: "bar", Sheet: book.Sheets[0].Name,
+		FirstRow: 1, FirstColumn: 1, LastRow: 3, LastColumn: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := Encode(book)
+	if err != nil {
+		t.Fatal(err)
+	}
+	book, err = Decode(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := EvaluateChart(&book, chart)
+	if err != nil || !reflect.DeepEqual(data.Series[0].Values, []float64{2, 3, 4}) {
+		t.Fatalf("reopened spill chart: %+v, %v", data, err)
+	}
+	book.Sheets[0].Rows[0][0].Formula = "=SEQUENCE(3,1,5)"
+	data, err = EvaluateChart(&book, chart)
+	if err != nil || !reflect.DeepEqual(data.Series[0].Values, []float64{5, 6, 7}) {
+		t.Fatalf("updated spill chart: %+v, %v", data, err)
+	}
+}
+
 func TestFormulaReferenceShiftsPreserveDecimalExponents(t *testing.T) {
 	for _, formula := range []string{"=1.e3", "=1.e+3", "=1.E-3"} {
 		if got := shiftCellReferences(formula, 1, 1, false); got != formula {

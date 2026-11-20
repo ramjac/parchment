@@ -116,7 +116,7 @@ func TestRenderImageSelectsProtocolAndReturnsCellRows(t *testing.T) {
 	}
 
 	t.Setenv("TERM_PROGRAM", "")
-	t.Setenv("TERM", "xterm")
+	t.Setenv("TERM", "xterm-sixel")
 	got, rows, err = RenderImage(data.Bytes(), 8, 3)
 	if err != nil {
 		t.Fatal(err)
@@ -347,9 +347,15 @@ func TestDetectProtocol(t *testing.T) {
 	}
 
 	clearEnv()
-	t.Setenv("TERM", "xterm")
+	t.Setenv("TERM", "xterm-256color")
+	if DetectProtocol() != ProtocolNone {
+		t.Errorf("generic xterm must use the fallback")
+	}
+
+	clearEnv()
+	t.Setenv("TERM", "xterm-sixel")
 	if DetectProtocol() != ProtocolSixel {
-		t.Errorf("Expected Sixel protocol")
+		t.Errorf("Expected Sixel protocol when explicitly indicated")
 	}
 
 	clearEnv()

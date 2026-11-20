@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/xml"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,33 @@ import (
 
 	"example.com/parchment/internal/spreadsheet"
 )
+
+func TestSpreadsheetChartsCLI(t *testing.T) {
+	c := newCLI(t)
+	c.must("spreadsheet", "create", "chart.md")
+	c.must("spreadsheet", "cell", "chart.md", "A1", "3")
+	c.must("spreadsheet", "cell", "chart.md", "A2", "=A1*2", "--formula")
+	id := strings.TrimSpace(c.must("spreadsheet", "chart", "create", "chart.md", "bar", "A1:A2", "--title", "Values"))
+	if out := c.must("spreadsheet", "chart", "list", "chart.md"); !strings.Contains(out, id) {
+		t.Fatalf("missing chart: %q", out)
+	}
+	svg := c.must("spreadsheet", "chart", "export", "chart.md", id)
+	if err := xml.Unmarshal([]byte(svg), new(any)); err != nil {
+		t.Fatalf("invalid SVG: %v", err)
+	}
+	c.must("spreadsheet", "chart", "edit", "chart.md", id, "--type", "line")
+	c.must("spreadsheet", "chart", "export", "chart.md", id, "--format", "pdf", "-o", "chart.pdf")
+	if _, err := c.run("spreadsheet", "chart", "export", "chart.md", id, "--format", "pdf", "-o", "chart.pdf"); err == nil {
+		t.Fatal("overwriting a chart PDF without force succeeded")
+	}
+	if _, err := c.run("spreadsheet", "chart", "export", "chart.md", id, "-o", "chart.md", "--force"); err == nil {
+		t.Fatal("overwriting the workbook succeeded")
+	}
+	c.must("spreadsheet", "chart", "delete", "chart.md", id)
+	if out := c.must("spreadsheet", "chart", "list", "chart.md"); strings.Contains(out, id) {
+		t.Fatalf("deleted chart remains: %q", out)
+	}
+}
 
 func TestSpreadsheetCLIFormulasAndGridOperations(t *testing.T) {
 	c := newCLI(t)
@@ -60,8 +88,37 @@ func TestSpreadsheetCLIFormulasAndGridOperations(t *testing.T) {
 			t.Fatalf("workbook JSON missing %q:\n%s", value, shown)
 		}
 	}
-	if _, err := run("spreadsheet", "cell", id, "A1", "=1/0", "--formula"); err == nil {
-		t.Fatal("division by zero formula was stored")
+	must("spreadsheet", "cell", id, "A1", "=1/0", "--formula")
+	if out := must("spreadsheet", "cell", id, "A1"); !strings.Contains(out, "#DIV/0!") {
+		t.Fatalf("division by zero was not displayed: %q", out)
+	}
+}
+
+func TestSpreadsheetFormulaResultsInCLIAndCSV(t *testing.T) {
+	c := newCLI(t)
+	c.must("spreadsheet", "create", "values.md")
+	c.must("spreadsheet", "cell", "values.md", "A1", `=IF(1=1,"yes","no")`, "--formula")
+	c.must("spreadsheet", "cell", "values.md", "B1", `=1/0`, "--formula")
+	if out := c.must("spreadsheet", "cell", "values.md", "A1"); !strings.HasSuffix(strings.TrimSpace(out), "yes") {
+		t.Fatalf("string formula output = %q", out)
+	}
+	if out := c.must("spreadsheet", "export", "values.md", "--csv"); strings.TrimSpace(out) != "yes,#DIV/0!" {
+		t.Fatalf("CSV formula output = %q", out)
+	}
+}
+
+func TestSpreadsheetSpillCLIAndCSV(t *testing.T) {
+	c := newCLI(t)
+	c.must("spreadsheet", "create", "values.md")
+	c.must("spreadsheet", "cell", "values.md", "A1", "=SEQUENCE(2,2)", "--formula")
+	if out := strings.TrimSpace(c.must("spreadsheet", "cell", "values.md", "B2")); out != "4" {
+		t.Fatalf("spill cell = %q", out)
+	}
+	if out := strings.TrimSpace(c.must("spreadsheet", "export", "values.md", "--csv")); out != "1,2\n3,4" {
+		t.Fatalf("spill CSV = %q", out)
+	}
+	if _, err := c.run("spreadsheet", "cell", "values.md", "B2", "blocked"); err == nil {
+		t.Fatal("editing spill through CLI succeeded")
 	}
 }
 
@@ -134,6 +191,15 @@ func TestSpreadsheetCSVExport(t *testing.T) {
 	}
 	if string(content) != expected {
 		t.Fatalf("expected %q in file after force, got %q", expected, string(content))
+	}
+
+	// Force must not replace the source workbook.
+	if _, err := run("spreadsheet", "export", id, "--csv", "-o", id, "--force"); err == nil ||
+		!strings.Contains(err.Error(), "cannot overwrite the source") {
+		t.Fatalf("expected source overwrite error, got %v", err)
+	}
+	if out := must("spreadsheet", "show", id); !strings.Contains(out, "parchment-spreadsheet") {
+		t.Fatalf("source workbook was replaced: %q", out)
 	}
 
 	// Test export of a specific sheet via --sheet

@@ -105,6 +105,13 @@ type spreadsheetModel struct {
 	pdfPrompt        promptKind
 	pdfOverwritePath string
 	pdfPending       bool
+	clipboard        *spreadsheet.CellClipboard
+	clipboardRead    func() (string, error)
+	clipboardWrite   func(string) error
+	selecting        bool
+	selectionRow     int
+	selectionColumn  int
+	charts           spreadsheetChartUI
 
 	undoLimit    int
 	bufferUndo   []spreadsheet.Spreadsheet
@@ -134,12 +141,14 @@ func newSpreadsheetModel(service *spreadsheet.Service, path string, theme Theme,
 		undoLimit = 100
 	}
 	m := &spreadsheetModel{
-		service:   service,
-		path:      path,
-		theme:     theme,
-		input:     input,
-		undoLimit: undoLimit,
-		pdfInput:  pdfInput,
+		service:        service,
+		path:           path,
+		theme:          theme,
+		input:          input,
+		undoLimit:      undoLimit,
+		pdfInput:       pdfInput,
+		clipboardRead:  readSystemClipboard,
+		clipboardWrite: writeSystemClipboard,
 		spreadsheetGrid: spreadsheetGrid{
 			find:        newFindBar(theme),
 			searchMatch: -1,
@@ -249,7 +258,13 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.input.Width = max(1, m.width-12)
 		m.resizePDFPrompt()
+		if m.charts.mode == chartForm || m.charts.mode == chartExportPath {
+			m.charts.input.Width = max(1, m.width-6-runewidth.StringWidth(m.charts.input.Prompt))
+		}
 		m.scrollToSelection()
+		if m.charts.mode == chartPreview {
+			return m, m.renderChartPreview()
+		}
 		return m, nil
 	case spreadsheetLoadedMsg:
 		if msg.seq != m.seq {
@@ -308,6 +323,17 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case spreadsheetPDFExportedMsg:
 		return m, m.spreadsheetPDFExported(msg)
+	case spreadsheetChartPreviewMsg:
+		return m, m.chartPreviewed(msg)
+	case spreadsheetChartExportMsg:
+		return m, m.chartExported(msg)
+	case spreadsheetClipboardWriteMsg:
+		if msg.err != nil {
+			m.status = "Copied internally; system clipboard unavailable"
+		}
+		return m, nil
+	case spreadsheetClipboardReadMsg:
+		return m, m.spreadsheetClipboardRead(msg)
 	case spreadsheetAutosaveTickMsg:
 		if msg.session == m.autosaveSession && m.autosaveActive && m.dirty() {
 			return m, m.saveRecovery(msg.session)
@@ -343,6 +369,9 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case shiftEnterMsg:
 		return m, m.updateEditKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("shift+enter")})
 	case tea.KeyMsg:
+		if m.charts.mode != chartClosed {
+			return m, m.updateCharts(msg)
+		}
 		if m.pdfPrompt != promptNone {
 			return m, m.updatePDFPrompt(msg)
 		}
@@ -354,7 +383,7 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.updateBrowseKey(msg)
 	case tea.MouseMsg:
-		if !m.pending && m.pdfPrompt == promptNone && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		if m.charts.mode == chartClosed && !m.pending && m.pdfPrompt == promptNone && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			if m.editing {
 				if msg.Y == 1 {
 					m.input.SetCursor(max(msg.X-len(spreadsheet.CellName(m.row+1, m.column+1))-3, 0))
@@ -463,6 +492,11 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 			}
 			return m.syncAutosave()
 		}
+		if m.selecting {
+			m.selecting = false
+			m.status = "Range selection cancelled"
+			return nil
+		}
 		if m.find.visible {
 			return m.updateFindKey(msg)
 		}
@@ -557,6 +591,30 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		return nil
 	}
+	if key == "v" {
+		m.selecting = !m.selecting
+		if m.selecting {
+			m.selectionRow, m.selectionColumn = m.row, m.column
+			m.status = "Range selection: move, then y to copy"
+		} else {
+			m.status = "Range selection cancelled"
+		}
+		return nil
+	}
+	if key == "g" {
+		m.charts.mode, m.charts.index = chartList, 0
+		m.status, m.errMessage = "", ""
+		return nil
+	}
+	if key == "y" {
+		return m.copySelection()
+	}
+	if key == "p" {
+		return m.pasteInternal()
+	}
+	if key == "P" {
+		return m.pasteSystemClipboard()
+	}
 	if key == "d" {
 		m.pendingShortcut = "d"
 		m.status = "Delete (r)ow, (c)olumn, or (s)heet?"
@@ -590,6 +648,7 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		m.scrollToSelection()
 	case "tab", "shift+tab":
 		if len(m.book.Sheets) > 1 {
+			m.selecting = false
 			step := 1
 			if key == "shift+tab" {
 				step = len(m.book.Sheets) - 1
@@ -631,6 +690,12 @@ func (m *spreadsheetModel) move(rows, columns int) {
 }
 
 func (m *spreadsheetModel) beginEdit(draft string) tea.Cmd {
+	if m.cell(m.row, m.column) == (spreadsheet.Cell{}) {
+		if _, ok := m.values[[2]int{m.row, m.column}]; ok {
+			m.errMessage = "Cannot edit a spilled cell; edit its formula anchor"
+			return nil
+		}
+	}
 	m.editing = true
 	m.input.SetValue(draft)
 	m.input.CursorEnd()
@@ -764,6 +829,7 @@ func (m *spreadsheetModel) setBook(book spreadsheet.Spreadsheet) {
 		name = m.book.Sheets[m.sheet].Name
 	}
 	m.book, m.baseline, m.loaded = cloneSpreadsheetState(book), cloneSpreadsheetState(book), true
+	m.selecting = false
 	m.clearSearch()
 	m.bufferUndo, m.bufferRedo = nil, nil
 	m.sheet = 0
@@ -860,6 +926,7 @@ func (m *spreadsheetModel) redo() tea.Cmd {
 
 func cloneSpreadsheetState(book spreadsheet.Spreadsheet) spreadsheet.Spreadsheet {
 	clone := book
+	clone.Charts = append([]spreadsheet.Chart(nil), book.Charts...)
 	clone.Sheets = append([]spreadsheet.Sheet(nil), book.Sheets...)
 	for i := range clone.Sheets {
 		clone.Sheets[i].Rows = make([][]spreadsheet.Cell, len(book.Sheets[i].Rows))
@@ -879,21 +946,26 @@ func cloneSpreadsheetState(book spreadsheet.Spreadsheet) spreadsheet.Spreadsheet
 // computeValues evaluates formulas in the current sheet so views stay pure.
 func (m *spreadsheetModel) computeValues() {
 	m.values = make(map[[2]int]string)
+	evaluator := spreadsheet.NewEvaluator(&m.book)
+	spills, err := evaluator.SpillCells(m.sheet)
+	if err != nil {
+		m.errMessage = "Calculation failed: " + err.Error()
+		return
+	}
+	for cell, value := range spills {
+		m.values[[2]int{cell[0] - 1, cell[1] - 1}] = value.Display()
+	}
 	for row, cells := range m.book.Sheets[m.sheet].Rows {
 		for column, cell := range cells {
 			if cell.Formula == "" {
 				continue
 			}
-			valueV, err := spreadsheet.Evaluate(&m.book, m.sheet, row+1, column+1)
-			var value float64
-			if err == nil {
-				value, err = valueV.Float64()
-			}
+			value, err := evaluator.Evaluate(m.sheet, row+1, column+1)
 			if err != nil {
 				m.values[[2]int{row, column}] = "#ERR"
 				continue
 			}
-			m.values[[2]int{row, column}] = strconv.FormatFloat(value, 'f', -1, 64)
+			m.values[[2]int{row, column}] = value.Display()
 		}
 	}
 }
@@ -924,6 +996,9 @@ func (m *spreadsheetModel) displayValue(row, column int) string {
 			return cell.Formula
 		}
 		return m.values[[2]int{row, column}]
+	}
+	if value, ok := m.values[[2]int{row, column}]; ok {
+		return value
 	}
 	return cell.Value
 }
@@ -960,8 +1035,10 @@ func (m *spreadsheetModel) searchSpreadsheet(query string) {
 	for sheet := range m.book.Sheets {
 		m.sheet = sheet
 		m.computeValues()
-		for row, cells := range m.book.Sheets[sheet].Rows {
-			for column, cell := range cells {
+		rows, columns := m.sheetDimensions(sheet)
+		for row := 0; row < rows; row++ {
+			for column := 0; column < columns; column++ {
+				cell := m.cellOnSheet(sheet, row, column)
 				if len(findTextMatches(cell.Value, query)) > 0 ||
 					len(findTextMatches(cell.Formula, query)) > 0 ||
 					len(findTextMatches(m.values[[2]int{row, column}], query)) > 0 {
@@ -984,14 +1061,38 @@ func (m *spreadsheetModel) gotoSearchMatch() {
 	}
 	match := m.searchMatches[m.searchMatch]
 	if match.sheet < 0 || match.sheet >= len(m.book.Sheets) ||
-		match.row < 0 || match.row >= len(m.book.Sheets[match.sheet].Rows) ||
-		match.column < 0 || match.column >= len(m.book.Sheets[match.sheet].Rows[match.row]) {
+		match.row < 0 || match.column < 0 {
 		m.clearSearch()
 		return
 	}
 	m.sheet, m.row, m.column = match.sheet, match.row, match.column
 	m.computeValues()
+	rows, columns := m.sheetDimensions(m.sheet)
+	if match.row >= rows || match.column >= columns {
+		m.clearSearch()
+		return
+	}
 	m.scrollToSelection()
+}
+
+func (m *spreadsheetModel) sheetDimensions(sheet int) (rows, columns int) {
+	for _, row := range m.book.Sheets[sheet].Rows {
+		columns = max(columns, len(row))
+	}
+	rows = len(m.book.Sheets[sheet].Rows)
+	for coordinate := range m.values {
+		rows = max(rows, coordinate[0]+1)
+		columns = max(columns, coordinate[1]+1)
+	}
+	return rows, columns
+}
+
+func (m *spreadsheetModel) cellOnSheet(sheet, row, column int) spreadsheet.Cell {
+	rows := m.book.Sheets[sheet].Rows
+	if row >= 0 && row < len(rows) && column >= 0 && column < len(rows[row]) {
+		return rows[row][column]
+	}
+	return spreadsheet.Cell{}
 }
 
 func (m *spreadsheetModel) moveSearchMatch(step int) {
@@ -1140,7 +1241,9 @@ func (m *spreadsheetModel) renderGrid() string {
 			if m.find.visible && m.find.query() != "" {
 				text = highlightLine(text, m.find.query(), m.theme)
 			}
-			if r == m.row && c == m.column {
+			if r == m.row && c == m.column || m.selecting &&
+				r >= min(m.row, m.selectionRow) && r <= max(m.row, m.selectionRow) &&
+				c >= min(m.column, m.selectionColumn) && c <= max(m.column, m.selectionColumn) {
 				text = selected.Render(text)
 			}
 			gridBuf.WriteByte(' ')
@@ -1186,7 +1289,7 @@ func (m *spreadsheetModel) centerSheetIndicator(status string) string {
 
 func (m *spreadsheetModel) renderHelp() string {
 	muted := m.theme.Muted
-	help := "arrows move • enter edit • ctrl+s save • del clear • ctrl+p PDF • f formulas • tab sheet • u/ctrl+z undo • ctrl+r redo • d delete • i insert • r reload • esc/q quit"
+	help := "arrows move • enter edit • ctrl+s save • del clear • v select • g charts • y copy • p paste • P text paste • ctrl+p PDF • f formulas • tab sheet • u/ctrl+z undo • ctrl+r redo • d delete • i insert • r reload • esc/q quit"
 	if m.editing {
 		help = "enter stage • ctrl+s save • esc cancel • =formula • 'literal • shift+enter/alt+enter down • ctrl+p PDF"
 	} else if !m.loaded {
@@ -1196,6 +1299,9 @@ func (m *spreadsheetModel) renderHelp() string {
 }
 
 func (m *spreadsheetModel) View() string {
+	if m.charts.mode != chartClosed {
+		return m.viewCharts()
+	}
 	if m.width < 20 || m.height < spreadsheetChromeLines+1 {
 		return "Terminal too small. Press q to quit."
 	}
@@ -1209,5 +1315,6 @@ func (m *spreadsheetModel) View() string {
 		status = m.find.view(len(m.searchMatches), m.searchMatch, m.width)
 	}
 	status = m.centerSheetIndicator(status)
-	return chromeLayout(m.width, m.height, m.renderHeader(), shortcuts, content, status, m.theme.BorderColor)
+	output := chromeLayout(m.width, m.height, m.renderHeader(), shortcuts, content, status, m.theme.BorderColor)
+	return m.clearChartGraphics(output)
 }

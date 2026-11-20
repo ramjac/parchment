@@ -45,8 +45,9 @@ func TestSpreadsheetPrintWrappingAndFormula(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	text := strings.Join(pages[0].Lines, "\n")
-	for _, want := range []string{"123456789012", "long", "last", "5", "#ERR", "hello", "next"} {
+	for _, want := range []string{"123456789012", "long", "last", "5", "#DIV/0!", "hello", "next"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q:\n%s", want, text)
 		}
@@ -57,5 +58,19 @@ func TestSpreadsheetPrintWrappingAndFormula(t *testing.T) {
 	book.Sheets[0].Rows[0][0].Value = strings.Repeat("x\n", 100)
 	if _, err := SpreadsheetPages(book); err == nil {
 		t.Fatal("oversized row should return an error")
+	}
+}
+
+func TestSpreadsheetPrintIncludesSpilledCells(t *testing.T) {
+	book := spreadsheet.Spreadsheet{Sheets: []spreadsheet.Sheet{{Name: "Values", Rows: [][]spreadsheet.Cell{{{Formula: "=SEQUENCE(2,2)"}}}}}}
+	pages, err := SpreadsheetPages(book)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Join(pages[0].Lines, "\n")
+	for _, value := range []string{"1", "2", "3", "4"} {
+		if !strings.Contains(text, value) {
+			t.Fatalf("missing spilled value %q:\n%s", value, text)
+		}
 	}
 }

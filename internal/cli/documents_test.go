@@ -36,26 +36,62 @@ func TestDocumentCLI(t *testing.T) {
 	if _, err := run("document", "layout", id, "--columns", "9"); err == nil {
 		t.Fatal("invalid column count was accepted")
 	}
-	changeID := strings.TrimSpace(must("document", "propose", id, "--body", "proposed text", "--description", "Update report"))
-	if len(changeID) != 32 {
-		t.Fatalf("proposal ID = %q", changeID)
+	must("document", "tracking", id, "on")
+	if _, err := run("document", "edit", id, "--body", "tracked text"); err == nil {
+		t.Fatal("enabled tracking did not require an explicit CLI choice")
 	}
-	if out := must("document", "show", id); strings.Contains(out, "proposed text") || !strings.Contains(out, "second page") {
-		t.Fatalf("proposal changed live content before acceptance: %q", out)
+	must("document", "edit", id, "--body", "tracked text", "--track")
+	changeID := strings.Fields(must("document", "changes", id))[0]
+	if out := must("document", "show", id); !strings.Contains(out, "tracked text") {
+		t.Fatalf("tracked edit did not change live content: %q", out)
 	}
 	if out := must("document", "changes", id); !strings.Contains(out, changeID) || !strings.Contains(out, "pending") {
 		t.Fatalf("changes = %q", out)
 	}
-	if out := must("document", "review", id, changeID); !strings.Contains(out, "proposed text") || !strings.Contains(out, "second page") {
+	if out := must("document", "review", id, changeID); !strings.Contains(out, "tracked text") || !strings.Contains(out, "second page") {
 		t.Fatalf("review = %q", out)
 	}
 	must("document", "accept", id, changeID)
-	if out := must("document", "show", id); strings.Contains(out, "second page") || !strings.Contains(out, "proposed text") {
+	if out := must("document", "show", id); strings.Contains(out, "second page") || !strings.Contains(out, "tracked text") {
 		t.Fatalf("accepted document = %q", out)
 	}
 	if _, err := run("document", "accept", id, changeID); err == nil {
-		t.Fatal("accepted proposal was accepted a second time")
+		t.Fatal("accepted change was accepted a second time")
 	}
+}
+
+func TestDocumentTrackingChoiceForMarkupAndImages(t *testing.T) {
+	c := newCLI(t)
+	png := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\xff\xff?\x00\x05\xfe\x02\xfe\xa7\x35\x81\x84\x00\x00\x00\x00IEND\xaeB`\x82")
+	if err := os.WriteFile("pixel.png", png, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c.must("document", "create", "doc.md", "--body", "body")
+	c.must("document", "tracking", "doc.md", "on")
+	for _, operation := range [][]string{
+		{"page-break", "doc.md"},
+		{"section-break", "doc.md"},
+		{"image", "doc.md", "pixel.png"},
+	} {
+		args := append([]string{"document"}, operation...)
+		if _, err := c.run(args...); err == nil || !strings.Contains(err.Error(), "choose --track") {
+			t.Fatalf("%v without choice: %v", operation, err)
+		}
+		c.must(append(args, "--track")...)
+		c.must("document", "reject", "doc.md", "--all")
+		c.must(append(args, "--track=false")...)
+	}
+	name := strings.TrimSpace(c.must("document", "images", "doc.md"))
+	name = strings.Fields(name)[0]
+	if _, err := c.run("document", "image-remove", "doc.md", name, "--strip-references"); err == nil || !strings.Contains(err.Error(), "choose --track") {
+		t.Fatalf("image removal without choice: %v", err)
+	}
+	c.must("document", "image-remove", "doc.md", name, "--strip-references", "--track")
+	c.must("document", "reject", "doc.md", "--all")
+	if got := c.must("document", "show", "doc.md"); !strings.Contains(got, name) {
+		t.Fatal("rejecting image removal did not restore its reference")
+	}
+	c.must("document", "image-remove", "doc.md", name, "--strip-references", "--track=false")
 }
 
 func TestDocumentPrintPDFCLI(t *testing.T) {
@@ -169,7 +205,7 @@ func TestPrintExampleDocumentPDF(t *testing.T) {
 	}
 }
 
-func TestDocumentProposalKeepsEmbeddedImages(t *testing.T) {
+func TestDocumentTrackingKeepsEmbeddedImages(t *testing.T) {
 	c := newCLI(t)
 	png := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\xff\xff?\x00\x05\xfe\x02\xfe\xa7\x35\x81\x84\x00\x00\x00\x00IEND\xaeB`\x82")
 	if err := os.WriteFile("pixel.png", png, 0o600); err != nil {
@@ -182,15 +218,15 @@ func TestDocumentProposalKeepsEmbeddedImages(t *testing.T) {
 		t.Fatalf("image not embedded: %v", err)
 	}
 	shown := c.must("document", "show", "report.md")
-	change := strings.TrimSpace(c.must("document", "propose", "report.md", "--body", strings.Replace(shown, "Intro", "Revised intro", 1)))
-	c.must("document", "accept", "report.md", change)
+	c.must("document", "edit", "report.md", "--body", strings.Replace(shown, "Intro", "Revised intro", 1), "--track")
+	c.must("document", "accept", "report.md", "--all")
 	accepted := c.must("document", "show", "report.md")
 	if !strings.Contains(accepted, "Revised intro") || !strings.Contains(accepted, name) {
 		t.Fatalf("accepted body = %q", accepted)
 	}
 	after, err := os.ReadFile("report.md")
 	if err != nil || !strings.Contains(string(after), `"name": "`+name) && !strings.Contains(string(after), `"name":"`+name) {
-		t.Fatalf("accepted proposal dropped the embedded image:\n%s", after)
+		t.Fatalf("accepted change dropped the embedded image:\n%s", after)
 	}
 }
 
@@ -236,14 +272,35 @@ func TestDocumentExportCLI(t *testing.T) {
 		t.Fatalf("expected %s to be created, err: %v", customOut, err)
 	}
 
-	// Pending proposals warning test
-	must("document", "propose", id, "--body", "Propose edit", "--description", "Pending test")
-	_, errOutput, err := c.runWithStderr("document", "export", id, "-o", "with_proposals.docx")
+	must("document", "edit", id, "--body", "Tracked edit", "--track")
+	_, errOutput, err := c.runWithStderr("document", "export", id, "-o", "with_changes.docx")
 	if err != nil {
-		t.Fatalf("export with pending proposal failed: %v", err)
+		t.Fatalf("export with pending changes failed: %v", err)
 	}
-	if !strings.Contains(errOutput, "warning: 1 pending proposal(s) not exported") {
-		t.Fatalf("expected pending proposals warning, got: %q", errOutput)
+	if !strings.Contains(errOutput, "warning: 1 pending tracked change(s) not exported") {
+		t.Fatalf("expected pending changes warning, got: %q", errOutput)
+	}
+}
+
+func TestDocumentOutputsWarnAboutPendingTracking(t *testing.T) {
+	c := newCLI(t)
+	c.must("document", "create", "doc.md", "--body", "Old body")
+	c.must("document", "edit", "doc.md", "--body", "New body", "--track")
+	for _, args := range [][]string{
+		{"document", "show", "doc.md"},
+		{"document", "print", "doc.md"},
+		{"document", "print", "doc.md", "--format", "pdf"},
+		{"document", "export", "doc.md", "-o", "doc.odt"},
+	} {
+		out, warning, err := c.runWithStderr(args...)
+		if err != nil || !strings.Contains(warning, "pending tracked change(s) not exported") {
+			t.Fatalf("%v: warning %q, err %v", args, warning, err)
+		}
+		if args[1] == "show" || args[1] == "print" && len(args) == 3 {
+			if !strings.Contains(out, "New body") || strings.Contains(out, "Old body") {
+				t.Fatalf("%v exported incorrect content: %q", args, out)
+			}
+		}
 	}
 }
 

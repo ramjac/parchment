@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"reflect"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/artifactfile"
@@ -21,270 +20,74 @@ type embeddedDocumentImage struct {
 }
 
 type documentFileData struct {
-	Layout  document.Layout         `json:"layout"`
-	Changes []document.Change       `json:"changes,omitempty"`
-	Images  []embeddedDocumentImage `json:"images,omitempty"`
+	Layout          document.Layout          `json:"layout"`
+	TrackingVersion int                      `json:"tracking_version,omitempty"`
+	Tracking        bool                     `json:"tracking,omitempty"`
+	TrackedChanges  []document.TrackedChange `json:"tracked_changes,omitempty"`
+	Images          []embeddedDocumentImage  `json:"images,omitempty"`
 }
 
 // GetDocument reads the document stored at path, including embedded images.
 func (r *Repository) GetDocument(ctx context.Context, path string) (document.Document, error) {
-	d, _, err := r.readDocument(ctx, path)
-	return d, err
-}
-
-// ListDocumentChanges returns the proposals recorded in the document at path.
-// It parses and validates only the changes payload, intentionally omitting
-// page layout and embedded image validation to optimize performance when
-// inspecting proposal history.
-func (r *Repository) ListDocumentChanges(ctx context.Context, path string) ([]document.Change, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return document.Document{}, err
 	}
 	path, err := filepath.Abs(path)
 	if err != nil {
-		return nil, err
-	}
-	content, err := readContent(path, artifact.DocumentKind, document.ErrNotFound)
-	if err != nil {
-		return nil, err
-	}
-	return decodeDocumentChanges(path, content)
-}
-
-// GetDocumentChange reads and returns a single proposal recorded in the
-// document at path. It parses only the target proposal, omitting other changes,
-// page layout, and embedded image validation to optimize performance.
-func (r *Repository) GetDocumentChange(ctx context.Context, path, changeID string) (document.Change, error) {
-	if err := ctx.Err(); err != nil {
-		return document.Change{}, err
-	}
-	path, err := filepath.Abs(path)
-	if err != nil {
-		return document.Change{}, err
-	}
-	content, err := readContent(path, artifact.DocumentKind, document.ErrNotFound)
-	if err != nil {
-		return document.Change{}, err
-	}
-	return decodeDocumentChange(path, content, changeID)
-}
-
-func decodeDocumentChange(path string, content []byte, changeID string) (document.Change, error) {
-	item, blocks, err := decodeArtifactBlocks(path, content)
-	if err != nil {
-		return document.Change{}, err
-	}
-	payloadJSON, ok := blocks[documentDataBlock]
-	if !ok {
-		return document.Change{}, fmt.Errorf("%s: document data block is missing", path)
-	}
-	var payload struct {
-		Changes []json.RawMessage `json:"changes,omitempty"`
-	}
-	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
-		return document.Change{}, fmt.Errorf("decode document data %s: %w", path, err)
-	}
-
-	for _, raw := range payload.Changes {
-		var peek struct {
-			ID string `json:"id"`
-		}
-		if err := json.Unmarshal(raw, &peek); err != nil {
-			return document.Change{}, fmt.Errorf("decode document change peek %s: %w", path, err)
-		}
-		if peek.ID == changeID {
-			var change document.Change
-			if err := json.Unmarshal(raw, &change); err != nil {
-				return document.Change{}, fmt.Errorf("decode document change %s: %w", path, err)
-			}
-			change.DocumentID = item.ID
-			if err := change.Validate(); err != nil {
-				return document.Change{}, fmt.Errorf("validate document change %s: %w", path, err)
-			}
-			return change, nil
-		}
-	}
-	return document.Change{}, document.ErrChangeNotFound
-}
-
-func decodeDocumentChanges(path string, content []byte) ([]document.Change, error) {
-	item, blocks, err := decodeArtifactBlocks(path, content)
-	if err != nil {
-		return nil, err
-	}
-	payloadJSON, ok := blocks[documentDataBlock]
-	if !ok {
-		return nil, fmt.Errorf("%s: document data block is missing", path)
-	}
-	var payload struct {
-		Changes []document.Change `json:"changes,omitempty"`
-	}
-	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
-		return nil, fmt.Errorf("decode document data %s: %w", path, err)
-	}
-	for i := range payload.Changes {
-		payload.Changes[i].DocumentID = item.ID
-	}
-	if err := validateDocumentChanges(item.ID, payload.Changes); err != nil {
-		return nil, fmt.Errorf("validate document changes %s: %w", path, err)
-	}
-	return payload.Changes, nil
-}
-
-func (r *Repository) readDocument(ctx context.Context, path string) (document.Document, []document.Change, error) {
-	if err := ctx.Err(); err != nil {
-		return document.Document{}, nil, err
-	}
-	path, err := filepath.Abs(path)
-	if err != nil {
-		return document.Document{}, nil, err
+		return document.Document{}, err
 	}
 	if err := r.recoverHistory(ctx, path); err != nil {
-		return document.Document{}, nil, err
+		return document.Document{}, err
 	}
 	content, err := readContent(path, artifact.DocumentKind, document.ErrNotFound)
 	if err != nil {
-		return document.Document{}, nil, err
+		return document.Document{}, err
 	}
 	return decodeDocument(path, content)
 }
 
-// TransitionDocument writes target to path only if the file still matches
-// expected, preserving recorded proposals. A nil expected value creates a new
-// file.
+// TransitionDocument writes target only if the file still matches expected.
 func (r *Repository) TransitionDocument(ctx context.Context, path string, expected, target *document.Document) error {
 	if target == nil {
 		return errors.New("Parchment does not delete artifact files")
 	}
-	return r.updateDocument(ctx, path, expected == nil, func(current document.Document, changes []document.Change) (document.Document, []document.Change, error) {
-		if expected != nil && (!sameDocument(current, *expected) || target.ID != current.ID) {
-			return document.Document{}, nil, changedError(current.Path)
-		}
-		return *target, changes, nil
-	})
-}
-
-// ProposeDocumentChange records a pending proposal only if the document still
-// matches the version from which the proposal was created.
-func (r *Repository) ProposeDocumentChange(ctx context.Context, path string, expected document.Document, change document.Change) error {
-	if err := change.Validate(); err != nil {
-		return err
-	}
-	if change.Status != document.ChangePending {
-		return errors.New("new document change must be pending")
-	}
-	return r.updateDocument(ctx, path, false, func(current document.Document, changes []document.Change) (document.Document, []document.Change, error) {
-		if !sameDocument(current, expected) || change.DocumentID != current.ID {
-			return document.Document{}, nil, changedError(current.Path)
-		}
-		if !document.ChangeSnapshotEqual(change.Before, document.ChangeSnapshotOf(current)) {
-			return document.Document{}, nil, errors.New("proposal original snapshot does not match the document")
-		}
-		for _, existing := range changes {
-			if existing.ID == change.ID {
-				return document.Document{}, nil, errors.New("document change ID already exists")
-			}
-			if existing.Status == document.ChangePending {
-				return document.Document{}, nil, errors.New("resolve the existing document change before proposing another")
-			}
-		}
-		return current, append(changes, change), nil
-	})
-}
-
-// TransitionDocumentChange resolves a proposal, optionally updating the
-// document in the same file write.
-func (r *Repository) TransitionDocumentChange(
-	ctx context.Context, path, changeID string, expected, target document.Change,
-	expectedDocument, targetDocument *document.Document,
-) error {
-	if expected.ID != changeID || target.ID != changeID || expected.DocumentID != target.DocumentID {
-		return errors.New("document change ID does not match transition")
-	}
-	if err := target.Validate(); err != nil {
-		return err
-	}
-	if expected.Status != document.ChangePending ||
-		(target.Status != document.ChangeAccepted && target.Status != document.ChangeRejected) {
-		return errors.New("invalid document change transition")
-	}
-	if (expectedDocument == nil) != (targetDocument == nil) {
-		return errors.New("document transition must include both expected and target documents")
-	}
-	return r.updateDocument(ctx, path, false, func(current document.Document, changes []document.Change) (document.Document, []document.Change, error) {
-		index := -1
-		for i := range changes {
-			if changes[i].ID == changeID {
-				index = i
-				break
-			}
-		}
-		if index < 0 {
-			return document.Document{}, nil, document.ErrChangeNotFound
-		}
-		if !reflect.DeepEqual(changes[index], expected) {
-			return document.Document{}, nil, errors.New("document change is no longer in the expected state")
-		}
-		changes[index] = target
-		if expectedDocument == nil {
-			return current, changes, nil
-		}
-		if !sameDocument(current, *expectedDocument) || targetDocument.ID != current.ID {
-			return document.Document{}, nil, errors.New("document changed since the proposal was reviewed")
-		}
-		if !document.ChangeSnapshotEqual(target.Before, document.ChangeSnapshotOf(*expectedDocument)) ||
-			!document.ChangeSnapshotEqual(target.After, document.ChangeSnapshotOf(*targetDocument)) {
-			return document.Document{}, nil, errors.New("accepted document does not match the proposal")
-		}
-		return *targetDocument, changes, nil
-	})
-}
-
-type documentEdit func(current document.Document, changes []document.Change) (document.Document, []document.Change, error)
-
-// updateDocument decodes the current file (unless creating), applies edit,
-// and writes the resulting document and proposal list.
-func (r *Repository) updateDocument(ctx context.Context, path string, create bool, edit documentEdit) error {
 	path, err := filepath.Abs(path)
 	if err != nil {
 		return err
 	}
-	return r.update(ctx, path, create, document.ErrNotFound, func(content []byte) ([]byte, error) {
-		current := document.Document{Artifact: artifact.Artifact{Path: path}}
-		var changes []document.Change
-		if !create {
+	return r.update(ctx, path, expected == nil, document.ErrNotFound, func(content []byte) ([]byte, error) {
+		if expected != nil {
 			if err := checkKind(path, content, artifact.DocumentKind); err != nil {
 				return nil, err
 			}
-			current, changes, err = decodeDocument(path, content)
+			current, err := decodeDocument(path, content)
 			if err != nil {
 				return nil, err
 			}
+			previous := *expected
+			previous.Path = current.Path
+			if !document.Equal(current, previous) || target.ID != current.ID {
+				return nil, changedError(current.Path)
+			}
 		}
-		target, changes, err := edit(current, changes)
-		if err != nil {
-			return nil, err
-		}
-		return encodeDocument(target, changes)
+		return encodeDocument(*target)
 	})
 }
 
-func sameDocument(current, expected document.Document) bool {
-	expected.Path = current.Path
-	return document.Equal(current, expected)
-}
-
-func encodeDocument(d document.Document, changes []document.Change) ([]byte, error) {
+func encodeDocument(d document.Document) ([]byte, error) {
 	if err := validateTarget(d.Artifact, artifact.DocumentKind); err != nil {
 		return nil, err
 	}
 	if err := d.Layout.Validate(); err != nil {
 		return nil, err
 	}
-	if err := validateDocumentChanges(d.ID, changes); err != nil {
+	if err := document.ValidateTracking(d); err != nil {
 		return nil, err
 	}
-	payload := documentFileData{Layout: d.Layout, Changes: changes}
+	payload := documentFileData{Layout: d.Layout, Tracking: d.Tracking, TrackedChanges: d.TrackedChanges}
+	if d.Tracking || len(d.TrackedChanges) > 0 {
+		payload.TrackingVersion = 1
+	}
 	seenImages := map[string]bool{}
 	for _, img := range d.Images {
 		if err := img.Validate(); err != nil {
@@ -305,60 +108,48 @@ func encodeDocument(d document.Document, changes []document.Change) ([]byte, err
 	return data, nil
 }
 
-func decodeDocument(path string, content []byte) (document.Document, []document.Change, error) {
+func decodeDocument(path string, content []byte) (document.Document, error) {
 	file, err := decodeArtifact(path, content)
 	if err != nil {
-		return document.Document{}, nil, err
+		return document.Document{}, err
 	}
 	payloadJSON, ok := file.Blocks[documentDataBlock]
 	if !ok {
-		return document.Document{}, nil, fmt.Errorf("%s: document data block is missing", path)
+		return document.Document{}, fmt.Errorf("%s: document data block is missing", path)
 	}
 	var payload documentFileData
 	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
-		return document.Document{}, nil, fmt.Errorf("decode document data %s: %w", path, err)
+		return document.Document{}, fmt.Errorf("decode document data %s: %w", path, err)
+	}
+	if payload.TrackingVersion < 0 || payload.TrackingVersion > 1 ||
+		(payload.TrackingVersion != 1 && (payload.Tracking || len(payload.TrackedChanges) > 0)) {
+		return document.Document{}, fmt.Errorf("unsupported document tracking version %d", payload.TrackingVersion)
 	}
 	if payload.Layout == (document.Layout{}) {
 		payload.Layout = document.DefaultLayout()
 	}
 	if err := payload.Layout.Validate(); err != nil {
-		return document.Document{}, nil, fmt.Errorf("validate document layout %s: %w", path, err)
-	}
-	for i := range payload.Changes {
-		payload.Changes[i].DocumentID = file.Artifact.ID
-	}
-	if err := validateDocumentChanges(file.Artifact.ID, payload.Changes); err != nil {
-		return document.Document{}, nil, fmt.Errorf("validate document changes %s: %w", path, err)
+		return document.Document{}, fmt.Errorf("validate document layout %s: %w", path, err)
 	}
 	d := document.Document{
 		Artifact: file.Artifact, Body: file.Body, Layout: payload.Layout,
+		Tracking: payload.Tracking, TrackedChanges: payload.TrackedChanges,
 		Blocks: copyPayloadBlocks(file.Blocks, documentDataBlock),
+	}
+	if err := document.ValidateTracking(d); err != nil {
+		return document.Document{}, fmt.Errorf("validate document tracking %s: %w", path, err)
 	}
 	seenImages := map[string]bool{}
 	for _, imageData := range payload.Images {
 		img := artifact.Image{Name: imageData.Name, Data: imageData.Data}
 		if err := img.Validate(); err != nil {
-			return document.Document{}, nil, fmt.Errorf("validate document image %s: %w", img.Name, err)
+			return document.Document{}, fmt.Errorf("validate document image %s: %w", img.Name, err)
 		}
 		if seenImages[img.Name] {
-			return document.Document{}, nil, fmt.Errorf("duplicate document image %s", img.Name)
+			return document.Document{}, fmt.Errorf("duplicate document image %s", img.Name)
 		}
 		seenImages[img.Name] = true
 		d.Images = append(d.Images, img)
 	}
-	return d, payload.Changes, nil
-}
-
-func validateDocumentChanges(id string, changes []document.Change) error {
-	seen := map[string]bool{}
-	for _, change := range changes {
-		if err := change.Validate(); err != nil {
-			return err
-		}
-		if change.DocumentID != id || seen[change.ID] {
-			return errors.New("invalid document change list")
-		}
-		seen[change.ID] = true
-	}
-	return nil
+	return d, nil
 }

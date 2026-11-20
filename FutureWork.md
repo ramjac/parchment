@@ -26,37 +26,6 @@ update rendering baselines only for intentional, reviewed changes.
   scanning folders or fetching remote content, and keep the note's Markdown
   source unchanged.
 
-## Additional functionality
-
-- **Revisit CLI file-opening convenience.** Review the existing
-  `parchment <file>` entry point rather than introducing duplicate routing.
-  Decide whether opening a missing path should keep prompting for kind or
-  default to creating a Document. Preserve explicit kind selection, plain
-  Markdown notes, and the rule that existing files are never overwritten.
-  Update CLI help, tests, documentation, and agent instructions together if
-  the behavior changes.
-- **Replace proposals with Document change tracking.** Decide whether to retire
-  the current proposal workflow and its UI/commands. If replacing it, specify
-  tracked insertions/deletions, review presentation, accept/reject operations,
-  and interactions with save, undo/redo, and external edits. Keep tracking data
-  in the artifact's single Markdown file; do not relabel proposals or undo
-  history as change tracking.
-- **Expand spreadsheet built-in formulas.** The current formula engine
-  supports `SUM`, `AVERAGE`, `COUNT`, `MIN`, and `MAX`. Specify and implement
-  additional functions such as `COUNTA`, `ROUND`, `IF`, `IFERROR`, `SUMIFS`,
-  `COUNTIFS`, `XLOOKUP`, `INDEX`, `MATCH`, `XMATCH`, `TEXTJOIN`, date/time
-  functions, `FILTER`, `SORT`, `UNIQUE`, and `SEQUENCE`. Define argument,
-  empty-cell, error, date/time, and array-result semantics and test successful
-  and failing calculations.
-- **Add spreadsheet copy/paste with reference adjustment.** Update relative
-  formula references when copying cells or ranges, while preserving absolute
-  and mixed references (`$A$1`, `$A1`, `A$1`). Define clipboard behavior and
-  boundary/error handling, and test copying in both row and column directions.
-- **Add spreadsheet charts.** Support pie, bar, and line charts sourced from
-  workbook ranges. Define data binding, TUI rendering, persistence, and export
-  behavior; keep chart definitions in the spreadsheet artifact rather than
-  per-artifact sidecars.
-
 ## Large-artifact performance and responsiveness
 
 Extend the Go benchmarks with reproducibly generated inputs rather than

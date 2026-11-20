@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -18,6 +19,9 @@ const (
 	ErrValue    ErrorCode = "#VALUE!"
 	ErrName     ErrorCode = "#NAME?"
 	ErrCircular ErrorCode = "#CIRCULAR!"
+	ErrNA       ErrorCode = "#N/A"
+	ErrSpill    ErrorCode = "#SPILL!"
+	ErrCalc     ErrorCode = "#CALC!"
 )
 
 type ValueKind int
@@ -26,14 +30,18 @@ const (
 	EmptyKind ValueKind = iota
 	NumKind
 	StrKind
+	BoolKind
 	ErrKind
+	ArrayKind
 )
 
 type Value struct {
-	Kind ValueKind
-	Num  float64
-	Str  string
-	Err  ErrorCode
+	Kind  ValueKind
+	Num   float64
+	Str   string
+	Bool  bool
+	Err   ErrorCode
+	array *valueGrid
 }
 
 func (v Value) Float64() (float64, error) {
@@ -41,7 +49,10 @@ func (v Value) Float64() (float64, error) {
 		return 0, errors.New(string(v.Err))
 	}
 	if v.Kind == StrKind {
-		return 0, errors.New("value is text")
+		return 0, errors.New("value is not numeric")
+	}
+	if v.Kind == BoolKind && v.Bool {
+		return 1, nil
 	}
 	return v.Num, nil
 }
@@ -60,9 +71,15 @@ type Evaluator struct {
 
 // NewEvaluator creates an evaluator for book.
 func NewEvaluator(book *Spreadsheet) *Evaluator {
+	return NewEvaluatorAt(book, time.Now())
+}
+
+// NewEvaluatorAt evaluates volatile time functions against a fixed UTC instant.
+func NewEvaluatorAt(book *Spreadsheet, now time.Time) *Evaluator {
 	return &Evaluator{evaluator: evaluator{
 		book: book, visiting: make(map[cellCoordinate]bool),
 		cache: make(map[cellCoordinate]Value), depth: make(map[cellCoordinate]int),
+		now: now.UTC(),
 	}}
 }
 
@@ -73,17 +90,26 @@ func (e *Evaluator) Evaluate(sheetIndex, row, column int) (Value, error) {
 		column < 1 || column > MaxColumns {
 		return Value{}, errors.New("cell coordinates are outside the workbook")
 	}
+	if err := e.evaluator.prepareSpills(); err != nil {
+		return Value{}, err
+	}
 	return e.evaluator.cell(sheetIndex, row, column)
 }
 
 const maxFormulaDepth = 512
 
 type evaluator struct {
-	book     *Spreadsheet
-	visiting map[cellCoordinate]bool
-	cache    map[cellCoordinate]Value
-	depth    map[cellCoordinate]int
-	depths   []int
+	book        *Spreadsheet
+	now         time.Time
+	visiting    map[cellCoordinate]bool
+	cache       map[cellCoordinate]Value
+	depth       map[cellCoordinate]int
+	depths      []int
+	spills      map[cellCoordinate]spillValue
+	arrays      map[cellCoordinate]valueGrid
+	spillErrors map[cellCoordinate]bool
+	spillsReady bool
+	preparing   bool
 }
 
 type cellCoordinate struct {
@@ -91,11 +117,18 @@ type cellCoordinate struct {
 }
 
 func (e *evaluator) cell(sheetIndex, row, column int) (Value, error) {
+	coordinate := cellCoordinate{sheet: sheetIndex, row: row, column: column}
+	if spill, ok := e.spills[coordinate]; ok {
+		owner, err := e.cell(spill.owner.sheet, spill.owner.row, spill.owner.column)
+		if err != nil || owner.Kind == ErrKind {
+			return owner, err
+		}
+		return spill.value, nil
+	}
 	if row > len(e.book.Sheets[sheetIndex].Rows) ||
 		column > len(e.book.Sheets[sheetIndex].Rows[row-1]) {
 		return Value{Kind: EmptyKind}, nil
 	}
-	coordinate := cellCoordinate{sheet: sheetIndex, row: row, column: column}
 	if value, ok := e.cache[coordinate]; ok {
 		depth := e.depth[coordinate]
 		if len(e.visiting)+depth > maxFormulaDepth {
@@ -110,12 +143,14 @@ func (e *evaluator) cell(sheetIndex, row, column int) (Value, error) {
 	cell := e.book.Sheets[sheetIndex].Rows[row-1][column-1]
 	if cell.Formula == "" {
 		trimmed := strings.TrimSpace(cell.Value)
-		if trimmed == "" {
+		if cell.Value == "" {
 			return Value{Kind: EmptyKind}, nil
 		}
 		value, err := strconv.ParseFloat(trimmed, 64)
-		if err != nil {
-			return Value{}, fmt.Errorf("%s is not numeric", CellName(row, column))
+		if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+			val := Value{Kind: StrKind, Str: cell.Value}
+			e.cache[coordinate] = val
+			return val, nil
 		}
 		val := Value{Kind: NumKind, Num: value}
 		e.cache[coordinate] = val
@@ -138,6 +173,20 @@ func (e *evaluator) cell(sheetIndex, row, column int) (Value, error) {
 	val, err := node.Eval(e, sheetIndex)
 	if err != nil {
 		return Value{}, err
+	}
+	if val.Kind == ArrayKind {
+		if val.array == nil || val.array.rows < 1 || val.array.cols < 1 || len(val.array.values) == 0 {
+			val = Value{Kind: ErrKind, Err: ErrCalc}
+		} else {
+			if e.arrays != nil {
+				e.arrays[coordinate] = *val.array
+			}
+			if e.spillErrors[coordinate] {
+				val = Value{Kind: ErrKind, Err: ErrSpill}
+			} else {
+				val = val.array.values[0]
+			}
+		}
 	}
 	if val.Kind == NumKind && (math.IsNaN(val.Num) || math.IsInf(val.Num, 0)) {
 		return Value{}, errors.New("formula result is not finite")
@@ -176,6 +225,12 @@ const (
 	TokRParen
 	TokColon
 	TokComma
+	TokEqual
+	TokNotEqual
+	TokLess
+	TokLessEqual
+	TokGreater
+	TokGreaterEqual
 )
 
 type Token struct {
@@ -235,6 +290,26 @@ func (l *Lexer) Next() (Token, error) {
 	case ',':
 		l.pos++
 		return Token{Kind: TokComma, Lexeme: ",", Start: start, End: l.pos}, nil
+	case '=', '<', '>':
+		l.pos++
+		kind := TokEqual
+		if c == '<' {
+			kind = TokLess
+			if l.pos < len(l.input) && l.input[l.pos] == '>' {
+				l.pos++
+				kind = TokNotEqual
+			} else if l.pos < len(l.input) && l.input[l.pos] == '=' {
+				l.pos++
+				kind = TokLessEqual
+			}
+		} else if c == '>' {
+			kind = TokGreater
+			if l.pos < len(l.input) && l.input[l.pos] == '=' {
+				l.pos++
+				kind = TokGreaterEqual
+			}
+		}
+		return Token{Kind: kind, Lexeme: l.input[start:l.pos], Start: start, End: l.pos}, nil
 	}
 
 	if c == '"' {
@@ -255,7 +330,14 @@ func (l *Lexer) Next() (Token, error) {
 
 	if c == '\'' {
 		l.pos++
-		for l.pos < len(l.input) && l.input[l.pos] != '\'' {
+		for l.pos < len(l.input) {
+			if l.input[l.pos] == '\'' {
+				if l.pos+1 < len(l.input) && l.input[l.pos+1] == '\'' {
+					l.pos += 2
+					continue
+				}
+				break
+			}
 			l.pos++
 		}
 		if l.pos >= len(l.input) {
@@ -264,12 +346,7 @@ func (l *Lexer) Next() (Token, error) {
 		l.pos++
 		if l.pos < len(l.input) && l.input[l.pos] == '!' {
 			l.pos++
-			for l.pos < len(l.input) && isLetter(l.input[l.pos]) {
-				l.pos++
-			}
-			for l.pos < len(l.input) && isDigit(l.input[l.pos]) {
-				l.pos++
-			}
+			l.scanCellReference()
 			return Token{Kind: TokRef, Lexeme: l.input[start:l.pos], Start: start, End: l.pos}, nil
 		}
 		return Token{}, errors.New("expected ! after sheet name")
@@ -307,8 +384,15 @@ func (l *Lexer) Next() (Token, error) {
 		return Token{Kind: TokNumber, Lexeme: l.input[start:l.pos], Start: start, End: l.pos}, nil
 	}
 
-	if isLetter(c) {
+	if isLetter(c) || c == '$' {
+		if c == '$' {
+			l.scanCellReference()
+			return Token{Kind: TokRef, Lexeme: l.input[start:l.pos], Start: start, End: l.pos}, nil
+		}
 		for l.pos < len(l.input) && isLetter(l.input[l.pos]) {
+			l.pos++
+		}
+		if l.pos < len(l.input) && l.input[l.pos] == '$' {
 			l.pos++
 		}
 		for l.pos < len(l.input) && isDigit(l.input[l.pos]) {
@@ -316,17 +400,16 @@ func (l *Lexer) Next() (Token, error) {
 		}
 		if l.pos < len(l.input) && l.input[l.pos] == '!' {
 			l.pos++
-			for l.pos < len(l.input) && isLetter(l.input[l.pos]) {
-				l.pos++
-			}
-			for l.pos < len(l.input) && isDigit(l.input[l.pos]) {
-				l.pos++
-			}
+			l.scanCellReference()
 		}
 		return Token{Kind: TokRef, Lexeme: l.input[start:l.pos], Start: start, End: l.pos}, nil
 	}
 
 	if c == '#' {
+		if strings.HasPrefix(l.input[l.pos:], string(ErrNA)) {
+			l.pos += len(ErrNA)
+			return Token{Kind: TokString, Lexeme: l.input[start:l.pos], Start: start, End: l.pos}, nil
+		}
 		for l.pos < len(l.input) {
 			r, size := utf8.DecodeRuneInString(l.input[l.pos:])
 			if r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\u00A0' || r == ',' || r == ')' || r == ':' {
@@ -345,6 +428,21 @@ func (l *Lexer) Next() (Token, error) {
 	return Token{}, fmt.Errorf("unexpected character %q", l.input[start:start+size])
 }
 
+func (l *Lexer) scanCellReference() {
+	if l.pos < len(l.input) && l.input[l.pos] == '$' {
+		l.pos++
+	}
+	for l.pos < len(l.input) && isLetter(l.input[l.pos]) {
+		l.pos++
+	}
+	if l.pos < len(l.input) && l.input[l.pos] == '$' {
+		l.pos++
+	}
+	for l.pos < len(l.input) && isDigit(l.input[l.pos]) {
+		l.pos++
+	}
+}
+
 type Node interface {
 	Eval(e *evaluator, currentSheet int) (Value, error)
 }
@@ -361,6 +459,12 @@ type StringNode struct {
 	Value string
 }
 
+type BoolNode struct{ Value bool }
+
+func (n *BoolNode) Eval(_ *evaluator, _ int) (Value, error) {
+	return Value{Kind: BoolKind, Bool: n.Value}, nil
+}
+
 func (n *StringNode) Eval(e *evaluator, currentSheet int) (Value, error) {
 	return Value{Kind: StrKind, Str: n.Value}, nil
 }
@@ -374,11 +478,13 @@ func (n *ErrorNode) Eval(e *evaluator, currentSheet int) (Value, error) {
 }
 
 type RefNode struct {
-	Sheet string
-	Row   int
-	Col   int
-	Start int
-	End   int
+	Sheet       string
+	Row         int
+	Col         int
+	AbsoluteRow bool
+	AbsoluteCol bool
+	Start       int
+	End         int
 }
 
 func (n *RefNode) Eval(e *evaluator, currentSheet int) (Value, error) {
@@ -400,17 +506,30 @@ func (n *RefNode) Eval(e *evaluator, currentSheet int) (Value, error) {
 }
 
 type RangeNode struct {
-	Sheet   string
-	FromRow int
-	FromCol int
-	ToRow   int
-	ToCol   int
-	Start   int
-	End     int
+	Sheet           string
+	FromRow         int
+	FromCol         int
+	ToRow           int
+	ToCol           int
+	FromAbsoluteRow bool
+	FromAbsoluteCol bool
+	ToAbsoluteRow   bool
+	ToAbsoluteCol   bool
+	Start           int
+	End             int
+	FirstEnd        int
+	SecondStart     int
 }
 
 func (n *RangeNode) Eval(e *evaluator, currentSheet int) (Value, error) {
-	return Value{Kind: ErrKind, Err: ErrValue}, nil
+	grid, err := evaluateGrid(n, e, currentSheet)
+	if err != nil {
+		return Value{}, err
+	}
+	if grid.err != "" {
+		return Value{Kind: ErrKind, Err: grid.err}, nil
+	}
+	return Value{Kind: ArrayKind, array: &grid}, nil
 }
 
 type UnaryOpNode struct {
@@ -425,6 +544,20 @@ func (n *UnaryOpNode) Eval(e *evaluator, currentSheet int) (Value, error) {
 	}
 	if val.Kind == ErrKind {
 		return val, nil
+	}
+	if val.Kind == ArrayKind {
+		result := valueGrid{rows: val.array.rows, cols: val.array.cols, values: make([]Value, len(val.array.values))}
+		for i, value := range val.array.values {
+			num, valueErr := coerceToNumber(value)
+			if valueErr != nil {
+				result.values[i] = *valueErr
+			} else if n.Op == TokMinus {
+				result.values[i] = Value{Kind: NumKind, Num: -num}
+			} else {
+				result.values[i] = Value{Kind: NumKind, Num: num}
+			}
+		}
+		return Value{Kind: ArrayKind, array: &result}, nil
 	}
 	num, errVal := coerceToNumber(val)
 	if errVal != nil {
@@ -459,6 +592,62 @@ func (n *BinaryOpNode) Eval(e *evaluator, currentSheet int) (Value, error) {
 		return right, nil
 	}
 
+	if left.Kind == ArrayKind || right.Kind == ArrayKind {
+		rows, cols := 1, 1
+		if left.Kind == ArrayKind {
+			rows, cols = left.array.rows, left.array.cols
+		}
+		if right.Kind == ArrayKind {
+			if left.Kind == ArrayKind && (rows != right.array.rows || cols != right.array.cols) {
+				return Value{Kind: ErrKind, Err: ErrValue}, nil
+			}
+			rows, cols = right.array.rows, right.array.cols
+		}
+		result := valueGrid{rows: rows, cols: cols, values: make([]Value, rows*cols)}
+		for i := range result.values {
+			l, r := left, right
+			if left.Kind == ArrayKind {
+				l = left.array.values[i]
+			}
+			if right.Kind == ArrayKind {
+				r = right.array.values[i]
+			}
+			result.values[i], err = applyBinary(n.Op, l, r)
+			if err != nil {
+				return Value{}, err
+			}
+		}
+		return Value{Kind: ArrayKind, array: &result}, nil
+	}
+	return applyBinary(n.Op, left, right)
+}
+
+func applyBinary(op TokenKind, left, right Value) (Value, error) {
+	if left.Kind == ErrKind {
+		return left, nil
+	}
+	if right.Kind == ErrKind {
+		return right, nil
+	}
+	if op >= TokEqual && op <= TokGreaterEqual {
+		cmp := compareValues(left, right)
+		var result bool
+		switch op {
+		case TokEqual:
+			result = cmp == 0
+		case TokNotEqual:
+			result = cmp != 0
+		case TokLess:
+			result = cmp < 0
+		case TokLessEqual:
+			result = cmp <= 0
+		case TokGreater:
+			result = cmp > 0
+		case TokGreaterEqual:
+			result = cmp >= 0
+		}
+		return Value{Kind: BoolKind, Bool: result}, nil
+	}
 	lNum, lErrVal := coerceToNumber(left)
 	if lErrVal != nil {
 		return *lErrVal, nil
@@ -468,7 +657,7 @@ func (n *BinaryOpNode) Eval(e *evaluator, currentSheet int) (Value, error) {
 		return *rErrVal, nil
 	}
 
-	switch n.Op {
+	switch op {
 	case TokPlus:
 		return Value{Kind: NumKind, Num: lNum + rNum}, nil
 	case TokMinus:
@@ -477,7 +666,7 @@ func (n *BinaryOpNode) Eval(e *evaluator, currentSheet int) (Value, error) {
 		return Value{Kind: NumKind, Num: lNum * rNum}, nil
 	case TokSlash:
 		if rNum == 0 {
-			return Value{}, errors.New("division by zero")
+			return Value{Kind: ErrKind, Err: ErrDiv0}, nil
 		}
 		return Value{Kind: NumKind, Num: lNum / rNum}, nil
 	}
@@ -492,13 +681,18 @@ func coerceToNumber(v Value) (float64, *Value) {
 		return 0, nil
 	case NumKind:
 		return v.Num, nil
+	case BoolKind:
+		if v.Bool {
+			return 1, nil
+		}
+		return 0, nil
 	case StrKind:
 		s := strings.TrimSpace(v.Str)
 		if s == "" {
 			return 0, nil
 		}
 		num, err := strconv.ParseFloat(s, 64)
-		if err != nil {
+		if err != nil || math.IsNaN(num) || math.IsInf(num, 0) {
 			errVal := Value{Kind: ErrKind, Err: ErrValue}
 			return 0, &errVal
 		}
@@ -514,6 +708,9 @@ type FunctionCallNode struct {
 
 func (n *FunctionCallNode) Eval(e *evaluator, currentSheet int) (Value, error) {
 	name := strings.ToUpper(n.Name)
+	if value, handled, err := evalAdditionalFunction(name, n.Args, e, currentSheet); handled {
+		return value, err
+	}
 	switch name {
 	case "SUM", "AVERAGE", "COUNT", "MIN", "MAX":
 	default:
@@ -544,21 +741,6 @@ func (n *FunctionCallNode) Eval(e *evaluator, currentSheet int) (Value, error) {
 
 			for r := r1; r <= r2; r++ {
 				for c := c1; c <= c2; c++ {
-					if r <= len(e.book.Sheets[sheetIdx].Rows) &&
-						c <= len(e.book.Sheets[sheetIdx].Rows[r-1]) {
-						cell := e.book.Sheets[sheetIdx].Rows[r-1][c-1]
-						if cell.Formula == "" {
-							trimmed := strings.TrimSpace(cell.Value)
-							if trimmed == "" {
-								continue
-							}
-							if f, err := strconv.ParseFloat(trimmed, 64); err == nil {
-								nums = append(nums, f)
-							}
-							continue
-						}
-					}
-
 					val, err := e.cell(sheetIdx, r, c)
 					if err != nil {
 						return Value{}, err
@@ -579,12 +761,21 @@ func (n *FunctionCallNode) Eval(e *evaluator, currentSheet int) (Value, error) {
 			if val.Kind == ErrKind {
 				return val, nil
 			}
-			if val.Kind == NumKind {
+			if val.Kind == ArrayKind {
+				for _, item := range val.array.values {
+					if item.Kind == ErrKind {
+						return item, nil
+					}
+					if item.Kind == NumKind {
+						nums = append(nums, item.Num)
+					}
+				}
+			} else if val.Kind == NumKind {
 				nums = append(nums, val.Num)
 			} else if val.Kind == StrKind {
 				trimmed := strings.TrimSpace(val.Str)
 				num, err := strconv.ParseFloat(trimmed, 64)
-				if err != nil {
+				if err != nil || math.IsNaN(num) || math.IsInf(num, 0) {
 					return Value{Kind: ErrKind, Err: ErrValue}, nil
 				}
 				nums = append(nums, num)
@@ -686,6 +877,32 @@ func (p *Parser) parseExpression() (Node, error) {
 		}
 		node = &BinaryOpNode{Op: op, Left: node, Right: right}
 	}
+	for p.tok.Kind >= TokEqual && p.tok.Kind <= TokGreaterEqual {
+		op := p.tok.Kind
+		p.next()
+		right, err := p.parseExpressionArithmetic()
+		if err != nil {
+			return nil, err
+		}
+		node = &BinaryOpNode{Op: op, Left: node, Right: right}
+	}
+	return node, nil
+}
+
+func (p *Parser) parseExpressionArithmetic() (Node, error) {
+	node, err := p.parseTerm()
+	if err != nil {
+		return nil, err
+	}
+	for p.tok.Kind == TokPlus || p.tok.Kind == TokMinus {
+		op := p.tok.Kind
+		p.next()
+		right, err := p.parseTerm()
+		if err != nil {
+			return nil, err
+		}
+		node = &BinaryOpNode{Op: op, Left: node, Right: right}
+	}
 	return node, nil
 }
 
@@ -740,7 +957,7 @@ func (p *Parser) parsePrimary() (Node, error) {
 	case TokString:
 		val := p.tok.Lexeme
 		switch ErrorCode(val) {
-		case ErrRef, ErrDiv0, ErrValue, ErrName, ErrCircular:
+		case ErrRef, ErrDiv0, ErrValue, ErrName, ErrCircular, ErrNA, ErrSpill, ErrCalc:
 			p.next()
 			return &ErrorNode{Err: ErrorCode(val)}, nil
 		}
@@ -751,6 +968,11 @@ func (p *Parser) parsePrimary() (Node, error) {
 		p.next()
 		return &StringNode{Value: val}, nil
 	case TokRef:
+		if strings.EqualFold(p.tok.Lexeme, "TRUE") || strings.EqualFold(p.tok.Lexeme, "FALSE") {
+			value := strings.EqualFold(p.tok.Lexeme, "TRUE")
+			p.next()
+			return &BoolNode{Value: value}, nil
+		}
 		if p.peekTok.Kind == TokLParen && !strings.Contains(p.tok.Lexeme, "!") {
 			return p.parseFunctionCall()
 		}
@@ -786,20 +1008,20 @@ func (p *Parser) parseCellRef() (Node, error) {
 
 	sheetName := ""
 	cellRef := ref
-	if idx := strings.Index(ref, "!"); idx != -1 {
+	if idx := strings.LastIndex(ref, "!"); idx != -1 {
 		sheetName = ref[:idx]
 		cellRef = ref[idx+1:]
 		if len(sheetName) >= 2 && sheetName[0] == '\'' && sheetName[len(sheetName)-1] == '\'' {
-			sheetName = sheetName[1 : len(sheetName)-1]
+			sheetName = strings.ReplaceAll(sheetName[1:len(sheetName)-1], "''", "'")
 		}
 	}
 
-	row, col, err := CellCoordinates(cellRef)
+	row, col, absRow, absCol, err := parseFormulaCoordinates(cellRef)
 	if err != nil {
 		return nil, err
 	}
 
-	return &RefNode{Sheet: sheetName, Row: row, Col: col, Start: start, End: end}, nil
+	return &RefNode{Sheet: sheetName, Row: row, Col: col, AbsoluteRow: absRow, AbsoluteCol: absCol, Start: start, End: end}, nil
 }
 
 func (p *Parser) parseRange() (Node, error) {
@@ -815,45 +1037,84 @@ func (p *Parser) parseRange() (Node, error) {
 
 	sheetName := ""
 	firstRef := firstToken.Lexeme
-	if idx := strings.Index(firstRef, "!"); idx != -1 {
+	if idx := strings.LastIndex(firstRef, "!"); idx != -1 {
 		sheetName = firstRef[:idx]
 		firstRef = firstRef[idx+1:]
 		if len(sheetName) >= 2 && sheetName[0] == '\'' && sheetName[len(sheetName)-1] == '\'' {
-			sheetName = sheetName[1 : len(sheetName)-1]
+			sheetName = strings.ReplaceAll(sheetName[1:len(sheetName)-1], "''", "'")
 		}
 	}
 
-	fromRow, fromCol, err := CellCoordinates(firstRef)
+	fromRow, fromCol, fromAbsRow, fromAbsCol, err := parseFormulaCoordinates(firstRef)
 	if err != nil {
 		return nil, err
 	}
 
 	secondRef := secondToken.Lexeme
-	if idx := strings.Index(secondRef, "!"); idx != -1 {
+	if idx := strings.LastIndex(secondRef, "!"); idx != -1 {
 		sName := secondRef[:idx]
 		secondRef = secondRef[idx+1:]
 		if len(sName) >= 2 && sName[0] == '\'' && sName[len(sName)-1] == '\'' {
-			sName = sName[1 : len(sName)-1]
+			sName = strings.ReplaceAll(sName[1:len(sName)-1], "''", "'")
 		}
 		if sheetName == "" {
 			sheetName = sName
 		}
 	}
 
-	toRow, toCol, err := CellCoordinates(secondRef)
+	toRow, toCol, toAbsRow, toAbsCol, err := parseFormulaCoordinates(secondRef)
 	if err != nil {
 		return nil, err
 	}
 
 	return &RangeNode{
-		Sheet:   sheetName,
-		FromRow: fromRow,
-		FromCol: fromCol,
-		ToRow:   toRow,
-		ToCol:   toCol,
-		Start:   firstToken.Start,
-		End:     secondToken.End,
+		Sheet: sheetName, FromRow: fromRow, FromCol: fromCol, ToRow: toRow, ToCol: toCol,
+		FromAbsoluteRow: fromAbsRow, FromAbsoluteCol: fromAbsCol,
+		ToAbsoluteRow: toAbsRow, ToAbsoluteCol: toAbsCol,
+		Start: firstToken.Start, End: secondToken.End, FirstEnd: firstToken.End, SecondStart: secondToken.Start,
 	}, nil
+}
+
+func parseFormulaCoordinates(ref string) (row, col int, absoluteRow, absoluteCol bool, err error) {
+	i := 0
+	if strings.HasPrefix(ref, "$") {
+		absoluteCol = true
+		i++
+	}
+	start := i
+	for i < len(ref) && isLetter(ref[i]) {
+		i++
+	}
+	if i == start {
+		return 0, 0, false, false, fmt.Errorf("invalid cell reference %q", ref)
+	}
+	letters := ref[start:i]
+	if i < len(ref) && ref[i] == '$' {
+		absoluteRow = true
+		i++
+	}
+	row, col, err = CellCoordinates(letters + ref[i:])
+	return
+}
+
+func formatFormulaReference(original string, row, col int, absoluteRow, absoluteCol bool) string {
+	prefix := ""
+	if separator := strings.LastIndexByte(original, '!'); separator >= 0 {
+		prefix = original[:separator+1]
+	}
+	name := CellName(row, col)
+	i := 0
+	for i < len(name) && isLetter(name[i]) {
+		i++
+	}
+	if absoluteCol {
+		prefix += "$"
+	}
+	prefix += name[:i]
+	if absoluteRow {
+		prefix += "$"
+	}
+	return prefix + name[i:]
 }
 
 func (p *Parser) parseFunctionCall() (Node, error) {
@@ -933,6 +1194,52 @@ func extractAllRefs(node Node) []refTarget {
 	}
 	walk(node)
 	return targets
+}
+
+// TranslateFormula adjusts relative references when a formula is copied.
+func TranslateFormula(formula string, rowDelta, colDelta int) (string, error) {
+	if !strings.HasPrefix(formula, "=") {
+		return "", errors.New("formula must begin with =")
+	}
+	node, err := NewParser(formula[1:]).Parse()
+	if err != nil {
+		return "", err
+	}
+	targets := extractAllRefs(node)
+	sort.Slice(targets, func(i, j int) bool { return targets[i].start > targets[j].start })
+	data := []byte(formula)
+	translate := func(original string, row, col int, absRow, absCol bool) string {
+		if !absRow {
+			row += rowDelta
+		}
+		if !absCol {
+			col += colDelta
+		}
+		if row < 1 || row > MaxRows || col < 1 || col > MaxColumns {
+			return "#REF!"
+		}
+		return formatFormulaReference(original, row, col, absRow, absCol)
+	}
+	for _, target := range targets {
+		start, end := target.start+1, target.end+1
+		var replacement string
+		if target.isRange {
+			r := target.rng
+			firstEnd, secondStart := r.FirstEnd+1, r.SecondStart+1
+			first := translate(string(data[start:firstEnd]), r.FromRow, r.FromCol, r.FromAbsoluteRow, r.FromAbsoluteCol)
+			second := translate(string(data[secondStart:end]), r.ToRow, r.ToCol, r.ToAbsoluteRow, r.ToAbsoluteCol)
+			if first == "#REF!" || second == "#REF!" {
+				replacement = "#REF!"
+			} else {
+				replacement = first + string(data[firstEnd:secondStart]) + second
+			}
+		} else {
+			r := target.ref
+			replacement = translate(string(data[start:end]), r.Row, r.Col, r.AbsoluteRow, r.AbsoluteCol)
+		}
+		data = append(data[:start], append([]byte(replacement), data[end:]...)...)
+	}
+	return string(data), nil
 }
 
 func shiftCellReferences(formula string, fromRow, fromColumn int, delete bool) string {
@@ -1037,16 +1344,23 @@ func shiftCellReferencesWhere(formula string, fromRow, fromColumn int, delete bo
 				continue
 			}
 
-			original := string(bytes[start:end])
-			prefix := ""
-			if separator := strings.IndexByte(original, '!'); separator >= 0 {
-				if colon := strings.IndexByte(original, ':'); colon >= 0 && colon < separator {
-					prefix = original[colon+1 : separator+1]
-				} else {
-					prefix = original[:separator+1]
+			fromRow, toRow, fromCol, toCol := r1, r2, c1, c2
+			if rng.FromRow > rng.ToRow {
+				fromRow, toRow = toRow, fromRow
+			}
+			if rng.FromCol > rng.ToCol {
+				fromCol, toCol = toCol, fromCol
+			}
+			firstEnd, secondStart := rng.FirstEnd+1, rng.SecondStart+1
+			first := formatFormulaReference(string(bytes[start:firstEnd]), fromRow, fromCol, rng.FromAbsoluteRow, rng.FromAbsoluteCol)
+			second := formatFormulaReference(string(bytes[secondStart:end]), toRow, toCol, rng.ToAbsoluteRow, rng.ToAbsoluteCol)
+			if !strings.Contains(first, "!") {
+				if separator := strings.LastIndexByte(second, '!'); separator >= 0 {
+					first = second[:separator+1] + first
+					second = second[separator+1:]
 				}
 			}
-			newName := prefix + CellName(r1, c1) + ":" + CellName(r2, c2)
+			newName := first + string(bytes[firstEnd:secondStart]) + second
 			bytes = append(bytes[:start], append([]byte(newName), bytes[end:]...)...)
 		} else {
 			ref := target.ref
@@ -1093,12 +1407,7 @@ func shiftCellReferencesWhere(formula string, fromRow, fromColumn int, delete bo
 					bytes = append(bytes[:start], append([]byte("#REF!"), bytes[end:]...)...)
 					continue
 				}
-				original := string(bytes[start:end])
-				prefix := ""
-				if separator := strings.IndexByte(original, '!'); separator >= 0 {
-					prefix = original[:separator+1]
-				}
-				newName := prefix + CellName(r, c)
+				newName := formatFormulaReference(string(bytes[start:end]), r, c, ref.AbsoluteRow, ref.AbsoluteCol)
 				bytes = append(bytes[:start], append([]byte(newName), bytes[end:]...)...)
 			}
 		}

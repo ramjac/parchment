@@ -2,6 +2,7 @@ package pdfrender
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 
@@ -63,6 +64,16 @@ func spreadsheetPDFContext(ctx context.Context, book spreadsheet.Spreadsheet) (F
 					Text: line, X: 0, Y: float64(row+1) * lineHeightMM, FontSize: printerFontSize,
 				})
 			}
+		}
+		file.Pages = append(file.Pages, page)
+	}
+	for _, chart := range book.Charts {
+		if err := ctx.Err(); err != nil {
+			return File{}, err
+		}
+		page, err := chartPage(&book, chart)
+		if err != nil {
+			return File{}, fmt.Errorf("chart %q: %w", chart.Title, err)
 		}
 		file.Pages = append(file.Pages, page)
 	}

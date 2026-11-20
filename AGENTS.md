@@ -208,8 +208,8 @@ does not record the file's path; the path is wherever the file is.
 - Closing the note or document editor normally (confirmed when dirty) deletes
   the file's recovery draft; only an abnormal exit leaves one, which is
   offered when the same path is reopened. Spreadsheet and presentation editors
-  do not autosave drafts yet. Document proposals are an editor action (`F3`
-  proposes unsaved edits, `F4` reviews proposals), not a separate mode.
+  do not autosave drafts yet. Documents support opt-in tracked Markdown edits:
+  `F3` toggles tracking and `F4` reviews saved pending changes.
 - Documents, spreadsheets, and presentations may open in their reader views;
   notes open directly in their editor. An existing document opens in its
   reader (outline pane beside the rendered pages); a newly created document or

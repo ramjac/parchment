@@ -98,7 +98,7 @@ func TestDocumentEditorFindBarUsesSharedMatchHighlighting(t *testing.T) {
 func TestDocumentEditorHasToolbarAndSavesLayout(t *testing.T) {
 	h := newDocumentHarness(t, document.Draft{})
 	view := h.m.View()
-	for _, label := range []string{"Save", "PDF", "Propose", "Changes", "Preview", "B", "H1", "Page break", "Section", "Cols: 1", "Margins: Normal", "Header", "Footer", "Image"} {
+	for _, label := range []string{"Save", "PDF", "Tracking", "Changes", "Preview", "B", "H1", "Page break", "Section", "Cols: 1", "Margins: Normal", "Header", "Footer", "Image"} {
 		if !strings.Contains(view, label) {
 			t.Fatalf("editor toolbar is missing %q:\n%s", label, view)
 		}
@@ -287,6 +287,22 @@ func TestDocumentPDFExportFromEditorPreservesUnsavedDraft(t *testing.T) {
 		t.Fatal("print preview did not display the overwrite confirmation")
 	}
 	h.key("esc")
+}
+
+func TestDocumentPDFExportWarnsForUnsavedTrackedEdit(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{Body: "Saved body"})
+	s := h.m.documents
+	h.key("f3")
+	if !s.snapshot.Tracking {
+		t.Fatal("tracking was not enabled")
+	}
+	h.typeText(" with unsaved changes")
+	h.send(tea.KeyMsg{Type: tea.KeyCtrlP})
+	s.promptInput.SetValue(filepath.Join(t.TempDir(), "tracked.pdf"))
+	h.key("enter")
+	if !strings.Contains(s.status, "pending tracked changes not exported") {
+		t.Fatalf("missing tracking warning: %q", s.status)
+	}
 }
 
 func TestDocumentPDFExportFromReaderAndConfirmsOverwrite(t *testing.T) {
@@ -501,42 +517,39 @@ func TestDocumentEditorFrameAndClickAfterResize(t *testing.T) {
 	t.Fatalf("click target not visible:\n%s", h.m.View())
 }
 
-func TestDocumentProposeReviewAndAccept(t *testing.T) {
+func TestDocumentTrackingReviewAndAccept(t *testing.T) {
 	ctx := context.Background()
 	h := newDocumentHarness(t, document.Draft{Body: "before", Layout: document.DefaultLayout()})
 	s := h.m.documents
 	h.key("f3")
-	if !strings.Contains(s.status, "Edit the document first") || s.showChanges {
-		t.Fatalf("propose without edits: status=%q", s.status)
+	if !s.snapshot.Tracking {
+		t.Fatalf("tracking was not enabled: %q", s.status)
 	}
 	s.body.SetValue("after")
-	h.key("f3")
-	if !s.showChanges || len(s.changes) != 1 || s.changes[0].Status != document.ChangePending {
-		t.Fatalf("proposal was not recorded for review: %+v (error %q)", s.changes, s.errMessage)
-	}
-	if s.dirty() || s.body.Value() != "before" {
-		t.Fatalf("editor did not return to the saved document: body %q", s.body.Value())
+	h.key("ctrl+s")
+	if s.dirty() || s.body.Value() != "after" {
+		t.Fatalf("editor did not save tracked content: body %q", s.body.Value())
 	}
 	live, err := h.docs.Get(ctx, h.path)
-	if err != nil || live.Body != "before" {
-		t.Fatalf("proposal modified the live document: %+v, %v", live, err)
+	if err != nil || live.Body != "after" || len(live.TrackedChanges) != 1 {
+		t.Fatalf("tracked edit not saved: %+v, %v", live, err)
 	}
+	h.key("f4")
 	h.key("enter")
-	if !s.reviewing || !strings.Contains(h.m.View(), "Proposed Markdown") {
-		t.Fatal("proposal review did not display its before/after content")
+	if !s.reviewing || !strings.Contains(h.m.View(), "Inserted") {
+		t.Fatal("review did not display tracked content")
 	}
 	h.key("a")
 	accepted, err := h.docs.Get(ctx, h.path)
 	if err != nil || accepted.Body != "after" {
 		t.Fatalf("accepted document = %+v, %v", accepted, err)
 	}
-	if len(s.changes) != 1 || s.changes[0].Status != document.ChangeAccepted {
-		t.Fatalf("accepted proposal state = %+v", s.changes)
+	if len(s.changes) != 0 {
+		t.Fatalf("accepted changes remain pending = %+v", s.changes)
 	}
 	if s.body.Value() != "after" {
 		t.Fatalf("editor not refreshed after acceptance: %q", s.body.Value())
 	}
-	h.key("esc")
 	h.key("esc")
 	if s.showChanges || h.quit {
 		t.Fatalf("Esc from review: showChanges=%t quit=%t", s.showChanges, h.quit)
@@ -546,11 +559,10 @@ func TestDocumentProposeReviewAndAccept(t *testing.T) {
 func TestDocumentAcceptRefusedWithUnsavedEdits(t *testing.T) {
 	ctx := context.Background()
 	h := newDocumentHarness(t, document.Draft{Body: "before", Layout: document.DefaultLayout()})
-	before, err := h.docs.Get(ctx, h.path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.docs.Propose(ctx, before, "Other", document.Draft{Body: "proposed", Layout: before.Layout}); err != nil {
+	if _, err := h.docs.ModifyWithTracking(ctx, h.path, "Other", true, func(d *document.Document) error {
+		d.Body = "proposed"
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	s := h.m.documents
@@ -561,13 +573,13 @@ func TestDocumentAcceptRefusedWithUnsavedEdits(t *testing.T) {
 	if !strings.Contains(s.status, "Save or discard") {
 		t.Fatalf("status = %q", s.status)
 	}
-	if d, _ := h.docs.Get(ctx, h.path); d.Body != "before" {
-		t.Fatalf("proposal accepted over unsaved edits: %q", d.Body)
+	if d, _ := h.docs.Get(ctx, h.path); d.Body != "proposed" {
+		t.Fatalf("review modified saved content over unsaved edits: %q", d.Body)
 	}
 	h.key("r")
-	changes, err := h.docs.Changes(ctx, h.path)
-	if err != nil || changes[0].Status != document.ChangeRejected {
-		t.Fatalf("reject with unsaved edits = %+v, %v", changes, err)
+	d, err := h.docs.Get(ctx, h.path)
+	if err != nil || len(d.TrackedChanges) != 1 {
+		t.Fatalf("rejected despite unsaved edits: %+v, %v", d.TrackedChanges, err)
 	}
 	if s.body.Value() != "local edit" {
 		t.Fatalf("reject discarded unsaved edits: %q", s.body.Value())
@@ -575,20 +587,11 @@ func TestDocumentAcceptRefusedWithUnsavedEdits(t *testing.T) {
 }
 
 func TestDocumentChangeReviewScrollsAndBoundsChangeList(t *testing.T) {
-	ctx := context.Background()
 	h := newDocumentHarness(t, document.Draft{Body: strings.Repeat("current line\n", 80) + "CURRENT-LAST"})
-	created, err := h.docs.Get(ctx, h.path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	change, err := h.docs.Propose(ctx, created, "Long proposal", document.Draft{
-		Body: strings.Repeat("proposed line\n", 80) + "PROPOSED-LAST", Layout: created.Layout,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	change := document.TrackedChange{Deleted: strings.Repeat("current line\n", 80) + "CURRENT-LAST",
+		Inserted: strings.Repeat("proposed line\n", 80) + "PROPOSED-LAST"}
 	s := h.m.documents
-	s.changes, s.selectedChange, s.showChanges, s.reviewing = []document.Change{change}, 0, true, true
+	s.changes, s.selectedChange, s.showChanges, s.reviewing = []document.TrackedChange{change}, 0, true, true
 	s.resize(100, 12)
 	s.setChangeReviewContent()
 	view := h.m.View()
@@ -608,16 +611,10 @@ func TestDocumentChangeReviewScrollsAndBoundsChangeList(t *testing.T) {
 	if !strings.Contains(view, "a accept") || !strings.Contains(view, "Esc/q return") {
 		t.Fatalf("review controls disappeared while scrolling:\n%s", view)
 	}
-	for _, label := range []string{"Header:", "Footer:", "Page numbers:"} {
-		if !strings.Contains(changeLayoutDescription(change.Before.Layout), label) {
-			t.Errorf("review omitted %q layout details", label)
-		}
-	}
-
 	s.reviewing = false
-	s.changes = make([]document.Change, 20)
+	s.changes = make([]document.TrackedChange, 20)
 	for i := range s.changes {
-		s.changes[i].Description = fmt.Sprintf("Change %02d", i)
+		s.changes[i].ID = fmt.Sprintf("Change %02d", i)
 	}
 	s.selectedChange = len(s.changes) - 1
 	view = s.viewChanges("header")
@@ -627,20 +624,11 @@ func TestDocumentChangeReviewScrollsAndBoundsChangeList(t *testing.T) {
 }
 
 func TestDocumentChangeReviewReflowsLongLinesOnResize(t *testing.T) {
-	ctx := context.Background()
 	h := newDocumentHarness(t, document.Draft{Body: strings.Repeat("c", 90) + "CURRENT-END"})
-	created, err := h.docs.Get(ctx, h.path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	change, err := h.docs.Propose(ctx, created, "Long proposal", document.Draft{
-		Body: strings.Repeat("p", 90) + "PROPOSED-END", Layout: created.Layout,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	change := document.TrackedChange{Deleted: strings.Repeat("c", 90) + "CURRENT-END",
+		Inserted: strings.Repeat("p", 90) + "PROPOSED-END"}
 	s := h.m.documents
-	s.changes, s.selectedChange, s.showChanges, s.reviewing = []document.Change{change}, 0, true, true
+	s.changes, s.selectedChange, s.showChanges, s.reviewing = []document.TrackedChange{change}, 0, true, true
 	s.resize(100, 12)
 	wide := s.changeReview.TotalLineCount()
 	s.resize(40, 12)

@@ -105,7 +105,7 @@ func documentImageEnv(t *testing.T, protocol string) {
 	case "iterm":
 		t.Setenv("TERM_PROGRAM", "iTerm.app")
 	case "sixel":
-		t.Setenv("TERM", "xterm")
+		t.Setenv("TERM", "xterm-sixel")
 	}
 }
 

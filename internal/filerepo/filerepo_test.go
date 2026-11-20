@@ -328,43 +328,55 @@ func TestRepositoryNeverDeletesFiles(t *testing.T) {
 	}
 }
 
-func TestDocumentProposalsAreStoredInTheFile(t *testing.T) {
+func TestDocumentTrackedChangesAreStoredInTheFile(t *testing.T) {
 	ctx := context.Background()
 	repo, _, folder := newRepo(t)
 	path := filepath.Join(folder, "doc.md")
 	docs := document.NewService(repo, 10)
-	created, err := docs.Create(ctx, path, document.Draft{Body: "before"})
+	_, err := docs.Create(ctx, path, document.Draft{Body: "before"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	change, err := docs.Propose(ctx, created, "Edit", document.Draft{Body: "after", Layout: created.Layout})
+	updated, err := docs.ModifyWithTracking(ctx, path, "Edit", true, func(d *document.Document) error {
+		d.Body = "after"
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	change := updated.TrackedChanges[0]
 	data, err := os.ReadFile(path)
 	if err != nil || !strings.Contains(string(data), change.ID) {
-		t.Fatalf("file lacks proposal: %s, %v", data, err)
+		t.Fatalf("file lacks tracked change: %s, %v", data, err)
 	}
 	reopened, err := filerepo.New(t.TempDir(), filerepo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	accepted, err := document.NewService(reopened, 10).Accept(ctx, path, change.ID)
+	service := document.NewService(reopened, 10)
+	loaded, err := service.Get(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := service.ReviewTracked(ctx, loaded, change.ID, true)
 	if err != nil || accepted.Body != "after" {
 		t.Fatalf("accept from another process = %+v, %v", accepted, err)
 	}
 }
 
-func TestListDocumentChangesSkipsLayoutAndImageValidation(t *testing.T) {
+func TestTrackedDocumentRejectsInvalidLayout(t *testing.T) {
 	ctx := context.Background()
 	repo, _, folder := newRepo(t)
 	path := filepath.Join(folder, "invalid_layout_doc.md")
 	docs := document.NewService(repo, 10)
-	created, err := docs.Create(ctx, path, document.Draft{Body: "initial"})
+	_, err := docs.Create(ctx, path, document.Draft{Body: "initial"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	change, err := docs.Propose(ctx, created, "Edit proposal", document.Draft{Body: "proposed", Layout: created.Layout})
+	_, err = docs.ModifyWithTracking(ctx, path, "Edit", true, func(d *document.Document) error {
+		d.Body = "edited"
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,14 +397,6 @@ func TestListDocumentChangesSkipsLayoutAndImageValidation(t *testing.T) {
 		t.Fatal("expected GetDocument to fail on invalid layout")
 	}
 
-	// ListDocumentChanges intentionally succeeds because it skips layout and image validation
-	changes, err := repo.ListDocumentChanges(ctx, path)
-	if err != nil {
-		t.Fatalf("expected ListDocumentChanges to succeed, got: %v", err)
-	}
-	if len(changes) != 1 || changes[0].ID != change.ID {
-		t.Fatalf("unexpected changes returned: %+v", changes)
-	}
 }
 
 func TestSpreadsheetAndPresentationRoundTrip(t *testing.T) {

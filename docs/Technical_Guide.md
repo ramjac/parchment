@@ -124,8 +124,8 @@ application.
 | Kind | Body | Structured blocks |
 | --- | --- | --- |
 | Note | Canonical Markdown note text. | No kind-specific block is required. |
-| Document | Canonical Markdown including anchors, links, page/section break comments, and image references. | `parchment-document`: layout, embedded image bytes, and proposal history. |
-| Spreadsheet | Optional human-readable workbook description. | `parchment-spreadsheet`: versioned sheets, cell arrays, and explicit literal/formula cells. |
+| Document | Canonical Markdown including anchors, links, page/section break comments, and image references. | `parchment-document`: layout, embedded image bytes, and versioned pending tracked changes. |
+| Spreadsheet | Optional human-readable workbook description. | `parchment-spreadsheet`: versioned sheets, cell arrays, explicit literal/formula cells, and range-bound chart definitions. |
 | Presentation | Go `present`-style Markdown source: title, slides, notes, image/code directives. | `parchment-presentation`: versioned presentation settings and embedded image bytes. |
 
 The [`document.md`](../examples/document.md) example shows `parchment-document`
@@ -146,6 +146,15 @@ uses `value`; a formula uses `formula`. A string beginning with `=` is not
 automatically treated as a formula. Formula parsing, evaluation, and reference
 adjustment belong to the spreadsheet domain layer, not Markdown rendering.
 
+Document tracking uses version 1 metadata in the `parchment-document` block.
+Each pending replacement stores a stable ID, UTC timestamp, UTF-8 byte offset,
+deleted text and inserted text; inserted text is part of the current body.
+Anchors are validated against that body on load, transformed during edits, and
+coalesced when edits overlap. Review removes metadata on acceptance or reverses
+the replacement on rejection. Image-reference moves can link multiple
+replacements for atomic review; embedded bytes are retained while any change
+is pending. Layout changes are not tracked.
+
 ## ODT and DOCX interchange
 
 Document import and export use pure-Go adapters over ZIP archives and XML;
@@ -164,7 +173,7 @@ margins and column counts are clamped or rounded. Per-run and per-section
 fonts collapse to one document font. Unsupported content and approximations
 are reported as warnings. External images and unsupported image formats are
 skipped; their fallback text is retained where available. Export uses the
-accepted Document body and does not include pending proposals.
+current Document body and omits pending review metadata with a warning.
 
 ## Persistence and external edits
 

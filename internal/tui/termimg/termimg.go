@@ -143,18 +143,10 @@ func DetectProtocol() GraphicsProtocol {
 		return ProtocolITerm2
 	}
 
-	// Sixel protocol
-	// E.g., Xterm, mlterm, yaft, foot, libsixel, etc.
-	// We'll approximate this by checking TERM or checking well-known sixel terminals.
-	// In the exact instructions: "Detect Kitty, Sixel, and iTerm2 graphics support strictly via environment variables (KITTY_WINDOW_ID, TERM, TERM_PROGRAM, LC_TERMINAL..."
-
-	// E.g. xterm can support sixel, mlterm, foot
-	if strings.Contains(term, "xterm") ||
+	// Generic xterm TERM values are shared by terminals without Sixel support.
+	if strings.Contains(term, "sixel") ||
 		strings.Contains(term, "mlterm") ||
 		strings.Contains(term, "foot") {
-		// This is a naive detection but fits the "detect ... strictly via environment variables" rule
-		// Without terminal queries, accurate sixel detection is hard, but we do our best based on TERM.
-		// For the sake of the PR, we'll implement the shell of the renderers and just let the PR implement the details.
 		return ProtocolSixel
 	}
 

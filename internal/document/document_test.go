@@ -2,6 +2,7 @@ package document
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"example.com/parchment/internal/artifact"
@@ -12,18 +13,8 @@ func TestDocumentSnapshotsDoNotTrackTransientTitle(t *testing.T) {
 	after := before
 	after.Title = "Changed transient title"
 
-	if !ChangeSnapshotEqual(ChangeSnapshotOf(before), ChangeSnapshotOf(after)) {
-		t.Fatal("document snapshot includes transient title changes")
-	}
 	if !Equal(before, after) {
 		t.Fatal("document equality includes transient title changes")
-	}
-}
-
-func TestChangeSnapshotDoesNotRequireTitle(t *testing.T) {
-	snapshot := ChangeSnapshot{Body: "Text", Layout: DefaultLayout()}
-	if err := validateSnapshot(snapshot); err != nil {
-		t.Fatalf("snapshot without a title was rejected: %v", err)
 	}
 }
 
@@ -52,6 +43,38 @@ func TestNormalizeAllowsBlankTitle(t *testing.T) {
 	}
 }
 
+func TestModifyWithTrackingChoiceUsesCurrentSnapshot(t *testing.T) {
+	service := NewService(&documentRepositoryStub{}, 5)
+	ctx := context.Background()
+	if _, err := service.Create(ctx, "doc.md", Draft{Body: "before", Layout: DefaultLayout()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SetTracking(ctx, "doc.md", true); err != nil {
+		t.Fatal(err)
+	}
+	edit := func(d *Document) error { d.Body = "after"; return nil }
+	if _, err := service.ModifyWithTrackingChoice(ctx, "doc.md", "edit", nil, edit); err == nil || !strings.Contains(err.Error(), "choose --track") {
+		t.Fatalf("missing tracking choice: %v", err)
+	}
+	current, err := service.Get(ctx, "doc.md")
+	if err != nil || current.Body != "before" {
+		t.Fatalf("rejected edit mutated document: %+v, %v", current, err)
+	}
+	track := false
+	current, err = service.ModifyWithTrackingChoice(ctx, "doc.md", "edit", &track, edit)
+	if err != nil || current.Body != "after" || len(current.TrackedChanges) != 0 {
+		t.Fatalf("explicit untracked edit: %+v, %v", current, err)
+	}
+	track = true
+	current, err = service.ModifyWithTrackingChoice(ctx, "doc.md", "edit", &track, func(d *Document) error {
+		d.Body = "again"
+		return nil
+	})
+	if err != nil || len(current.TrackedChanges) != 1 {
+		t.Fatalf("explicit tracked edit: %+v, %v", current, err)
+	}
+}
+
 type documentRepositoryStub struct {
 	Repository
 	stored Document
@@ -59,19 +82,6 @@ type documentRepositoryStub struct {
 
 func (r *documentRepositoryStub) GetDocument(context.Context, string) (Document, error) {
 	return r.stored, nil
-}
-
-func (r *documentRepositoryStub) GetDocumentChange(ctx context.Context, path, changeID string) (Change, error) {
-	changes, err := r.ListDocumentChanges(ctx, path)
-	if err != nil {
-		return Change{}, err
-	}
-	for _, c := range changes {
-		if c.ID == changeID {
-			return c, nil
-		}
-	}
-	return Change{}, ErrChangeNotFound
 }
 
 func (r *documentRepositoryStub) TransitionDocument(
