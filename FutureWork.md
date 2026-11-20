@@ -44,7 +44,31 @@ update rendering baselines only for intentional, reviewed changes.
   `spreadsheet.ChartData` as input. It may be that we use one method of
   displaying charts in the TUI such as with ntcharts and another method of 
   rendering them for SVG/PDF export. Consider making a prereq step of upgrading
-  to Bubbletea v2 to adopt ntcharts v2.
+  to Bubble Tea v2 to adopt ntcharts v2; treat that migration as a separate
+  prerequisite, not a version-only bump.
+- **Plan a coordinated Bubble Tea v2 migration.** Parchment currently uses
+  Bubble Tea v1.3.10, Bubbles v0.21.0, Lip Gloss v1.1.1 prerelease, and Go
+  1.24.0.
+  Upgrade Bubble Tea, Bubbles, and Lip Gloss together: Bubbles v2 requires both
+  companion v2 libraries, and their import paths change. This touches the root
+  and child `View` methods (`string` becomes `tea.View`), terminal-mode setup
+  (alt screen and mouse mode become declarative view state), key and paste
+  messages, mouse event handling, and the many tests that construct v1 events.
+  The shared theme also uses Lip Gloss `AdaptiveColor`; replace it with explicit
+  light/dark colors while preserving configured and automatic theme behavior.
+  Migrate Bubbles `textinput`, `viewport`, and `cursor` APIs as needed, but keep
+  the dedicated large-text editor. Review render goldens and verify keyboard,
+  mouse, clipboard, and terminal behavior after the renderer change.
+
+  **Resolve the Go floor before implementation:** the v2.0.0 trio requires Go
+  1.24.2, while the current v2 releases require Go 1.26.0. Either raise the
+  project minimum to 1.26 to use current releases, or explicitly pin and test a
+  Go-1.24-compatible v2 set (and raise the current 1.24.0 minimum to at least
+  1.24.2). Do not claim compatibility with Go 1.24.0 while depending on v2.
+  Follow the upstream [Bubble Tea v2 migration
+  guide](https://github.com/charmbracelet/bubbletea/blob/main/UPGRADE_GUIDE_V2.md)
+  and [Bubbles v2 migration
+  guide](https://github.com/charmbracelet/bubbles/blob/main/UPGRADE_GUIDE_V2.md).
 - **Evaluate terminal image libraries separately from charting.** Compare
   `go-termimg` with `internal/tui/termimg` for Kitty, iTerm2, Sixel, sizing,
   placement, and ANSI fallback. Its Go 1.24-compatible release supports these
