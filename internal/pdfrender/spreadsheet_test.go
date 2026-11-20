@@ -14,18 +14,18 @@ import (
 
 func TestSpreadsheetChartPDFPages(t *testing.T) {
 	book := spreadsheet.Spreadsheet{Sheets: []spreadsheet.Sheet{{Name: "Sheet1", Rows: [][]spreadsheet.Cell{
-		{{Value: "1"}, {Value: "2"}},
+		{{Value: "2"}},
 	}}}}
 	chart := spreadsheet.Chart{ID: "one", Title: "Chart title", Type: "bar", Sheet: "Sheet1",
-		FirstRow: 1, LastRow: 1, FirstColumn: 1, LastColumn: 2}
+		PlaceSheet: "Sheet1", PlaceRow: 1, PlaceColumn: 2,
+		FirstRow: 1, LastRow: 1, FirstColumn: 1, LastColumn: 1}
 	book.Charts = []spreadsheet.Chart{chart}
 	file, err := spreadsheetPDF(book)
 	if err != nil {
 		t.Fatal(err)
 	}
-	page := file.Pages[len(file.Pages)-1]
-	if len(page.Polygons) == 0 || len(page.Elements) == 0 {
-		t.Fatalf("chart page lacks vector shapes or labels: %+v", page)
+	if len(file.Pages) != 1 || len(file.Images) != 1 {
+		t.Fatalf("chart was not embedded in its sheet page: %+v", file)
 	}
 	var output bytes.Buffer
 	if err := RenderChartContext(context.Background(), &output, book, chart); err != nil {
@@ -44,6 +44,27 @@ func TestSpreadsheetChartPDFPages(t *testing.T) {
 	}
 }
 
+func TestSpreadsheetChartPDFClipsAcrossColumnBands(t *testing.T) {
+	book := spreadsheet.Spreadsheet{Sheets: []spreadsheet.Sheet{{Name: "Sheet1",
+		Rows:  [][]spreadsheet.Cell{{{Value: "2"}, {}, {}, {}, {}, {}}, {{}, {}, {}, {}, {}, {}}},
+		Spans: []spreadsheet.CellSpan{{FirstRow: 1, LastRow: 2, FirstColumn: 2, LastColumn: 6}},
+	}}, Charts: []spreadsheet.Chart{{
+		ID: "one", Type: "bar", Sheet: "Sheet1", FirstRow: 1, LastRow: 1, FirstColumn: 1, LastColumn: 1,
+		PlaceSheet: "Sheet1", PlaceRow: 1, PlaceColumn: 2,
+	}}}
+	file, err := spreadsheetPDF(book)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Pages) != 2 || len(file.Images) != 2 {
+		t.Fatalf("chart fragments: %d pages, %d images", len(file.Pages), len(file.Images))
+	}
+	var out bytes.Buffer
+	if err := Write(&out, file); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRenderSpreadsheetPDF(t *testing.T) {
 	book := spreadsheet.Spreadsheet{Sheets: []spreadsheet.Sheet{{Name: "Report", Rows: [][]spreadsheet.Cell{
 		{{Value: "First cell"}, {}, {}, {}, {Value: "Fifth cell"}},
@@ -57,6 +78,50 @@ func TestRenderSpreadsheetPDF(t *testing.T) {
 		t.Fatalf("PDF missing data: header=%v pages=%v first=%v fifth=%v",
 			bytes.HasPrefix(out.Bytes(), []byte("%PDF-")), strings.Contains(out.String(), "/Count 2"),
 			spreadsheetPDFContains(out.Bytes(), []byte("First cell")), spreadsheetPDFContains(out.Bytes(), []byte("Fifth cell")))
+	}
+}
+
+func TestSpreadsheetChartPDFClipsAcrossRowBands(t *testing.T) {
+	rows := make([][]spreadsheet.Cell, 60)
+	for i := range rows {
+		rows[i] = make([]spreadsheet.Cell, 2)
+	}
+	rows[0][0].Value = "2"
+	book := spreadsheet.Spreadsheet{Sheets: []spreadsheet.Sheet{{Name: "Sheet1", Rows: rows,
+		Spans: []spreadsheet.CellSpan{{FirstRow: 1, LastRow: 60, FirstColumn: 2, LastColumn: 2}},
+	}}, Charts: []spreadsheet.Chart{{
+		ID: "one", Type: "bar", Sheet: "Sheet1", FirstRow: 1, LastRow: 1, FirstColumn: 1, LastColumn: 1,
+		PlaceSheet: "Sheet1", PlaceRow: 1, PlaceColumn: 2,
+	}}}
+	file, err := spreadsheetPDF(book)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Pages) < 2 || len(file.Images) != len(file.Pages) {
+		t.Fatalf("chart fragments: %d pages, %d images", len(file.Pages), len(file.Images))
+	}
+}
+
+func TestSpreadsheetPDFDrawsOneSpannedCell(t *testing.T) {
+	book := spreadsheet.Spreadsheet{Sheets: []spreadsheet.Sheet{{Name: "Span",
+		Rows:  [][]spreadsheet.Cell{{{Value: "wide"}, {}}, {{}, {}}},
+		Spans: []spreadsheet.CellSpan{{FirstRow: 1, FirstColumn: 1, LastRow: 2, LastColumn: 2}},
+	}}}
+	file, err := spreadsheetPDF(book)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Pages) != 1 || len(file.Pages[0].Rectangles) != 6 {
+		t.Fatalf("span grid has unexpected rectangles: %+v", file.Pages)
+	}
+	var found bool
+	for _, rect := range file.Pages[0].Rectangles {
+		if math.Abs(rect.WidthMM-26*2.54) < 1e-6 && math.Abs(rect.HeightMM-2*lineHeightMM) < 1e-6 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("PDF did not draw one rectangle for the span")
 	}
 }
 

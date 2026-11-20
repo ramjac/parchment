@@ -22,6 +22,7 @@ import (
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/presentation"
+	"example.com/parchment/internal/tui/editor"
 	"example.com/parchment/internal/tui/termimg"
 	tuitheme "example.com/parchment/internal/tui/theme"
 )
@@ -29,6 +30,7 @@ import (
 // drivePresentation sends a message and feeds presentation results back in.
 // While editing, only a pending save command runs; textarea focus and cursor
 // blink commands are skipped because executing them sleeps and repeats.
+// Transition timers use immediate messages so animations stay deterministic.
 // Results other than presentation messages are dropped for the same reason.
 func drivePresentation(t *testing.T, m *presentationModel, message tea.Msg) tea.Msg {
 	t.Helper()
@@ -47,7 +49,8 @@ func drivePresentation(t *testing.T, m *presentationModel, message tea.Msg) tea.
 		case nil:
 		case tea.QuitMsg:
 			last = result
-		case presentationLoadedMsg, presentationSavedMsg, presentationHistoryMsg, presentationAutosaveFinishedMsg:
+		case presentationLoadedMsg, presentationSavedMsg, presentationHistoryMsg, presentationAutosaveFinishedMsg,
+			presentationTransitionTickMsg:
 			last = result
 			_, next := m.Update(result)
 			run(next)
@@ -69,6 +72,9 @@ func newPresentationTestModel(t *testing.T) (*presentationModel, *presentation.S
 	}
 	service := presentation.NewService(newTestRepository(t), 10)
 	m := newPresentationModel(service, path, Theme{})
+	m.transitionScheduler = func(generation uint64) tea.Cmd {
+		return func() tea.Msg { return presentationTransitionTickMsg{generation: generation} }
+	}
 	drivePresentation(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	drivePresentation(t, m, m.Init()())
 	if !m.loaded || m.pending || m.errMessage != "" {
@@ -99,6 +105,23 @@ func TestPresentationSourceFindBarSearchAndClose(t *testing.T) {
 		t.Fatalf("closing presentation search did not preserve the current match: active=%t matches=%d focused=%t cursor=%+v",
 			m.find.active, m.editor.MatchCount(), m.editor.Focused, m.editor.Cursor)
 	}
+}
+
+func advancePresentationTransition(m *presentationModel, frames int) {
+	for range frames {
+		if !m.active {
+			return
+		}
+		_, _ = m.Update(presentationTransitionTickMsg{generation: m.generation})
+	}
+}
+
+func presentationPlainLines(content string) string {
+	lines := strings.Split(ansi.Strip(content), "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " ")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func storedPresentation(t *testing.T, path string) presentation.Presentation {
@@ -166,6 +189,95 @@ func TestPresentationViewNavigatesSlidesAndNotes(t *testing.T) {
 	}
 	if _, ok := drivePresentation(t, m, sheetKey("esc")).(tea.QuitMsg); !ok {
 		t.Fatal("esc did not quit")
+	}
+}
+
+func TestPresentationSlideTransitionAnimatesAndPreservesViewState(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+	m.showNotes = true
+	m.editor.Cursor = editor.Point{Line: 3, Col: 4}
+	m.editor.Focused = true
+	m.scroll = 0
+	outgoing := m.renderSlideContent()
+
+	_, cmd := m.Update(sheetKey("right"))
+	if cmd == nil || !m.active || m.page != 1 || m.from != outgoing {
+		t.Fatalf("slide transition did not start: active=%t page=%d", m.active, m.page)
+	}
+	if got := m.renderSlideContent(); presentationPlainLines(got) != presentationPlainLines(outgoing) {
+		t.Fatal("transition frame changed before its first animation tick")
+	}
+
+	advancePresentationTransition(m, 10)
+	if !m.active || m.position <= 0 || m.renderSlideContent() == outgoing {
+		t.Fatal("slide transition did not render an intermediate frame")
+	}
+	if !m.showNotes || m.editor.Cursor != (editor.Point{Line: 3, Col: 4}) ||
+		!m.editor.Focused || m.scroll != 0 {
+		t.Fatalf("transition changed unrelated view state: notes=%t cursor=%+v focused=%t scroll=%d",
+			m.showNotes, m.editor.Cursor, m.editor.Focused, m.scroll)
+	}
+
+	for ticks := 0; m.active && ticks < 180; ticks++ {
+		advancePresentationTransition(m, 1)
+	}
+	if m.active || !strings.Contains(ansi.Strip(m.View().Content), "Start with a path") {
+		t.Fatal("slide transition did not settle on its destination")
+	}
+}
+
+func TestPresentationSlideTransitionCanBeInterruptedAndCancelled(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+	_, _ = m.Update(sheetKey("right"))
+	advancePresentationTransition(m, 10)
+	interruptedFrame := m.renderSlideContent()
+
+	_, _ = m.Update(sheetKey("right"))
+	if !m.active || m.page != 2 || m.from != interruptedFrame || m.position != 0 {
+		t.Fatalf("retargeting did not continue from the visible frame: active=%t page=%d position=%f",
+			m.active, m.page, m.position)
+	}
+
+	resizeGeneration := m.generation
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	if m.active || m.page != 2 {
+		t.Fatal("resizing did not settle on the active destination slide")
+	}
+	_, staleCmd := m.Update(presentationTransitionTickMsg{generation: resizeGeneration})
+	if staleCmd != nil {
+		t.Fatal("a stale animation tick restarted a resized transition")
+	}
+
+	_, _ = m.Update(sheetKey("right"))
+	if !m.active || m.page != 3 {
+		t.Fatal("slide navigation did not restart after resizing")
+	}
+	generation := m.generation
+	_, _ = m.Update(sheetKey("q"))
+	if m.active || m.generation == generation {
+		t.Fatal("leaving the presentation did not cancel its transition")
+	}
+	_, staleCmd = m.Update(presentationTransitionTickMsg{generation: generation})
+	if staleCmd != nil || m.active {
+		t.Fatal("a stale animation tick restarted a cancelled transition")
+	}
+}
+
+func TestPresentationSlideTransitionSkipsMediaAndSmallTerminals(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+	m.setItem(presentation.Presentation{Source: "# Deck\n\n## Image\n\n.image missing 2 4\n"})
+	m.goToPage(0)
+	_, _ = m.Update(sheetKey("right"))
+	if m.page != 1 || m.active {
+		t.Fatal("media slide transition should remain immediate")
+	}
+
+	m.setItem(presentation.Presentation{Source: "# Deck\n\n## One\n\nText\n\n## Two\n\nMore text\n"})
+	m.goToPage(0)
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 39, Height: 9})
+	_, _ = m.Update(sheetKey("right"))
+	if m.page != 1 || m.active {
+		t.Fatal("small-terminal slide transition should remain immediate")
 	}
 }
 

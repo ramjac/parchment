@@ -4,7 +4,7 @@
   "kind": "spreadsheet",
   "format_version": 2,
   "created_at": "2026-01-15T09:00:00Z",
-  "modified_at": "2026-11-20T00:49:10.36871913Z"
+  "modified_at": "2026-11-20T19:38:25.220042491Z"
 }
 ```
 
@@ -32,7 +32,12 @@ negative values are over plan.
           },
           {
             "value": "Hours"
-          }
+          },
+          {},
+          {},
+          {},
+          {},
+          {}
         ],
         [
           {
@@ -40,7 +45,12 @@ negative values are over plan.
           },
           {
             "formula": "=SUM('Work Plan'!B2:B6)"
-          }
+          },
+          {},
+          {},
+          {},
+          {},
+          {}
         ],
         [
           {
@@ -48,7 +58,12 @@ negative values are over plan.
           },
           {
             "formula": "=SUM('Work Plan'!C2:C6)"
-          }
+          },
+          {},
+          {},
+          {},
+          {},
+          {}
         ],
         [
           {
@@ -56,7 +71,12 @@ negative values are over plan.
           },
           {
             "formula": "=B2-B3"
-          }
+          },
+          {},
+          {},
+          {},
+          {},
+          {}
         ],
         [
           {
@@ -64,7 +84,12 @@ negative values are over plan.
           },
           {
             "formula": "=AVERAGE('Work Plan'!C2:C6)"
-          }
+          },
+          {},
+          {},
+          {},
+          {},
+          {}
         ],
         [
           {
@@ -72,7 +97,12 @@ negative values are over plan.
           },
           {
             "formula": "=MAX('Work Plan'!D2:D6)"
-          }
+          },
+          {},
+          {},
+          {},
+          {},
+          {}
         ],
         [
           {
@@ -80,7 +110,12 @@ negative values are over plan.
           },
           {
             "formula": "=MIN('Work Plan'!D2:D6)"
-          }
+          },
+          {},
+          {},
+          {},
+          {},
+          {}
         ],
         [
           {
@@ -88,7 +123,39 @@ negative values are over plan.
           },
           {
             "formula": "=SUM(B2:B7)"
-          }
+          },
+          {},
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {}
         ]
       ]
     },

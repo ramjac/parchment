@@ -1,69 +1,52 @@
 package tui
 
 import (
-	"bytes"
-	"context"
 	"errors"
 	"fmt"
-	"io/fs"
-	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2/compat"
 	"github.com/charmbracelet/colorprofile"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
-	"example.com/parchment/internal/chartrender"
-	"example.com/parchment/internal/pdfrender"
 	"example.com/parchment/internal/spreadsheet"
-	"example.com/parchment/internal/tui/termimg"
 )
 
 type chartMode uint8
 
 const (
 	chartClosed chartMode = iota
-	chartList
 	chartForm
-	chartPreview
-	chartExportPath
-	chartOverwrite
 	chartDelete
 )
 
 type spreadsheetChartUI struct {
-	mode          chartMode
-	index         int
-	stage         int
-	draft         spreadsheet.Chart
-	input         textinput.Model
-	exportFormat  string
-	exportPath    string
-	preview       string
-	previewRows   int
-	previewGraph  bool
-	previewError  string
-	previewText   string
-	clearGraphics bool
+	mode              chartMode
+	formReturn        chartMode
+	index             int
+	stage             int
+	draft             spreadsheet.Chart
+	fields            [6]textinput.Model
+	formPreview       string
+	formText          string
+	formError         string
+	formSeq           uint64
+	formPreviewOffset int
 }
 
-type spreadsheetChartPreviewMsg struct {
-	seq      int
+type spreadsheetChartFormPreviewMsg struct {
+	seq      uint64
 	rendered string
-	rows     int
-	graphics bool
 	text     string
 	err      error
 }
 
-type spreadsheetChartExportMsg struct {
-	seq  int
-	path string
-	err  error
-}
+type spreadsheetChartFormPreviewRequest struct{ seq uint64 }
 
 func (m *spreadsheetModel) selectedChart() spreadsheet.Chart {
 	return m.book.Charts[m.charts.index]
@@ -71,112 +54,107 @@ func (m *spreadsheetModel) selectedChart() spreadsheet.Chart {
 
 func (m *spreadsheetModel) openChartForm(edit bool) tea.Cmd {
 	ui := &m.charts
+	ui.formReturn = chartClosed
 	ui.mode, ui.stage = chartForm, 0
 	if edit {
 		ui.draft = m.selectedChart()
 	} else {
-		firstRow, lastRow := m.row+1, m.row+1
-		firstCol, lastCol := m.column+1, m.column+1
-		if m.selecting {
-			firstRow, lastRow = min(m.selectionRow, m.row)+1, max(m.selectionRow, m.row)+1
-			firstCol, lastCol = min(m.selectionColumn, m.column)+1, max(m.selectionColumn, m.column)+1
-		}
+		selection := m.selectedCellRange()
 		ui.draft = spreadsheet.Chart{Type: "bar", Sheet: m.book.Sheets[m.sheet].Name,
-			FirstRow: firstRow, LastRow: lastRow, FirstColumn: firstCol, LastColumn: lastCol}
+			PlaceSheet: m.book.Sheets[m.sheet].Name, PlaceRow: m.row + 1, PlaceColumn: m.column + 1,
+			FirstRow: selection.FirstRow, LastRow: selection.LastRow,
+			FirstColumn: selection.FirstColumn, LastColumn: selection.LastColumn}
 	}
-	ui.input = textinput.New()
-	ui.input.CharLimit = 1024
-	return m.setChartFormField()
+	values := []string{ui.draft.Type, ui.draft.Sheet,
+		spreadsheet.CellName(ui.draft.FirstRow, ui.draft.FirstColumn) + ":" +
+			spreadsheet.CellName(ui.draft.LastRow, ui.draft.LastColumn),
+		strconv.FormatBool(ui.draft.Header), strconv.FormatBool(ui.draft.Labels), ui.draft.Title}
+	for i := range ui.fields {
+		ui.fields[i] = textinput.New()
+		ui.fields[i].Prompt = ""
+		ui.fields[i].CharLimit = 1024
+		ui.fields[i].SetValue(values[i])
+		ui.fields[i].CursorEnd()
+	}
+	m.resizeChartForm()
+	return tea.Batch(ui.fields[0].Focus(), m.renderChartFormPreview())
 }
 
-func (m *spreadsheetModel) setChartFormField() tea.Cmd {
+func (m *spreadsheetModel) chartFormDraft() (spreadsheet.Chart, error) {
 	ui := &m.charts
-	c := ui.draft
-	prompts := []string{"Type (bar, line, pie): ", "Sheet: ", "Range (A1:B5): ",
-		"Header row (yes/no): ", "Label column (yes/no): ", "Title: "}
-	values := []string{c.Type, c.Sheet, spreadsheet.CellName(c.FirstRow, c.FirstColumn) + ":" +
-		spreadsheet.CellName(c.LastRow, c.LastColumn), strconv.FormatBool(c.Header), strconv.FormatBool(c.Labels), c.Title}
-	ui.input.Prompt = prompts[ui.stage]
-	ui.input.SetWidth(max(1, m.width-6-runewidth.StringWidth(ui.input.Prompt)))
-	ui.input.SetValue(values[ui.stage])
-	ui.input.CursorEnd()
-	return ui.input.Focus()
-}
-
-func (m *spreadsheetModel) advanceChartForm() tea.Cmd {
-	ui := &m.charts
-	value := strings.TrimSpace(ui.input.Value())
+	draft := ui.draft
 	var err error
-	switch ui.stage {
-	case 0:
-		if value != "bar" && value != "line" && value != "pie" {
-			err = errors.New("type must be bar, line, or pie")
-		} else {
-			ui.draft.Type = value
-		}
-	case 1:
-		_, err = spreadsheet.SheetIndex(m.book, value)
+	draft.Type = strings.TrimSpace(ui.fields[0].Value())
+	if draft.Type != "bar" && draft.Type != "line" {
+		return draft, errors.New("type must be bar or line")
+	}
+	draft.Sheet = strings.TrimSpace(ui.fields[1].Value())
+	if _, err = spreadsheet.SheetIndex(m.book, draft.Sheet); err != nil {
+		return draft, err
+	}
+	parts := strings.Split(strings.TrimSpace(ui.fields[2].Value()), ":")
+	if len(parts) != 2 {
+		err = errors.New("range must look like A1:B5")
+	} else {
+		var r1, c1, r2, c2 int
+		r1, c1, err = spreadsheet.CellCoordinates(parts[0])
 		if err == nil {
-			ui.draft.Sheet = value
+			r2, c2, err = spreadsheet.CellCoordinates(parts[1])
 		}
-	case 2:
-		parts := strings.Split(value, ":")
-		if len(parts) != 2 {
-			err = errors.New("range must look like A1:B5")
-		} else {
-			var r1, c1, r2, c2 int
-			r1, c1, err = spreadsheet.CellCoordinates(parts[0])
-			if err == nil {
-				r2, c2, err = spreadsheet.CellCoordinates(parts[1])
-			}
-			if err == nil && (r2 < r1 || c2 < c1) {
-				err = errors.New("range must run from top-left to bottom-right")
-			}
-			if err == nil {
-				ui.draft.FirstRow, ui.draft.FirstColumn, ui.draft.LastRow, ui.draft.LastColumn = r1, c1, r2, c2
-			}
+		if err == nil && (r2 < r1 || c2 < c1) {
+			err = errors.New("range must run from top-left to bottom-right")
 		}
-	case 3, 4:
+		if err == nil {
+			draft.FirstRow, draft.FirstColumn, draft.LastRow, draft.LastColumn = r1, c1, r2, c2
+		}
+	}
+	if err != nil {
+		return draft, err
+	}
+	for i := 3; i <= 4; i++ {
 		var flag bool
-		switch strings.ToLower(value) {
+		switch strings.ToLower(strings.TrimSpace(ui.fields[i].Value())) {
 		case "yes", "y", "true":
 			flag = true
 		case "no", "n", "false":
 		default:
-			err = errors.New("enter yes or no")
+			return draft, errors.New("header and label options must be yes or no")
 		}
-		if err == nil && ui.stage == 3 {
-			ui.draft.Header = flag
-		} else if err == nil {
-			ui.draft.Labels = flag
+		if i == 3 {
+			draft.Header = flag
+		} else {
+			draft.Labels = flag
 		}
-	case 5:
-		ui.draft.Title = value
-		ui.draft.Invalid = false
-		if !m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
-			if ui.draft.ID == "" {
-				_, err := spreadsheet.AddChartToBook(book, ui.draft)
-				return err
-			}
-			return spreadsheet.UpdateChartInBook(book, ui.draft)
-		}) {
-			return nil
-		}
-		if ui.draft.ID == "" {
-			ui.index = len(m.book.Charts) - 1
-		}
-		ui.input.Blur()
-		ui.mode = chartList
-		m.status = "Chart staged; Ctrl+S saves workbook"
-		return m.syncAutosave()
 	}
+	draft.Title = strings.TrimSpace(ui.fields[5].Value())
+	draft.Invalid = false
+	return draft, nil
+}
+
+func (m *spreadsheetModel) stageChartForm() tea.Cmd {
+	ui := &m.charts
+	draft, err := m.chartFormDraft()
 	if err != nil {
 		m.errMessage = err.Error()
 		return nil
 	}
-	m.errMessage = ""
-	ui.stage++
-	return m.setChartFormField()
+	if !m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+		if draft.ID == "" {
+			_, err := spreadsheet.AddChartToBook(book, draft)
+			return err
+		}
+		return spreadsheet.UpdateChartInBook(book, draft)
+	}) {
+		return nil
+	}
+	if draft.ID == "" {
+		ui.index = len(m.book.Charts) - 1
+	}
+	ui.fields[ui.stage].Blur()
+	ui.formSeq++
+	ui.mode = ui.formReturn
+	m.status = "Chart staged; Ctrl+S saves workbook"
+	return m.syncAutosave()
 }
 
 func (m *spreadsheetModel) updateCharts(msg tea.KeyPressMsg) tea.Cmd {
@@ -195,34 +173,62 @@ func (m *spreadsheetModel) updateCharts(msg tea.KeyPressMsg) tea.Cmd {
 		return nil
 	}
 	switch ui.mode {
-	case chartForm, chartExportPath:
+	case chartForm:
 		switch key {
 		case "esc":
-			ui.input.Blur()
-			ui.mode = chartList
+			ui.fields[ui.stage].Blur()
+			ui.formSeq++
+			ui.mode = ui.formReturn
 			m.errMessage = ""
 			return nil
-		case "enter":
-			if ui.mode == chartForm {
-				return m.advanceChartForm()
+		case "ctrl+s":
+			return m.stageChartForm()
+		case "pgup", "pgdown":
+			_, width, _, _, rows := m.chartFormSize()
+			limit := max(0, len(m.chartFormPreviewLines(width))-rows)
+			if key == "pgup" {
+				ui.formPreviewOffset = max(0, ui.formPreviewOffset-max(1, rows))
+			} else {
+				ui.formPreviewOffset = min(limit, ui.formPreviewOffset+max(1, rows))
 			}
-			ui.exportPath = strings.TrimSpace(ui.input.Value())
-			return m.exportChart(false)
+			return nil
+		case "tab", "shift+tab", "enter":
+			ui.fields[ui.stage].Blur()
+			step := 1
+			if key == "shift+tab" {
+				step = -1
+			}
+			ui.stage = (ui.stage + step + len(ui.fields)) % len(ui.fields)
+			return ui.fields[ui.stage].Focus()
+		case "left", "right", " ", "space":
+			if ui.stage == 0 || ui.stage == 3 || ui.stage == 4 {
+				value := ui.fields[ui.stage].Value()
+				if ui.stage == 0 {
+					if value == "bar" {
+						value = "line"
+					} else {
+						value = "bar"
+					}
+				} else if value == "true" || value == "yes" {
+					value = "false"
+				} else {
+					value = "true"
+				}
+				ui.fields[ui.stage].SetValue(value)
+				m.errMessage = ""
+				return m.renderChartFormPreview()
+			}
 		}
+		before := ui.fields[ui.stage].Value()
 		var cmd tea.Cmd
-		ui.input, cmd = ui.input.Update(msg)
-		return cmd
-	case chartOverwrite:
-		switch key {
-		case "y", "Y":
-			return m.exportChart(true)
-		case "n", "N", "esc", "enter":
-			ui.mode = chartList
-			m.status = "Chart export cancelled"
+		ui.fields[ui.stage], cmd = ui.fields[ui.stage].Update(msg)
+		if before != ui.fields[ui.stage].Value() {
+			m.errMessage = ""
+			return tea.Batch(cmd, m.renderChartFormPreview())
 		}
-		return nil
+		return cmd
 	case chartDelete:
-		ui.mode = chartList
+		ui.mode = chartClosed
 		if key == "y" || key == "Y" {
 			id := m.selectedChart().ID
 			if m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
@@ -234,260 +240,198 @@ func (m *spreadsheetModel) updateCharts(msg tea.KeyPressMsg) tea.Cmd {
 			}
 		}
 		return nil
-	case chartPreview:
-		if key == "esc" || key == "q" {
-			ui.mode = chartList
-			ui.preview = ""
-			m.errMessage = ""
-		}
-		return nil
-	}
-	switch key {
-	case "esc", "q":
-		ui.mode = chartClosed
-		m.status, m.errMessage = "", ""
-	case "up", "k":
-		ui.index = max(0, ui.index-1)
-	case "down", "j":
-		ui.index = min(max(0, len(m.book.Charts)-1), ui.index+1)
-	case "n":
-		return m.openChartForm(false)
-	case "ctrl+s":
-		return m.saveWorkbook()
-	case "e":
-		if len(m.book.Charts) > 0 {
-			return m.openChartForm(true)
-		}
-	case "d":
-		if len(m.book.Charts) > 0 {
-			ui.mode = chartDelete
-		}
-	case "enter":
-		if len(m.book.Charts) > 0 {
-			ui.mode = chartPreview
-			return m.renderChartPreview()
-		}
-	case "s", "p":
-		if len(m.book.Charts) > 0 {
-			ui.exportFormat = "svg"
-			if key == "p" {
-				ui.exportFormat = "pdf"
-			}
-			ui.mode = chartExportPath
-			ui.input = textinput.New()
-			ui.input.CharLimit = 64 << 10
-			ui.input.Prompt = strings.ToUpper(ui.exportFormat) + " output path: "
-			ui.input.SetWidth(max(1, m.width-6-runewidth.StringWidth(ui.input.Prompt)))
-			ui.input.SetValue(strings.TrimSuffix(m.path, filepath.Ext(m.path)) + "-chart." + ui.exportFormat)
-			ui.input.CursorEnd()
-			return ui.input.Focus()
-		}
 	}
 	return nil
 }
 
-func (m *spreadsheetModel) renderChartPreview() tea.Cmd {
+// chartFormSize returns the inner pane sizes, excluding shared chrome.
+func (m *spreadsheetModel) chartFormSize() (left, right, height, formRows, previewRows int) {
+	width := max(1, m.width-4)
+	height = max(1, m.height-5)
+	right = width
+	if width >= 49 && height >= 10 {
+		left = width / 2
+		right = width - left - 1
+	}
+	formRows = min(6, max(1, height-2))
+	previewRows = max(0, height-formRows-1)
+	return
+}
+
+func (m *spreadsheetModel) resizeChartForm() {
+	_, width, _, _, _ := m.chartFormSize()
+	for i := range m.charts.fields {
+		m.charts.fields[i].SetWidth(max(1, width-11))
+	}
+}
+
+func (m *spreadsheetModel) renderChartFormPreview() tea.Cmd {
 	ui := &m.charts
-	ui.preview, ui.previewError, ui.previewText = "", "", ""
-	if len(m.book.Charts) == 0 {
+	ui.formSeq++
+	seq := ui.formSeq
+	ui.formPreviewOffset = 0
+	ui.formPreview, ui.formText, ui.formError = "", "", ""
+	_, err := m.chartFormDraft()
+	if err != nil {
+		ui.formError = err.Error()
 		return nil
 	}
-	m.stopAutosave()
-	ctx, seq := m.startOperation()
-	book, chart := cloneSpreadsheetState(m.book), m.selectedChart()
-	cols, rows := min(70, m.width-6), min(16, m.height-9)
-	protocol := termimg.DetectProtocol()
+	ui.formText = "Updating preview…"
+	return tea.Tick(75*time.Millisecond, func(time.Time) tea.Msg {
+		return spreadsheetChartFormPreviewRequest{seq: seq}
+	})
+}
+
+func (m *spreadsheetModel) prepareChartFormPreview(msg spreadsheetChartFormPreviewRequest) tea.Cmd {
+	ui := &m.charts
+	if ui.mode != chartForm || msg.seq != ui.formSeq {
+		return nil
+	}
+	draft, err := m.chartFormDraft()
+	if err != nil {
+		ui.formError = err.Error()
+		return nil
+	}
+	if draft.ID == "" {
+		draft.ID = "preview"
+	}
+	book := cloneSpreadsheetState(m.book)
+	_, cols, _, _, rows := m.chartFormSize()
 	monochrome := compat.Profile == colorprofile.Ascii
-	m.status = "Preparing chart…"
-	if protocol == termimg.ProtocolKitty {
-		ui.clearGraphics = true
-	}
+	theme := m.theme
 	return func() tea.Msg {
-		result := spreadsheetChartPreviewMsg{seq: seq}
-		if err := ctx.Err(); err != nil {
-			result.err = err
-			return result
-		}
-		data, err := spreadsheet.EvaluateChart(&book, chart)
+		result := spreadsheetChartFormPreviewMsg{seq: msg.seq}
+		data, err := spreadsheet.EvaluateChart(&book, draft)
 		if err != nil {
 			result.err = err
 			return result
 		}
-		result.text = fmt.Sprintf("%s: %d categories, %d series", data.Type, len(data.Labels), len(data.Series))
-		if cols < 20 || rows < 4 || monochrome {
-			for _, series := range data.Series {
-				values := series.Values
-				if len(values) > 8 {
-					result.text += "\n" + series.Name + ": " + fmt.Sprint(values[:8]) + " …"
-				} else {
-					result.text += "\n" + series.Name + ": " + fmt.Sprint(values)
-				}
-			}
+		result.text = spreadsheetChartFormSummary(data)
+		if cols < 20 || rows < 6 || monochrome {
 			return result
 		}
-		scene, err := chartrender.Layout(data)
-		if err != nil {
+		result.rendered, err = renderSpreadsheetChart(data, cols, rows, theme)
+		if err != nil && !errors.Is(err, errSpreadsheetChartPreviewTooSmall) {
 			result.err = err
-			return result
 		}
-		result.rendered, result.rows = termimg.RenderPixels(chartrender.Raster(scene), cols, rows, protocol)
-		result.graphics = termimg.IsGraphicsOutput(protocol, result.rendered)
-		if result.graphics {
-			result.rendered = strings.TrimSuffix(strings.TrimPrefix(result.rendered, "\x1b[s"), "\x1b[u")
-		}
-		result.err = ctx.Err()
 		return result
 	}
 }
 
-func (m *spreadsheetModel) chartPreviewed(msg spreadsheetChartPreviewMsg) tea.Cmd {
-	if msg.seq != m.seq {
-		return nil
+func spreadsheetChartFormSummary(data spreadsheet.ChartData) string {
+	var prefix string
+	if data.Title != "" {
+		prefix = data.Title + "\n"
 	}
-	m.finishOperation()
-	m.status = ""
+	labels := data.Labels
+	suffix := ""
+	if len(labels) > 8 {
+		labels, suffix = labels[:8], ", …"
+	}
+	return prefix + spreadsheetChartSummary(data) + "\nCategories: " + strings.Join(labels, ", ") + suffix
+}
+
+func (m *spreadsheetModel) chartFormPreviewed(msg spreadsheetChartFormPreviewMsg) {
 	ui := &m.charts
+	if ui.mode != chartForm || msg.seq != ui.formSeq {
+		return
+	}
 	if msg.err != nil {
-		ui.previewError = msg.err.Error()
+		ui.formError = msg.err.Error()
 	} else {
-		ui.preview, ui.previewRows, ui.previewGraph, ui.previewText = msg.rendered, msg.rows, msg.graphics, msg.text
+		ui.formPreview, ui.formText, ui.formError = msg.rendered, msg.text, ""
 	}
-	return m.syncAutosave()
 }
 
-func (m *spreadsheetModel) exportChart(overwrite bool) tea.Cmd {
+func chartFormLine(line string, width int) string {
+	line = ansi.Truncate(line, width, "…")
+	return line + strings.Repeat(" ", max(0, width-ansi.StringWidth(line)))
+}
+
+func (m *spreadsheetModel) chartFormPreviewLines(width int) []string {
 	ui := &m.charts
-	path, err := filepath.Abs(ui.exportPath)
-	if ui.exportPath == "" || err != nil {
-		m.errMessage = "Chart output path is required"
-		return nil
+	if ui.formError != "" {
+		return strings.Split(ansi.Wrap("Chart: "+sanitizeTerminalLine(ui.formError), width, " "), "\n")
 	}
-	if m.pdfStore == nil {
-		m.errMessage = "Chart export storage is unavailable"
-		return nil
+	if ui.formPreview != "" {
+		return strings.Split(ui.formPreview, "\n")
 	}
-	book, chart, format := cloneSpreadsheetState(m.book), m.selectedChart(), ui.exportFormat
-	store, source := m.pdfStore, m.path
-	m.stopAutosave()
-	ctx, seq := m.startOperation()
-	m.status, m.errMessage = "Exporting chart…", ""
-	return func() tea.Msg {
-		result := spreadsheetChartExportMsg{seq: seq, path: path}
-		var data []byte
-		if format == "pdf" {
-			var output bytes.Buffer
-			result.err = pdfrender.RenderChartContext(ctx, &output, book, chart)
-			data = output.Bytes()
+	return strings.Split(ansi.Wrap(sanitizeTerminalText(ui.formText), width, " "), "\n")
+}
+
+func (m *spreadsheetModel) viewChartForm() string {
+	ui := &m.charts
+	left, width, height, formRows, previewRows := m.chartFormSize()
+	labels := []string{"Type", "Source", "Range", "Header", "Labels", "Title"}
+	start := min(max(0, ui.stage-formRows+1), len(labels)-formRows)
+	form := make([]string, 0, height)
+	for i := start; i < start+formRows; i++ {
+		marker := "  "
+		if i == ui.stage {
+			marker = "> "
+		}
+		line := marker + fmt.Sprintf("%-7s", labels[i]) + " " + ui.fields[i].View()
+		form = append(form, chartFormLine(line, width))
+	}
+	lines := m.chartFormPreviewLines(width)
+	heading := "Preview"
+	if len(lines) > previewRows {
+		heading += " PgUp/Dn"
+	}
+	form = append(form, chartFormLine(m.theme.Heading.Render(heading), width))
+	offset := min(ui.formPreviewOffset, max(0, len(lines)-previewRows))
+	for i := 0; i < previewRows; i++ {
+		line := ""
+		if i+offset < len(lines) {
+			line = lines[i+offset]
+		}
+		form = append(form, chartFormLine(line, width))
+	}
+	if left == 0 {
+		return strings.Join(form, "\n")
+	}
+	grid := *m
+	grid.width = left + 4
+	grid.height = height + spreadsheetChromeLines - 1
+	grid.scrollToSelection()
+	gridLines := strings.Split(grid.renderGrid(), "\n")
+	for i := range form {
+		line := ""
+		if i < len(gridLines) {
+			line = gridLines[i]
+		}
+		form[i] = chartFormLine(line, left) + "│" + form[i]
+	}
+	return strings.Join(form, "\n")
+}
+
+func spreadsheetChartSummary(data spreadsheet.ChartData) string {
+	summary := fmt.Sprintf("%s: %d categories, %d series", data.Type, len(data.Labels), len(data.Series))
+	for _, series := range data.Series {
+		values := series.Values
+		if len(values) > 8 {
+			summary += "\n" + series.Name + ": " + fmt.Sprint(values[:8]) + " …"
 		} else {
-			values, err := spreadsheet.EvaluateChart(&book, chart)
-			if err == nil {
-				var scene chartrender.Scene
-				scene, err = chartrender.Layout(values)
-				if err == nil {
-					data = chartrender.SVG(scene)
-				}
-			}
-			result.err = err
+			summary += "\n" + series.Name + ": " + fmt.Sprint(values)
 		}
-		if result.err == nil {
-			if format == "pdf" {
-				result.err = store.WritePDFExport(ctx, path, source, data, overwrite)
-			} else if writer, ok := store.(interface {
-				WriteTextExport(context.Context, string, string, []byte, bool) error
-			}); ok {
-				result.err = writer.WriteTextExport(ctx, path, source, data, overwrite)
-			} else {
-				result.err = errors.New("SVG export storage is unavailable")
-			}
-		}
-		return result
 	}
-}
-
-func (m *spreadsheetModel) chartExported(msg spreadsheetChartExportMsg) tea.Cmd {
-	if msg.seq != m.seq {
-		return nil
-	}
-	m.finishOperation()
-	switch {
-	case errors.Is(msg.err, fs.ErrExist):
-		m.charts.mode, m.charts.exportPath = chartOverwrite, msg.path
-		m.status = ""
-	case msg.err != nil:
-		m.charts.mode = chartList
-		m.status, m.errMessage = "", "Chart export failed: "+msg.err.Error()
-	default:
-		m.charts.mode = chartList
-		m.status, m.errMessage = "Chart exported to "+msg.path, ""
-	}
-	return m.syncAutosave()
-}
-
-func (m *spreadsheetModel) clearChartGraphics(output string) string {
-	if m.charts.clearGraphics {
-		return termimg.ClearKittyPlacements() + output
-	}
-	return output
+	return summary
 }
 
 func (m *spreadsheetModel) viewCharts() string {
 	if m.width < 20 || m.height < spreadsheetChromeLines+1 {
-		return m.clearChartGraphics("Terminal too small. Press Esc to return.")
+		return "Terminal too small. Press Esc to return."
 	}
 	ui := &m.charts
-	help := "n new • e edit • enter preview • s SVG • p PDF • d delete • ctrl+s save • esc back"
+	help := "y delete • n/esc cancel"
 	var content string
 	switch ui.mode {
-	case chartForm, chartExportPath:
-		content = ui.input.View()
-		help = "enter continue • esc cancel"
-	case chartOverwrite:
-		content = "Output exists. Overwrite? [y/N]"
+	case chartForm:
+		content = m.viewChartForm()
+		help = "ctrl+s stage • esc cancel • tab/shift+tab field • arrows/space choice"
 	case chartDelete:
-		content = "Delete selected chart? [y/N]"
-	case chartPreview:
-		help = "esc back"
-		for i, line := range strings.Split(ui.previewText, "\n") {
-			if i > 0 {
-				content += "\n"
-			}
-			content += runewidth.Truncate(sanitizeTerminalLine(line), max(1, m.width-6), "…")
-		}
-		if ui.previewError != "" {
-			content = "Chart error: " + sanitizeTerminalLine(ui.previewError)
-		} else if ui.preview != "" {
-			if ui.previewGraph {
-				content += "\n" + strings.Repeat("\n", ui.previewRows)
-			} else {
-				content += "\n" + ui.preview
-			}
-		}
-	default:
-		if len(m.book.Charts) == 0 {
-			content = "No charts. Press n to create one from the current selection."
-		}
-		visible := max(1, m.height-6)
-		start := max(0, ui.index-visible+1)
-		for i := start; i < len(m.book.Charts) && i < start+visible; i++ {
-			chart := m.book.Charts[i]
-			marker := "  "
-			if i == ui.index {
-				marker = "> "
-			}
-			line := fmt.Sprintf("%s%s [%s] %s!%s:%s", marker, chart.Title, chart.Type, chart.Sheet,
-				spreadsheet.CellName(chart.FirstRow, chart.FirstColumn), spreadsheet.CellName(chart.LastRow, chart.LastColumn))
-			if chart.Invalid {
-				line += " (invalid source)"
-			}
-			content += runewidth.Truncate(sanitizeTerminalLine(line), max(1, m.width-6), "…") + "\n"
-		}
+		content = "Delete chart in this cell? [y/N]"
 	}
-	output := chromeLayout(m.width, m.height, m.renderHeader(), m.theme.Muted.Render(runewidth.Truncate(help, m.width, "…")),
+	return chromeLayout(m.width, m.height, m.renderHeader(), m.theme.Muted.Render(runewidth.Truncate(help, m.width, "…")),
 		content, m.renderStatus(), m.theme.BorderColor)
-	output = m.clearChartGraphics(output)
-	if ui.mode == chartPreview && ui.previewGraph && ui.preview != "" && ui.previewError == "" {
-		// Header, help, border, and summary precede the image inside the pane.
-		output += "\x1b[s\x1b[6;3H" + ui.preview + "\x1b[u"
-	}
-	return output
 }

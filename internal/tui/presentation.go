@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"math"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/harmonica"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
@@ -28,7 +30,11 @@ import (
 // presentationChromeLines counts the header, status, and help lines.
 const presentationChromeLines = 3
 
+const presentationTransitionFPS = 60
+
 type presentationAutosaveTickMsg struct{ session uint64 }
+
+type presentationTransitionTickMsg struct{ generation uint64 }
 
 type presentationAutosaveFinishedMsg struct {
 	session uint64
@@ -104,6 +110,16 @@ type presentationImageViewState struct {
 	revision                    uint64
 }
 
+type presentationTransitionState struct {
+	from       string
+	spring     harmonica.Spring
+	position   float64
+	velocity   float64
+	generation uint64
+	direction  int
+	active     bool
+}
+
 // presentationModel is a single-deck slide viewer and Markdown source editor.
 // It owns only UI state; it reads and edits the deck file through the
 // presentation service.
@@ -115,29 +131,31 @@ type presentationModel struct {
 	deck    presentation.Deck
 	loaded  bool
 
-	recoveryStore     recovery.Store
-	autosaveScheduler func(session uint64) tea.Cmd
-	autosaveSession   uint64
-	autosaveCancel    context.CancelFunc
-	draftStored       bool
-	pdfStore          PDFExportStore
-	lastPDFPath       string
-	pdfPrompt         promptKind
-	pdfInput          textinput.Model
-	pdfOverwritePath  string
-	pdfPending        bool
-	pdfTwoUp          bool
-	find              findBar
-	imageRenderCache  map[string]renderedPresentationImage
-	imageRowMarkers   map[rune]presentationImageRow
-	nextImageMarker   rune
-	imageGraphicsUsed bool
-	imageFrame        uint64
-	imageRevision     uint64
+	recoveryStore       recovery.Store
+	autosaveScheduler   func(session uint64) tea.Cmd
+	transitionScheduler func(generation uint64) tea.Cmd
+	autosaveSession     uint64
+	autosaveCancel      context.CancelFunc
+	draftStored         bool
+	pdfStore            PDFExportStore
+	lastPDFPath         string
+	pdfPrompt           promptKind
+	pdfInput            textinput.Model
+	pdfOverwritePath    string
+	pdfPending          bool
+	pdfTwoUp            bool
+	find                findBar
+	imageRenderCache    map[string]renderedPresentationImage
+	imageRowMarkers     map[rune]presentationImageRow
+	nextImageMarker     rune
+	imageGraphicsUsed   bool
+	imageFrame          uint64
+	imageRevision       uint64
 
 	presentationOpState
 	presentationViewState
 	presentationEditorState
+	presentationTransitionState
 }
 
 func newPresentationModel(service *presentation.Service, path string, theme Theme, undoLimits ...int) *presentationModel {
@@ -150,11 +168,16 @@ func newPresentationModel(service *presentation.Service, path string, theme Them
 	pdfInput := textinput.New()
 	pdfInput.CharLimit = 64 << 10
 	return &presentationModel{
-		service:          service,
-		path:             path,
-		theme:            theme,
-		pdfInput:         pdfInput,
-		find:             newFindBar(theme),
+		service:  service,
+		path:     path,
+		theme:    theme,
+		pdfInput: pdfInput,
+		find:     newFindBar(theme),
+		transitionScheduler: func(generation uint64) tea.Cmd {
+			return tea.Tick(time.Second/presentationTransitionFPS, func(time.Time) tea.Msg {
+				return presentationTransitionTickMsg{generation: generation}
+			})
+		},
 		imageRenderCache: make(map[string]renderedPresentationImage),
 		presentationEditorState: presentationEditorState{
 			editor: body,
@@ -182,6 +205,7 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 func (m *presentationModel) updatePresentation(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
+		m.cancelPageTransition()
 		m.width, m.height = msg.Width, msg.Height
 		m.editor.SetWidth(max(1, m.width-4))
 		m.resizePDFPrompt()
@@ -192,6 +216,8 @@ func (m *presentationModel) updatePresentation(message tea.Msg) (tea.Model, tea.
 		}
 		m.clampScroll()
 		return m, nil
+	case presentationTransitionTickMsg:
+		return m, m.updatePageTransition(msg)
 	case presentationPDFExportedMsg:
 		return m, m.presentationPDFExported(msg)
 	case presentationLoadedMsg:
@@ -370,19 +396,20 @@ func (m *presentationModel) updateEditKey(msg tea.KeyPressMsg) tea.Cmd {
 func (m *presentationModel) updateFindKey(msg tea.Msg) tea.Cmd {
 	action, cmd := m.find.update(msg)
 	if !m.editing {
+		var transitionCmd tea.Cmd
 		switch action {
 		case findChanged:
-			m.searchSlides(m.find.query())
+			transitionCmd = m.searchSlides(m.find.query())
 		case findNext:
-			m.moveSearchMatch(1)
+			transitionCmd = m.moveSearchMatch(1)
 			m.find.blur()
 		case findPrevious:
-			m.moveSearchMatch(-1)
+			transitionCmd = m.moveSearchMatch(-1)
 			m.find.blur()
 		case findClosed:
-			m.searchSlides("")
+			transitionCmd = m.searchSlides("")
 		}
-		return cmd
+		return tea.Batch(cmd, transitionCmd)
 	}
 	switch action {
 	case findChanged:
@@ -400,14 +427,15 @@ func (m *presentationModel) updateFindKey(msg tea.Msg) tea.Cmd {
 
 func (m *presentationModel) updateBrowseKey(msg tea.KeyPressMsg) tea.Cmd {
 	key := msg.String()
+	if m.active && !isPresentationPageNavigationKey(key, m.find.visible) {
+		m.cancelPageTransition()
+	}
 	if m.find.visible && !m.pending {
 		switch key {
 		case "n":
-			m.moveSearchMatch(1)
-			return nil
+			return m.moveSearchMatch(1)
 		case "N":
-			m.moveSearchMatch(-1)
-			return nil
+			return m.moveSearchMatch(-1)
 		case "esc":
 			m.find.close()
 			m.searchSlides("")
@@ -445,20 +473,20 @@ func (m *presentationModel) updateBrowseKey(msg tea.KeyPressMsg) tea.Cmd {
 		return nil
 	}
 	if key == "/" || key == "ctrl+f" {
-		m.searchSlides(m.find.query())
-		return m.find.open(m.width)
+		transitionCmd := m.searchSlides(m.find.query())
+		return tea.Batch(transitionCmd, m.find.open(m.width))
 	}
 	switch key {
 	case "ctrl+p":
 		return m.openPDFPrompt()
 	case "right", "l", "n", "space", "pgdown":
-		m.goToPage(m.page + 1)
+		return m.navigateToPage(m.page + 1)
 	case "left", "h", "p", "pgup":
-		m.goToPage(m.page - 1)
+		return m.navigateToPage(m.page - 1)
 	case "home", "g":
-		m.goToPage(0)
+		return m.navigateToPage(0)
 	case "end", "G":
-		m.goToPage(m.pageCount() - 1)
+		return m.navigateToPage(m.pageCount() - 1)
 	case "down", "j":
 		m.scroll++
 		m.clampScroll()
@@ -501,19 +529,98 @@ func (m *presentationModel) updateBrowseKey(msg tea.KeyPressMsg) tea.Cmd {
 func (m *presentationModel) pageCount() int { return len(m.deck.Slides) + 1 }
 
 func (m *presentationModel) goToPage(page int) {
+	m.cancelPageTransition()
 	page = min(max(page, 0), m.pageCount()-1)
 	if page != m.page {
 		m.page, m.scroll = page, 0
 	}
 }
 
-func (m *presentationModel) searchSlides(query string) {
+func isPresentationPageNavigationKey(key string, searching bool) bool {
+	switch key {
+	case "right", "l", "n", "space", "pgdown", "left", "h", "p", "pgup", "home", "g", "end", "G":
+		return true
+	case "N":
+		return searching
+	default:
+		return false
+	}
+}
+
+func (m *presentationModel) navigateToPage(page int) tea.Cmd {
+	page = min(max(page, 0), m.pageCount()-1)
+	if page == m.page {
+		return nil
+	}
+
+	fromPage := m.page
+	outgoing := ""
+	// Terminal image placements cannot be composited safely as text frames.
+	animate := !m.editing && m.loaded && m.width >= 40 && m.height >= 10 &&
+		!m.pageHasImageDirectiveAt(fromPage) && !m.pageHasImageDirectiveAt(page)
+	if animate {
+		outgoing = m.renderSlideContent()
+	}
+
+	m.goToPage(page)
+	if !animate {
+		return nil
+	}
+	m.startPageTransition(outgoing, page-fromPage)
+	return m.schedulePageTransition(m.generation)
+}
+
+func (m *presentationModel) startPageTransition(outgoing string, direction int) {
+	m.generation++
+	m.from = outgoing
+	m.spring = harmonica.NewSpring(harmonica.FPS(presentationTransitionFPS), 12, 1)
+	m.position, m.velocity = 0, 0
+	m.direction = 1
+	if direction < 0 {
+		m.direction = -1
+	}
+	m.active = true
+}
+
+func (m *presentationModel) cancelPageTransition() {
+	if !m.active {
+		return
+	}
+	m.active = false
+	m.from = ""
+	m.generation++
+}
+
+func (m *presentationModel) schedulePageTransition(generation uint64) tea.Cmd {
+	if m.transitionScheduler != nil {
+		return m.transitionScheduler(generation)
+	}
+	return nil
+}
+
+func (m *presentationModel) updatePageTransition(msg presentationTransitionTickMsg) tea.Cmd {
+	if !m.active || msg.generation != m.generation {
+		return nil
+	}
+	m.position, m.velocity = m.spring.Update(m.position, m.velocity, 1)
+	if 1-m.position < 0.01 && math.Abs(m.velocity) < 0.05 {
+		m.position, m.velocity = 1, 0
+		m.active = false
+		m.from = ""
+		m.generation++
+		return nil
+	}
+	return m.schedulePageTransition(msg.generation)
+}
+
+func (m *presentationModel) searchSlides(query string) tea.Cmd {
 	m.rebuildSlideMatches(query)
 	if len(m.searchMatches) > 0 {
 		m.searchMatch = 0
-		m.gotoSearchMatch()
+		return m.gotoSearchMatch()
 	} else {
 		m.clampScroll()
+		return nil
 	}
 }
 
@@ -543,32 +650,33 @@ func (m *presentationModel) rebuildSlideMatches(query string) {
 	m.page, m.showNotes, m.scroll = page, showNotes, scroll
 }
 
-func (m *presentationModel) gotoSearchMatch() {
+func (m *presentationModel) gotoSearchMatch() tea.Cmd {
 	if m.searchMatch < 0 || m.searchMatch >= len(m.searchMatches) {
-		return
+		return nil
 	}
 	match := m.searchMatches[m.searchMatch]
 	if match.page < 0 || match.page >= m.pageCount() {
 		m.searchMatches, m.searchMatch = nil, -1
-		return
+		return nil
 	}
-	m.page = match.page
+	transitionCmd := m.navigateToPage(match.page)
 	if match.inNotes {
 		m.showNotes = true
 	}
 	m.scroll = max(match.row-m.visibleLines()/2, 0)
 	m.clampScroll()
+	return transitionCmd
 }
 
-func (m *presentationModel) moveSearchMatch(step int) {
+func (m *presentationModel) moveSearchMatch(step int) tea.Cmd {
 	if len(m.searchMatches) == 0 {
-		return
+		return nil
 	}
 	m.searchMatch = (m.searchMatch + step) % len(m.searchMatches)
 	if m.searchMatch < 0 {
 		m.searchMatch += len(m.searchMatches)
 	}
-	m.gotoSearchMatch()
+	return m.gotoSearchMatch()
 }
 
 func (m *presentationModel) beginEdit() tea.Cmd {
@@ -654,6 +762,7 @@ func (m *presentationModel) saveRecovery(session uint64) tea.Cmd {
 }
 
 func (m *presentationModel) close() tea.Cmd {
+	m.cancelPageTransition()
 	m.stopAutosave()
 	return closeEditor(m.recoveryStore, m.path)
 }
@@ -860,6 +969,7 @@ func (m *presentationModel) setError(prefix string, err error) {
 }
 
 func (m *presentationModel) setItem(item presentation.Presentation) {
+	m.cancelPageTransition()
 	deck, err := presentation.Parse(item.Source)
 	if err != nil {
 		m.status, m.errMessage = "", "Invalid presentation: "+err.Error()
@@ -1193,10 +1303,14 @@ func (m *presentationModel) presentationView() string {
 }
 
 func (m *presentationModel) pageHasImageDirective() bool {
-	if !m.loaded || m.page <= 0 || m.page > len(m.deck.Slides) {
+	return m.pageHasImageDirectiveAt(m.page)
+}
+
+func (m *presentationModel) pageHasImageDirectiveAt(page int) bool {
+	if !m.loaded || page <= 0 || page > len(m.deck.Slides) {
 		return false
 	}
-	for _, line := range strings.Split(m.deck.Slides[m.page-1].Body, "\n") {
+	for _, line := range strings.Split(m.deck.Slides[page-1].Body, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), ".image ") {
 			return true
 		}
@@ -1237,8 +1351,22 @@ func (m *presentationModel) renderSlideContent() string {
 	if m.find.visible && m.find.query() != "" {
 		lines = highlightLines(lines, m.find.query(), m.theme)
 	}
+	visibleLines := m.visibleLines()
+	if m.active {
+		current := make([]string, visibleLines)
+		for i := range current {
+			if index := m.scroll + i; index < len(lines) {
+				current[i] = lines[index]
+			}
+		}
+		lines = presentationTransitionLines(
+			strings.Split(m.from, "\n"), current, max(m.width-4, 1),
+			m.position, m.direction,
+		)
+		return strings.Join(lines, "\n")
+	}
 	var slideBuf strings.Builder
-	for i := 0; i < m.visibleLines(); i++ {
+	for i := 0; i < visibleLines; i++ {
 		if i > 0 {
 			slideBuf.WriteByte('\n')
 		}
@@ -1247,6 +1375,33 @@ func (m *presentationModel) renderSlideContent() string {
 		}
 	}
 	return slideBuf.String()
+}
+
+func presentationTransitionLines(from, to []string, width int, position float64, direction int) []string {
+	shift := min(max(int(float64(width)*position+0.5), 0), width)
+	lines := make([]string, max(len(from), len(to)))
+	for row := range lines {
+		var oldLine, newLine string
+		if row < len(from) {
+			oldLine = from[row]
+		}
+		if row < len(to) {
+			newLine = to[row]
+		}
+		if direction >= 0 {
+			leftWidth := width - shift
+			lines[row] = fitPresentationTransitionPart(ansi.Cut(oldLine, shift, width), leftWidth) +
+				fitPresentationTransitionPart(ansi.Cut(newLine, 0, shift), shift)
+		} else {
+			lines[row] = fitPresentationTransitionPart(ansi.Cut(newLine, width-shift, width), shift) +
+				fitPresentationTransitionPart(ansi.Cut(oldLine, 0, width-shift), width-shift)
+		}
+	}
+	return lines
+}
+
+func fitPresentationTransitionPart(part string, width int) string {
+	return part + strings.Repeat(" ", max(width-ansi.StringWidth(part), 0))
 }
 
 func (m *presentationModel) renderStatus() string {

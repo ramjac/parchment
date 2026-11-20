@@ -125,7 +125,7 @@ application.
 | --- | --- | --- |
 | Note | Canonical Markdown note text. | No kind-specific block is required. |
 | Document | Canonical Markdown including anchors, links, page/section break comments, and image references. | `parchment-document`: layout, embedded image bytes, and versioned pending tracked changes. |
-| Spreadsheet | Optional human-readable workbook description. | `parchment-spreadsheet`: versioned sheets, cell arrays, explicit literal/formula cells, and range-bound chart definitions. |
+| Spreadsheet | Optional human-readable workbook description. | `parchment-spreadsheet`: versioned sheets, cell arrays, spans, explicit literal/formula cells, and chart definitions with separate placement anchors and source ranges. |
 | Presentation | Go `present`-style Markdown source: title, slides, notes, image/code directives. | `parchment-presentation`: versioned presentation settings and embedded image bytes. |
 
 The [`document.md`](../examples/document.md) example shows `parchment-document`
@@ -145,6 +145,12 @@ Spreadsheet cell objects distinguish literal content from formulas. A literal
 uses `value`; a formula uses `formula`. A string beginning with `=` is not
 automatically treated as a formula. Formula parsing, evaluation, and reference
 adjustment belong to the spreadsheet domain layer, not Markdown rendering.
+Each sheet may also contain `spans`, rectangular ranges with one-based
+`first_row`, `first_column`, `last_row`, and `last_column`. Only the top-left
+anchor stores a cell value or formula. Covered cells are empty and cannot be
+edited or occupied by another span or an array spill; formula references to
+covered coordinates evaluate as empty. Spans are workbook data, not separate
+files or per-cell sidecars.
 
 Document tracking uses version 1 metadata in the `parchment-document` block.
 Each pending replacement stores a stable ID, UTC timestamp, UTF-8 byte offset,

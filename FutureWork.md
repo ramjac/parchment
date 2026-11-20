@@ -22,28 +22,11 @@ update rendering baselines only for intentional, reviewed changes.
 - **Decide on images in Note previews.** Decision - Notes won't support embedded images.
   More generally, Notes won't support any features that result in code blocks after
   the closing parchment fence (like images).
-- **Evaluate Charmbracelet libraries before adding bespoke TUI components.**
-  Outside the dedicated large-text editors, check whether Bubbles already
-  provides the needed component. PDF path fields and chart-form fields already
-  use Bubbles `textinput`, while their prompt, validation, and overwrite flows
-  remain application state. Audit the chart list and key/help handling for
-  `list`, `key`, or `help` components; do not replace the spreadsheet editor
-  with a generic table unless formula editing, range selection, clipboard
-  operations, and sheet navigation remain intact. Do not use a file picker
-  that scans directories: users explicitly name files. Keep Lip Gloss as the
-  shared semantic styling and layout layer.
-- **Prototype animated view transitions, starting with Presentations.** Try
-  Harmonica for slide-to-slide transitions first, then assess the Document
-  reader/editor transition and spreadsheet sheet-tab changes. Preserve the
-  active slide, page, cursor, selection, focus, and viewport state. Keep
-  transitions interruptible and ensure animation ticks stop on cancellation or
-  view exit; add deterministic message-driven tests and visual evidence before
-  extending the behavior to other screens.
-- **Evaluate ntcharts for spreadsheet chart previews.** Compare its terminal
-  bar/line rendering with `internal/chartrender`, using the existing
-  `spreadsheet.ChartData` as input. It may be that we use one method of
-  displaying charts in the TUI such as with ntcharts and another method of 
-  rendering them for SVG/PDF export.
+- **Assess extending animated view transitions to Documents and Spreadsheets.**
+  Presentation slide transitions now have a Harmonica prototype. Preserve
+  reader/editor and sheet-tab state, keep transitions interruptible, and ensure
+  animation ticks stop on cancellation or view exit. Add deterministic
+  message-driven tests and visual evidence before extending the behavior.
 - **Evaluate terminal image libraries separately from charting.** Compare
   `go-termimg` with `internal/tui/termimg` for Kitty, iTerm2, Sixel, sizing,
   placement, and ANSI fallback. Its Go 1.24-compatible release supports these

@@ -15,6 +15,9 @@ const MaxCharts = 128
 
 type Chart struct {
 	ID          string `json:"id"`
+	PlaceSheet  string `json:"place_sheet"`
+	PlaceRow    int    `json:"place_row"`
+	PlaceColumn int    `json:"place_column"`
 	Title       string `json:"title"`
 	Type        string `json:"type"`
 	Sheet       string `json:"sheet"`
@@ -25,6 +28,42 @@ type Chart struct {
 	Header      bool   `json:"header,omitempty"`
 	Labels      bool   `json:"labels,omitempty"`
 	Invalid     bool   `json:"invalid,omitempty"`
+}
+
+// ChartAt returns the graph anchored at a physical cell.
+func ChartAt(book *Spreadsheet, sheet string, row, column int) (Chart, bool) {
+	for _, chart := range book.Charts {
+		if strings.EqualFold(chart.PlaceSheet, sheet) && chart.PlaceRow == row && chart.PlaceColumn == column {
+			return chart, true
+		}
+	}
+	return Chart{}, false
+}
+
+func validateChartPlacement(book *Spreadsheet, chart Chart) error {
+	index, err := SheetIndex(*book, chart.PlaceSheet)
+	if err != nil {
+		return fmt.Errorf("chart placement: %w", err)
+	}
+	if chart.PlaceRow < 1 || chart.PlaceRow > MaxRows || chart.PlaceColumn < 1 || chart.PlaceColumn > MaxColumns {
+		return errors.New("chart placement is outside the workbook")
+	}
+	sheet := book.Sheets[index]
+	if span, ok := SpanAt(sheet, chart.PlaceRow, chart.PlaceColumn); ok &&
+		(span.FirstRow != chart.PlaceRow || span.FirstColumn != chart.PlaceColumn) {
+		return errors.New("chart placement must be a cell or span anchor")
+	}
+	if chart.PlaceRow <= len(sheet.Rows) && chart.PlaceColumn <= len(sheet.Rows[chart.PlaceRow-1]) &&
+		sheet.Rows[chart.PlaceRow-1][chart.PlaceColumn-1] != (Cell{}) {
+		return errors.New("chart placement cell is not empty")
+	}
+	for _, other := range book.Charts {
+		if other.ID != chart.ID && strings.EqualFold(other.PlaceSheet, chart.PlaceSheet) &&
+			other.PlaceRow == chart.PlaceRow && other.PlaceColumn == chart.PlaceColumn {
+			return errors.New("chart placement already contains a chart")
+		}
+	}
+	return nil
 }
 
 type ChartSeries struct {
@@ -53,12 +92,19 @@ func validateCharts(charts []Chart) error {
 			strings.TrimSpace(chart.Sheet) == "" || len(chart.Sheet) > 128 {
 			return errors.New("invalid chart title or sheet")
 		}
-		if chart.Type != "pie" && chart.Type != "bar" && chart.Type != "line" {
+		if chart.Type != "bar" && chart.Type != "line" {
 			return fmt.Errorf("unsupported chart type %q", chart.Type)
 		}
 		if chart.FirstRow < 1 || chart.FirstColumn < 1 || chart.LastRow < chart.FirstRow ||
 			chart.LastColumn < chart.FirstColumn || chart.LastRow > MaxRows || chart.LastColumn > MaxColumns {
 			return errors.New("chart range is outside the workbook")
+		}
+		firstSeriesColumn := chart.FirstColumn
+		if chart.Labels {
+			firstSeriesColumn++
+		}
+		if chart.Type == "bar" && chart.LastColumn-firstSeriesColumn+1 != 1 {
+			return errors.New("bar charts require exactly one data series")
 		}
 	}
 	return nil
@@ -81,6 +127,20 @@ func AddChartToBook(book *Spreadsheet, chart Chart) (Chart, error) {
 	if err := validateCharts(append(append([]Chart(nil), book.Charts...), chart)); err != nil {
 		return Chart{}, err
 	}
+	if err := validateChartPlacement(book, chart); err != nil {
+		return Chart{}, err
+	}
+	index, _ := SheetIndex(*book, chart.PlaceSheet)
+	spills, err := NewEvaluator(book).SpillCells(index)
+	if err != nil {
+		return Chart{}, err
+	}
+	if _, ok := spills[[2]int{chart.PlaceRow, chart.PlaceColumn}]; ok {
+		return Chart{}, errors.New("cannot place a chart on a spilled cell")
+	}
+	if err := setCellInBook(book, index, SetCellOptions{Row: chart.PlaceRow, Column: chart.PlaceColumn}); err != nil {
+		return Chart{}, err
+	}
 	book.Charts = append(book.Charts, chart)
 	return chart, nil
 }
@@ -93,16 +153,52 @@ func UpdateChartInBook(book *Spreadsheet, chart Chart) error {
 	}
 	for i := range book.Charts {
 		if book.Charts[i].ID == chart.ID {
+			if chart.PlaceSheet != book.Charts[i].PlaceSheet || chart.PlaceRow != book.Charts[i].PlaceRow ||
+				chart.PlaceColumn != book.Charts[i].PlaceColumn {
+				return errors.New("cannot change chart placement while editing")
+			}
+			if err := validateChartPlacement(book, chart); err != nil {
+				return err
+			}
 			next := append([]Chart(nil), book.Charts...)
 			next[i] = chart
 			if err := validateCharts(next); err != nil {
 				return err
 			}
+
 			book.Charts = next
 			return nil
 		}
 	}
 	return errors.New("chart not found")
+}
+
+// shiftChartPlacements is called before changing the sheet's span geometry.
+func shiftChartPlacements(book *Spreadsheet, sheet int, at int, row, deleting bool) {
+	name := book.Sheets[sheet].Name
+	charts := book.Charts[:0]
+	for _, chart := range book.Charts {
+		if strings.EqualFold(chart.PlaceSheet, name) {
+			coordinate := &chart.PlaceColumn
+			if row {
+				coordinate = &chart.PlaceRow
+			}
+			if deleting && *coordinate == at {
+				span, ok := SpanAt(book.Sheets[sheet], chart.PlaceRow, chart.PlaceColumn)
+				survives := ok && ((row && span.LastRow > span.FirstRow) ||
+					(!row && span.LastColumn > span.FirstColumn))
+				if !survives {
+					continue
+				}
+			} else if deleting && *coordinate > at {
+				*coordinate--
+			} else if !deleting && *coordinate >= at {
+				*coordinate++
+			}
+		}
+		charts = append(charts, chart)
+	}
+	book.Charts = charts
 }
 
 func DeleteChartFromBook(book *Spreadsheet, id string) error {
@@ -137,9 +233,6 @@ func EvaluateChart(book *Spreadsheet, chart Chart) (ChartData, error) {
 	if firstRow > chart.LastRow || firstColumn > chart.LastColumn {
 		return ChartData{}, errors.New("chart source has no data")
 	}
-	if chart.Type == "pie" && chart.LastColumn != firstColumn {
-		return ChartData{}, errors.New("pie charts require exactly one data series")
-	}
 	if chart.LastColumn-firstColumn+1 > 12 || (chart.LastRow-firstRow+1)*(chart.LastColumn-firstColumn+1) > 4096 {
 		return ChartData{}, errors.New("chart exceeds the limit of 12 series or 4096 values")
 	}
@@ -157,7 +250,6 @@ func EvaluateChart(book *Spreadsheet, chart Chart) (ChartData, error) {
 		}
 		data.Series = append(data.Series, ChartSeries{Name: name})
 	}
-	total := 0.0
 	for r := firstRow; r <= chart.LastRow; r++ {
 		label := strconvChartRow(r)
 		if chart.Labels {
@@ -173,15 +265,8 @@ func EvaluateChart(book *Spreadsheet, chart Chart) (ChartData, error) {
 			if err != nil || v.Kind != NumKind || math.IsNaN(v.Num) || math.IsInf(v.Num, 0) {
 				return ChartData{}, fmt.Errorf("chart value %s must be numeric", CellName(r, c))
 			}
-			if chart.Type == "pie" && v.Num < 0 {
-				return ChartData{}, fmt.Errorf("pie chart value %s cannot be negative", CellName(r, c))
-			}
-			total += v.Num
 			data.Series[c-firstColumn].Values = append(data.Series[c-firstColumn].Values, v.Num)
 		}
-	}
-	if chart.Type == "pie" && (total <= 0 || math.IsInf(total, 0)) {
-		return ChartData{}, errors.New("pie chart total must be positive and finite")
 	}
 	return data, nil
 }

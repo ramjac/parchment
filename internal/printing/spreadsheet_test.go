@@ -74,3 +74,30 @@ func TestSpreadsheetPrintIncludesSpilledCells(t *testing.T) {
 		}
 	}
 }
+
+func TestSpreadsheetPrintSpanAcrossPageBands(t *testing.T) {
+	rows := make([][]spreadsheet.Cell, 60)
+	for i := range rows {
+		rows[i] = make([]spreadsheet.Cell, 5)
+	}
+	rows[0][0].Value = strings.Repeat("x", 50) + "QXYZ"
+	book := spreadsheet.Spreadsheet{Sheets: []spreadsheet.Sheet{{Name: "Span", Rows: rows,
+		Spans: []spreadsheet.CellSpan{{FirstRow: 1, FirstColumn: 1, LastRow: 60, LastColumn: 5}}}}}
+	pages, err := SpreadsheetPages(book)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pages) < 4 || len(pages[0].Spans) != 1 || len(pages[1].Spans) != 1 {
+		t.Fatalf("span was not clipped into page bands: %+v", pages)
+	}
+	first := strings.Join(pages[0].Lines, "\n")
+	second := strings.Join(pages[1].Lines, "\n")
+	if !strings.Contains(first, strings.Repeat("x", 50)+"Q") || !strings.Contains(second, "XYZ") {
+		t.Fatalf("span content lost at column boundary:\n%s\n%s", first, second)
+	}
+	for _, page := range pages[2:] {
+		if strings.Contains(strings.Join(page.Lines, "\n"), "QXYZ") {
+			t.Fatal("span content was duplicated on another row band")
+		}
+	}
+}

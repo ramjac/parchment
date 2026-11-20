@@ -130,30 +130,72 @@ func TestTUIRenderGoldens(t *testing.T) {
 		assertTUIViewGolden(t, "spreadsheet-grid", h.m.View().Content, 80, 24)
 	})
 
-	t.Run("spreadsheet-chart-list", func(t *testing.T) {
-		h := newHarness(t, artifact.SpreadsheetKind)
-		book, err := h.sheets.Get(context.Background(), h.path)
-		if err != nil {
-			t.Fatal(err)
+	t.Run("spreadsheet-spans", func(t *testing.T) {
+		m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "A cell spanning columns"}, {}, {Value: "next"}}})
+		m.path = "fixtures/example.md"
+		m.theme = resolveTheme(darkTheme)
+		if !m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+			return spreadsheet.SpanCellsInBook(book, "Sheet1", spreadsheet.CellSpan{FirstRow: 1, FirstColumn: 1, LastRow: 3, LastColumn: 2})
+		}) {
+			t.Fatal(m.errMessage)
 		}
-		_, err = spreadsheet.AddChartToBook(&book, spreadsheet.Chart{
-			ID: "chart-one", Title: "Sales", Type: "bar", Sheet: book.Sheets[0].Name,
-			FirstRow: 1, LastRow: 1, FirstColumn: 1, LastColumn: 1,
+		driveSheet(t, m, tea.WindowSizeMsg{Width: 80, Height: 16})
+		assertTUIViewGolden(t, "spreadsheet-span", m.View().Content, 80, 16)
+		driveSheet(t, m, tea.WindowSizeMsg{Width: 30, Height: 10})
+		m.rowOffset, m.columnOffset = 1, 1
+		assertTUIViewGolden(t, "spreadsheet-span-small", m.View().Content, 30, 10)
+	})
+
+	t.Run("spreadsheet-chart-grid", func(t *testing.T) {
+		m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "3"}}, {{Value: "4"}}})
+		m.path = "fixtures/example.md"
+		m.theme = resolveTheme(darkTheme)
+		if !m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+			if err := spreadsheet.SpanCellsInBook(book, "Sheet1", spreadsheet.CellSpan{FirstRow: 1, FirstColumn: 3, LastRow: 8, LastColumn: 5}); err != nil {
+				return err
+			}
+			_, err := spreadsheet.AddChartToBook(book, spreadsheet.Chart{
+				ID: "chart-one", Title: "Sales", Type: "bar", Sheet: "Sheet1",
+				PlaceSheet: "Sheet1", PlaceRow: 1, PlaceColumn: 3,
+				FirstRow: 1, LastRow: 2, FirstColumn: 1, LastColumn: 1,
+			})
+			return err
+		}) {
+			t.Fatal(m.errMessage)
+		}
+		m.row, m.column = 0, 2
+		driveSheet(t, m, tea.WindowSizeMsg{Width: 80, Height: 16})
+		assertTUIViewGolden(t, "spreadsheet-chart-grid", m.View().Content, 80, 16)
+		driveSheet(t, m, tea.WindowSizeMsg{Width: 30, Height: 10})
+		m.rowOffset, m.columnOffset = 2, 3
+		assertTUIViewGolden(t, "spreadsheet-chart-grid-clipped", m.View().Content, 30, 10)
+	})
+
+	t.Run("spreadsheet-chart-form", func(t *testing.T) {
+		m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{
+			{{Value: "Month"}, {Value: "Sales"}},
+			{{Value: "Jan"}, {Value: "2"}},
+			{{Value: "Feb"}, {Value: "4"}},
 		})
-		if err != nil {
-			t.Fatal(err)
+		m.path = "fixtures/example.md"
+		m.theme = resolveTheme(darkTheme)
+		driveSheet(t, m, tea.WindowSizeMsg{Width: 100, Height: 24})
+		m.column = 2
+		assertTUIViewGolden(t, "spreadsheet-chart-form-before", m.View().Content, 100, 24)
+		driveSheet(t, m, sheetKey("g"))
+		m.charts.fields[2].SetValue("A1:B3")
+		for i := range m.charts.fields {
+			setTextInputCursorStatic(&m.charts.fields[i])
 		}
-		expected, err := h.sheets.Get(context.Background(), h.path)
-		if err != nil {
-			t.Fatal(err)
+		for i := 0; i < 3; i++ {
+			driveSheet(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
 		}
-		if _, err := h.sheets.Update(context.Background(), expected, book); err != nil {
-			t.Fatal(err)
-		}
-		h.openWithTheme(artifact.SpreadsheetKind, false, darkTheme)
-		prepareGoldenView(h, 80, 24)
-		h.key("g")
-		assertTUIViewGolden(t, "spreadsheet-chart-list", h.m.View().Content, 80, 24)
+		driveSheet(t, m, sheetKey("right"))
+		driveSheet(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+		driveSheet(t, m, sheetKey("right"))
+		assertTUIViewGolden(t, "spreadsheet-chart-form-after", m.View().Content, 100, 24)
+		driveSheet(t, m, tea.WindowSizeMsg{Width: 35, Height: 12})
+		assertTUIViewGolden(t, "spreadsheet-chart-form-small", m.View().Content, 35, 12)
 	})
 
 	t.Run("presentation", func(t *testing.T) {
@@ -170,6 +212,26 @@ func TestTUIRenderGoldens(t *testing.T) {
 		h.m.deck.goToPage(1)
 		prepareGoldenView(h, 120, 40)
 		assertTUIViewGolden(t, "presentation", h.m.View().Content, 120, 40)
+	})
+
+	t.Run("presentation-transition", func(t *testing.T) {
+		h := newHarness(t, artifact.PresentationKind)
+		item, err := h.decks.Get(context.Background(), h.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.decks.Update(context.Background(), item,
+			"# A Short Deck\n\n## First Slide\n\nA paragraph with **emphasis** and `code`.\n"); err != nil {
+			t.Fatal(err)
+		}
+		h.openWithTheme(artifact.PresentationKind, false, darkTheme)
+		prepareGoldenView(h, 120, 40)
+		deck := h.m.deck
+		_, _ = deck.Update(sheetKey("right"))
+		for range 12 {
+			_, _ = deck.Update(presentationTransitionTickMsg{generation: deck.generation})
+		}
+		assertTUIViewGolden(t, "presentation-transition", h.m.View().Content, 120, 40)
 	})
 
 	t.Run("presentation-image", func(t *testing.T) {

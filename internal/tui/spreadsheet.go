@@ -112,6 +112,10 @@ type spreadsheetModel struct {
 	selectionRow     int
 	selectionColumn  int
 	charts           spreadsheetChartUI
+	gridChartSeq     uint64
+	gridChartDirty   bool
+	gridCharts       map[[2]int][]string
+	gridChartInfo    map[[2]int]string
 
 	undoLimit    int
 	bufferUndo   []spreadsheet.Spreadsheet
@@ -252,18 +256,27 @@ func (m *spreadsheetModel) deleteRecoveryDraft() tea.Cmd {
 func (m *spreadsheetModel) Init() tea.Cmd { return m.load() }
 
 func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	model, cmd := m.update(message)
+	if m.gridChartDirty && m.loaded {
+		m.gridChartDirty = false
+		if len(m.book.Charts) > 0 {
+			return model, tea.Batch(cmd, m.prepareGridCharts())
+		}
+	}
+	return model, cmd
+}
+
+func (m *spreadsheetModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 	message = normalizeTerminalKey(message)
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.input.SetWidth(max(1, m.width-12))
 		m.resizePDFPrompt()
-		if m.charts.mode == chartForm || m.charts.mode == chartExportPath {
-			m.charts.input.SetWidth(max(1, m.width-6-runewidth.StringWidth(m.charts.input.Prompt)))
-		}
 		m.scrollToSelection()
-		if m.charts.mode == chartPreview {
-			return m, m.renderChartPreview()
+		if m.charts.mode == chartForm {
+			m.resizeChartForm()
+			return m, m.renderChartFormPreview()
 		}
 		return m, nil
 	case spreadsheetLoadedMsg:
@@ -325,10 +338,17 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case spreadsheetPDFExportedMsg:
 		return m, m.spreadsheetPDFExported(msg)
-	case spreadsheetChartPreviewMsg:
-		return m, m.chartPreviewed(msg)
-	case spreadsheetChartExportMsg:
-		return m, m.chartExported(msg)
+	case spreadsheetChartFormPreviewMsg:
+		m.chartFormPreviewed(msg)
+		return m, nil
+	case spreadsheetChartFormPreviewRequest:
+		return m, m.prepareChartFormPreview(msg)
+	case spreadsheetGridChartsMsg:
+		if msg.seq == m.gridChartSeq {
+			m.gridCharts = msg.charts
+			m.gridChartInfo = msg.info
+		}
+		return m, nil
 	case spreadsheetClipboardWriteMsg:
 		if msg.err != nil {
 			m.status = "Copied internally; system clipboard unavailable"
@@ -396,6 +416,7 @@ func (m *spreadsheetModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				if gridX > m.rowHeaderWidth() && column >= 0 && column < m.visibleColumns() {
 					m.row = min(m.rowOffset+msg.Y-4, spreadsheet.MaxRows-1)
 					m.column = min(m.columnOffset+column, spreadsheet.MaxColumns-1)
+					m.normalizeSpanCursor()
 					m.scrollToSelection()
 				}
 			}
@@ -597,16 +618,45 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyPressMsg) tea.Cmd {
 		m.selecting = !m.selecting
 		if m.selecting {
 			m.selectionRow, m.selectionColumn = m.row, m.column
-			m.status = "Range selection: move, then y to copy"
+			m.status = "Range selection: Enter spans and edits, g charts, m spans, y copies"
 		} else {
 			m.status = "Range selection cancelled"
 		}
 		return nil
 	}
-	if key == "g" {
-		m.charts.mode, m.charts.index = chartList, 0
-		m.status, m.errMessage = "", ""
+	if key == "m" {
+		if !m.selecting {
+			m.errMessage = "Select a range with v before spanning cells"
+			return nil
+		}
+		span := m.selectedCellRange()
+		if m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+			return spreadsheet.SpanCellsInBook(book, book.Sheets[m.sheet].Name, span)
+		}) {
+			m.selecting = false
+			m.row, m.column = span.FirstRow-1, span.FirstColumn-1
+			m.scrollToSelection()
+			m.status = "Cells spanned"
+			return m.syncAutosave()
+		}
 		return nil
+	}
+	if key == "M" {
+		if m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+			return spreadsheet.SplitCellInBook(book, book.Sheets[m.sheet].Name, m.row+1, m.column+1)
+		}) {
+			m.selecting = false
+			m.status = "Cell span split"
+			return m.syncAutosave()
+		}
+		return nil
+	}
+	if key == "g" {
+		m.status, m.errMessage = "", ""
+		if m.selecting {
+			return m.openSelectedRangeChart()
+		}
+		return m.openCellChart()
 	}
 	if key == "y" {
 		return m.copySelection()
@@ -644,9 +694,11 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyPressMsg) tea.Cmd {
 		m.move(page, 0)
 	case "home":
 		m.column = 0
+		m.normalizeSpanCursor()
 		m.scrollToSelection()
 	case "end":
 		m.column = max(0, len(m.currentRow())-1)
+		m.normalizeSpanCursor()
 		m.scrollToSelection()
 	case "tab", "shift+tab":
 		if len(m.book.Sheets) > 1 {
@@ -662,8 +714,24 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyPressMsg) tea.Cmd {
 	case "f":
 		m.showFormulas = !m.showFormulas
 	case "enter", "e":
+		if key == "enter" && m.selecting {
+			return m.editSelectedRange()
+		}
+		if _, ok := spreadsheet.ChartAt(&m.book, m.book.Sheets[m.sheet].Name, m.row+1, m.column+1); ok {
+			return m.openCellChart()
+		}
 		return m.beginEdit(cellDraft(m.cell(m.row, m.column)))
 	case "delete", "backspace":
+		if chart, ok := spreadsheet.ChartAt(&m.book, m.book.Sheets[m.sheet].Name, m.row+1, m.column+1); ok {
+			for i := range m.book.Charts {
+				if m.book.Charts[i].ID == chart.ID {
+					m.charts.index = i
+					m.charts.mode = chartDelete
+					break
+				}
+			}
+			return nil
+		}
 		if m.cell(m.row, m.column) != (spreadsheet.Cell{}) {
 			if m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
 				return spreadsheet.SetCellInBook(book, spreadsheet.SetCellOptions{
@@ -686,9 +754,42 @@ func (m *spreadsheetModel) updateBrowseKey(msg tea.KeyPressMsg) tea.Cmd {
 }
 
 func (m *spreadsheetModel) move(rows, columns int) {
+	if m.loaded {
+		if span, ok := spreadsheet.SpanAt(m.book.Sheets[m.sheet], m.row+1, m.column+1); ok {
+			if rows > 0 {
+				m.row = span.LastRow - 1
+			} else if columns > 0 {
+				m.column = span.LastColumn - 1
+			}
+		}
+	}
 	m.row = min(max(m.row+rows, 0), spreadsheet.MaxRows-1)
 	m.column = min(max(m.column+columns, 0), spreadsheet.MaxColumns-1)
+	m.normalizeSpanCursor()
 	m.scrollToSelection()
+}
+
+func (m *spreadsheetModel) normalizeSpanCursor() {
+	if m.loaded {
+		if span, ok := spreadsheet.SpanAt(m.book.Sheets[m.sheet], m.row+1, m.column+1); ok {
+			m.row, m.column = span.FirstRow-1, span.FirstColumn-1
+		}
+	}
+}
+
+func (m *spreadsheetModel) selectedCellRange() spreadsheet.CellSpan {
+	span := spreadsheet.CellSpan{
+		FirstRow: m.row + 1, LastRow: m.row + 1,
+		FirstColumn: m.column + 1, LastColumn: m.column + 1,
+	}
+	if m.selecting {
+		span.FirstRow, span.LastRow = min(m.row, m.selectionRow)+1, max(m.row, m.selectionRow)+1
+		span.FirstColumn, span.LastColumn = min(m.column, m.selectionColumn)+1, max(m.column, m.selectionColumn)+1
+	}
+	if !m.loaded {
+		return span
+	}
+	return spreadsheet.ExpandSpanRange(m.book.Sheets[m.sheet], span)
 }
 
 func (m *spreadsheetModel) beginEdit(draft string) tea.Cmd {
@@ -840,6 +941,7 @@ func (m *spreadsheetModel) setBook(book spreadsheet.Spreadsheet) {
 	}
 	m.status, m.errMessage, m.closeWarning = "", "", false
 	m.computeValues()
+	m.normalizeSpanCursor()
 	m.scrollToSelection()
 }
 
@@ -878,6 +980,7 @@ func (m *spreadsheetModel) editWorkbook(edit func(*spreadsheet.Spreadsheet) erro
 	}
 	m.status, m.errMessage, m.closeWarning = "", "", false
 	m.computeValues()
+	m.normalizeSpanCursor()
 	m.scrollToSelection()
 	return true
 }
@@ -899,6 +1002,7 @@ func (m *spreadsheetModel) undo() tea.Cmd {
 		m.status, m.errMessage = "Undid spreadsheet edit", ""
 		m.sheet = min(max(m.sheet, 0), len(m.book.Sheets)-1)
 		m.computeValues()
+		m.normalizeSpanCursor()
 		m.scrollToSelection()
 		return m.syncAutosave()
 	}
@@ -917,6 +1021,7 @@ func (m *spreadsheetModel) redo() tea.Cmd {
 		m.status, m.errMessage = "Redid spreadsheet edit", ""
 		m.sheet = min(max(m.sheet, 0), len(m.book.Sheets)-1)
 		m.computeValues()
+		m.normalizeSpanCursor()
 		m.scrollToSelection()
 		return m.syncAutosave()
 	}
@@ -931,6 +1036,7 @@ func cloneSpreadsheetState(book spreadsheet.Spreadsheet) spreadsheet.Spreadsheet
 	clone.Charts = append([]spreadsheet.Chart(nil), book.Charts...)
 	clone.Sheets = append([]spreadsheet.Sheet(nil), book.Sheets...)
 	for i := range clone.Sheets {
+		clone.Sheets[i].Spans = append([]spreadsheet.CellSpan(nil), book.Sheets[i].Spans...)
 		clone.Sheets[i].Rows = make([][]spreadsheet.Cell, len(book.Sheets[i].Rows))
 		for row := range book.Sheets[i].Rows {
 			clone.Sheets[i].Rows[row] = append([]spreadsheet.Cell(nil), book.Sheets[i].Rows[row]...)
@@ -947,6 +1053,10 @@ func cloneSpreadsheetState(book spreadsheet.Spreadsheet) spreadsheet.Spreadsheet
 
 // computeValues evaluates formulas in the current sheet so views stay pure.
 func (m *spreadsheetModel) computeValues() {
+	m.gridChartSeq++
+	m.gridChartDirty = true
+	m.gridCharts = nil
+	m.gridChartInfo = nil
 	m.values = make(map[[2]int]string)
 	evaluator := spreadsheet.NewEvaluator(&m.book)
 	spills, err := evaluator.SpillCells(m.sheet)
@@ -1068,6 +1178,7 @@ func (m *spreadsheetModel) gotoSearchMatch() {
 		return
 	}
 	m.sheet, m.row, m.column = match.sheet, match.row, match.column
+	m.normalizeSpanCursor()
 	m.computeValues()
 	rows, columns := m.sheetDimensions(m.sheet)
 	if match.row >= rows || match.column >= columns {
@@ -1186,6 +1297,9 @@ func (m *spreadsheetModel) renderHeader() string {
 		if len(m.book.Sheets) > 1 || m.book.Sheets[m.sheet].Name != "Sheet1" {
 			title += " — " + m.book.Sheets[m.sheet].Name
 		}
+		if m.charts.mode == chartForm {
+			title += " — Chart " + spreadsheet.CellName(m.row+1, m.column+1)
+		}
 	}
 	header := sanitizeTerminalLine(title)
 	if m.path != "" {
@@ -1224,6 +1338,19 @@ func (m *spreadsheetModel) renderGrid() string {
 	rowWidth := m.rowHeaderWidth()
 	columns := m.visibleColumns()
 	visibleRows := m.visibleRows()
+	selection := m.selectedCellRange()
+	var sheet spreadsheet.Sheet
+	if m.loaded {
+		sheet = m.book.Sheets[m.sheet]
+	}
+	visibleSpans := make(map[[2]int]spreadsheet.CellSpan)
+	for _, span := range sheet.Spans {
+		for row := max(span.FirstRow-1, m.rowOffset); row < min(span.LastRow, m.rowOffset+visibleRows); row++ {
+			for col := max(span.FirstColumn-1, m.columnOffset); col < min(span.LastColumn, m.columnOffset+columns); col++ {
+				visibleSpans[[2]int{row, col}] = span
+			}
+		}
+	}
 
 	lineBuf := m.renderColumnHeader(rowWidth, columns)
 
@@ -1238,18 +1365,50 @@ func (m *spreadsheetModel) renderGrid() string {
 			continue
 		}
 		gridBuf.WriteString(muted.Render(fmt.Sprintf("%*d", rowWidth, r+1)))
-		for c := m.columnOffset; c < m.columnOffset+columns && c < spreadsheet.MaxColumns; c++ {
+		for c := m.columnOffset; c < m.columnOffset+columns && c < spreadsheet.MaxColumns; {
+			span, spanned := visibleSpans[[2]int{r, c}]
+			end := c + 1
 			text := fitCell(m.displayValue(r, c), spreadsheetColumnWidth)
+			if lines, ok := m.gridCharts[[2]int{r, c}]; ok && len(lines) > 0 {
+				text = chartFormLine(lines[0], spreadsheetColumnWidth)
+			} else if _, ok := spreadsheet.ChartAt(&m.book, sheet.Name, r+1, c+1); ok {
+				text = fitCell("[Chart]", spreadsheetColumnWidth)
+			}
+			if spanned {
+				end = min(span.LastColumn, m.columnOffset+columns, spreadsheet.MaxColumns)
+				width := (span.LastColumn-span.FirstColumn+1)*(spreadsheetColumnWidth+1) - 1
+				value := ""
+				if r+1 == span.FirstRow {
+					value = m.displayValue(span.FirstRow-1, span.FirstColumn-1)
+				}
+				_, chart := spreadsheet.ChartAt(&m.book, sheet.Name, span.FirstRow, span.FirstColumn)
+				if chart {
+					value = ""
+					lines := m.gridCharts[[2]int{span.FirstRow - 1, span.FirstColumn - 1}]
+					line := r + 1 - span.FirstRow
+					if line < len(lines) {
+						value = lines[line]
+					} else if line == 0 && len(lines) == 0 {
+						value = "[Chart]"
+					}
+				}
+				start := (c - span.FirstColumn + 1) * (spreadsheetColumnWidth + 1)
+				if chart {
+					text = ansi.Cut(chartFormLine(value, width), start, start+(end-c)*(spreadsheetColumnWidth+1)-1)
+				} else {
+					text = ansi.Cut(fitCell(value, width), start, start+(end-c)*(spreadsheetColumnWidth+1)-1)
+				}
+			}
 			if m.find.visible && m.find.query() != "" {
 				text = highlightLine(text, m.find.query(), m.theme)
 			}
-			if r == m.row && c == m.column || m.selecting &&
-				r >= min(m.row, m.selectionRow) && r <= max(m.row, m.selectionRow) &&
-				c >= min(m.column, m.selectionColumn) && c <= max(m.column, m.selectionColumn) {
+			if r+1 >= selection.FirstRow && r+1 <= selection.LastRow &&
+				c+1 >= selection.FirstColumn && c+1 <= selection.LastColumn {
 				text = selected.Render(text)
 			}
 			gridBuf.WriteByte(' ')
 			gridBuf.WriteString(text)
+			c = end
 		}
 		if r < m.rowOffset+visibleRows-1 {
 			gridBuf.WriteByte('\n')
@@ -1269,6 +1428,9 @@ func (m *spreadsheetModel) renderStatus() string {
 			status = "Unsaved changes • " + dimensions
 		} else {
 			status = dimensions
+		}
+		if info := m.gridChartInfo[[2]int{m.row, m.column}]; info != "" {
+			status += " • " + sanitizeTerminalLine(info)
 		}
 	}
 	return runewidth.Truncate(sanitizeTerminalLine(status), m.width, "…")
@@ -1291,13 +1453,101 @@ func (m *spreadsheetModel) centerSheetIndicator(status string) string {
 
 func (m *spreadsheetModel) renderHelp() string {
 	muted := m.theme.Muted
-	help := "arrows move • enter edit • ctrl+s save • del clear • v select • g charts • y copy • p paste • P text paste • ctrl+p PDF • f formulas • tab sheet • u/ctrl+z undo • ctrl+r redo • d delete • i insert • r reload • esc/q quit"
+	help := "g chart • v select • m span • M split • arrows move • enter edit • ctrl+s save • del clear • y copy • p paste • P text paste • ctrl+p PDF • f formulas • tab sheet • u/ctrl+z undo • ctrl+r redo • d delete • i insert • r reload • esc/q quit"
 	if m.editing {
 		help = "enter stage • ctrl+s save • esc cancel • =formula • 'literal • shift+enter/alt+enter down • ctrl+p PDF"
 	} else if !m.loaded {
 		help = "r retry • esc/q quit"
+	} else if m.selecting {
+		help = "enter span • g chart • m span • y copy • esc cancel • arrows select"
+	} else if _, ok := spreadsheet.SpanAt(m.book.Sheets[m.sheet], m.row+1, m.column+1); ok {
+		help = "M split • v select • g new chart • arrows move • enter edit • ctrl+s save"
 	}
 	return muted.Render(runewidth.Truncate(help, m.width, "…"))
+}
+
+func (m *spreadsheetModel) chartTargetError(row, column int) error {
+	name := m.book.Sheets[m.sheet].Name
+	if _, ok := spreadsheet.ChartAt(&m.book, name, row+1, column+1); ok {
+		return nil
+	}
+	if m.cell(row, column) != (spreadsheet.Cell{}) {
+		return errors.New("clear the cell before creating a chart")
+	}
+	spills, err := spreadsheet.NewEvaluator(&m.book).SpillCells(m.sheet)
+	if err != nil {
+		return err
+	}
+	if _, ok := spills[[2]int{row + 1, column + 1}]; ok {
+		return errors.New("cannot create a chart in a spilled cell")
+	}
+	return nil
+}
+
+func (m *spreadsheetModel) openSelectedRangeChart() tea.Cmd {
+	span := m.selectedCellRange()
+	row, column := span.FirstRow-1, span.FirstColumn-1
+	if err := m.chartTargetError(row, column); err != nil {
+		m.setError("Chart", err)
+		return nil
+	}
+	if !m.finalizeSelectedSpan(span) {
+		return nil
+	}
+	return tea.Batch(m.syncAutosave(), m.openCellChart())
+}
+
+func (m *spreadsheetModel) finalizeSelectedSpan(span spreadsheet.CellSpan) bool {
+	existing, spanned := spreadsheet.SpanAt(m.book.Sheets[m.sheet], span.FirstRow, span.FirstColumn)
+	needsSpan := (span.FirstRow != span.LastRow || span.FirstColumn != span.LastColumn) &&
+		(!spanned || existing != span)
+	if needsSpan && !m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+		return spreadsheet.SpanCellsInBook(book, book.Sheets[m.sheet].Name, span)
+	}) {
+		return false
+	}
+	m.selecting = false
+	m.row, m.column = span.FirstRow-1, span.FirstColumn-1
+	m.status, m.errMessage = "", ""
+	m.scrollToSelection()
+	return true
+}
+
+func (m *spreadsheetModel) editSelectedRange() tea.Cmd {
+	span := m.selectedCellRange()
+	row, column := span.FirstRow-1, span.FirstColumn-1
+	if span.FirstRow == span.LastRow && span.FirstColumn == span.LastColumn &&
+		m.cell(row, column) == (spreadsheet.Cell{}) {
+		if _, ok := m.values[[2]int{row, column}]; ok {
+			m.errMessage = "Cannot edit a spilled cell; edit its formula anchor"
+			return nil
+		}
+	}
+	if !m.finalizeSelectedSpan(span) {
+		return nil
+	}
+	if _, ok := spreadsheet.ChartAt(&m.book, m.book.Sheets[m.sheet].Name, m.row+1, m.column+1); ok {
+		return tea.Batch(m.syncAutosave(), m.openCellChart())
+	}
+	return tea.Batch(m.syncAutosave(), m.beginEdit(cellDraft(m.cell(m.row, m.column))))
+}
+
+func (m *spreadsheetModel) openCellChart() tea.Cmd {
+	name := m.book.Sheets[m.sheet].Name
+	chart, ok := spreadsheet.ChartAt(&m.book, name, m.row+1, m.column+1)
+	if ok {
+		for i := range m.book.Charts {
+			if m.book.Charts[i].ID == chart.ID {
+				m.charts.index = i
+				return m.openChartForm(true)
+			}
+		}
+	}
+	if err := m.chartTargetError(m.row, m.column); err != nil {
+		m.setError("Chart", err)
+		return nil
+	}
+	return m.openChartForm(false)
 }
 
 func (m *spreadsheetModel) View() tea.View {
@@ -1322,5 +1572,5 @@ func (m *spreadsheetModel) viewContent() string {
 	}
 	status = m.centerSheetIndicator(status)
 	output := chromeLayout(m.width, m.height, m.renderHeader(), shortcuts, content, status, m.theme.BorderColor)
-	return m.clearChartGraphics(output)
+	return output
 }

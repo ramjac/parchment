@@ -228,28 +228,58 @@ adjusted. Copy also writes tab-separated text to the system clipboard when
 available. Press `P` to paste system clipboard text as literal cells, including
 text beginning with `=`; it never becomes a formula. `Esc` cancels a selection.
 
-Press `g` to manage charts. Select a range first with `v`, then use `n` to
-create a chart; the form asks for its type, source sheet and range, header row,
-label column, and title. Use `e` to edit, `Enter` to preview, `d` to delete,
-`s` to export SVG, or `p` to export PDF. Chart changes are buffered and saved
-with the workbook. The preview uses terminal graphics where available, with a
-text summary for small or monochrome terminals.
+To make one cell span a rectangular area, select the range with `v` and press
+`m`, or press `Enter` to span it and edit the top-left cell immediately.
+Cancelling that edit leaves the span in place. The top-left cell keeps its
+value or formula; the other cells must be empty and cannot overlap another
+span or an array spill. Select a spanned cell
+and press `M` to split it. Clicking anywhere in the span selects its top-left
+cell, and arrow keys move past the span. Covered coordinates cannot be edited;
+formulas referencing them evaluate them as empty. Inserting or deleting rows
+or columns adjusts spans, preserving the anchor when part of a span remains.
+Spans participate in undo, recovery, printing and PDF. CSV and system clipboard
+text retain the anchor value and empty covered cells, but not span formatting.
 
-Charts are live definitions bound to a rectangular range. Bar and line charts
-support multiple numeric series; pie charts require one nonnegative series
-with a positive total. Optional headers supply series names and an optional
-first column supplies category labels. Missing or nonnumeric values are
-errors. Deleting a source preserves an invalid chart for editing or deletion.
-Charts are included as additional pages in workbook PDFs; CSV contains only
-cells. Standalone exports are generated on demand, refuse overwrite unless
-confirmed, and cannot overwrite the workbook. PDF chart labels must use
-characters supported by the PDF's standard font.
+The CLI can also create or split spans:
 
 ```sh
-parchment spreadsheet chart create budget.md bar A1:B5 --header --labels --title "Budget"
-parchment spreadsheet chart list budget.md
-parchment spreadsheet chart export budget.md CHART_ID --format svg -o budget-chart.svg
-parchment spreadsheet chart export budget.md CHART_ID --format pdf -o budget-chart.pdf
+parchment spreadsheet span budget.md A1:B3
+parchment spreadsheet unspan budget.md A1
+```
+
+Select an empty cell and press `g` to create a chart there. For a larger
+chart, select an empty rectangle with `v` and press `g` to span it and open
+the chart editor. You can also press `m` to span the rectangle first, then
+press `g` on the span. Cancelling the chart editor leaves the span in place.
+Press `g` or `Enter` on an existing chart to edit it;
+`Delete` removes it after confirmation without splitting its span. A cell
+containing data, a formula, or a spill cannot be replaced by a chart.
+The form shows its type, source sheet and range, header row,
+label column, and title alongside a live preview and the read-only spreadsheet.
+Use `Tab` / `Shift+Tab` to move between fields, and arrows or Space to change
+the type and yes/no choices. `Ctrl+S` stages the chart and `Esc` cancels.
+On small terminals, the grid may be hidden and the form scrolls to the focused
+field; use `PgUp` / `PgDn` to scroll a long preview or error. A chart can be
+staged even if its data cannot currently be previewed. Chart changes are
+buffered and saved with the workbook. In the grid, a chart that is too small
+to draw displays an indicator. To enlarge an existing span, split it with `M`
+and then span a larger rectangle from the same anchor.
+
+Charts are live definitions bound to a rectangular range. Bar charts use one
+numeric series; line charts support multiple numeric series. Optional headers
+supply series names and an optional first column supplies category labels.
+Missing or nonnumeric values are errors. Deleting a source preserves an invalid
+chart for editing or deletion. A reference to a chart cell evaluates as empty.
+Internal copy preserves charts and their source references; CSV and system
+clipboard text do not carry charts. Text printing uses a chart placeholder;
+workbook PDFs draw charts in their cells. Standalone exports are generated on
+demand, refuse overwrite unless forced, and cannot overwrite the workbook.
+
+```sh
+parchment spreadsheet chart create budget.md C1 bar A1:B5 --header --labels --title "Budget"
+parchment spreadsheet chart edit budget.md C1 --title "Updated budget"
+parchment spreadsheet chart export budget.md C1 --format svg -o budget-chart.svg
+parchment spreadsheet chart export budget.md C1 --format pdf -o budget-chart.pdf
 ```
 
 CSV import initializes literal text cells; CSV export writes one selected
@@ -288,6 +318,8 @@ The `presentation image`, `images`, `image-extract`, and `image-remove`
 commands manage embedded assets.
 The presentation-wide print font can be `courier`, `helvetica`, or `times`;
 it does not affect terminal output.
+Slide navigation animates between text-only slides; slides with embedded images
+and terminals smaller than 40×10 switch immediately.
 
 ## Images
 

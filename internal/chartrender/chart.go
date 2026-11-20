@@ -68,43 +68,11 @@ func Layout(data spreadsheet.ChartData) (Scene, error) {
 	polygon := func(points []Point, col color.RGBA) {
 		scene.Shapes = append(scene.Shapes, Shape{Points: points, Color: col, Fill: true})
 	}
-	if data.Type == "pie" {
-		if len(data.Series) != 1 {
-			return scene, fmt.Errorf("pie chart requires one series")
-		}
-		total := 0.0
-		for _, value := range data.Series[0].Values {
-			if value < 0 {
-				return scene, fmt.Errorf("pie chart values cannot be negative")
-			}
-			total += value
-		}
-		if total <= 0 || math.IsInf(total, 0) {
-			return scene, fmt.Errorf("pie chart total must be positive and finite")
-		}
-		angle := -math.Pi / 2
-		for i, value := range data.Series[0].Values {
-			if value == 0 {
-				continue
-			}
-			end := angle + value/total*2*math.Pi
-			steps := max(1, int(math.Ceil((end-angle)/(math.Pi/40))))
-			points := []Point{{250, 245}}
-			for j := 0; j <= steps; j++ {
-				a := angle + (end-angle)*float64(j)/float64(steps)
-				points = append(points, Point{250 + 175*math.Cos(a), 245 + 175*math.Sin(a)})
-			}
-			polygon(points, palette[i%len(palette)])
-			angle = end
-			if i < 18 {
-				polygon([]Point{{465, 65 + float64(i)*20}, {477, 65 + float64(i)*20}, {477, 77 + float64(i)*20}, {465, 77 + float64(i)*20}}, palette[i%len(palette)])
-				scene.Text = append(scene.Text, Text{X: 485, Y: 76 + float64(i)*20, Text: cleanLabel(data.Labels[i])})
-			}
-		}
-		return scene, nil
-	}
 	if data.Type != "bar" && data.Type != "line" {
 		return scene, fmt.Errorf("unsupported chart type %q", data.Type)
+	}
+	if data.Type == "bar" && len(data.Series) != 1 {
+		return scene, fmt.Errorf("bar charts require exactly one data series")
 	}
 	minimum, maximum := 0.0, 0.0
 	for _, series := range data.Series {
