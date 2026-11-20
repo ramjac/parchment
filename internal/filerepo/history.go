@@ -169,9 +169,11 @@ type historyEmbeddedImage struct {
 }
 
 type historyDocumentData struct {
-	Layout  document.Layout        `json:"layout"`
-	Changes []document.Change      `json:"changes,omitempty"`
-	Images  []historyEmbeddedImage `json:"images,omitempty"`
+	Layout          document.Layout          `json:"layout"`
+	TrackingVersion int                      `json:"tracking_version,omitempty"`
+	Tracking        bool                     `json:"tracking,omitempty"`
+	TrackedChanges  []document.TrackedChange `json:"tracked_changes,omitempty"`
+	Images          []historyEmbeddedImage   `json:"images,omitempty"`
 }
 
 type historyPresentationData struct {

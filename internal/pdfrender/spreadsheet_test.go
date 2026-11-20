@@ -3,6 +3,7 @@ package pdfrender
 import (
 	"bytes"
 	"compress/zlib"
+	"context"
 	"io"
 	"math"
 	"strings"
@@ -10,6 +11,38 @@ import (
 
 	"example.com/parchment/internal/spreadsheet"
 )
+
+func TestSpreadsheetChartPDFPages(t *testing.T) {
+	book := spreadsheet.Spreadsheet{Sheets: []spreadsheet.Sheet{{Name: "Sheet1", Rows: [][]spreadsheet.Cell{
+		{{Value: "1"}, {Value: "2"}},
+	}}}}
+	chart := spreadsheet.Chart{ID: "one", Title: "Chart title", Type: "bar", Sheet: "Sheet1",
+		FirstRow: 1, LastRow: 1, FirstColumn: 1, LastColumn: 2}
+	book.Charts = []spreadsheet.Chart{chart}
+	file, err := spreadsheetPDF(book)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := file.Pages[len(file.Pages)-1]
+	if len(page.Polygons) == 0 || len(page.Elements) == 0 {
+		t.Fatalf("chart page lacks vector shapes or labels: %+v", page)
+	}
+	var output bytes.Buffer
+	if err := RenderChartContext(context.Background(), &output, book, chart); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(output.Bytes(), []byte("%PDF-")) || !spreadsheetPDFContains(output.Bytes(), []byte("Chart title")) {
+		t.Fatal("standalone chart PDF lacks header or title")
+	}
+	if !spreadsheetPDFContains(output.Bytes(), []byte(" l S")) {
+		t.Fatal("chart PDF does not render two-point unfilled shapes as lines")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := RenderChartContext(ctx, &output, book, chart); err != context.Canceled {
+		t.Fatalf("cancelled chart PDF: %v", err)
+	}
+}
 
 func TestRenderSpreadsheetPDF(t *testing.T) {
 	book := spreadsheet.Spreadsheet{Sheets: []spreadsheet.Sheet{{Name: "Report", Rows: [][]spreadsheet.Cell{

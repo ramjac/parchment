@@ -63,7 +63,7 @@ func (s *documentsScreen) toolbarButtons() []toolbarButton {
 	buttons := []toolbarButton{
 		{"File", "Save", "save", "Ctrl+S"},
 		{"File", "PDF", "pdf", "Ctrl+P"},
-		{"File", "Propose", "propose", "F3"},
+		{"File", "Tracking", "tracking", "F3"},
 		{"File", "Changes", "changes", "F4"},
 		{"File", "Preview", "preview", "F5"},
 		{"File", "Close", "close", "Esc"},
@@ -455,7 +455,7 @@ func (s *documentsScreen) updateEditorShortcuts(msg tea.KeyMsg, key string) (tea
 	case "ctrl+s":
 		return s.save(), true
 	case "f3":
-		return s.propose(), true
+		return s.toggleTracking(), true
 	case "f4":
 		return s.loadChanges(), true
 	case "f5":
@@ -672,31 +672,22 @@ func (s *documentsScreen) save() tea.Cmd {
 	}
 }
 
-// propose records the unsaved edits as a proposal for review instead of
-// saving them. The editor then returns to the saved document and shows the
-// file's proposals.
-func (s *documentsScreen) propose() tea.Cmd {
+func (s *documentsScreen) toggleTracking() tea.Cmd {
 	if s.pending {
 		return nil
 	}
-	if !s.dirty() {
-		s.status = "Edit the document first; Propose records your unsaved edits for review"
+	if s.dirty() {
+		s.status = "Save or discard edits before changing tracking"
 		return nil
 	}
-	draft := document.Draft{Body: s.body.Value(), Layout: s.layout, Images: s.images}
-	service, snapshot, store, path := s.service, s.snapshot, s.recoveryStore, s.path
-	return s.reload(true, func(ctx context.Context) (string, error) {
-		change, err := service.Propose(ctx, snapshot, "TUI edit", draft)
-		if err != nil {
-			return "", err
+	service, snapshot := s.service, s.snapshot
+	enabled := !snapshot.Tracking
+	return s.reload(false, func(ctx context.Context) (string, error) {
+		_, err := service.SetTrackingExpected(ctx, snapshot, enabled)
+		if enabled {
+			return "Change tracking on", err
 		}
-		description := "Proposal recorded: " + change.ID
-		if store != nil {
-			if err := store.DeleteRecovery(context.Background(), path); err != nil {
-				description += " (could not remove recovery draft: " + err.Error() + ")"
-			}
-		}
-		return description, nil
+		return "Change tracking off", err
 	})
 }
 
@@ -861,8 +852,8 @@ func (s *documentsScreen) actDocument(action string) (tea.Cmd, bool) {
 	switch action {
 	case "save":
 		return s.save(), true
-	case "propose":
-		return s.propose(), true
+	case "tracking":
+		return s.toggleTracking(), true
 	case "changes":
 		return s.loadChanges(), true
 	case "image":
@@ -1052,7 +1043,11 @@ func (s *documentsScreen) editorView(header string) string {
 	if s.dirty() {
 		state += " • unsaved"
 	}
-	state += "  ·  Ctrl+F find  ·  Ctrl+P exports PDF  ·  F2 toolbar  ·  F6 outline  ·  Ctrl+S saves  ·  F3 proposes  ·  F4 changes  ·  Esc returns to the reader"
+	tracking := "off"
+	if s.snapshot.Tracking {
+		tracking = "on"
+	}
+	state += "  ·  Ctrl+F find  ·  Ctrl+P exports PDF  ·  F2 toolbar  ·  F6 outline  ·  Ctrl+S saves  ·  F3 tracking " + tracking + "  ·  F4 changes  ·  Esc returns to the reader"
 	if s.previewing {
 		// A printed page is usually taller than the terminal. Show only the
 		// lines that fit; an over-tall view would be clipped from the top,

@@ -107,6 +107,7 @@ func newSheetModel(t *testing.T, rows [][]spreadsheet.Cell) (*spreadsheetModel, 
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	m := newSpreadsheetModel(service, book.Path, Theme{}, 10)
 	driveSheet(t, m, tea.WindowSizeMsg{Width: 100, Height: 20})
 	if msg := m.Init()(); msg != nil {
@@ -116,6 +117,106 @@ func newSheetModel(t *testing.T, rows [][]spreadsheet.Cell) (*spreadsheetModel, 
 		t.Fatalf("model not loaded: loaded %t pending %t err %q", m.loaded, m.pending, m.errMessage)
 	}
 	return m, service, repository, book.Path
+}
+
+func TestSpreadsheetRangeClipboard(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "7"}, {Formula: "=A1+$A$1"}}})
+	var system string
+	m.clipboardWrite = func(text string) error { system = text; return nil }
+	m.clipboardRead = func() (string, error) { return "=untrusted\t\"two\nlines\"\n", nil }
+	driveSheet(t, m, sheetKey("v"))
+	driveSheet(t, m, sheetKey("right"))
+	driveSheet(t, m, sheetKey("y"))
+	if system != "7\t=A1+$A$1\n" {
+		t.Fatalf("system copy = %q", system)
+	}
+	driveSheet(t, m, sheetKey("down"))
+	driveSheet(t, m, sheetKey("left"))
+	driveSheet(t, m, sheetKey("p"))
+	if got := m.book.Sheets[0].Rows[1]; got[0].Value != "7" || got[1].Formula != "=A2+$A$1" {
+		t.Fatalf("internal paste = %#v", got)
+	}
+	driveSheet(t, m, sheetKey("u"))
+	if got := m.cell(1, 0); got != (spreadsheet.Cell{}) {
+		t.Fatalf("undo did not revert range: %#v", got)
+	}
+	driveSheet(t, m, sheetKey("P"))
+	if got := m.book.Sheets[0].Rows[1]; got[0].Value != "=untrusted" || got[0].Formula != "" || got[1].Value != "two\nlines" {
+		t.Fatalf("external paste = %#v", got)
+	}
+}
+
+func TestSpreadsheetClipboardRoundTripsEmptyRows(t *testing.T) {
+	copied := spreadsheet.CellClipboard{Cells: [][]spreadsheet.Cell{{{Value: "first"}}, {{}}, {{Value: "last"}}}}
+	text, err := encodeSpreadsheetClipboard(copied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := decodeSpreadsheetClipboard(text)
+	if err != nil || len(rows) != 3 || rows[1][0].Value != "" || rows[2][0].Value != "last" {
+		t.Fatalf("clipboard round trip = %#v, %v", rows, err)
+	}
+	rows, err = decodeSpreadsheetClipboard("\"first\n\nline\"\r\n\r\nlast\r\n")
+	if err != nil || len(rows) != 3 || rows[0][0].Value != "first\n\nline" || rows[1][0].Value != "" || rows[2][0].Value != "last" {
+		t.Fatalf("external blank rows = %#v, %v", rows, err)
+	}
+}
+
+func TestSpreadsheetClipboardFailuresKeepInternalCopy(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "source"}}})
+	m.clipboardWrite = func(string) error { return errors.New("unavailable") }
+	m.clipboardRead = func() (string, error) { return "", errors.New("unavailable") }
+	driveSheet(t, m, sheetKey("y"))
+	if m.clipboard == nil || !strings.Contains(m.status, "internally") {
+		t.Fatalf("copy failed to retain internal clipboard: %q", m.status)
+	}
+	driveSheet(t, m, sheetKey("down"))
+	driveSheet(t, m, sheetKey("P"))
+	if !strings.Contains(m.errMessage, "unavailable") {
+		t.Fatalf("read failure not reported: %q", m.errMessage)
+	}
+	driveSheet(t, m, sheetKey("p"))
+	if got := m.cell(1, 0).Value; got != "source" {
+		t.Fatalf("internal copy after system failure = %q", got)
+	}
+}
+
+func TestSpreadsheetDisplaysAndProtectsSpill(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Formula: "=SEQUENCE(2,2)"}}})
+	var copied string
+	m.clipboardWrite = func(text string) error { copied = text; return nil }
+	driveSheet(t, m, sheetKey("v"))
+	driveSheet(t, m, sheetKey("down"))
+	driveSheet(t, m, sheetKey("right"))
+	driveSheet(t, m, sheetKey("y"))
+	if copied != "=SEQUENCE(2,2)\t2\n3\t4\n" {
+		t.Fatalf("copied spill text = %q", copied)
+	}
+
+	m.row, m.column = 0, 0
+	if got := m.displayValue(1, 1); got != "4" {
+		t.Fatalf("spill display = %q", got)
+	}
+	driveSheet(t, m, sheetKey("down"))
+	driveSheet(t, m, sheetKey("right"))
+	driveSheet(t, m, sheetKey("enter"))
+	if m.editing || !strings.Contains(m.errMessage, "spilled cell") {
+		t.Fatalf("spill edit: editing=%t, error=%q", m.editing, m.errMessage)
+	}
+}
+
+func TestSpreadsheetSearchFindsSpilledCells(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Formula: "=SEQUENCE(2,2)"}}})
+	m.searchSpreadsheet("4")
+	if len(m.searchMatches) != 1 {
+		t.Fatalf("search matches = %+v", m.searchMatches)
+	}
+	match := m.searchMatches[0]
+	if match.sheet != 0 || match.row != 1 || match.column != 1 ||
+		m.row != 1 || m.column != 1 || m.displayValue(1, 1) != "4" {
+		t.Fatalf("spill search selection = %+v at %s: %q", match,
+			spreadsheet.CellName(m.row+1, m.column+1), m.displayValue(1, 1))
+	}
 }
 
 func TestSpreadsheetAutosavesWorkbookAndActiveCellInput(t *testing.T) {
@@ -1146,6 +1247,36 @@ func TestSpreadsheetUpdateSavedMsgSuccess(t *testing.T) {
 	}
 	if m.pending || m.dirty() || m.book.Sheets[0].Rows[0][1].Value != "saved" {
 		t.Fatalf("save did not update clean workbook state")
+	}
+}
+
+func TestSpreadsheetSavePreservesRangeSelection(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{
+		{{Value: "1"}, {Value: "2"}},
+		{{Value: "3"}, {Value: "4"}},
+	})
+	if !m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+		return spreadsheet.SetCellInBook(book, spreadsheet.SetCellOptions{
+			Sheet: "Sheet1", Row: 1, Column: 1, Cell: spreadsheet.Cell{Value: "saved"},
+		})
+	}) {
+		t.Fatalf("edit failed: %s", m.errMessage)
+	}
+	var copied string
+	m.clipboardWrite = func(text string) error {
+		copied = text
+		return nil
+	}
+	driveSheet(t, m, sheetKey("v"))
+	driveSheet(t, m, sheetKey("right"))
+	driveSheet(t, m, sheetKey("down"))
+	driveSheet(t, m, sheetKey("ctrl+s"))
+	if !m.selecting || m.selectionRow != 0 || m.selectionColumn != 0 {
+		t.Fatalf("save lost selection: active=%t anchor=%d,%d", m.selecting, m.selectionRow, m.selectionColumn)
+	}
+	driveSheet(t, m, sheetKey("y"))
+	if copied != "saved\t2\n3\t4\n" {
+		t.Fatalf("copied range after save = %q", copied)
 	}
 }
 

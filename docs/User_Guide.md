@@ -68,7 +68,7 @@ exports the current text, including unsaved edits, to PDF.
 ## Documents
 
 Documents add a reader, heading outline, clickable internal links, print
-layout, embedded images, and review proposals to Markdown. These features are
+layout, embedded images, and optional change tracking to Markdown. These features are
 Document-only: notes remain flat and presentations use slides instead. The
 [document example](../examples/document.md) demonstrates Markdown, anchors,
 layout, printing, and embedded media.
@@ -78,17 +78,27 @@ layout, printing, and embedded media.
 An existing document opens in its reader, with an outline beside the rendered
 pages. Use `↑` / `↓` to scroll across pages, `←` / `→` or `[` / `]` to change
 pages, `{` / `}` to move between sections, and click an outline entry to jump.
-Press `e` to edit, `v` to list proposals, `u` or `Ctrl+R` to undo or redo, and
+Press `e` to edit, `v` to list tracked changes, `u` or `Ctrl+R` to undo or redo, and
 `Esc` or `q` to leave the reader.
 
 In the editor, `Ctrl+S` saves and `F5` previews the rendered pages. `Ctrl+O`
 toggles the outline; the toolbar provides text formatting, page setup, and
-save/proposal actions. `F2` and arrow keys navigate toolbar controls, and `F6`
-focuses the outline. `F3` records the unsaved changes as a proposal; `F4`
-opens proposal review. In the proposal list, `Enter` reviews a proposal and
-`a` or `r` accepts or rejects it. A proposal does not change the live document
-until accepted; only one can be pending per document, and accepting is refused
-if the live document changed after the proposal was recorded.
+save and tracking actions. `F2` and arrow keys navigate toolbar controls, and
+`F6` focuses the outline. `F3` toggles tracking for future edits; save or
+discard unsaved edits before toggling. `Ctrl+S` saves the current Markdown,
+including insertions and excluding deletions. `F4` lists saved pending changes:
+press `Enter` to review, then `a` to accept or `r` to reject. In the list,
+`A` accepts all and `R` rejects all. Save or discard unsaved edits before
+reviewing. A stale save or review fails rather than overwriting external edits.
+
+Tracked changes record Markdown text, including image references, not page
+layout or image bytes. Overlapping edits coalesce; nearby changes and very
+large replacements may be reviewed together. Image-reference moves are
+reviewed together when their removal and insertion are paired. Embedded bytes
+remain in the file while pending changes might need them. Turning tracking off
+does not resolve pending changes; untracked edits that intersect them are
+rejected until they are reviewed. At most 4096 changes and 16 MiB of tracked
+text are stored per document.
 
 ### Layout, images, and interchange
 
@@ -112,18 +122,42 @@ parchment document export report.md -o report.docx
 parchment document import draft.docx report.md
 ```
 
-PDF output renders Markdown styling, links, layout, and embedded images.
-Document import and export support the documented ODT and DOCX subsets and
-warn when a conversion is lossy. `Ctrl+P` in the reader or editor exports a
-PDF; the destination defaults to the last successful PDF destination, and
-overwriting an existing file requires confirmation. In non-interactive CLI
-use, pass `--force` to replace an existing PDF.
+Import and export support ODT and DOCX. The format is inferred from the file
+extension; `--format odt|docx` can specify it explicitly. Import refuses to
+overwrite an existing Markdown file and opens the result for editing in an
+interactive terminal unless `--no-edit` is passed. Export requires `-o` and
+refuses to overwrite an existing destination unless `--force` is passed.
 
-Proposal commands are also available through `parchment document propose`,
-`review`, `accept`, and `reject`. A proposal can include Markdown or layout
-changes. Add new image data with the regular document image command rather
-than a proposal. `parchment document images` lists embedded assets;
-`image-extract` and `image-remove` extract or remove them.
+Conversion is intentionally lossy, not a full-fidelity office document
+round-trip. The supported subset includes common Markdown text and formatting,
+lists, blockquotes, code blocks, tables, links, page/section breaks, basic page
+layout, headers/footers, and embedded PNG, JPEG, or GIF images. Unsupported or
+approximated features generate warnings; geometry is rounded or mapped to
+supported page sizes, and per-section fonts collapse to one document font.
+External images and unsupported image formats are skipped with a warning.
+Export uses the current document body and warns when pending review metadata is
+omitted. The same applies to Markdown output, printing and PDF.
+
+PDF output renders Markdown styling, links, layout, and embedded images.
+`Ctrl+P` in the reader or editor exports a PDF; the destination defaults to
+the last successful PDF destination, and overwriting an existing file
+requires confirmation. In non-interactive CLI use, pass `--force` to replace
+an existing PDF.
+
+Use `parchment document tracking report.md on|off` to change the persistent
+setting. CLI body-changing commands accept `--track` or `--track=false`;
+when tracking is enabled, the choice is required explicitly. For example:
+
+```sh
+parchment document edit report.md --body "Revised text" --track
+parchment document changes report.md
+parchment document review report.md CHANGE_ID
+parchment document reject report.md CHANGE_ID
+parchment document accept report.md --all
+```
+
+`parchment document images` lists embedded assets; `image-extract` and
+`image-remove` extract or remove them.
 
 ## Spreadsheets
 
@@ -144,10 +178,42 @@ parchment spreadsheet print budget.md --format pdf -o budget.pdf
 
 Formulas support numeric constants, same-sheet and cross-sheet A1 references,
 rectangular ranges, parentheses, unary signs, `+`, `-`, `*`, `/`, nested
-function calls, and `SUM`, `AVERAGE`, `COUNT`, `MIN`, and `MAX`. Empty
+function calls, comparisons (`=`, `<>`, `<`, `<=`, `>`, `>=`), and
+`SUM`, `AVERAGE`, `COUNT`, `MIN`, `MAX`, `COUNTA`, `ROUND`, `IF`, and
+`IFERROR`, `SUMIFS`, `COUNTIFS`, `TEXTJOIN`, `INDEX`, `MATCH`, `XMATCH`,
+`XLOOKUP`, `DATE`, `YEAR`, `MONTH`, `DAY`, `TODAY`, `NOW`, `FILTER`, `SORT`,
+`UNIQUE`, and `SEQUENCE`. `IF` and
+`IFERROR` evaluate only the branch they need. `COUNTA`
+counts nonempty cells, including formulas that return an empty string.
+`ROUND(number, digits)` rounds half away from zero. Dates use serial days
+from 1899-12-30, without a fictitious 1900 leap day. `DATE(year, month, day)`
+normalizes overflowing months and days; years must be 1 through 9999.
+`TODAY()` and `NOW()` use UTC, with one time snapshot per recalculation.
+Empty
 referenced cells evaluate to zero; formula errors can be stored and displayed.
+`SUMIFS(sum_range, range, criterion, ...)` and
+`COUNTIFS(range, criterion, ...)` require equally sized ranges. Criteria are
+case-insensitive and support comparison prefixes and `*`/`?` wildcards (`~`
+escapes a wildcard). `TEXTJOIN(delimiter, ignore_empty, value, ...)` joins
+values and ranges in row-major order.
+`INDEX(range, row, column)` uses one-based coordinates (`column` defaults to
+1). `MATCH(value, range, mode)` supports exact (`0`), exact-or-smaller (`1`,
+the default), and exact-or-larger (`-1`) matching. `XMATCH` and `XLOOKUP`
+default to exact matching; their match modes `-1`, `1`, and `2` mean
+exact-or-smaller, exact-or-larger, and wildcard. Their search mode is `1`
+(forward) or `-1` (reverse); binary search is not supported. Lookup ranges
+must be one-dimensional, and `XLOOKUP`'s return range must have the same
+shape. Optional arguments must be supplied in order.
+`SEQUENCE(rows, columns, start, step)` defaults its last three arguments to 1.
+`FILTER(array, include, if_empty)` filters rows or columns using a matching
+one-dimensional condition. `SORT(array, index, order, by_column)` defaults
+to the first column, ascending rows. `UNIQUE(array, by_column, exactly_once)`
+defaults to distinct rows. Array results spill into empty neighboring cells;
+only the formula anchor is stored. A blocked or out-of-bounds result shows
+`#SPILL!`, and spill cells cannot be edited directly.
 Rows, columns, and sheets can be inserted or deleted; affected references
-shift or become `#REF!` as appropriate.
+shift or become `#REF!` as appropriate. References support absolute and mixed
+axes (`$A$1`, `$A1`, `A$1`) when formulas are copied.
 
 In the grid editor, arrow keys select cells and `Enter` edits a cell. Changes
 are buffered until `Ctrl+S`. `Shift+Enter` stages the current cell and starts
@@ -155,6 +221,36 @@ editing the cell below; if the terminal or multiplexer does not report that
 key, use `Alt+Enter`. Insert a row or column with `i` then `r` or `c`; delete
 a row, column, or sheet with `d` then `r`, `c`, or `s`. `u` / `Ctrl+Z` and
 `Ctrl+R` undo and redo buffered edits before committed changes.
+Press `v` to start selecting a range, move to its opposite corner, and press
+`y` to copy. Press `y` without a selection to copy one cell. Move to the
+destination and press `p` to paste the internal copy with relative references
+adjusted. Copy also writes tab-separated text to the system clipboard when
+available. Press `P` to paste system clipboard text as literal cells, including
+text beginning with `=`; it never becomes a formula. `Esc` cancels a selection.
+
+Press `g` to manage charts. Select a range first with `v`, then use `n` to
+create a chart; the form asks for its type, source sheet and range, header row,
+label column, and title. Use `e` to edit, `Enter` to preview, `d` to delete,
+`s` to export SVG, or `p` to export PDF. Chart changes are buffered and saved
+with the workbook. The preview uses terminal graphics where available, with a
+text summary for small or monochrome terminals.
+
+Charts are live definitions bound to a rectangular range. Bar and line charts
+support multiple numeric series; pie charts require one nonnegative series
+with a positive total. Optional headers supply series names and an optional
+first column supplies category labels. Missing or nonnumeric values are
+errors. Deleting a source preserves an invalid chart for editing or deletion.
+Charts are included as additional pages in workbook PDFs; CSV contains only
+cells. Standalone exports are generated on demand, refuse overwrite unless
+confirmed, and cannot overwrite the workbook. PDF chart labels must use
+characters supported by the PDF's standard font.
+
+```sh
+parchment spreadsheet chart create budget.md bar A1:B5 --header --labels --title "Budget"
+parchment spreadsheet chart list budget.md
+parchment spreadsheet chart export budget.md CHART_ID --format svg -o budget-chart.svg
+parchment spreadsheet chart export budget.md CHART_ID --format pdf -o budget-chart.pdf
+```
 
 CSV import initializes literal text cells; CSV export writes one selected
 sheet (the first sheet by default). The Markdown file is the canonical
@@ -215,7 +311,9 @@ is selected by the `.png`, `.jpg`, or `.jpeg` extension. PNG transparency is
 preserved; transparent JPEG pixels are composited over white.
 
 The TUI viewer fits the image to the terminal using Kitty, Sixel, iTerm2, or an
-ANSI half-block fallback. Use `c` for crop, `r` for resize, Tab to move between
+ANSI half-block fallback. Generic `xterm` terminal types use the ANSI fallback
+because they do not reliably indicate Sixel support; explicit Sixel terminal
+types, `foot`, and `mlterm` use Sixel. Use `c` for crop, `r` for resize, Tab to move between
 fields, Enter to apply, and Esc to cancel. `u` undoes and `Ctrl+R` redoes
 in-session edits. `Ctrl+S` saves in place; `s` saves to another image path.
 Images do not have recovery drafts or persistent saved-file history. Inputs
@@ -272,4 +370,4 @@ Environment overrides include `PARCHMENT_UNDO_LIMIT`, `PARCHMENT_THEME`,
 `error`, or `off`, and format accepts `text` or `json`. Local backup snapshots
 are disabled unless a destination is configured. See the
 [Technical Guide](Technical_Guide.md) for the file format and application-state
-boundaries.
+boundaries, including persistent history storage.

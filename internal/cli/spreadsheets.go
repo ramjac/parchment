@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/csv"
 	"errors"
 	"fmt"
@@ -28,6 +29,7 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 	group.AddCommand(newSpreadsheetDeleteSheetCmd())
 	group.AddCommand(newSpreadsheetAddSheetCmd())
 	group.AddCommand(newSpreadsheetExportCmd(streams))
+	addSpreadsheetChartCommands(group, streams)
 	group.AddCommand(newPrintCmd(artifact.SpreadsheetKind, streams))
 }
 
@@ -103,7 +105,7 @@ func newSpreadsheetExportCmd(streams output) *cobra.Command {
 			if !csvFlag {
 				return errors.New("--csv is required")
 			}
-			_, service, err := openSpreadsheets(cmd)
+			repo, service, err := openSpreadsheets(cmd)
 			if err != nil {
 				return err
 			}
@@ -120,39 +122,36 @@ func newSpreadsheetExportCmd(streams output) *cobra.Command {
 				}
 			}
 
-			var out io.Writer
-			out = streams.out
-
 			outputPath, _ := cmd.Flags().GetString("output")
-			if outputPath != "" {
-				force, _ := cmd.Flags().GetBool("force")
-				flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL
-				if force {
-					flags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
-				}
-				f, err := os.OpenFile(outputPath, flags, 0o600)
-				if err != nil {
-					return err
-				}
-				defer f.Close()
-				out = f
-			}
-
-			writer := csv.NewWriter(out)
+			var data bytes.Buffer
+			writer := csv.NewWriter(&data)
 			sheet := book.Sheets[sheetIndex]
-			for r, row := range sheet.Rows {
-				record := make([]string, len(row))
-				for c, cell := range row {
-					if cell.Formula != "" {
-						valueV, err := spreadsheet.Evaluate(&book, sheetIndex, r+1, c+1)
-						var value float64
-						if err == nil {
-							value, err = valueV.Float64()
-						}
+			evaluator := spreadsheet.NewEvaluator(&book)
+			spills, err := evaluator.SpillCells(sheetIndex)
+			if err != nil {
+				return err
+			}
+			rows, columns := len(sheet.Rows), 0
+			for _, row := range sheet.Rows {
+				columns = max(columns, len(row))
+			}
+			for cell := range spills {
+				rows, columns = max(rows, cell[0]), max(columns, cell[1])
+			}
+			for r := 0; r < rows; r++ {
+				record := make([]string, columns)
+				for c := 0; c < columns; c++ {
+					cell := spreadsheet.Cell{}
+					if r < len(sheet.Rows) && c < len(sheet.Rows[r]) {
+						cell = sheet.Rows[r][c]
+					}
+					_, spilled := spills[[2]int{r + 1, c + 1}]
+					if cell.Formula != "" || spilled {
+						value, err := evaluator.Evaluate(sheetIndex, r+1, c+1)
 						if err != nil {
 							return err
 						}
-						record[c] = strconv.FormatFloat(value, 'f', -1, 64)
+						record[c] = value.Display()
 					} else {
 						record[c] = cell.Value
 					}
@@ -162,7 +161,22 @@ func newSpreadsheetExportCmd(streams output) *cobra.Command {
 				}
 			}
 			writer.Flush()
-			return writer.Error()
+			if err := writer.Error(); err != nil {
+				return err
+			}
+			if outputPath == "" {
+				_, err = streams.out.Write(data.Bytes())
+				return err
+			}
+			force, _ := cmd.Flags().GetBool("force")
+			err = repo.WriteTextExport(cmd.Context(), outputPath, book.Path, data.Bytes(), false)
+			if errors.Is(err, os.ErrExist) {
+				if !force {
+					return fmt.Errorf("output file exists: %w", err)
+				}
+				err = repo.WriteTextExport(cmd.Context(), outputPath, book.Path, data.Bytes(), true)
+			}
+			return err
 		},
 	}
 	cmd.Flags().Bool("csv", false, "export as CSV (required)")
@@ -289,19 +303,23 @@ func readSpreadsheetCell(out io.Writer, cmd *cobra.Command, book spreadsheet.Spr
 		cellValue = book.Sheets[sheetIndex].Rows[row-1][column-1]
 	}
 	if cellValue.Formula != "" {
-		valueV, err := spreadsheet.Evaluate(&book, sheetIndex, row, column)
-		var value float64
-		if err == nil {
-			value, err = valueV.Float64()
-		}
+		value, err := spreadsheet.Evaluate(&book, sheetIndex, row, column)
 		if err != nil {
 			return err
 		}
 		_, err = fmt.Fprintf(out, "%s\t= %s\t%s\n", cellRef,
-			strings.TrimPrefix(cellValue.Formula, "="), strconv.FormatFloat(value, 'f', -1, 64))
+			strings.TrimPrefix(cellValue.Formula, "="), value.Display())
 		return err
 	}
-	_, err := fmt.Fprintln(out, cellValue.Value)
+	value, err := spreadsheet.Evaluate(&book, sheetIndex, row, column)
+	if err != nil {
+		return err
+	}
+	if cellValue == (spreadsheet.Cell{}) && value.Kind != spreadsheet.EmptyKind {
+		_, err = fmt.Fprintln(out, value.Display())
+		return err
+	}
+	_, err = fmt.Fprintln(out, cellValue.Value)
 	return err
 }
 

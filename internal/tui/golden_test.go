@@ -22,6 +22,7 @@ import (
 	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/presentation"
+	"example.com/parchment/internal/spreadsheet"
 	tuitheme "example.com/parchment/internal/tui/theme"
 )
 
@@ -126,6 +127,32 @@ func TestTUIRenderGoldens(t *testing.T) {
 		h.openWithTheme(artifact.SpreadsheetKind, false, darkTheme)
 		prepareGoldenView(h, 80, 24)
 		assertTUIViewGolden(t, "spreadsheet-grid", h.m.View(), 80, 24)
+	})
+
+	t.Run("spreadsheet-chart-list", func(t *testing.T) {
+		h := newHarness(t, artifact.SpreadsheetKind)
+		book, err := h.sheets.Get(context.Background(), h.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = spreadsheet.AddChartToBook(&book, spreadsheet.Chart{
+			ID: "chart-one", Title: "Sales", Type: "bar", Sheet: book.Sheets[0].Name,
+			FirstRow: 1, LastRow: 1, FirstColumn: 1, LastColumn: 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected, err := h.sheets.Get(context.Background(), h.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.sheets.Update(context.Background(), expected, book); err != nil {
+			t.Fatal(err)
+		}
+		h.openWithTheme(artifact.SpreadsheetKind, false, darkTheme)
+		prepareGoldenView(h, 80, 24)
+		h.key("g")
+		assertTUIViewGolden(t, "spreadsheet-chart-list", h.m.View(), 80, 24)
 	})
 
 	t.Run("presentation", func(t *testing.T) {

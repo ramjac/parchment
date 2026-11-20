@@ -105,8 +105,8 @@ The same payload can be referenced by name:
 
 ## Review and recover
 
-`F3` records unsaved document edits as a proposal; `F4` reviews proposals, and
-accepting one updates the live document. Saving or editing in another program
+`F3` toggles tracking for future edits; `F4` reviews saved changes. The current
+Markdown includes pending insertions and excludes pending deletions. Saving or editing in another program
 does not silently overwrite external changes. Recovery drafts protect unsaved
 note and document edits, while persistent service undo and redo survive
 restarts.

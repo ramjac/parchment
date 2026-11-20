@@ -54,6 +54,13 @@ func SpreadsheetPagesContext(ctx context.Context, book spreadsheet.Spreadsheet) 
 				}
 			}
 		}
+		spills, err := evaluator.SpillCells(sheetIndex)
+		if err != nil {
+			return nil, err
+		}
+		for cell := range spills {
+			lastRow, lastCol = max(lastRow, cell[0]), max(lastCol, cell[1])
+		}
 		lastRow, lastCol = max(1, lastRow), max(1, lastCol)
 		rowLabelWidth := len(strconv.Itoa(lastRow))
 		columnsPerPage := (g.TextCols - rowLabelWidth) / (spreadsheetPrintColumnWidth + 1)
@@ -73,27 +80,19 @@ func SpreadsheetPagesContext(ctx context.Context, book spreadsheet.Spreadsheet) 
 			}
 			values[r] = make([][]string, lastCol)
 			heights[r] = 1
-			if r >= len(sheet.Rows) {
-				continue
-			}
-			for c, cell := range sheet.Rows[r] {
-				if c >= lastCol {
-					break
+			for c := 0; c < lastCol; c++ {
+				cell := spreadsheet.Cell{}
+				if r < len(sheet.Rows) && c < len(sheet.Rows[r]) {
+					cell = sheet.Rows[r][c]
 				}
 				value := cell.Value
-				if cell.Formula != "" {
+				_, spilled := spills[[2]int{r + 1, c + 1}]
+				if cell.Formula != "" || spilled {
 					result, evalErr := evaluator.Evaluate(sheetIndex, r+1, c+1)
-					switch {
-					case evalErr != nil, result.Kind == spreadsheet.ErrKind:
+					if evalErr != nil {
 						value = "#ERR"
-					case result.Kind == spreadsheet.NumKind:
-						value = strconv.FormatFloat(result.Num, 'f', -1, 64)
-					case result.Kind == spreadsheet.StrKind:
-						value = result.Str
-					case result.Kind == spreadsheet.EmptyKind:
-						value = ""
-					default:
-						value = "#ERR"
+					} else {
+						value = result.Display()
 					}
 				}
 				values[r][c] = wrapSpreadsheetText(value, spreadsheetPrintColumnWidth)

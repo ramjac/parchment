@@ -23,7 +23,15 @@ type PDFPage struct {
 	WidthMM    float64
 	HeightMM   float64
 	Rectangles []Rectangle
+	Polygons   []Polygon
 	Elements   []Element
+}
+
+type Polygon struct {
+	Points      []fpdf.PointType
+	Color       [3]uint8
+	Fill        bool
+	LineWidthMM float64
 }
 
 // Rectangle is a stroked rectangle positioned in millimeters.
@@ -89,6 +97,16 @@ func WriteContext(ctx context.Context, w io.Writer, file File) error {
 				return fmt.Errorf("PDF rectangle dimensions and coordinates must be finite and positive")
 			}
 		}
+		for _, polygon := range page.Polygons {
+			if len(polygon.Points) < 2 || !validDimension(polygon.LineWidthMM) {
+				return fmt.Errorf("PDF polygon requires points and a positive line width")
+			}
+			for _, point := range polygon.Points {
+				if !finite(point.X) || !finite(point.Y) {
+					return fmt.Errorf("PDF polygon coordinates must be finite")
+				}
+			}
+		}
 		for _, element := range page.Elements {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -144,6 +162,23 @@ func WriteContext(ctx context.Context, w io.Writer, file File) error {
 			pdf.SetDrawColor(int(rect.Color[0]), int(rect.Color[1]), int(rect.Color[2]))
 			pdf.SetLineWidth(rect.LineWidthMM)
 			pdf.Rect(rect.X, rect.Y, rect.WidthMM, rect.HeightMM, "D")
+		}
+		for _, polygon := range page.Polygons {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			pdf.SetDrawColor(int(polygon.Color[0]), int(polygon.Color[1]), int(polygon.Color[2]))
+			pdf.SetFillColor(int(polygon.Color[0]), int(polygon.Color[1]), int(polygon.Color[2]))
+			pdf.SetLineWidth(polygon.LineWidthMM)
+			style := "D"
+			if polygon.Fill {
+				style = "F"
+			}
+			if len(polygon.Points) == 2 && !polygon.Fill {
+				pdf.Line(polygon.Points[0].X, polygon.Points[0].Y, polygon.Points[1].X, polygon.Points[1].Y)
+			} else {
+				pdf.Polygon(polygon.Points, style)
+			}
 		}
 		for _, element := range page.Elements {
 			if err := ctx.Err(); err != nil {

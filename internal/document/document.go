@@ -3,8 +3,6 @@ package document
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,10 +24,12 @@ var ErrNotFound = errors.New("document not found")
 // page layout and embedded images in a hidden payload block.
 type Document struct {
 	artifact.Artifact
-	Body   string
-	Layout Layout
-	Images []artifact.Image
-	Blocks map[string]json.RawMessage `json:"-"`
+	Body           string
+	Layout         Layout
+	Images         []artifact.Image
+	Tracking       bool
+	TrackedChanges []TrackedChange
+	Blocks         map[string]json.RawMessage `json:"-"`
 }
 
 // Draft is the editable part of a document.
@@ -39,47 +39,13 @@ type Draft struct {
 	Images []artifact.Image
 }
 
-// ChangeSnapshot captures the editable document fields without duplicating
-// embedded image data in the change log.
-type ChangeSnapshot struct {
-	Body       string   `json:"body"`
-	Layout     Layout   `json:"layout"`
-	ImageNames []string `json:"images,omitempty"`
-}
-
-type ChangeStatus string
-
-const (
-	ChangePending  ChangeStatus = "pending"
-	ChangeAccepted ChangeStatus = "accepted"
-	ChangeRejected ChangeStatus = "rejected"
-)
-
-// Change is a proposed document edit. The canonical document is unchanged
-// until the proposal is accepted.
-type Change struct {
-	ID          string         `json:"id"`
-	DocumentID  string         `json:"-"` // bound to the open document's runtime ID, never persisted
-	Description string         `json:"description"`
-	CreatedAt   time.Time      `json:"created_at"`
-	ResolvedAt  *time.Time     `json:"resolved_at,omitempty"`
-	Status      ChangeStatus   `json:"status"`
-	Before      ChangeSnapshot `json:"before"`
-	After       ChangeSnapshot `json:"after"`
-}
-
 // Repository is the persistence boundary required by document operations.
 type Repository interface {
 	// GetDocument reads the document stored at a file path.
 	GetDocument(context.Context, string) (Document, error)
 	// TransitionDocument replaces the document at a path only if it still
-	// matches expected, preserving recorded changes. A nil expected value
-	// creates a new file.
+	// matches expected. A nil expected value creates a new file.
 	TransitionDocument(context.Context, string, *Document, *Document) error
-	ListDocumentChanges(context.Context, string) ([]Change, error)
-	GetDocumentChange(context.Context, string, string) (Change, error)
-	ProposeDocumentChange(context.Context, string, Document, Change) error
-	TransitionDocumentChange(context.Context, string, string, Change, Change, *Document, *Document) error
 }
 
 // Service applies document operations and records successful changes in
@@ -105,165 +71,8 @@ func (s *Service) Get(ctx context.Context, path string) (Document, error) {
 	return s.repository.GetDocument(ctx, path)
 }
 
-// Propose records a Markdown, or layout edit for later review without
-// changing the live document. Proposals may retain or remove embedded images,
-// but cannot add or replace their data.
-func (s *Service) Propose(ctx context.Context, before Document, description string, draft Draft) (Change, error) {
-	existingImages := make(map[string][]byte, len(before.Images))
-	for _, img := range before.Images {
-		existingImages[img.Name] = img.Data
-	}
-
-	for _, proposedImage := range draft.Images {
-		existingData, ok := existingImages[proposedImage.Name]
-		if !ok || !bytes.Equal(proposedImage.Data, existingData) {
-			return Change{}, errors.New("proposals cannot add or replace embedded images")
-		}
-	}
-	after := cloneDocument(&before)
-	applyDraft(after, draft)
-	after.Images = before.Images
-	if err := normalize(after); err != nil {
-		return Change{}, err
-	}
-	if sameSnapshot(snapshot(before), snapshot(*after)) {
-		return Change{}, errors.New("proposed change has no document edits")
-	}
-	description = strings.TrimSpace(description)
-	if description == "" {
-		description = "Edit document"
-	}
-	idBytes := make([]byte, 16)
-	if _, err := rand.Read(idBytes); err != nil {
-		return Change{}, fmt.Errorf("generate document change ID: %w", err)
-	}
-	change := Change{
-		ID: hex.EncodeToString(idBytes), DocumentID: before.ID, Description: description,
-		CreatedAt: s.now().UTC(), Status: ChangePending,
-		Before: snapshot(before), After: snapshot(*after),
-	}
-	if err := change.Validate(); err != nil {
-		return Change{}, err
-	}
-	if err := s.repository.ProposeDocumentChange(ctx, before.Path, before, change); err != nil {
-		return Change{}, err
-	}
-	return change, nil
-}
-
-// Changes returns the recorded proposals for a document, newest first.
-func (s *Service) Changes(ctx context.Context, path string) ([]Change, error) {
-	changes, err := s.repository.ListDocumentChanges(ctx, path)
-	if err != nil {
-		return nil, err
-	}
-	sort.SliceStable(changes, func(i, j int) bool {
-		return changes[i].CreatedAt.After(changes[j].CreatedAt)
-	})
-	return changes, nil
-}
-
-// GetChange returns one recorded proposal by ID.
-func (s *Service) GetChange(ctx context.Context, path, changeID string) (Change, error) {
-	return s.getChange(ctx, path, changeID)
-}
-
-// Accept applies a pending proposal if its original document state is still live.
-func (s *Service) Accept(ctx context.Context, path, changeID string) (Document, error) {
-	change, err := s.getChange(ctx, path, changeID)
-	if err != nil {
-		return Document{}, err
-	}
-	if change.Status != ChangePending {
-		return Document{}, errors.New("document change is not pending")
-	}
-	before, err := s.repository.GetDocument(ctx, path)
-	if err != nil {
-		return Document{}, err
-	}
-	if !sameSnapshot(snapshot(before), change.Before) {
-		return Document{}, errors.New("document changed since this proposal was recorded")
-	}
-	after := cloneDocument(&before)
-	applySnapshot(after, change.After)
-	after.ModifiedAt = s.now().UTC()
-	if err := normalize(after); err != nil {
-		return Document{}, err
-	}
-	resolved := change
-	resolved.Status = ChangeAccepted
-	now := s.now().UTC()
-	resolved.ResolvedAt = &now
-	operation := &documentChangeAcceptance{
-		repository: s.repository, changeID: changeID, beforeChange: change, afterChange: resolved,
-		before: *cloneDocument(&before), after: *cloneDocument(after),
-	}
-	s.activePath = path
-	if s.store != nil {
-		err = operation.Apply(history.WithDescription(ctx, operation.Description()))
-	} else {
-		err = s.history.Execute(ctx, operation)
-	}
-	if err != nil {
-		return Document{}, err
-	}
-	return *cloneDocument(after), nil
-}
-
-// Reject marks a pending proposal as rejected without changing the document.
-func (s *Service) Reject(ctx context.Context, path, changeID string) error {
-	change, err := s.getChange(ctx, path, changeID)
-	if err != nil {
-		return err
-	}
-	if change.Status != ChangePending {
-		return errors.New("document change is not pending")
-	}
-	rejected := change
-	rejected.Status = ChangeRejected
-	now := s.now().UTC()
-	rejected.ResolvedAt = &now
-	return s.repository.TransitionDocumentChange(ctx, path, changeID, change, rejected, nil, nil)
-}
-
-func (s *Service) getChange(ctx context.Context, path, changeID string) (Change, error) {
-	return s.repository.GetDocumentChange(ctx, path, changeID)
-}
-
-// ErrChangeNotFound indicates that the requested document proposal does not exist.
+// ErrChangeNotFound indicates that the requested tracked change does not exist.
 var ErrChangeNotFound = errors.New("document change not found")
-
-// Validate checks the persisted shape and consistency of a proposed change.
-func (c Change) Validate() error {
-	if !validChangeID(c.ID) || !artifact.ValidIDForKind(c.DocumentID, artifact.DocumentKind) {
-		return errors.New("document change ID or artifact ID is invalid")
-	}
-	if strings.TrimSpace(c.Description) == "" || c.CreatedAt.IsZero() {
-		return errors.New("document change description and creation time are required")
-	}
-	switch c.Status {
-	case ChangePending:
-		if c.ResolvedAt != nil {
-			return errors.New("pending document change cannot have a resolution time")
-		}
-	case ChangeAccepted, ChangeRejected:
-		if c.ResolvedAt == nil || c.ResolvedAt.IsZero() {
-			return errors.New("resolved document change requires a resolution time")
-		}
-	default:
-		return fmt.Errorf("unsupported document change status %q", c.Status)
-	}
-	if err := validateSnapshot(c.Before); err != nil {
-		return fmt.Errorf("invalid original snapshot: %w", err)
-	}
-	if err := validateSnapshot(c.After); err != nil {
-		return fmt.Errorf("invalid proposed snapshot: %w", err)
-	}
-	if sameSnapshot(c.Before, c.After) {
-		return errors.New("document change has no edits")
-	}
-	return nil
-}
 
 func validChangeID(id string) bool {
 	if len(id) != 32 {
@@ -277,62 +86,6 @@ func validChangeID(id string) bool {
 		}
 	}
 	return true
-}
-
-func validateSnapshot(s ChangeSnapshot) error {
-	if !utf8.ValidString(s.Body) {
-		return errors.New("document snapshot text must be valid UTF-8")
-	}
-	if err := s.Layout.Validate(); err != nil {
-		return err
-	}
-	seen := map[string]bool{}
-	for _, name := range s.ImageNames {
-		if !artifact.IsImageName(name) || seen[name] {
-			return fmt.Errorf("invalid or duplicate image name %q", name)
-		}
-		seen[name] = true
-	}
-	return nil
-}
-
-func snapshot(d Document) ChangeSnapshot {
-	result := ChangeSnapshot{Body: d.Body, Layout: d.Layout}
-	for _, img := range d.Images {
-		result.ImageNames = append(result.ImageNames, img.Name)
-	}
-	return result
-}
-
-// ChangeSnapshotOf returns the editable state captured by a proposal.
-func ChangeSnapshotOf(d Document) ChangeSnapshot { return snapshot(d) }
-
-// ChangeSnapshotEqual reports whether two captured document states are equal.
-func ChangeSnapshotEqual(left, right ChangeSnapshot) bool { return sameSnapshot(left, right) }
-
-func sameSnapshot(left, right ChangeSnapshot) bool {
-	if len(left.ImageNames) == 0 {
-		left.ImageNames = nil
-	}
-	if len(right.ImageNames) == 0 {
-		right.ImageNames = nil
-	}
-	return reflect.DeepEqual(left, right)
-}
-
-func applySnapshot(d *Document, s ChangeSnapshot) {
-	d.Body, d.Layout = s.Body, s.Layout
-	wanted := make(map[string]bool, len(s.ImageNames))
-	for _, name := range s.ImageNames {
-		wanted[name] = true
-	}
-	images := d.Images[:0]
-	for _, img := range d.Images {
-		if wanted[img.Name] {
-			images = append(images, img)
-		}
-	}
-	d.Images = images
 }
 
 // Create writes a new document file at path. A zero Layout selects
@@ -369,6 +122,45 @@ func (s *Service) Save(ctx context.Context, expected Document, draft Draft) (Doc
 	})
 }
 
+// SetTracking enables or disables tracking for future body edits.
+func (s *Service) SetTracking(ctx context.Context, path string, enabled bool) (Document, error) {
+	return s.Modify(ctx, path, "Change tracking", func(d *Document) error {
+		d.Tracking = enabled
+		return nil
+	})
+}
+
+// SetTrackingExpected changes tracking only if the editor's snapshot is current.
+func (s *Service) SetTrackingExpected(ctx context.Context, expected Document, enabled bool) (Document, error) {
+	return s.apply(ctx, expected, "Change tracking", func(d *Document) error {
+		d.Tracking = enabled
+		return nil
+	})
+}
+
+// ReviewTracked resolves one pending change, or all changes when id is empty.
+func (s *Service) ReviewTracked(ctx context.Context, expected Document, id string, accept bool) (Document, error) {
+	after := cloneDocument(&expected)
+	if err := ResolveTrackedChange(after, id, accept); err != nil {
+		return Document{}, err
+	}
+	if err := normalize(after); err != nil {
+		return Document{}, err
+	}
+	if Equal(expected, *after) {
+		return expected, nil
+	}
+	after.ModifiedAt = s.now().UTC()
+	description := "Reject tracked change"
+	if accept {
+		description = "Accept tracked change"
+	}
+	if err := s.change(ctx, &expected, after, description); err != nil {
+		return Document{}, err
+	}
+	return *after, nil
+}
+
 // Modify changes the latest stored version of a document as one undoable change.
 func (s *Service) Modify(ctx context.Context, path, description string, edit func(*Document) error) (Document, error) {
 	before, err := s.repository.GetDocument(ctx, path)
@@ -376,6 +168,23 @@ func (s *Service) Modify(ctx context.Context, path, description string, edit fun
 		return Document{}, err
 	}
 	return s.apply(ctx, before, description, edit)
+}
+
+// ModifyWithTracking applies an explicit tracking choice for this edit only.
+func (s *Service) ModifyWithTracking(ctx context.Context, path, description string, track bool, edit func(*Document) error) (Document, error) {
+	return s.ModifyWithTrackingChoice(ctx, path, description, &track, edit)
+}
+
+// ModifyWithTrackingChoice requires an explicit choice when tracking is enabled.
+func (s *Service) ModifyWithTrackingChoice(ctx context.Context, path, description string, track *bool, edit func(*Document) error) (Document, error) {
+	before, err := s.repository.GetDocument(ctx, path)
+	if err != nil {
+		return Document{}, err
+	}
+	if track == nil && before.Tracking {
+		return Document{}, errors.New("choose --track or --track=false for this edit")
+	}
+	return s.applyWithTracking(ctx, before, description, edit, track != nil && *track)
 }
 
 // SetLayout replaces the page layout.
@@ -389,43 +198,53 @@ func (s *Service) SetLayout(ctx context.Context, path string, layout Layout) (Do
 // AddImage embeds an image and appends it to the end of the body. It returns
 // the updated document and the embedded image's stable name.
 func (s *Service) AddImage(ctx context.Context, path, alt string, data []byte) (Document, string, error) {
+	return s.addImage(ctx, path, alt, data, nil, false)
+}
+
+func (s *Service) AddImageWithTracking(ctx context.Context, path, alt string, data []byte, track bool) (Document, string, error) {
+	return s.addImage(ctx, path, alt, data, &track, true)
+}
+
+func (s *Service) AddImageWithTrackingChoice(ctx context.Context, path, alt string, data []byte, track *bool) (Document, string, error) {
+	return s.addImage(ctx, path, alt, data, track, true)
+}
+
+func (s *Service) addImage(ctx context.Context, path, alt string, data []byte, tracking *bool, explicitChoice bool) (Document, string, error) {
 	img, err := artifact.NewImage(data)
 	if err != nil {
 		return Document{}, "", err
 	}
-	updated, err := s.Modify(ctx, path, "Insert image", func(d *Document) error {
+	edit := func(d *Document) error {
 		*d = WithImage(*d, img)
 		d.Body = strings.TrimRight(d.Body, "\n") + "\n\n" + artifact.ImageMarkdown(alt, img.Name) + "\n"
 		return nil
-	})
+	}
+	var updated Document
+	if !explicitChoice {
+		updated, err = s.Modify(ctx, path, "Insert image", edit)
+	} else {
+		updated, err = s.ModifyWithTrackingChoice(ctx, path, "Insert image", tracking, edit)
+	}
 	return updated, img.Name, err
 }
 
 // RemoveImage removes an image from a document. If it is referenced in the body,
-// it is only removed if stripReferences is true. It fails if the image is in a
-// pending proposal.
+// it is only removed if stripReferences is true. Pending changes retain the
+// image data until they are resolved.
 func (s *Service) RemoveImage(ctx context.Context, path, imageName string, stripReferences bool) (Document, error) {
-	changes, err := s.Changes(ctx, path)
-	if err != nil {
-		return Document{}, err
-	}
-	for _, c := range changes {
-		if c.Status != ChangePending {
-			continue
-		}
-		for _, name := range c.Before.ImageNames {
-			if name == imageName {
-				return Document{}, fmt.Errorf("cannot remove image %q because it is referenced in pending proposal %s", imageName, c.ID)
-			}
-		}
-		for _, name := range c.After.ImageNames {
-			if name == imageName {
-				return Document{}, fmt.Errorf("cannot remove image %q because it is referenced in pending proposal %s", imageName, c.ID)
-			}
-		}
-	}
+	return s.removeImage(ctx, path, imageName, stripReferences, nil, false)
+}
 
-	return s.Modify(ctx, path, "Remove image", func(d *Document) error {
+func (s *Service) RemoveImageWithTracking(ctx context.Context, path, imageName string, stripReferences, track bool) (Document, error) {
+	return s.removeImage(ctx, path, imageName, stripReferences, &track, true)
+}
+
+func (s *Service) RemoveImageWithTrackingChoice(ctx context.Context, path, imageName string, stripReferences bool, track *bool) (Document, error) {
+	return s.removeImage(ctx, path, imageName, stripReferences, track, true)
+}
+
+func (s *Service) removeImage(ctx context.Context, path, imageName string, stripReferences bool, tracking *bool, explicitChoice bool) (Document, error) {
+	edit := func(d *Document) error {
 		hasImage := false
 		for _, img := range d.Images {
 			if img.Name == imageName {
@@ -452,7 +271,11 @@ func (s *Service) RemoveImage(ctx context.Context, path, imageName string, strip
 		}
 		d.Images = images
 		return nil
-	})
+	}
+	if !explicitChoice {
+		return s.Modify(ctx, path, "Remove image", edit)
+	}
+	return s.ModifyWithTrackingChoice(ctx, path, "Remove image", tracking, edit)
 }
 
 // Undo reverses the most recent document change.
@@ -530,9 +353,29 @@ func applyDraft(d *Document, draft Draft) {
 
 // apply edits a clone of expected and records the change if anything differs.
 func (s *Service) apply(ctx context.Context, expected Document, description string, edit func(*Document) error) (Document, error) {
+	return s.applyWithTracking(ctx, expected, description, edit, expected.Tracking)
+}
+
+func (s *Service) applyWithTracking(ctx context.Context, expected Document, description string, edit func(*Document) error, track bool) (Document, error) {
 	after := cloneDocument(&expected)
 	if err := edit(after); err != nil {
 		return Document{}, err
+	}
+	body := after.Body
+	after.Body = expected.Body
+	if err := EditTrackedBody(after, body, track, s.now()); err != nil {
+		return Document{}, err
+	}
+	if len(after.TrackedChanges) > 0 {
+		present := make(map[string]bool, len(after.Images))
+		for _, image := range after.Images {
+			present[image.Name] = true
+		}
+		for _, image := range expected.Images {
+			if !present[image.Name] {
+				after.Images = append(after.Images, image)
+			}
+		}
 	}
 	if err := normalize(after); err != nil {
 		return Document{}, err
@@ -556,11 +399,14 @@ func normalize(d *Document) error {
 	if err := d.Layout.Validate(); err != nil {
 		return err
 	}
+	if err := ValidateTracking(*d); err != nil {
+		return err
+	}
 	referenced := artifact.ReferencedImages(d.Body)
 	seen := map[string]bool{}
 	var images []artifact.Image
 	for _, img := range d.Images {
-		if !referenced[img.Name] || seen[img.Name] {
+		if (!referenced[img.Name] && len(d.TrackedChanges) == 0) || seen[img.Name] {
 			continue
 		}
 		if err := img.Validate(); err != nil {
@@ -589,6 +435,7 @@ func cloneDocument(d *Document) *Document {
 		return nil
 	}
 	clone := *d
+	clone.TrackedChanges = append([]TrackedChange(nil), d.TrackedChanges...)
 	clone.Images = make([]artifact.Image, len(d.Images))
 	for i, img := range d.Images {
 		clone.Images[i] = artifact.Image{Name: img.Name, Data: append([]byte(nil), img.Data...)}
@@ -608,34 +455,6 @@ type documentOperation struct {
 	after       *Document
 	description string
 }
-
-type documentChangeAcceptance struct {
-	repository   Repository
-	changeID     string
-	beforeChange Change
-	afterChange  Change
-	before       Document
-	after        Document
-	resolved     bool
-}
-
-func (o *documentChangeAcceptance) Apply(ctx context.Context) error {
-	if o.resolved {
-		return o.repository.TransitionDocument(ctx, o.before.Path, &o.before, &o.after)
-	}
-	if err := o.repository.TransitionDocumentChange(ctx, o.before.Path, o.changeID,
-		o.beforeChange, o.afterChange, &o.before, &o.after); err != nil {
-		return err
-	}
-	o.resolved = true
-	return nil
-}
-
-func (o *documentChangeAcceptance) Undo(ctx context.Context) error {
-	return o.repository.TransitionDocument(ctx, o.before.Path, &o.after, &o.before)
-}
-
-func (o *documentChangeAcceptance) Description() string { return "Accept document change" }
 
 func (o *documentOperation) Apply(ctx context.Context) error {
 	return o.transition(ctx, o.before, o.after)

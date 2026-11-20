@@ -13,7 +13,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -41,7 +40,7 @@ func addDocumentCommands(root *cobra.Command, streams output) {
 		newDocumentCreateCmd(streams),
 		newDocumentShowCmd(streams),
 		newDocumentEditCmd(),
-		newDocumentProposeCmd(streams),
+		newDocumentTrackingCmd(streams),
 		newDocumentChangesCmd(streams),
 		newDocumentReviewCmd(streams),
 		newDocumentAcceptCmd(),
@@ -105,6 +104,7 @@ func newDocumentShowCmd(streams output) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			warnDocumentTracking(streams.err, d)
 			_, err = io.WriteString(streams.out, d.Body)
 			return err
 		},
@@ -126,7 +126,11 @@ func newDocumentEditCmd() *cobra.Command {
 			if !bodyChanged {
 				return fmt.Errorf("nothing to change: pass --body or --body-file")
 			}
-			_, err = service.Modify(cmd.Context(), args[0], "Edit document", func(d *document.Document) error {
+			track, err := documentTrackingChoice(cmd)
+			if err != nil {
+				return err
+			}
+			_, err = service.ModifyWithTrackingChoice(cmd.Context(), args[0], "Edit document", track, func(d *document.Document) error {
 				d.Body = body
 				return nil
 			})
@@ -137,67 +141,57 @@ func newDocumentEditCmd() *cobra.Command {
 		},
 	}
 	addBodyFlags(cmd)
+	cmd.Flags().Bool("track", false, "record this edit for review")
 	return cmd
 }
 
-func newDocumentProposeCmd(streams output) *cobra.Command {
-	cmd := &cobra.Command{
-		Use: "propose <file>", Short: "Record a document edit for review", Args: cobra.ExactArgs(1),
+func newDocumentTrackingCmd(streams output) *cobra.Command {
+	return &cobra.Command{
+		Use: "tracking <file> [on|off]", Short: "Show or change document tracking", Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repo, service, err := openDocuments(cmd)
+			_, service, err := openDocuments(cmd)
 			if err != nil {
 				return err
 			}
-			current, err := service.Get(cmd.Context(), args[0])
+			d, err := service.Get(cmd.Context(), args[0])
 			if err != nil {
 				return err
 			}
-			body, bodyChanged, err := bodyFromFlags(cmd)
-			if err != nil {
-				return err
+			if len(args) == 2 {
+				if args[1] != "on" && args[1] != "off" {
+					return errors.New("tracking must be on or off")
+				}
+				d, err = service.SetTracking(cmd.Context(), args[0], args[1] == "on")
+				if err != nil {
+					return err
+				}
 			}
-			if !bodyChanged {
-				body = current.Body
+			state := "off"
+			if d.Tracking {
+				state = "on"
 			}
-			layout := current.Layout
-			if err := applyLayoutFlags(cmd, &layout); err != nil {
-				return err
-			}
-			description, _ := cmd.Flags().GetString("description")
-			change, err := service.Propose(cmd.Context(), current, description, document.Draft{
-				Body: body, Layout: layout, Images: current.Images,
-			})
-			if err != nil {
-				return err
-			}
-			drainWarnings(repo, output{err: cmd.ErrOrStderr()})
-			_, err = fmt.Fprintln(streams.out, change.ID)
+			_, err = fmt.Fprintln(streams.out, state)
 			return err
 		},
 	}
-	cmd.Flags().String("description", "", "short description of the proposed edit")
-	addBodyFlags(cmd)
-	addLayoutFlags(cmd)
-	return cmd
 }
 
 func newDocumentChangesCmd(streams output) *cobra.Command {
 	return &cobra.Command{
-		Use: "changes <file>", Short: "List proposed and resolved document edits", Args: cobra.ExactArgs(1),
+		Use: "changes <file>", Short: "List pending tracked edits", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			repo, service, err := openDocuments(cmd)
 			if err != nil {
 				return err
 			}
-			changes, err := service.Changes(cmd.Context(), args[0])
+			d, err := service.Get(cmd.Context(), args[0])
 			if err != nil {
 				return err
 			}
 			drainWarnings(repo, output{err: cmd.ErrOrStderr()})
-			for _, change := range changes {
-				if _, err := fmt.Fprintf(streams.out, "%s\t%s\t%s\t%s\n",
-					change.ID, change.Status, change.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-					strconv.Quote(change.Description)); err != nil {
+			for _, change := range d.TrackedChanges {
+				if _, err := fmt.Fprintf(streams.out, "%s\tpending\t%s\tbyte %d\n",
+					change.ID, change.CreatedAt.Format("2006-01-02T15:04:05Z07:00"), change.Offset); err != nil {
 					return err
 				}
 			}
@@ -208,54 +202,113 @@ func newDocumentChangesCmd(streams output) *cobra.Command {
 
 func newDocumentReviewCmd(streams output) *cobra.Command {
 	return &cobra.Command{
-		Use: "review <file> <change-id>", Short: "Review a proposed document edit", Args: cobra.ExactArgs(2),
+		Use: "review <file> <change-id>", Short: "Review a tracked document edit", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
 			if err != nil {
 				return err
 			}
-			change, err := service.GetChange(cmd.Context(), args[0], args[1])
+			d, err := service.Get(cmd.Context(), args[0])
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(streams.out,
-				"change: %s\nstatus: %s\ndescription: %s\ncreated: %s\n\n--- Current page setup ---\n%s\n+++ Proposed page setup +++\n%s\n\n--- Current Markdown ---\n%s\n\n+++ Proposed Markdown +++\n%s\n",
-				change.ID, change.Status, change.Description, change.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-				changeLayoutDescription(change.Before.Layout),
-				changeLayoutDescription(change.After.Layout), change.Before.Body, change.After.Body)
-			return err
+			for _, change := range d.TrackedChanges {
+				if change.ID == args[1] {
+					if _, err = fmt.Fprintf(streams.out, "change: %s\nstatus: pending\n\n%s\n", change.ID, document.TrackingSummary(change)); err != nil {
+						return err
+					}
+					if change.Group != "" {
+						if _, err = fmt.Fprintln(streams.out, "\nLinked image move (reviewed together):"); err != nil {
+							return err
+						}
+						for _, linked := range d.TrackedChanges {
+							if linked.ID != change.ID && linked.Group == change.Group {
+								if _, err = fmt.Fprintf(streams.out, "\n%s\n", document.TrackingSummary(linked)); err != nil {
+									return err
+								}
+							}
+						}
+					}
+					return nil
+				}
+			}
+			return document.ErrChangeNotFound
 		},
 	}
 }
 
 func newDocumentAcceptCmd() *cobra.Command {
-	return &cobra.Command{
-		Use: "accept <file> <change-id>", Short: "Accept and apply a proposed document edit", Args: cobra.ExactArgs(2),
+	cmd := &cobra.Command{
+		Use: "accept <file> <change-id|--all>", Short: "Accept tracked edits", Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			repo, service, err := openDocuments(cmd)
 			if err != nil {
 				return err
 			}
-			_, err = service.Accept(cmd.Context(), args[0], args[1])
+			id, err := documentReviewID(cmd, args)
+			if err != nil {
+				return err
+			}
+			d, err := service.Get(cmd.Context(), args[0])
+			if err == nil {
+				_, err = service.ReviewTracked(cmd.Context(), d, id, true)
+			}
 			if err == nil {
 				drainWarnings(repo, output{err: cmd.ErrOrStderr()})
 			}
 			return err
 		},
 	}
+	cmd.Flags().Bool("all", false, "accept all pending changes")
+	return cmd
 }
 
 func newDocumentRejectCmd() *cobra.Command {
-	return &cobra.Command{
-		Use: "reject <file> <change-id>", Short: "Reject a proposed document edit", Args: cobra.ExactArgs(2),
+	cmd := &cobra.Command{
+		Use: "reject <file> <change-id|--all>", Short: "Reject tracked edits", Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openDocuments(cmd)
 			if err != nil {
 				return err
 			}
-			return service.Reject(cmd.Context(), args[0], args[1])
+			id, err := documentReviewID(cmd, args)
+			if err != nil {
+				return err
+			}
+			d, err := service.Get(cmd.Context(), args[0])
+			if err == nil {
+				_, err = service.ReviewTracked(cmd.Context(), d, id, false)
+			}
+			return err
 		},
 	}
+	cmd.Flags().Bool("all", false, "reject all pending changes")
+	return cmd
+}
+
+func documentReviewID(cmd *cobra.Command, args []string) (string, error) {
+	all, _ := cmd.Flags().GetBool("all")
+	if all == (len(args) == 2) {
+		return "", errors.New("supply exactly one change ID or --all")
+	}
+	if all {
+		return "", nil
+	}
+	return args[1], nil
+}
+
+func warnDocumentTracking(output io.Writer, d document.Document) {
+	if len(d.TrackedChanges) > 0 {
+		fmt.Fprintf(output, "warning: %d pending tracked change(s) not exported\n", len(d.TrackedChanges))
+	}
+}
+
+func documentTrackingChoice(cmd *cobra.Command) (*bool, error) {
+	if !cmd.Flags().Changed("track") {
+		return nil, nil
+	}
+	track, err := cmd.Flags().GetBool("track")
+	return &track, err
 }
 
 func newDocumentLayoutCmd(streams output) *cobra.Command {
@@ -296,12 +349,14 @@ func newDocumentLayoutCmd(streams output) *cobra.Command {
 }
 
 func newDocumentPageBreakCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use: "page-break <file>", Short: "Append a page break", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return appendMarkup(cmd, args[0], "Insert page break", document.PageBreakMarkup)
 		},
 	}
+	cmd.Flags().Bool("track", false, "record this edit for review")
+	return cmd
 }
 
 func newDocumentSectionBreakCmd() *cobra.Command {
@@ -318,6 +373,7 @@ func newDocumentSectionBreakCmd() *cobra.Command {
 	}
 	cmd.Flags().Int("columns", 1, "columns in the new section")
 	cmd.Flags().Bool("continuous", false, "start the section on the current page")
+	cmd.Flags().Bool("track", false, "record this edit for review")
 	return cmd
 }
 
@@ -334,7 +390,11 @@ func newDocumentImageCmd(streams output) *cobra.Command {
 				return err
 			}
 			alt, _ := cmd.Flags().GetString("alt")
-			_, name, err := service.AddImage(cmd.Context(), args[0], alt, data)
+			track, err := documentTrackingChoice(cmd)
+			if err != nil {
+				return err
+			}
+			_, name, err := service.AddImageWithTrackingChoice(cmd.Context(), args[0], alt, data, track)
 			if err != nil {
 				return err
 			}
@@ -344,6 +404,7 @@ func newDocumentImageCmd(streams output) *cobra.Command {
 		},
 	}
 	cmd.Flags().String("alt", "", "alternative text for the image")
+	cmd.Flags().Bool("track", false, "record this edit for review")
 	return cmd
 }
 
@@ -445,11 +506,16 @@ func newDocumentImageRemoveCmd() *cobra.Command {
 				return err
 			}
 			strip, _ := cmd.Flags().GetBool("strip-references")
-			_, err = service.RemoveImage(cmd.Context(), args[0], args[1], strip)
+			track, err := documentTrackingChoice(cmd)
+			if err != nil {
+				return err
+			}
+			_, err = service.RemoveImageWithTrackingChoice(cmd.Context(), args[0], args[1], strip, track)
 			return err
 		},
 	}
 	cmd.Flags().Bool("strip-references", false, "remove Markdown image tags referencing the image from the document body")
+	cmd.Flags().Bool("track", false, "record this edit for review")
 	return cmd
 }
 
@@ -494,6 +560,9 @@ func newPrintCmd(kind artifact.Kind, streams output) *cobra.Command {
 				}
 			default:
 				return fmt.Errorf("unsupported print kind %q", kind)
+			}
+			if kind == artifact.DocumentKind {
+				warnDocumentTracking(streams.err, d)
 			}
 			format, _ := cmd.Flags().GetString("format")
 			slidesPerPage := 1
@@ -701,7 +770,11 @@ func appendMarkup(cmd *cobra.Command, id, description, markup string) error {
 	if err != nil {
 		return err
 	}
-	_, err = service.Modify(cmd.Context(), id, description, func(d *document.Document) error {
+	track, err := documentTrackingChoice(cmd)
+	if err != nil {
+		return err
+	}
+	_, err = service.ModifyWithTrackingChoice(cmd.Context(), id, description, track, func(d *document.Document) error {
 		d.Body = trimTrailingNewlines(d.Body) + "\n\n" + markup + "\n\n"
 		return nil
 	})
@@ -716,13 +789,6 @@ func trimTrailingNewlines(s string) string {
 		s = s[:len(s)-1]
 	}
 	return s
-}
-
-func changeLayoutDescription(layout document.Layout) string {
-	return fmt.Sprintf("page size: %s\norientation: %s\nmargins (mm): top=%d right=%d bottom=%d left=%d\ncolumns: %d\nheader: %q\nfooter: %q\npage numbers: %s",
-		layout.PageSize, layout.Orientation, layout.Margins.Top, layout.Margins.Right,
-		layout.Margins.Bottom, layout.Margins.Left, layout.Columns, layout.Header,
-		layout.Footer, layout.PageNumbers)
 }
 
 func newDocumentExportCmd(streams output) *cobra.Command {
@@ -785,19 +851,7 @@ func newDocumentExportCmd(streams output) *cobra.Command {
 				return err
 			}
 
-			// Check pending proposals
-			changes, err := repo.ListDocumentChanges(cmd.Context(), srcPath)
-			if err == nil {
-				pendingCount := 0
-				for _, ch := range changes {
-					if ch.Status == document.ChangePending {
-						pendingCount++
-					}
-				}
-				if pendingCount > 0 {
-					fmt.Fprintf(streams.err, "warning: %d pending proposal(s) not exported\n", pendingCount)
-				}
-			}
+			warnDocumentTracking(streams.err, doc)
 
 			var buf bytes.Buffer
 			warnings, err := exporter.Export(&buf, doc)

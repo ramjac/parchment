@@ -124,8 +124,8 @@ application.
 | Kind | Body | Structured blocks |
 | --- | --- | --- |
 | Note | Canonical Markdown note text. | No kind-specific block is required. |
-| Document | Canonical Markdown including anchors, links, page/section break comments, and image references. | `parchment-document`: layout, embedded image bytes, and proposal history. |
-| Spreadsheet | Optional human-readable workbook description. | `parchment-spreadsheet`: versioned sheets, cell arrays, and explicit literal/formula cells. |
+| Document | Canonical Markdown including anchors, links, page/section break comments, and image references. | `parchment-document`: layout, embedded image bytes, and versioned pending tracked changes. |
+| Spreadsheet | Optional human-readable workbook description. | `parchment-spreadsheet`: versioned sheets, cell arrays, explicit literal/formula cells, and range-bound chart definitions. |
 | Presentation | Go `present`-style Markdown source: title, slides, notes, image/code directives. | `parchment-presentation`: versioned presentation settings and embedded image bytes. |
 
 The [`document.md`](../examples/document.md) example shows `parchment-document`
@@ -145,6 +145,35 @@ Spreadsheet cell objects distinguish literal content from formulas. A literal
 uses `value`; a formula uses `formula`. A string beginning with `=` is not
 automatically treated as a formula. Formula parsing, evaluation, and reference
 adjustment belong to the spreadsheet domain layer, not Markdown rendering.
+
+Document tracking uses version 1 metadata in the `parchment-document` block.
+Each pending replacement stores a stable ID, UTC timestamp, UTF-8 byte offset,
+deleted text and inserted text; inserted text is part of the current body.
+Anchors are validated against that body on load, transformed during edits, and
+coalesced when edits overlap. Review removes metadata on acceptance or reverses
+the replacement on rejection. Image-reference moves can link multiple
+replacements for atomic review; embedded bytes are retained while any change
+is pending. Layout changes are not tracked.
+
+## ODT and DOCX interchange
+
+Document import and export use pure-Go adapters over ZIP archives and XML;
+they require no office suite or external conversion process. Import accepts
+ODT and DOCX archives up to 64 MiB, with at most 1000 entries and 128 MiB of
+total uncompressed data. XML external entities and document types are not
+expanded. Each imported embedded image is limited to 10 MiB; PNG, JPEG, and
+GIF are supported.
+
+Conversion maps a defined subset rather than promising lossless office-format
+round-trips: headings, paragraphs, inline emphasis/code, links, lists,
+blockquotes, code blocks, GFM tables, page and section breaks, common page
+geometry, columns, headers/footers, page numbers, document-wide fonts, and
+supported embedded images. Page dimensions are mapped to supported sizes;
+margins and column counts are clamped or rounded. Per-run and per-section
+fonts collapse to one document font. Unsupported content and approximations
+are reported as warnings. External images and unsupported image formats are
+skipped; their fallback text is retained where available. Export uses the
+current Document body and omits pending review metadata with a warning.
 
 ## Persistence and external edits
 
@@ -168,9 +197,39 @@ path. Persistent undo/redo records successful saved service operations in
 application state. These mechanisms do not change which file is canonical:
 the ordinary artifact at its user-selected path remains authoritative.
 
+### Persistent history storage
+
+History is stored under `~/.parchment/history/`, outside artifact directories.
+Each file's history directory is keyed by the SHA-256 hash of its resolved
+canonical path, so opening a symlink and its target uses the same history.
+History reads and writes coordinate through Parchment's global write lock.
+
+Each per-file `index.json` manifest records a bounded sequence of snapshots,
+the current head, and the configured undo limit. A new artifact starts at a
+non-undoable initial baseline. Snapshot data is stored in immutable,
+content-addressed SHA-256 blobs: envelope metadata, the Markdown body,
+structured blocks, and embedded image bytes can be shared across snapshots.
+When a snapshot cannot be re-encoded to the exact original bytes, history
+stores the full raw file instead. Garbage collection removes blobs no longer
+referenced by any manifest.
+
+Artifact and history changes use a journaled transition. The repository first
+stages `index.pending.json` and a `journal.json` containing source and target
+file digests and the staged manifest digest. It then atomically writes the
+artifact, commits the manifest, and removes the journal and pending manifest.
+On the next history operation, recovery compares the on-disk artifact digest:
+the target digest commits the staged manifest, the source digest leaves the
+old manifest in place, and any other digest is reported as an external-change
+conflict. Cleanup and garbage-collection failures after a successful commit
+are warnings rather than failed saves.
+
+Undo and redo refuse to replace a file that differs from the history head.
+When a user saves a new Parchment edit over externally modified content, that
+content is checkpointed as an `"External edit"` entry. Restore also preserves
+the external checkpoint and requested restore target while applying bounded
+retention.
+
 ## Related documentation
 
 - [User Guide](User_Guide.md) — commands, editors, printing, recovery, and examples.
 - [TUI Design Contract](TUI_Design.md) — interaction and rendering conventions.
-- [ODF/DOCX interoperability plan](ODF_DOCX_Interop_Plan.md).
-- [Persistent undo/redo plan](Persistent_Undo_Redo_Plan.md).

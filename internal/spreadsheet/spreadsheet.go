@@ -68,6 +68,7 @@ type Spreadsheet struct {
 	artifact.Artifact `json:"artifact"`
 	Version           int                        `json:"version"`
 	Sheets            []Sheet                    `json:"sheets"`
+	Charts            []Chart                    `json:"charts,omitempty"`
 	Body              string                     `json:"-"`
 	Blocks            map[string]json.RawMessage `json:"-"`
 }
@@ -75,6 +76,7 @@ type Spreadsheet struct {
 type fileContent struct {
 	Version int     `json:"version"`
 	Sheets  []Sheet `json:"sheets"`
+	Charts  []Chart `json:"charts,omitempty"`
 }
 
 // Repository persists spreadsheets as individual artifacts.
@@ -192,7 +194,8 @@ func (s *Service) Update(ctx context.Context, expected, updated Spreadsheet) (Sp
 	before := cloneSpreadsheet(expected)
 	after := cloneSpreadsheet(expected)
 	after.Sheets = cloneSpreadsheet(updated).Sheets
-	if reflect.DeepEqual(before.Sheets, after.Sheets) {
+	after.Charts = append([]Chart(nil), updated.Charts...)
+	if reflect.DeepEqual(before.Sheets, after.Sheets) && reflect.DeepEqual(before.Charts, after.Charts) {
 		return before, nil
 	}
 	after.ModifiedAt = s.now().UTC()
@@ -241,7 +244,7 @@ func (s *Service) modify(ctx context.Context, path, description string, edit fun
 	if err := edit(&after); err != nil {
 		return Spreadsheet{}, err
 	}
-	if reflect.DeepEqual(before.Sheets, after.Sheets) {
+	if reflect.DeepEqual(before.Sheets, after.Sheets) && reflect.DeepEqual(before.Charts, after.Charts) {
 		return before, nil
 	}
 	after.ModifiedAt = s.now().UTC()
@@ -280,6 +283,9 @@ func Normalize(book *Spreadsheet) error {
 		if err := normalizeSheetGrid(sheet); err != nil {
 			return err
 		}
+	}
+	if err := validateCharts(book.Charts); err != nil {
+		return err
 	}
 	return validateFormulas(book)
 }
@@ -322,17 +328,14 @@ func normalizeSheetGrid(sheet *Sheet) error {
 }
 
 func validateFormulas(book *Spreadsheet) error {
-	evaluator := evaluator{
-		book: book, visiting: make(map[cellCoordinate]bool),
-		cache: make(map[cellCoordinate]Value), depth: make(map[cellCoordinate]int),
-	}
+	evaluator := NewEvaluator(book)
 	for sheetIndex := range book.Sheets {
 		for row := range book.Sheets[sheetIndex].Rows {
 			for column, cell := range book.Sheets[sheetIndex].Rows[row] {
 				if cell.Formula == "" {
 					continue
 				}
-				if val, err := evaluator.cell(sheetIndex, row+1, column+1); err != nil {
+				if val, err := evaluator.Evaluate(sheetIndex, row+1, column+1); err != nil {
 					return fmt.Errorf("sheet %q cell %s formula: %w", book.Sheets[sheetIndex].Name,
 						CellName(row+1, column+1), err)
 				} else if val.Kind == ErrKind {
@@ -380,6 +383,7 @@ func cloneRows(rows [][]Cell) [][]Cell {
 
 func cloneSpreadsheet(book Spreadsheet) Spreadsheet {
 	book.Blocks = cloneBlocks(book.Blocks)
+	book.Charts = append([]Chart(nil), book.Charts...)
 	book.Sheets = append([]Sheet(nil), book.Sheets...)
 	for i := range book.Sheets {
 		book.Sheets[i].Rows = cloneRows(book.Sheets[i].Rows)
@@ -464,7 +468,7 @@ func Encode(book Spreadsheet) ([]byte, error) {
 	if err := Normalize(&book); err != nil {
 		return nil, err
 	}
-	content, err := json.MarshalIndent(fileContent{Version: book.Version, Sheets: book.Sheets}, "", "  ")
+	content, err := json.MarshalIndent(fileContent{Version: book.Version, Sheets: book.Sheets, Charts: book.Charts}, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encode spreadsheet: %w", err)
 	}
@@ -494,7 +498,7 @@ func Decode(data []byte) (Spreadsheet, error) {
 		return Spreadsheet{}, fmt.Errorf("decode spreadsheet payload: %w", err)
 	}
 	book := Spreadsheet{
-		Artifact: file.Artifact, Version: payload.Version, Sheets: payload.Sheets,
+		Artifact: file.Artifact, Version: payload.Version, Sheets: payload.Sheets, Charts: payload.Charts,
 		Body: file.Body, Blocks: cloneBlocksExcept(file.Blocks, "parchment-spreadsheet"),
 	}
 	if err := Normalize(&book); err != nil {
@@ -585,6 +589,17 @@ func SetCellInBook(book *Spreadsheet, opts SetCellOptions) error {
 	if err != nil {
 		return err
 	}
+	spills, err := NewEvaluator(book).SpillCells(index)
+	if err != nil {
+		return err
+	}
+	if _, ok := spills[[2]int{opts.Row, opts.Column}]; ok {
+		return errors.New("cannot edit a spilled cell; edit its formula anchor")
+	}
+	return setCellInBook(book, index, opts)
+}
+
+func setCellInBook(book *Spreadsheet, index int, opts SetCellOptions) error {
 	grid := &book.Sheets[index].Rows
 	if opts.Row > len(*grid) {
 		*grid = append(*grid, make([][]Cell, opts.Row-len(*grid))...)
@@ -613,6 +628,7 @@ func InsertRowInBook(book *Spreadsheet, name string, row int) error {
 	copy((*grid)[row:], (*grid)[row-1:])
 	(*grid)[row-1] = inserted
 	shiftFormulas(book, index, row, 0, false)
+	shiftCharts(book, name, row, 0, false)
 	return nil
 }
 
@@ -633,6 +649,7 @@ func InsertColumnInBook(book *Spreadsheet, name string, column int) error {
 		(*grid)[i][column-1] = Cell{}
 	}
 	shiftFormulas(book, index, 0, column, false)
+	shiftCharts(book, name, 0, column, false)
 	return nil
 }
 
@@ -653,6 +670,7 @@ func DeleteRowFromBook(book *Spreadsheet, name string, row int) error {
 		return fmt.Errorf("row must be between 1 and %d", len(*grid))
 	}
 	shiftFormulas(book, index, row, 0, true)
+	shiftCharts(book, name, row, 0, true)
 	copy((*grid)[row-1:], (*grid)[row:])
 	(*grid)[len(*grid)-1] = nil
 	*grid = (*grid)[:len(*grid)-1]
@@ -671,6 +689,7 @@ func DeleteColumnFromBook(book *Spreadsheet, name string, column int) error {
 		return fmt.Errorf("column must be between 1 and %d", width)
 	}
 	shiftFormulas(book, index, 0, column, true)
+	shiftCharts(book, name, 0, column, true)
 	for i := range *grid {
 		if column <= len((*grid)[i]) {
 			copy((*grid)[i][column-1:], (*grid)[i][column:])
@@ -689,6 +708,11 @@ func DeleteSheetFromBook(book *Spreadsheet, name string) error {
 	index, err := SheetIndex(*book, name)
 	if err != nil {
 		return err
+	}
+	for i := range book.Charts {
+		if strings.EqualFold(book.Charts[i].Sheet, name) {
+			book.Charts[i].Invalid = true
+		}
 	}
 	copy(book.Sheets[index:], book.Sheets[index+1:])
 	book.Sheets = book.Sheets[:len(book.Sheets)-1]

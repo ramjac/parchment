@@ -4,6 +4,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestEvaluate(t *testing.T) {
@@ -24,7 +25,7 @@ func TestEvaluate(t *testing.T) {
 		{name: "subtraction", formula: "=5-3", want: 2},
 		{name: "multiplication", formula: "=4*5", want: 20},
 		{name: "division", formula: "=20/4", want: 5},
-		{name: "division by zero", formula: "=1/0", wantError: "division by zero"},
+		{name: "division by zero", formula: "=1/0", wantError: "#DIV/0!"},
 		{name: "parentheses", formula: "=2*(3+4)", want: 14},
 		{name: "unary minus", formula: "=-5", want: -5},
 		{name: "multiple unary", formula: "=--5", want: 5},
@@ -286,6 +287,268 @@ func TestShiftCellReferences(t *testing.T) {
 	}
 }
 
+func TestAbsoluteReferencesEvaluateAndFollowStructuralEdits(t *testing.T) {
+	book := &Spreadsheet{Sheets: []Sheet{
+		{Name: "Sheet1", Rows: [][]Cell{{{Value: "3"}, {Formula: "=$A$1+A$1+$A1"}}}},
+		{Name: "Other Sheet", Rows: [][]Cell{{{Value: "4"}}}},
+		{Name: "Team's! Sheet", Rows: [][]Cell{{{Value: "5"}}}},
+	}}
+	value, err := Evaluate(book, 0, 1, 2)
+	if err != nil || value.Kind != NumKind || value.Num != 9 {
+		t.Fatalf("evaluate mixed references = %#v, %v", value, err)
+	}
+	book.Sheets[0].Rows[0][1].Formula = "='Team''s! Sheet'!$A$1"
+	value, err = Evaluate(book, 0, 1, 2)
+	if err != nil || value.Kind != NumKind || value.Num != 5 {
+		t.Fatalf("evaluate quoted sheet reference = %#v, %v", value, err)
+	}
+	tests := []struct{ formula, want string }{
+		{"=$A$1+A$1+$A1", "=$A$2+A$2+$A2"},
+		{"=SUM('Other Sheet'!$B$2:A$1)", "=SUM('Other Sheet'!$B$3:A$2)"},
+		{"=SUM($A$1:$B2)", "=SUM($A$2:$B3)"},
+	}
+	for _, tt := range tests {
+		if got := shiftCellReferencesWhere(tt.formula, 1, 0, false, func(string) bool { return true }); got != tt.want {
+			t.Errorf("shift %q = %q, want %q", tt.formula, got, tt.want)
+		}
+	}
+}
+
+func TestTranslateFormula(t *testing.T) {
+	tests := []struct {
+		formula  string
+		row, col int
+		want     string
+	}{
+		{`=A1+$A1+A$1+$A$1`, 2, 1, `=B3+$A3+B$1+$A$1`},
+		{`=SUM('Other Sheet'!$B2:C$4)+"A1"`, -1, 2, `=SUM('Other Sheet'!$B1:E$4)+"A1"`},
+		{`='Team''s! Sheet'!$A1`, 1, 1, `='Team''s! Sheet'!$A2`},
+		{`=A1+$A$1`, -1, 0, `=#REF!+$A$1`},
+		{`=SUM(A1:B2)`, 0, -1, `=SUM(#REF!)`},
+		{`=IV1000`, 1, 1, `=#REF!`},
+	}
+	for _, tt := range tests {
+		got, err := TranslateFormula(tt.formula, tt.row, tt.col)
+		if err != nil || got != tt.want {
+			t.Errorf("TranslateFormula(%q, %d, %d) = %q, %v; want %q", tt.formula, tt.row, tt.col, got, err, tt.want)
+		}
+	}
+}
+
+func TestAdditionalScalarFunctions(t *testing.T) {
+	tests := []struct {
+		formula string
+		want    string
+	}{
+		{`=IF(2>1,"yes",1/0)`, "yes"},
+		{`=IF(2<1,1/0,"no")`, "no"},
+		{`=IFERROR(1/0,"fallback")`, "fallback"},
+		{`=IFERROR("ok",1/0)`, "ok"},
+		{`=ROUND(-12.345,2)`, "-12.35"},
+		{`=ROUND(1234,-2)`, "1200"},
+		{`=COUNTA(A2:A5)`, "3"},
+		{`=A2`, "text"},
+		{`=IF("abc"="ABC",TRUE,FALSE)`, "TRUE"},
+	}
+	for _, tt := range tests {
+		book := &Spreadsheet{Sheets: []Sheet{{Rows: [][]Cell{
+			{{Formula: tt.formula}}, {{Value: "text"}}, {{}}, {{Value: "0"}}, {{Formula: `=""`}},
+		}}}}
+		value, err := Evaluate(book, 0, 1, 1)
+		if err != nil || value.Display() != tt.want {
+			t.Errorf("%s = %q, %v; want %q", tt.formula, value.Display(), err, tt.want)
+		}
+	}
+}
+
+func TestDateFunctionsUseOneUTCInstant(t *testing.T) {
+	book := &Spreadsheet{Sheets: []Sheet{{Rows: [][]Cell{{
+		{Formula: "=DATE(2024,2,29)"}, {Formula: "=YEAR(A1)"},
+		{Formula: "=MONTH(A1)"}, {Formula: "=DAY(A1)"},
+		{Formula: "=TODAY()"}, {Formula: "=NOW()"},
+	}}}}}
+	now := time.Date(2024, 3, 1, 0, 0, 0, 0, time.FixedZone("test", 2*60*60))
+	e := NewEvaluatorAt(book, now)
+	want := []float64{45351, 2024, 2, 29, 45351, 45351 + 22.0/24}
+	for i, expected := range want {
+		value, err := e.Evaluate(0, 1, i+1)
+		if err != nil || value.Kind != NumKind || math.Abs(value.Num-expected) > 1e-8 {
+			t.Errorf("column %d = %#v, %v; want %v", i+1, value, err, expected)
+		}
+	}
+}
+
+func TestCriteriaAndTextJoinFunctions(t *testing.T) {
+	tests := []struct{ formula, want string }{
+		{`=COUNTIFS(A2:A5,">=2",B2:B5,"ca*")`, "2"},
+		{`=SUMIFS(A2:A5,B2:B5,"CA*")`, "5"},
+		{`=COUNTIFS(B2:B5,"~*")`, "1"},
+		{`=TEXTJOIN("/",TRUE,B2:B5)`, "cat/car/*"},
+		{`=TEXTJOIN("/",FALSE,B2:B5)`, "cat/car/*/"},
+		{`=COUNTIFS(A2:A5,">1",B2:B4,"*")`, "#VALUE!"},
+	}
+	for _, tt := range tests {
+		book := &Spreadsheet{Sheets: []Sheet{{Rows: [][]Cell{
+			{{Formula: tt.formula}},
+			{{Value: "2"}, {Value: "cat"}},
+			{{Value: "3"}, {Value: "car"}},
+			{{Value: "4"}, {Value: "*"}},
+			{{Value: "1"}, {}},
+		}}}}
+		value, err := Evaluate(book, 0, 1, 1)
+		if err != nil || value.Display() != tt.want {
+			t.Errorf("%s = %q, %v; want %q", tt.formula, value.Display(), err, tt.want)
+		}
+	}
+}
+
+func TestLookupFunctions(t *testing.T) {
+	tests := []struct{ formula, want string }{
+		{`=INDEX(A2:B4,2,2)`, "bee"},
+		{`=INDEX(A2:B4,4,1)`, "#REF!"},
+		{`=MATCH(3,A2:A4,0)`, "2"},
+		{`=MATCH(4,A2:A4,1)`, "2"},
+		{`=XMATCH(3,A2:A4,0,-1)`, "2"},
+		{`=XMATCH("b*",B2:B4,2)`, "2"},
+		{`=XLOOKUP(5,A2:A4,B2:B4,"missing")`, "see"},
+		{`=XLOOKUP(4,A2:A4,B2:B4,"missing")`, "missing"},
+		{`=XLOOKUP(4,A2:A4,B2:B4,"missing",-1)`, "bee"},
+		{`=IFERROR(MATCH(9,A2:A4,0),"no")`, "no"},
+	}
+	for _, tt := range tests {
+		book := &Spreadsheet{Sheets: []Sheet{{Rows: [][]Cell{
+			{{Formula: tt.formula}},
+			{{Value: "1"}, {Value: "aye"}},
+			{{Value: "3"}, {Value: "bee"}},
+			{{Value: "5"}, {Value: "see"}},
+		}}}}
+		value, err := Evaluate(book, 0, 1, 1)
+		if err != nil || value.Display() != tt.want {
+			t.Errorf("%s = %q, %v; want %q", tt.formula, value.Display(), err, tt.want)
+		}
+	}
+}
+
+func TestDynamicArraySpills(t *testing.T) {
+	tests := []struct {
+		formula string
+		rows    [][]Cell
+		want    []string
+	}{
+		{`=SEQUENCE(2,2,2,3)`, nil, []string{"2", "5", "8", "11"}},
+		{`=FILTER(C1:D3,C1:C3>1)`, [][]Cell{
+			{{}, {}, {Value: "1"}, {Value: "a"}},
+			{{}, {}, {Value: "2"}, {Value: "b"}},
+			{{}, {}, {Value: "3"}, {Value: "c"}},
+		}, []string{"2", "b", "3", "c"}},
+		{`=SORT(C1:D3,1,-1)`, [][]Cell{
+			{{}, {}, {Value: "1"}, {Value: "a"}},
+			{{}, {}, {Value: "2"}, {Value: "b"}},
+			{{}, {}, {Value: "3"}, {Value: "c"}},
+		}, []string{"3", "c", "2", "b"}},
+		{`=UNIQUE(C1:C3)`, [][]Cell{{{}, {}, {Value: "a"}}, {{}, {}, {Value: "b"}}, {{}, {}, {Value: "a"}}}, []string{"a", "", "b", ""}},
+	}
+	for _, tt := range tests {
+		rows := tt.rows
+		if len(rows) == 0 {
+			rows = [][]Cell{{{}}}
+		}
+		rows[0][0] = Cell{Formula: tt.formula}
+		book := &Spreadsheet{Sheets: []Sheet{{Name: "Sheet1", Rows: rows}}}
+		e := NewEvaluator(book)
+		for i, want := range tt.want {
+			value, err := e.Evaluate(0, 1+i/2, 1+i%2)
+			if err != nil || value.Display() != want {
+				t.Errorf("%s cell %s = %q, %v; want %q", tt.formula, CellName(1+i/2, 1+i%2), value.Display(), err, want)
+			}
+		}
+	}
+}
+
+func TestSpillCellsRemainAvailableWhenAnchorValueIsAnError(t *testing.T) {
+	book := &Spreadsheet{Sheets: []Sheet{{Name: "Sheet1", Rows: [][]Cell{
+		{{Formula: "=SEQUENCE(2)/SEQUENCE(2,1,0)"}},
+	}}}}
+	evaluator := NewEvaluator(book)
+	anchor, err := evaluator.Evaluate(0, 1, 1)
+	if err != nil || anchor.Err != ErrDiv0 {
+		t.Fatalf("anchor = %+v, %v; want #DIV/0!", anchor, err)
+	}
+	spill, err := evaluator.Evaluate(0, 2, 1)
+	if err != nil || spill.Display() != "2" {
+		t.Fatalf("spilled cell = %+v, %v; want 2", spill, err)
+	}
+}
+
+func TestSpillCollisionAndReferences(t *testing.T) {
+	book := &Spreadsheet{Sheets: []Sheet{{Name: "Sheet1", Rows: [][]Cell{
+		{{Formula: "=SEQUENCE(3)"}, {Formula: "=A3*2"}, {Formula: "=SUM(A1:A3)"}},
+	}}}}
+	e := NewEvaluator(book)
+	value, err := e.Evaluate(0, 1, 2)
+	if err != nil || value.Display() != "6" {
+		t.Fatalf("reference to spill = %q, %v", value.Display(), err)
+	}
+	value, err = e.Evaluate(0, 1, 3)
+	if err != nil || value.Display() != "6" {
+		t.Fatalf("aggregate of spill = %q, %v", value.Display(), err)
+	}
+	book.Sheets[0].Rows = append(book.Sheets[0].Rows, []Cell{{Value: "block"}})
+	value, err = NewEvaluator(book).Evaluate(0, 1, 1)
+	if err != nil || value.Err != ErrSpill {
+		t.Fatalf("blocked spill = %#v, %v", value, err)
+	}
+}
+
+func TestDynamicArrayEdgeCases(t *testing.T) {
+	tests := []struct{ formula, want string }{
+		{`=SUM(SEQUENCE(3))`, "6"},
+		{`=COUNTA(SEQUENCE(3))`, "3"},
+		{`=FILTER(B1:B2,B1:B2>5,"none")`, "none"},
+		{`=FILTER(B1:B2,B1:B2>5)`, "#CALC!"},
+		{`=UNIQUE(B1:B2,FALSE,TRUE)`, "#CALC!"},
+		{`=SEQUENCE(0)`, "#VALUE!"},
+	}
+	for _, tt := range tests {
+		book := &Spreadsheet{Sheets: []Sheet{{Name: "Sheet1", Rows: [][]Cell{
+			{{Formula: tt.formula}, {Value: "1"}}, {{}, {Value: "1"}},
+		}}}}
+		value, err := Evaluate(book, 0, 1, 1)
+		if err != nil || value.Display() != tt.want {
+			t.Errorf("%s = %q, %v; want %q", tt.formula, value.Display(), err, tt.want)
+		}
+	}
+	book := &Spreadsheet{Sheets: []Sheet{{Name: "Sheet1", Rows: make([][]Cell, MaxRows)}}}
+	book.Sheets[0].Rows[MaxRows-1] = make([]Cell, MaxColumns)
+	book.Sheets[0].Rows[MaxRows-1][MaxColumns-1] = Cell{Formula: "=SEQUENCE(2)"}
+	value, err := Evaluate(book, 0, MaxRows, MaxColumns)
+	if err != nil || value.Err != ErrSpill {
+		t.Fatalf("out-of-bounds spill = %#v, %v", value, err)
+	}
+	cycle := &Spreadsheet{Sheets: []Sheet{{Name: "Sheet1", Rows: [][]Cell{{
+		{Formula: "=SEQUENCE(B1)"}, {Formula: "=A2+2"},
+	}}}}}
+	if _, err := Evaluate(cycle, 0, 1, 1); err == nil || !strings.Contains(err.Error(), "circular reference") {
+		t.Fatalf("spill cycle = %v", err)
+	}
+}
+
+func TestOverlappingSpillsHaveStablePriority(t *testing.T) {
+	book := &Spreadsheet{Sheets: []Sheet{{Name: "Sheet1", Rows: [][]Cell{
+		{{}, {}, {Formula: "=SEQUENCE(3)"}},
+		{{Formula: "=SEQUENCE(1,3)"}},
+	}}}}
+	e := NewEvaluator(book)
+	winner, err := e.Evaluate(0, 2, 3)
+	if err != nil || winner.Display() != "2" {
+		t.Fatalf("winning spill cell: %+v, %v", winner, err)
+	}
+	blocked, err := e.Evaluate(0, 2, 1)
+	if err != nil || blocked.Err != ErrSpill {
+		t.Fatalf("blocked spill anchor: %+v, %v", blocked, err)
+	}
+}
+
 func TestRecordDependencyDepth_EmptyDepths(t *testing.T) {
 	e := evaluator{}
 	// This should return immediately and not panic because e.depths is empty.
@@ -391,10 +654,14 @@ func TestAggregatesAndRanges(t *testing.T) {
 
 	// Cross-sheet range references
 	book.Sheets[0].Rows[2][1] = Cell{Formula: `='Sheet Two'!A1:B1`}
-	// A standalone range in scalar context returns #VALUE!
+	// A standalone range spills its values.
 	val, err = Evaluate(book, 0, 3, 2)
-	if err != nil || val.Kind != ErrKind || val.Err != ErrValue {
-		t.Fatalf("expected standalone range = #VALUE!, got %+v (err: %v)", val, err)
+	if err != nil || val.Kind != NumKind || val.Num != 100 {
+		t.Fatalf("expected standalone range anchor = 100, got %+v (err: %v)", val, err)
+	}
+	val, err = Evaluate(book, 0, 3, 3)
+	if err != nil || val.Kind != NumKind || val.Num != 200 {
+		t.Fatalf("expected standalone range spill = 200, got %+v (err: %v)", val, err)
 	}
 
 	book.Sheets[0].Rows[2][1] = Cell{Formula: `=SUM('Sheet Two'!A1:B1)`}

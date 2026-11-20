@@ -38,22 +38,23 @@ type documentSavedMsg struct {
 }
 
 // documentReloadedMsg reports an operation that changed the file, together
-// with the file's current document and proposals.
+// with the file's current document and tracked changes.
 type documentReloadedMsg struct {
 	description string
 	document    document.Document
-	changes     []document.Change
+	changes     []document.TrackedChange
 	history     *historyAvailability
 	showChanges bool
 	cleanupErr  error
 	err         error
 }
 type documentChangesLoadedMsg struct {
-	changes []document.Change
-	err     error
+	document document.Document
+	err      error
 }
 type documentPDFExportedMsg struct {
 	pdfExportResult
+	tracked bool
 }
 type imageLoadedMsg struct {
 	image artifact.Image
@@ -195,11 +196,12 @@ const (
 	promptPDFOverwrite
 )
 
-// documentChangesState holds state for reviewing proposed document changes.
+// documentChangesState holds state for reviewing tracked document changes.
 type documentChangesState struct {
 	showChanges    bool
 	reviewing      bool
-	changes        []document.Change
+	changes        []document.TrackedChange
+	reviewSnapshot document.Document
 	selectedChange int
 	changeReview   viewport.Model
 }
@@ -239,7 +241,7 @@ type documentReaderState struct {
 	outline       []document.Section
 }
 
-// documentsScreen edits one document file and reviews its proposed changes.
+// documentsScreen edits one document file and reviews its tracked changes.
 // It owns UI state only; document rules live in the document service.
 type documentsScreen struct {
 	imageState     documentImageState
@@ -445,8 +447,6 @@ func (s *documentsScreen) documentReloaded(msg documentReloadedMsg) tea.Cmd {
 		return s.resumeAutosave()
 	}
 	if !s.dirty() || msg.showChanges {
-		// The proposal recorded the edits, so the editor returns to the
-		// saved document.
 		s.loadDocument(msg.document)
 	} else {
 		s.snapshot = msg.document
@@ -455,11 +455,14 @@ func (s *documentsScreen) documentReloaded(msg documentReloadedMsg) tea.Cmd {
 		s.refreshReader()
 	}
 	s.changes = msg.changes
+	s.reviewSnapshot = msg.document
 	s.selectedChange = max(min(s.selectedChange, len(s.changes)-1), 0)
 	if msg.showChanges {
 		s.showChanges, s.reviewing = true, false
 	}
-	if s.reviewing {
+	if len(s.changes) == 0 {
+		s.reviewing = false
+	} else if s.reviewing {
 		s.setChangeReviewContent()
 	}
 	s.errMessage, s.status = "", msg.description
@@ -477,7 +480,8 @@ func (s *documentsScreen) documentChangesLoaded(msg documentChangesLoadedMsg) {
 		s.errMessage = msg.err.Error()
 		return
 	}
-	s.changes = msg.changes
+	s.changes = msg.document.TrackedChanges
+	s.reviewSnapshot = msg.document
 	s.selectedChange = max(min(s.selectedChange, len(s.changes)-1), 0)
 	s.showChanges, s.reviewing = true, false
 	s.errMessage = ""
@@ -519,6 +523,8 @@ func (s *documentsScreen) exportPDF(path string, overwrite bool) tea.Cmd {
 		return nil
 	}
 	d := s.snapshot
+	tracked := len(s.snapshot.TrackedChanges) > 0 ||
+		(!s.reading && s.snapshot.Tracking && s.body.Value() != s.snapshot.Body)
 	if !s.reading {
 		d = s.editorDocument()
 	}
@@ -527,7 +533,7 @@ func (s *documentsScreen) exportPDF(path string, overwrite bool) tea.Cmd {
 	s.status, s.errMessage = "Exporting PDF…", ""
 	store, source := s.pdfStore, s.path
 	return func() tea.Msg {
-		return documentPDFExportedMsg{writePDF(ctx, store, path, source, d, overwrite)}
+		return documentPDFExportedMsg{pdfExportResult: writePDF(ctx, store, path, source, d, overwrite), tracked: tracked}
 	}
 }
 
@@ -546,6 +552,9 @@ func (s *documentsScreen) documentPDFExported(msg documentPDFExportedMsg) tea.Cm
 	default:
 		s.lastPDFPath = msg.path
 		s.errMessage, s.status = "", "PDF exported to "+msg.path
+		if msg.tracked {
+			s.status += " (pending tracked changes not exported)"
+		}
 		if msg.warning != nil {
 			s.status += " (could not remember PDF path: " + msg.warning.Error() + ")"
 		}
@@ -579,19 +588,19 @@ func (s *documentsScreen) updateKey(msg tea.KeyMsg) tea.Cmd {
 	return s.updateEditorKey(msg)
 }
 
-// loadChanges opens the list of proposals recorded in this file.
+// loadChanges opens the list of pending tracked changes.
 func (s *documentsScreen) loadChanges() tea.Cmd {
 	s.pending = true
 	ctx := s.startOperation()
 	service, path := s.service, s.path
 	return func() tea.Msg {
-		changes, err := service.Changes(ctx, path)
-		return documentChangesLoadedMsg{changes: changes, err: err}
+		d, err := service.Get(ctx, path)
+		return documentChangesLoadedMsg{document: d, err: err}
 	}
 }
 
 // reload runs an operation that changes the file, then reads the document and
-// its proposals back.
+// its tracked changes back.
 func (s *documentsScreen) reload(showChanges bool, run func(context.Context) (string, error)) tea.Cmd {
 	s.stopDocumentAutosave()
 	s.pending = true
@@ -613,9 +622,8 @@ func (s *documentsScreen) reload(showChanges bool, run func(context.Context) (st
 				err:     err,
 			}
 		}
-		changes, err := service.Changes(ctx, path)
 		return documentReloadedMsg{
-			description: description, document: d, changes: changes,
+			description: description, document: d, changes: d.TrackedChanges,
 			history:     queryHistoryAvailability(ctx, service.HistoryAvailability),
 			showChanges: showChanges, err: err,
 		}
@@ -632,23 +640,14 @@ func (s *documentsScreen) updateChangesKey(msg tea.KeyMsg) tea.Cmd {
 			s.changeReview, _ = s.changeReview.Update(msg)
 		case "a", "r":
 			change, ok := s.selectedChangeValue()
-			if !ok || change.Status != document.ChangePending {
+			if !ok {
 				break
 			}
-			if key == "a" && s.dirty() {
-				s.status = "Save or discard your edits before accepting a proposal"
+			if s.dirty() {
+				s.status = "Save or discard your edits before reviewing changes"
 				return nil
 			}
-			service, path := s.service, s.path
-			if key == "a" {
-				return s.reload(false, func(ctx context.Context) (string, error) {
-					_, err := service.Accept(ctx, path, change.ID)
-					return "Proposal accepted", err
-				})
-			}
-			return s.reload(false, func(ctx context.Context) (string, error) {
-				return "Proposal rejected", service.Reject(ctx, path, change.ID)
-			})
+			return s.resolveTracked(change.ID, key == "a")
 		}
 		return nil
 	}
@@ -672,8 +671,26 @@ func (s *documentsScreen) updateChangesKey(msg tea.KeyMsg) tea.Cmd {
 			s.reviewing = true
 			s.setChangeReviewContent()
 		}
+	case "A", "R":
+		if s.dirty() {
+			s.status = "Save or discard your edits before reviewing changes"
+			return nil
+		}
+		return s.resolveTracked("", key == "A")
 	}
+
 	return nil
+}
+
+func (s *documentsScreen) resolveTracked(id string, accept bool) tea.Cmd {
+	service, snapshot := s.service, s.reviewSnapshot
+	return s.reload(false, func(ctx context.Context) (string, error) {
+		_, err := service.ReviewTracked(ctx, snapshot, id, accept)
+		if accept {
+			return "Tracked change accepted", err
+		}
+		return "Tracked change rejected", err
+	})
 }
 
 func (s *documentsScreen) resizeChangeReview() {
@@ -692,12 +709,16 @@ func (s *documentsScreen) setChangeReviewContent() {
 		s.changeReview.SetContent("")
 		return
 	}
-	content := fmt.Sprintf(
-		"%s  ·  %s  ·  %s\n\nCurrent page setup:\n%s\n\nProposed page setup:\n%s\n\n--- Current Markdown ---\n%s\n\n+++ Proposed Markdown +++\n%s",
-		change.ID, change.Status, sanitizeTerminalLine(change.Description),
-		changeLayoutDescription(change.Before.Layout), changeLayoutDescription(change.After.Layout),
-		sanitizeTerminalText(change.Before.Body), sanitizeTerminalText(change.After.Body),
-	)
+	content := fmt.Sprintf("%s  ·  pending  ·  byte %d\n\n%s",
+		change.ID, change.Offset, sanitizeTerminalText(document.TrackingSummary(change)))
+	if change.Group != "" {
+		content += "\n\nLinked image move (reviewed together):"
+		for _, linked := range s.changes {
+			if linked.ID != change.ID && linked.Group == change.Group {
+				content += "\n\n" + sanitizeTerminalText(document.TrackingSummary(linked))
+			}
+		}
+	}
 	s.changeReview.SetContent(wrapReviewText(content, max(s.changeReview.Width, 1)))
 	s.changeReview.GotoTop()
 }
@@ -754,9 +775,9 @@ func wrapReviewText(content string, width int) string {
 	return wrapped.String()
 }
 
-func (s *documentsScreen) selectedChangeValue() (document.Change, bool) {
+func (s *documentsScreen) selectedChangeValue() (document.TrackedChange, bool) {
 	if s.selectedChange < 0 || s.selectedChange >= len(s.changes) {
-		return document.Change{}, false
+		return document.TrackedChange{}, false
 	}
 	return s.changes[s.selectedChange], true
 }
@@ -834,21 +855,18 @@ func (s *documentsScreen) documentView(header string) string {
 
 func (s *documentsScreen) viewChanges(header string) string {
 	var b strings.Builder
-	b.WriteString(header + "\n\nProposed changes to this document\n")
+	b.WriteString(header + "\n\nTracked changes to this document\n")
 	if s.reviewing {
 		change, ok := s.selectedChangeValue()
 		if ok {
 			b.WriteString(s.changeReview.View())
 			b.WriteString("\n\n")
-			if change.Status == document.ChangePending {
-				b.WriteString("a accept  ·  r reject  ·  ↑/↓ scroll  ·  PgUp/PgDn  ·  Esc/q return")
-			} else {
-				b.WriteString("↑/↓ scroll  ·  PgUp/PgDn  ·  Esc/q return")
-			}
+			_ = change
+			b.WriteString("a accept  ·  r reject  ·  ↑/↓ scroll  ·  PgUp/PgDn  ·  Esc/q return")
 		}
 	} else {
 		if len(s.changes) == 0 {
-			b.WriteString("\nNo proposed or resolved changes.\n")
+			b.WriteString("\nNo pending changes.\n")
 		}
 		visible := max(s.height-8, 1)
 		start := visibleWindowStart(len(s.changes), s.selectedChange, visible)
@@ -859,23 +877,15 @@ func (s *documentsScreen) viewChanges(header string) string {
 			if i == s.selectedChange {
 				marker = "> "
 			}
-			fmt.Fprintf(&b, "%s%s  %s  %s\n", marker, change.Status, change.ID, sanitizeTerminalLine(change.Description))
+			fmt.Fprintf(&b, "%spending  %s  byte %d\n", marker, change.ID, change.Offset)
 		}
 		back := "the editor"
 		if s.reading {
 			back = "the reader"
 		}
-		b.WriteString("\n↑/↓ select  Enter review  ·  Esc/q returns to " + back)
+		b.WriteString("\n↑/↓ select  Enter review  A accept all  R reject all  ·  Esc/q returns to " + back)
 	}
 	return b.String() + "\n" + s.statusLine()
-}
-
-func changeLayoutDescription(layout document.Layout) string {
-	return fmt.Sprintf("%s %s, %d columns, margins %d/%d/%d/%d mm\nHeader: %s\nFooter: %s\nPage numbers: %s",
-		layout.PageSize, layout.Orientation, layout.Columns,
-		layout.Margins.Top, layout.Margins.Right, layout.Margins.Bottom, layout.Margins.Left,
-		sanitizeTerminalText(layout.Header), sanitizeTerminalText(layout.Footer),
-		sanitizeTerminalLine(layout.PageNumbers))
 }
 
 func (s *documentsScreen) statusLine() string {
