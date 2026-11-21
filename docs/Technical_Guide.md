@@ -224,6 +224,30 @@ path. Persistent undo/redo records successful saved service operations in
 application state. These mechanisms do not change which file is canonical:
 the ordinary artifact at its user-selected path remains authoritative.
 
+### Plain-note text sessions
+
+Existing plain-text notes opened in the Notes TUI use a separate lossless text
+session. `internal/notetext` provides strict codecs and logical LF text with
+per-boundary LF/CRLF/CR metadata. The filesystem repository retains original
+bytes and format information, performs encoding at the persistence boundary,
+and compares raw bytes under the existing write lock before saving. Typed
+artifacts keep their UTF-8 envelope format; noninteractive note commands keep
+their existing semantics.
+
+Automatic detection honors supported BOMs, then valid UTF-8, then a single
+unambiguous lossless legacy encoding. Ambiguous encodings require an opening
+override, and BOM-less UTF-16 requires explicit byte order. Decode and encode
+round-trip checks reject substitution, unsupported mappings, and unintended
+BOM changes.
+
+The native editor opts into boundary preservation only for plain notes.
+Line-ending metadata participates in edits and keystroke undo/redo; rendering,
+search, and PDF export consume logical Unicode text. Plain-note recovery
+stores its original baseline as byte-safe JSON data together with the format,
+draft Unicode text, and boundary metadata. A recovery baseline is never
+replaced with externally changed file contents. These runtime details do not
+add metadata or sidecars to the user's file.
+
 ### Persistent history storage
 
 History is stored under `~/.parchment/history/`, outside artifact directories.

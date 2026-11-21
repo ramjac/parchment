@@ -20,6 +20,7 @@ import (
 // noteEditor holds UI and autosave state for the note editor.
 type noteEditor struct {
 	snapshot          note.Note
+	textSnapshot      *note.TextSnapshot
 	originalBody      string
 	bodyInput         editor.Model
 	previewing        bool
@@ -81,9 +82,17 @@ func (n *noteEditor) loadNote(savedNote note.Note) {
 }
 
 func (n *noteEditor) markSaved(savedNote note.Note) {
+	n.textSnapshot = nil
 	n.snapshot = savedNote
 	n.originalBody = savedNote.Body
 	n.discardWarning = false
+}
+
+func (n *noteEditor) markTextSaved(snapshot note.TextSnapshot) {
+	n.markSaved(snapshot.Note)
+	copy := snapshot.Clone()
+	n.textSnapshot = &copy
+	n.originalBody = snapshot.Document.Text
 }
 
 func (n *noteEditor) resizePreview(width, height int) {

@@ -49,6 +49,7 @@ func New(stdout, stderr io.Writer) *cobra.Command {
 	}
 	root.SetOut(stdout)
 	root.SetErr(stderr)
+	addEncodingFlag(root)
 
 	notes := &cobra.Command{Use: "note", Short: "Create and manage Markdown notes"}
 	root.AddCommand(groupCommand(notes))
