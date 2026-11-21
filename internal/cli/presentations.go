@@ -13,6 +13,7 @@ import (
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/presentation"
+	"example.com/parchment/internal/printing"
 )
 
 func addPresentationCommands(root *cobra.Command, streams output) {
@@ -116,6 +117,10 @@ func addPresentationCommands(root *cobra.Command, streams output) {
 			deck, err := presentation.Parse(item.Source)
 			if err != nil {
 				return err
+			}
+			deck.Header, _ = printing.ExpandEmbeddedReferences(deck.Header, item.Workbook)
+			for index := range deck.Slides {
+				deck.Slides[index].Body, _ = printing.ExpandEmbeddedReferences(deck.Slides[index].Body, item.Workbook)
 			}
 			_, err = io.WriteString(streams.out, presentation.Preview(deck))
 			return err

@@ -9,12 +9,12 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2/compat"
 	"github.com/atotto/clipboard"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/config"
@@ -106,8 +106,8 @@ func TestSpreadsheetSearchIncludesOtherSheetsAndRawFormulas(t *testing.T) {
 		t.Fatal(err)
 	}
 	driveSheet(t, m, m.load()())
-	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
-	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1+2")})
+	driveSheet(t, m, tea.KeyPressMsg{Code: []rune(string("/"))[0], Text: string("/")})
+	driveSheet(t, m, tea.KeyPressMsg{Code: []rune(string("1+2"))[0], Text: string("1+2")})
 	if !m.find.active || len(m.searchMatches) != 1 || m.sheet != 1 || m.row != 0 || m.column != 0 {
 		t.Fatalf("formula search: active=%t matches=%+v selection=%d,%d,%d",
 			m.find.active, m.searchMatches, m.sheet, m.row, m.column)
@@ -116,9 +116,9 @@ func TestSpreadsheetSearchIncludesOtherSheetsAndRawFormulas(t *testing.T) {
 		t.Fatalf("evaluated formula value = %q", got)
 	}
 	for _, query := range []string{"3", "other literal"} {
-		driveSheet(t, m, tea.KeyMsg{Type: tea.KeyEsc})
-		driveSheet(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
-		driveSheet(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(query)})
+		driveSheet(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
+		driveSheet(t, m, tea.KeyPressMsg{Code: []rune(string("/"))[0], Text: string("/")})
+		driveSheet(t, m, tea.KeyPressMsg{Code: []rune(string(query))[0], Text: string(query)})
 		if len(m.searchMatches) != 1 || m.sheet != 1 || m.row != 0 ||
 			(query == "3" && m.column != 0) || (query != "3" && m.column != 1) {
 			t.Fatalf("search %q: matches=%+v selection=%d,%d,%d",
@@ -139,8 +139,8 @@ func TestPresentationSearchFindsSpeakerNotesAndRevealsThem(t *testing.T) {
 	if notesQuery == "" {
 		t.Skip("example presentation has no speaker notes")
 	}
-	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
-	drivePresentation(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(notesQuery)})
+	drivePresentation(t, m, tea.KeyPressMsg{Code: []rune(string("/"))[0], Text: string("/")})
+	drivePresentation(t, m, tea.KeyPressMsg{Code: []rune(string(notesQuery))[0], Text: string(notesQuery)})
 	noteMatch := -1
 	for i, match := range m.searchMatches {
 		if match.inNotes {
@@ -258,7 +258,7 @@ func TestFindReceivesClipboardResultInEachTarget(t *testing.T) {
 			h := newSearchHarness(t, target.kind, target.mode)
 			h.key("ctrl+f")
 			h.send(message)
-			if view := ansi.Strip(h.m.View()); !strings.Contains(view, "Find: needle") ||
+			if view := ansi.Strip(h.m.View().Content); !strings.Contains(view, "Find: needle") ||
 				strings.Contains(view, "no matches") {
 				t.Fatalf("clipboard result did not update Find and matches:\n%s", view)
 			}
@@ -361,19 +361,21 @@ func TestViewerResizePreservesSearchResultAndScroll(t *testing.T) {
 		h.key("enter")
 		h.m.previewMatch = len(h.m.previewMatches) - 1
 		h.m.movePreviewMatch(0)
-		current, offset := h.m.previewMatch, h.m.preview.YOffset
+		current, offset := h.m.previewMatch, h.m.preview.YOffset()
 		for _, size := range []tea.WindowSizeMsg{{Width: 100, Height: 25}, {Width: 90, Height: 25}} {
 			h.send(size)
-			if h.m.previewMatch != current || h.m.preview.YOffset != offset {
+			if h.m.previewMatch != current || h.m.preview.YOffset() != offset {
 				t.Fatalf("resize reset preview: match=%d/%d offset=%d/%d",
-					h.m.previewMatch, current, h.m.preview.YOffset, offset)
+					h.m.previewMatch, current, h.m.preview.YOffset(), offset)
 			}
 		}
 	})
 	t.Run("document reader", func(t *testing.T) {
 		h := newHarness(t, "")
 		if _, err := h.docs.Create(context.Background(), h.path, document.Draft{
-			Body: "needle\n\n" + document.PageBreakMarkup + "\n\nneedle", Layout: document.DefaultLayout(),
+			Body: strings.Repeat("A long line of words that wraps differently when the document reader changes width.\n\n", 25) +
+				"needle\n\n" + document.PageBreakMarkup + "\n\n" + strings.Repeat("Filler.\n\n", 20) + "needle\n\n" +
+				strings.Repeat("End.\n\n", 20), Layout: document.DefaultLayout(),
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -382,12 +384,13 @@ func TestViewerResizePreservesSearchResultAndScroll(t *testing.T) {
 		h.typeText("needle")
 		h.key("enter")
 		s := h.m.documents
-		current, page, offset := s.readerMatch, s.readerPage, s.reader.YOffset
-		for _, size := range []tea.WindowSizeMsg{{Width: 100, Height: 25}, {Width: 90, Height: 25}} {
+		current := s.readerMatch
+		for _, size := range []tea.WindowSizeMsg{{Width: 100, Height: 25}, {Width: 60, Height: 25}, {Width: 90, Height: 25}} {
 			h.send(size)
-			if s.readerMatch != current || s.readerPage != page || s.reader.YOffset != offset {
-				t.Fatalf("resize reset reader: match=%d/%d page=%d/%d offset=%d/%d",
-					s.readerMatch, current, s.readerPage, page, s.reader.YOffset, offset)
+			row := s.readerMatches[s.readerMatch].row
+			if s.readerMatch != current || row < s.reader.YOffset() || row >= s.reader.YOffset()+s.reader.Height() {
+				t.Fatalf("resize lost reader match %d/%d at row %d, viewport %d:%d",
+					s.readerMatch, current, row, s.reader.YOffset(), s.reader.YOffset()+s.reader.Height())
 			}
 		}
 	})
@@ -398,7 +401,7 @@ func TestViewerResizePreservesSearchResultAndScroll(t *testing.T) {
 		m.setItem(item)
 		drivePresentation(t, m, sheetKey("/"))
 		drivePresentation(t, m, sheetKey("needle"))
-		if view := m.View(); !strings.Contains(view, "1/2") || strings.Contains(view, "no matches") {
+		if view := m.View().Content; !strings.Contains(view, "1/2") || strings.Contains(view, "no matches") {
 			t.Fatalf("live viewer search has the wrong count:\n%s", view)
 		}
 		drivePresentation(t, m, sheetKey("enter"))
@@ -430,9 +433,9 @@ func TestSpreadsheetEscapeDismissesBlurredFindBeforeClosing(t *testing.T) {
 }
 
 func TestSpreadsheetHighlightedFormulaUsesDisplayWidth(t *testing.T) {
-	previousProfile := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(previousProfile) })
+	previousProfile := compat.Profile
+	compat.Profile = colorprofile.TrueColor
+	t.Cleanup(func() { compat.Profile = previousProfile })
 	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Formula: "=123456789+123456789"}}})
 	m.theme = resolveTheme(config.Theme{Mode: "dark"})
 	m.width = 18

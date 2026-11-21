@@ -64,6 +64,15 @@ markers, including in monochrome terminals. Spreadsheet chart previews use the
 terminal graphics pipeline and provide a textual summary when graphical output
 is unavailable or the terminal is too small.
 
+Documents and presentations can edit embedded workbook sheets in the native
+spreadsheet grid. The host retains its cursor and state while the child editor
+is open; commit and cancel return to the host. Presentation references in
+speaker notes remain notes, while slide-body chart references render
+independently from the referenced sheet.
+When terminal graphics are unavailable, embedded charts reuse the native
+spreadsheet chart renderer so titles, category labels, and legends remain
+readable terminal text instead of downsampled image pixels.
+
 ## Visual verification
 
 TUI behavior and appearance should be protected by message-driven regression

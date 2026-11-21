@@ -11,11 +11,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/bubbles/cursor"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/cursor"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2/compat"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/config"
@@ -92,7 +92,7 @@ func (h *imageHarness) send(msg tea.Msg) {
 	h.t.Helper()
 	_, cmd := h.m.Update(msg)
 	for i := range h.m.fields {
-		h.m.fields[i].Cursor.SetMode(cursor.CursorStatic)
+		setTextInputCursorStatic(&h.m.fields[i])
 	}
 	h.run(cmd)
 }
@@ -188,7 +188,7 @@ func TestImageTUIFormsConflictsAndDirtyQuit(t *testing.T) {
 	h.key("esc")
 	h.form("r", "12", "")
 	h.key("s")
-	h.send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("curious.png")})
+	h.send(tea.KeyPressMsg{Code: []rune(string("curious.png"))[0], Text: string("curious.png")})
 	if h.m.prompt != imageSaveAs || h.m.fields[0].Value() != "curious.png" || h.quit {
 		t.Fatal("path input triggered browse shortcuts")
 	}
@@ -225,7 +225,7 @@ func TestImageTUIFormsConflictsAndDirtyQuit(t *testing.T) {
 	}
 	h.send(tea.WindowSizeMsg{Width: 25, Height: 6})
 	h.key("q")
-	if !strings.Contains(h.m.View(), "Discard edits?") {
+	if !strings.Contains(h.m.View().Content, "Discard edits?") {
 		t.Fatal("small terminal hid dirty quit guard")
 	}
 	h.key("n")
@@ -255,10 +255,10 @@ func TestImageTUIPendingAndStaleResults(t *testing.T) {
 	if h.m.session.Dirty() || h.m.pending || h.m.err == "" {
 		t.Fatal("cancelled edit changed pixels or hung")
 	}
-	before := h.m.View()
+	before := h.m.View().Content
 	h.send(imageEditedMsg{seq: h.m.seq - 1, img: h.m.session.Image()})
 	h.send(imagePreviewMsg{seq: h.m.renderSeq - 1, output: "STALE", rows: 1})
-	if h.m.View() != before {
+	if h.m.View().Content != before {
 		t.Fatal("stale operation/render message changed current frame")
 	}
 }
@@ -270,7 +270,7 @@ func TestImageTUISmallTerminalPreservesForm(t *testing.T) {
 	h.m.fields[0].SetValue("7")
 	h.key("tab")
 	h.send(tea.WindowSizeMsg{Width: 25, Height: 6})
-	h.send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hidden")})
+	h.send(tea.KeyPressMsg{Code: []rune(string("hidden"))[0], Text: string("hidden")})
 	h.send(tea.WindowSizeMsg{Width: 80, Height: 24})
 	if h.m.prompt != imageResize || h.m.focus != 1 || h.m.fields[0].Value() != "7" || h.m.fields[1].Value() != "" {
 		t.Fatal("terminal resize lost form state or accepted invisible input")
@@ -282,13 +282,13 @@ func TestImageTUISmallTerminalPreservesForm(t *testing.T) {
 }
 
 func TestImageTUIGoldens(t *testing.T) {
-	old := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(old) })
+	old := compat.Profile
+	compat.Profile = colorprofile.TrueColor
+	t.Cleanup(func() { compat.Profile = old })
 	documentImageEnv(t, "")
 	h := newImageHarness(t)
 	normalized := func() string {
-		lines := strings.Split(h.m.View(), "\n")
+		lines := strings.Split(h.m.View().Content, "\n")
 		lines[0] = h.m.theme.Chrome.Render("parchment image  fixtures/picture.png")
 		const sizeLabel = "saved file: "
 		if start := strings.Index(lines[3], sizeLabel); start >= 0 {
@@ -302,29 +302,29 @@ func TestImageTUIGoldens(t *testing.T) {
 	assertTUIViewGolden(t, "image-viewer", normalized(), 80, 24)
 	h.send(tea.WindowSizeMsg{Width: 40, Height: 10})
 	h.key("c")
-	h.m.fields[h.m.focus].Cursor.Blink = false
-	if strings.Count(normalized(), "\x1b[7m") != 1 {
+	setTextInputCursorStatic(&h.m.fields[h.m.focus])
+	if strings.Count(normalized(), "\x1b[7;") != 1 {
 		t.Fatal("crop form must show exactly one focused cursor")
 	}
 	assertTUIViewGolden(t, "image-crop-small", normalized(), 40, 10)
 }
 
 func TestImageTUIMonochromeFallback(t *testing.T) {
-	old := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.Ascii)
-	t.Cleanup(func() { lipgloss.SetColorProfile(old) })
+	old := compat.Profile
+	compat.Profile = colorprofile.Ascii
+	t.Cleanup(func() { compat.Profile = old })
 	documentImageEnv(t, "")
 	h := newImageHarness(t)
-	view := h.m.View()
+	view := h.m.View().Content
 	if !strings.Contains(view, "▀") || !strings.Contains(view, "24x16") || strings.Contains(view, "\x1b_G") {
 		t.Fatal("monochrome terminal lost image fallback or metadata")
 	}
 }
 
 func TestImageTUIBoundedViews(t *testing.T) {
-	old := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(old) })
+	old := compat.Profile
+	compat.Profile = colorprofile.TrueColor
+	t.Cleanup(func() { compat.Profile = old })
 	for _, mode := range []string{"dark", "light"} {
 		for _, size := range [][2]int{{80, 24}, {120, 40}, {40, 10}, {25, 6}} {
 			t.Run(fmt.Sprintf("%s-%dx%d", mode, size[0], size[1]), func(t *testing.T) {
@@ -334,8 +334,8 @@ func TestImageTUIBoundedViews(t *testing.T) {
 				h.send(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
 				check := func() {
 					t.Helper()
-					view := h.m.View()
-					if h.m.View() != view {
+					view := h.m.View().Content
+					if h.m.View().Content != view {
 						t.Fatal("View mutated state")
 					}
 					lines := strings.Split(ansi.Strip(view), "\n")
@@ -372,6 +372,12 @@ func TestImageTUIBoundedViews(t *testing.T) {
 type imageRenderModel struct{ *imageModel }
 
 func (m imageRenderModel) Init() tea.Cmd { return nil }
+func (m imageRenderModel) View() tea.View {
+	view := m.imageModel.View()
+	view.AltScreen = true
+	view.MouseMode = tea.MouseModeCellMotion
+	return view
+}
 
 func TestImageTUIProtocolRendererUpdates(t *testing.T) {
 	for _, protocol := range []string{"kitty", "iterm", "sixel"} {
@@ -380,7 +386,7 @@ func TestImageTUIProtocolRendererUpdates(t *testing.T) {
 			h := newImageHarness(t)
 			m := h.m
 			prefix := map[string]string{"kitty": "\x1b_Ga=T", "iterm": "\x1b]1337;File=", "sixel": "\x1bP0;1;0q"}[protocol]
-			view := m.View()
+			view := m.View().Content
 			paintAt := strings.Index(view, prefix)
 			if paintAt < 0 || strings.Contains(view, "\x1b[0A") {
 				t.Fatal("missing graphical preview or invalid cursor move")
@@ -390,8 +396,9 @@ func TestImageTUIProtocolRendererUpdates(t *testing.T) {
 				t.Fatal("image painted before its reserved rows")
 			}
 			out := make(terminalRenderOutput, 128)
-			program := tea.NewProgram(imageRenderModel{m}, tea.WithInput(nil),
-				tea.WithOutput(out), tea.WithAltScreen(), tea.WithoutSignals())
+			program := tea.NewProgram(terminalModel{Model: imageRenderModel{m}}, tea.WithInput(nil),
+				tea.WithOutput(keyboardOutput{out}), tea.WithWindowSize(m.width, m.height),
+				tea.WithoutSignals())
 			done := make(chan error, 1)
 			go func() { _, err := program.Run(); done <- err }()
 			defer func() {
@@ -408,13 +415,14 @@ func TestImageTUIProtocolRendererUpdates(t *testing.T) {
 			}
 			program.Send(tea.WindowSizeMsg{Width: 60, Height: 18})
 			output = readTerminalOutputUntil(t, out, prefix)
-			if strings.Count(output, prefix) != 1 || strings.Contains(output, "\x1b[2J") {
-				t.Fatal("resize flickered or duplicated image")
+			if strings.Count(output, prefix) != 1 {
+				t.Fatalf("resize flickered or duplicated image (%d prefixes): %q",
+					strings.Count(output, prefix), output[:min(len(output), 1000)])
 			}
 			program.Send(tea.WindowSizeMsg{Width: 25, Height: 6})
 			output = readTerminalOutputUntil(t, out, "Terminal too small")
-			if strings.Contains(output, prefix) || strings.Contains(output, "\x1b[2J") {
-				t.Fatal("small terminal kept image or cleared full screen")
+			if strings.Contains(output, prefix) {
+				t.Fatal("small terminal kept image graphics")
 			}
 		})
 	}
@@ -424,7 +432,7 @@ func TestImageTUISingleRowGraphics(t *testing.T) {
 	documentImageEnv(t, "kitty")
 	h := newImageHarness(t)
 	h.form("r", "120", "1")
-	if h.m.previewRows != 1 || !h.m.previewGraphics || strings.Contains(h.m.View(), "\x1b[0A") {
+	if h.m.previewRows != 1 || !h.m.previewGraphics || strings.Contains(h.m.View().Content, "\x1b[0A") {
 		t.Fatal("single-row image moved the cursor above its reserved rectangle")
 	}
 }

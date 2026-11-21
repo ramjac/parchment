@@ -20,28 +20,69 @@ func PresentationSlides(item presentation.Presentation) ([]presentation.Slide, e
 
 // PresentationSlidesContext resolves slide content while honoring cancellation.
 func PresentationSlidesContext(ctx context.Context, item presentation.Presentation) ([]presentation.Slide, error) {
+	slides, _, err := presentationSlidesContext(ctx, item, false)
+	return slides, err
+}
+
+// PresentationSlidesWithImagesContext resolves chart references to generated
+// image assets for graphical PDF output.
+func PresentationSlidesWithImagesContext(
+	ctx context.Context,
+	item presentation.Presentation,
+) ([]presentation.Slide, []artifact.Image, error) {
+	return presentationSlidesContext(ctx, item, true)
+}
+
+func presentationSlidesContext(
+	ctx context.Context,
+	item presentation.Presentation,
+	chartsAsImages bool,
+) ([]presentation.Slide, []artifact.Image, error) {
 	deck, err := presentation.Parse(item.Source)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	slides := make([]presentation.Slide, 0, len(deck.Slides)+1)
 	slides = append(slides, presentation.Slide{Title: deck.Title, Body: deck.Header})
 	slides = append(slides, deck.Slides...)
+	var images []artifact.Image
 	baseDir := ""
 	if item.Path != "" {
 		baseDir = filepath.Dir(item.Path)
 	}
 	for i := range slides {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		body, err := presentation.ExpandDirectivesContext(ctx, slides[i].Body, baseDir, item.Images)
 		if err != nil {
-			return nil, fmt.Errorf("slide %d: %w", i, err)
+			return nil, nil, fmt.Errorf("slide %d: %w", i, err)
 		}
-		slides[i].Body = body
+		var referenceErrors []error
+		var bodyImages []artifact.Image
+		if chartsAsImages {
+			body, bodyImages, referenceErrors = ExpandEmbeddedReferencesWithImages(body, item.Workbook)
+		} else {
+			body, referenceErrors = ExpandEmbeddedReferences(body, item.Workbook)
+		}
+		if len(referenceErrors) > 0 {
+			return nil, nil, fmt.Errorf("slide %d: %w", i, referenceErrors[0])
+		}
+		notes := slides[i].Notes
+		var notesImages []artifact.Image
+		if chartsAsImages {
+			notes, notesImages, referenceErrors = ExpandEmbeddedReferencesWithImages(notes, item.Workbook)
+		} else {
+			notes, referenceErrors = ExpandEmbeddedReferences(notes, item.Workbook)
+		}
+		if len(referenceErrors) > 0 {
+			return nil, nil, fmt.Errorf("slide %d speaker notes: %w", i, referenceErrors[0])
+		}
+		slides[i].Body, slides[i].Notes = body, notes
+		images = append(images, bodyImages...)
+		images = append(images, notesImages...)
 	}
-	return slides, nil
+	return slides, images, nil
 }
 
 // PrintPresentationTwoUp renders portrait text pages with two framed slides

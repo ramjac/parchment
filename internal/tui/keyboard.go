@@ -2,6 +2,8 @@ package tui
 
 import (
 	"bytes"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,7 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -22,6 +24,37 @@ type keyboardTerminalOutput struct {
 }
 
 type shiftEnterMsg struct{}
+
+const protectedITermPrefix = "\x1b_PARCHMENT-OSC:"
+const protectedITermSuffix = "\x1b\\"
+const imageRefreshPrefix = "\x1b_PARCHMENT-REFRESH:"
+
+type mouseAction uint8
+
+const (
+	mousePress mouseAction = iota
+	mouseMotion
+	mouseRelease
+)
+
+type mouseButton uint8
+
+const (
+	mouseNone mouseButton = iota
+	mouseLeft
+	mouseRight
+	mouseMiddle
+	mouseWheelUp
+	mouseWheelDown
+	mouseWheelLeft
+	mouseWheelRight
+)
+
+type mouseEvent struct {
+	X, Y   int
+	Action mouseAction
+	Button mouseButton
+}
 
 func (w keyboardTerminalOutput) Write(p []byte) (int, error) {
 	return (keyboardOutput{w.File}).Write(p)
@@ -36,7 +69,11 @@ func (w keyboardOutput) Write(p []byte) (int, error) {
 	// restore before leaving, including Bubble Tea's error and signal cleanup.
 	enable := ansi.SetModifyOtherKeys1 + ansi.PushKittyKeyboard(ansi.KittyDisambiguateEscapeCodes)
 	disable := ansi.PopKittyKeyboard(1) + ansi.ResetModifyOtherKeys
-	data := bytes.ReplaceAll(p, []byte(ansi.SetAltScreenSaveCursorMode), []byte(ansi.SetAltScreenSaveCursorMode+enable))
+	data, err := restoreITermGraphics(p)
+	if err != nil {
+		return 0, err
+	}
+	data = bytes.ReplaceAll(data, []byte(ansi.SetAltScreenSaveCursorMode), []byte(ansi.SetAltScreenSaveCursorMode+enable))
 	data = bytes.ReplaceAll(data, []byte(ansi.ResetAltScreenSaveCursorMode), []byte(disable+ansi.ResetAltScreenSaveCursorMode))
 	n, err := w.Writer.Write(data)
 	if err != nil {
@@ -48,9 +85,77 @@ func (w keyboardOutput) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+func protectITermGraphics(content string) string {
+	const prefix = "\x1b]1337;File="
+	for {
+		start := strings.Index(content, prefix)
+		if start < 0 {
+			return content
+		}
+		end := strings.IndexByte(content[start:], '\a')
+		if end < 0 {
+			return content
+		}
+		end += start + 1
+		encoded := base64.RawStdEncoding.EncodeToString([]byte(content[start:end]))
+		content = content[:start] + protectedITermPrefix + encoded + protectedITermSuffix + content[end:]
+	}
+}
+
+func restoreITermGraphics(data []byte) ([]byte, error) {
+	var out bytes.Buffer
+	for len(data) > 0 {
+		imageStart := bytes.Index(data, []byte(protectedITermPrefix))
+		refreshStart := bytes.Index(data, []byte(imageRefreshPrefix))
+		if imageStart < 0 && refreshStart < 0 {
+			out.Write(data)
+			break
+		}
+		start := imageStart
+		if start < 0 || (refreshStart >= 0 && refreshStart < start) {
+			start = refreshStart
+		}
+		out.Write(data[:start])
+		if start == refreshStart {
+			data = data[start+len(imageRefreshPrefix):]
+			end := bytes.Index(data, []byte(protectedITermSuffix))
+			if end < 0 {
+				return nil, errors.New("incomplete image refresh marker")
+			}
+			data = data[end+len(protectedITermSuffix):]
+			continue
+		}
+		data = data[start+len(protectedITermPrefix):]
+		end := bytes.Index(data, []byte(protectedITermSuffix))
+		if end < 0 {
+			return nil, errors.New("incomplete protected iTerm2 image sequence")
+		}
+		sequence, err := base64.RawStdEncoding.DecodeString(string(data[:end]))
+		if err != nil || !bytes.HasPrefix(sequence, []byte("\x1b]1337;File=")) || sequence[len(sequence)-1] != '\a' {
+			return nil, errors.New("invalid protected iTerm2 image sequence")
+		}
+		out.WriteString("\x1b[s")
+		out.Write(sequence)
+		out.WriteString("\x1b[u")
+		data = data[end+len(protectedITermSuffix):]
+	}
+	return out.Bytes(), nil
+}
+
 func normalizeTerminalKey(message tea.Msg) tea.Msg {
-	// Bubble Tea v1 exposes CSI-u and modifyOtherKeys input as unnamed messages
-	// whose String method contains the sequence's decimal bytes.
+	switch msg := message.(type) {
+	case tea.MouseClickMsg:
+		return normalizeMouse(msg.Mouse(), mousePress)
+	case tea.MouseReleaseMsg:
+		return normalizeMouse(msg.Mouse(), mouseRelease)
+	case tea.MouseMotionMsg:
+		return normalizeMouse(msg.Mouse(), mouseMotion)
+	case tea.MouseWheelMsg:
+		return normalizeMouse(msg.Mouse(), mousePress)
+	}
+
+	// Some terminals expose CSI-u and modifyOtherKeys input as unnamed
+	// messages whose String method contains the sequence's decimal bytes.
 	msg, ok := message.(fmt.Stringer)
 	if !ok {
 		return message
@@ -103,34 +208,93 @@ func normalizeTerminalKey(message tea.Msg) tea.Msg {
 	if code == 13 && mods == 1 {
 		return shiftEnterMsg{}
 	}
-	if mods&5 == 5 && code >= 'A' && code <= 'Z' {
-		code += 'a' - 'A'
+	key := tea.KeyPressMsg{Code: rune(code)}
+	if mods&1 != 0 {
+		key.Mod |= tea.ModShift
 	}
-	if mods&5 == 5 && code >= 'a' && code <= 'z' {
-		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ctrl+shift+" + string(rune(code)))}
+	if mods&2 != 0 {
+		key.Mod |= tea.ModAlt
 	}
-	key := tea.KeyMsg{Alt: mods&2 != 0}
 	if mods&4 != 0 {
-		switch {
-		case code >= 'a' && code <= 'z':
-			code -= 'a' - 1
-		case code >= '@' && code <= '_':
-			code -= '@'
-		case code == ' ':
-			code = 0
-		default:
-			return message
+		if code >= 'A' && code <= 'Z' {
+			code += 'a' - 'A'
 		}
+		if code >= 'a' && code <= 'z' {
+			key.Code = rune(code)
+			key.Mod |= tea.ModCtrl
+			return key
+		}
+		return message
 	}
 	switch {
 	case code == 9 && mods&1 != 0:
-		key.Type = tea.KeyShiftTab
-	case code <= 31 || code == 127:
-		key.Type = tea.KeyType(code)
+		key.Code = tea.KeyTab
 	case code == ' ':
-		key.Type = tea.KeySpace
-	default:
-		key.Type, key.Runes = tea.KeyRunes, []rune{rune(code)}
+		key.Code, key.Text = tea.KeySpace, " "
+	case code == 13:
+		key.Code = tea.KeyEnter
+	case code == 27:
+		key.Code = tea.KeyEscape
+	case code == 127:
+		key.Code = tea.KeyBackspace
+	case code > 31 && code < utf8.MaxRune:
+		key.Text = string(rune(code))
+	case mods&1 != 0 && code >= 'A' && code <= 'Z':
+		key.Code, key.Text = rune(code+'a'-'A'), string(rune(code))
 	}
 	return key
+}
+
+func normalizeMouse(mouse tea.Mouse, action mouseAction) mouseEvent {
+	button := mouseNone
+	switch mouse.Button {
+	case tea.MouseLeft:
+		button = mouseLeft
+	case tea.MouseRight:
+		button = mouseRight
+	case tea.MouseMiddle:
+		button = mouseMiddle
+	case tea.MouseWheelUp:
+		button = mouseWheelUp
+	case tea.MouseWheelDown:
+		button = mouseWheelDown
+	case tea.MouseWheelLeft:
+		button = mouseWheelLeft
+	case tea.MouseWheelRight:
+		button = mouseWheelRight
+	}
+	return mouseEvent{X: mouse.X, Y: mouse.Y, Action: action, Button: button}
+}
+
+func toTeaMouseMessage(event mouseEvent) tea.MouseMsg {
+	button := tea.MouseNone
+	switch event.Button {
+	case mouseLeft:
+		button = tea.MouseLeft
+	case mouseRight:
+		button = tea.MouseRight
+	case mouseMiddle:
+		button = tea.MouseMiddle
+	case mouseWheelUp:
+		button = tea.MouseWheelUp
+	case mouseWheelDown:
+		button = tea.MouseWheelDown
+	case mouseWheelLeft:
+		button = tea.MouseWheelLeft
+	case mouseWheelRight:
+		button = tea.MouseWheelRight
+	}
+	mouse := tea.Mouse{X: event.X, Y: event.Y, Button: button}
+	if button == tea.MouseWheelUp || button == tea.MouseWheelDown ||
+		button == tea.MouseWheelLeft || button == tea.MouseWheelRight {
+		return tea.MouseWheelMsg(mouse)
+	}
+	switch event.Action {
+	case mouseMotion:
+		return tea.MouseMotionMsg(mouse)
+	case mouseRelease:
+		return tea.MouseReleaseMsg(mouse)
+	default:
+		return tea.MouseClickMsg(mouse)
+	}
 }

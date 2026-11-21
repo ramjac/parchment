@@ -5,7 +5,7 @@ phases and merged PR checklists are intentionally omitted. See the
 [User Guide](docs/User_Guide.md) for current behavior and the
 [Technical Guide](docs/Technical_Guide.md) for architecture and format details.
 
-## TUI quality and regression prevention
+## TUI quality improvements
 
 The design contract (`docs/TUI_Design.md`), shared semantic theme, rendering
 goldens, and PR visual-evidence checklist are already in place. Keep adding
@@ -19,12 +19,28 @@ update rendering baselines only for intentional, reviewed changes.
   approved theme code. Exempt tests and fixtures, and allow runtime-generated
   image pixel colors. Existing theme tests cover supported color profiles,
   including monochrome.
-- **Decide on images in Note previews.** Document reader/preview and
-  Presentation views already render embedded images with terminal graphics
-  protocols and ANSI half-block fallback. Decide whether Note `F5` should
-  render explicitly referenced local images; if so, add that support without
-  scanning folders or fetching remote content, and keep the note's Markdown
-  source unchanged.
+- **Decide on images in Note previews.** Decision - Notes won't support embedded images.
+  More generally, Notes won't support any features that result in code blocks after
+  the closing parchment fence (like images).
+- **Assess extending animated view transitions to Documents and Spreadsheets.**
+  Presentation slide transitions now have a Harmonica prototype. Preserve
+  reader/editor and sheet-tab state, keep transitions interruptible, and ensure
+  animation ticks stop on cancellation or view exit. Add deterministic
+  message-driven tests and visual evidence before extending the behavior.
+- **Evaluate terminal image libraries separately from charting.** Compare
+  `go-termimg` with `internal/tui/termimg` for Kitty, iTerm2, Sixel, sizing,
+  placement, and ANSI fallback. Its Go 1.24-compatible release supports these
+  protocols, but its normal render-options path queries terminal capabilities;
+  Parchment's environment-only detection and no-terminal-query behavior must
+  remain intact. Use a library only if rendering can be explicitly configured
+  without terminal queries or direct stdout writes, and retain Parchment's
+  image-dimension limits and document-image placement behavior. The newer
+  ntcharts image widget is not a drop-in alternative: its current v2 branch
+  requires Go 1.26 and Bubble Tea v2 and has different protocol coverage.
+- **Consider BubbleZone only for discrete hit regions.** Prototype it for
+  rectangular toolbar or outline controls if those controls grow. Keep custom
+  coordinate mapping for editor cursor/selection and spreadsheet cells, where
+  pointer positions map to runes or cells rather than simple clickable boxes.
 
 ## Large-artifact performance and responsiveness
 

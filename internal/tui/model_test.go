@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/bubbles/cursor"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"example.com/parchment/internal/artifact"
@@ -29,6 +29,13 @@ import (
 
 type terminalRenderOutput chan string
 
+func setTextInputCursorStatic(input *textinput.Model) {
+	input.SetVirtualCursor(true)
+	styles := input.Styles()
+	styles.Cursor.Blink = false
+	input.SetStyles(styles)
+}
+
 func (out terminalRenderOutput) Write(data []byte) (int, error) {
 	out <- string(data)
 	return len(data), nil
@@ -42,8 +49,15 @@ func readTerminalOutputUntil(t *testing.T, out <-chan string, needle string) str
 		select {
 		case chunk := <-out:
 			output.WriteString(chunk)
-			if strings.Contains(output.String(), needle) {
-				return output.String()
+			if strings.Contains(output.String(), needle) || strings.Contains(ansi.Strip(output.String()), needle) {
+				for {
+					select {
+					case chunk := <-out:
+						output.WriteString(chunk)
+					case <-time.After(20 * time.Millisecond):
+						return output.String()
+					}
+				}
 			}
 		case <-deadline:
 			t.Fatal("terminal renderer did not produce the expected frame")
@@ -115,18 +129,18 @@ func (h *harness) openWithTheme(kind artifact.Kind, edit bool, theme config.Them
 	// Blinking cursors return tea.Tick commands, which the harness would run
 	// synchronously.
 	if s := h.m.documents; s != nil {
-		s.promptInput.Cursor.SetMode(cursor.CursorStatic)
+		setTextInputCursorStatic(&s.promptInput)
 	}
-	h.m.pdfInput.Cursor.SetMode(cursor.CursorStatic)
-	h.m.noteEditor.find.input.Cursor.SetMode(cursor.CursorStatic)
+	setTextInputCursorStatic(&h.m.pdfInput)
+	setTextInputCursorStatic(&h.m.noteEditor.find.input)
 	if h.m.documents != nil {
-		h.m.documents.find.input.Cursor.SetMode(cursor.CursorStatic)
+		setTextInputCursorStatic(&h.m.documents.find.input)
 	}
 	if h.m.deck != nil {
-		h.m.deck.find.input.Cursor.SetMode(cursor.CursorStatic)
+		setTextInputCursorStatic(&h.m.deck.find.input)
 	}
 	if s := h.m.sheet; s != nil {
-		s.input.Cursor.SetMode(cursor.CursorStatic)
+		setTextInputCursorStatic(&s.input)
 	}
 	h.send(tea.WindowSizeMsg{Width: 100, Height: 30})
 	h.run(h.m.Init())
@@ -142,24 +156,24 @@ func (h *harness) send(message tea.Msg) {
 	}
 	if h.m.deck != nil {
 		h.m.deck.autosaveScheduler = nil
-		h.m.deck.pdfInput.Cursor.SetMode(cursor.CursorStatic)
-		h.m.deck.find.input.Cursor.SetMode(cursor.CursorStatic)
+		setTextInputCursorStatic(&h.m.deck.pdfInput)
+		setTextInputCursorStatic(&h.m.deck.find.input)
 	}
-	h.m.noteEditor.find.input.Cursor.SetMode(cursor.CursorStatic)
+	setTextInputCursorStatic(&h.m.noteEditor.find.input)
 	if h.m.documents != nil {
-		h.m.documents.find.input.Cursor.SetMode(cursor.CursorStatic)
+		setTextInputCursorStatic(&h.m.documents.find.input)
 	}
 	if h.m.sheet != nil {
 		h.m.sheet.autosaveScheduler = nil
-		h.m.sheet.input.Cursor.SetMode(cursor.CursorStatic)
-		h.m.sheet.pdfInput.Cursor.SetMode(cursor.CursorStatic)
-		h.m.sheet.find.input.Cursor.SetMode(cursor.CursorStatic)
+		setTextInputCursorStatic(&h.m.sheet.input)
+		setTextInputCursorStatic(&h.m.sheet.pdfInput)
+		setTextInputCursorStatic(&h.m.sheet.find.input)
 	}
 	_, cmd := h.m.Update(message)
 	if h.m.sheet != nil {
 		h.m.sheet.autosaveScheduler = nil
-		h.m.sheet.input.Cursor.SetMode(cursor.CursorStatic)
-		h.m.sheet.pdfInput.Cursor.SetMode(cursor.CursorStatic)
+		setTextInputCursorStatic(&h.m.sheet.input)
+		setTextInputCursorStatic(&h.m.sheet.pdfInput)
 	}
 	h.run(cmd)
 }
@@ -192,62 +206,89 @@ func (h *harness) key(key string) {
 	h.t.Helper()
 	switch key {
 	case "esc":
-		h.send(tea.KeyMsg{Type: tea.KeyEsc})
+		h.send(tea.KeyPressMsg{Code: tea.KeyEsc})
 	case "tab":
-		h.send(tea.KeyMsg{Type: tea.KeyTab})
+		h.send(tea.KeyPressMsg{Code: tea.KeyTab})
 	case "enter":
-		h.send(tea.KeyMsg{Type: tea.KeyEnter})
+		h.send(tea.KeyPressMsg{Code: tea.KeyEnter})
 	case "ctrl+s":
-		h.send(tea.KeyMsg{Type: tea.KeyCtrlS})
+		h.send(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	case "ctrl+c":
-		h.send(tea.KeyMsg{Type: tea.KeyCtrlC})
+		h.send(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	case "ctrl+z":
-		h.send(tea.KeyMsg{Type: tea.KeyCtrlZ})
+		h.send(tea.KeyPressMsg{Code: 'z', Mod: tea.ModCtrl})
 	case "f3":
-		h.send(tea.KeyMsg{Type: tea.KeyF3})
+		h.send(tea.KeyPressMsg{Code: tea.KeyF3})
 	case "f4":
-		h.send(tea.KeyMsg{Type: tea.KeyF4})
+		h.send(tea.KeyPressMsg{Code: tea.KeyF4})
 	case "f5":
-		h.send(tea.KeyMsg{Type: tea.KeyF5})
+		h.send(tea.KeyPressMsg{Code: tea.KeyF5})
 	case "pgdown":
-		h.send(tea.KeyMsg{Type: tea.KeyPgDown})
+		h.send(tea.KeyPressMsg{Code: tea.KeyPgDown})
 	default:
-		h.send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+		h.send(tea.KeyPressMsg{Code: []rune(string(key))[0], Text: string(key)})
 	}
 }
 
 func (h *harness) typeText(text string) {
 	h.t.Helper()
-	h.send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text)})
+	h.send(tea.KeyPressMsg{Code: []rune(string(text))[0], Text: string(text)})
 }
 
 func TestNoteEditorFindBarSearchAndClose(t *testing.T) {
 	h := newHarness(t, artifact.NoteKind)
 	h.typeText("alpha ALPHA alpha")
-	h.send(tea.KeyMsg{Type: tea.KeyCtrlF})
+	h.send(tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
 	if !h.m.find.active || h.m.bodyInput.Focused {
 		t.Fatal("find bar did not take focus from the note editor")
 	}
 
 	h.typeText("alpha")
+	view := ansi.Strip(h.m.View().Content)
 	if h.m.bodyInput.MatchCount() != 3 || h.m.bodyInput.Cursor.Col != 0 ||
-		!strings.Contains(h.m.View(), "Find: alpha") || !strings.Contains(h.m.View(), "1/3") {
+		!strings.Contains(view, "Find: alpha") || !strings.Contains(view, "1/3") {
 		t.Fatalf("live search state: matches=%d cursor=%+v view=%q",
-			h.m.bodyInput.MatchCount(), h.m.bodyInput.Cursor, h.m.View())
+			h.m.bodyInput.MatchCount(), h.m.bodyInput.Cursor, h.m.View().Content)
 	}
-	h.send(tea.KeyMsg{Type: tea.KeyEnter})
+	h.send(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if h.m.bodyInput.Cursor.Col != 6 || h.m.bodyInput.ActiveMatch() != 1 {
 		t.Fatalf("next match cursor=%+v active=%d", h.m.bodyInput.Cursor, h.m.bodyInput.ActiveMatch())
 	}
-	h.send(tea.KeyMsg{Type: tea.KeyUp})
+	h.send(tea.KeyPressMsg{Code: tea.KeyUp})
 	if h.m.bodyInput.Cursor.Col != 0 || h.m.bodyInput.ActiveMatch() != 0 {
 		t.Fatalf("previous match cursor=%+v active=%d", h.m.bodyInput.Cursor, h.m.bodyInput.ActiveMatch())
 	}
-	h.send(tea.KeyMsg{Type: tea.KeyEsc})
+	h.send(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if h.m.find.active || h.m.bodyInput.MatchCount() != 0 || !h.m.bodyInput.Focused ||
 		h.m.bodyInput.Cursor.Col != 0 {
 		t.Fatalf("closing find did not clear highlighting and restore focus: active=%t matches=%d editorFocused=%t cursor=%+v",
 			h.m.find.active, h.m.bodyInput.MatchCount(), h.m.bodyInput.Focused, h.m.bodyInput.Cursor)
+	}
+}
+
+func TestNoteEditorPastesClipboardText(t *testing.T) {
+	h := newHarness(t, artifact.NoteKind)
+	h.send(tea.PasteMsg{Content: "pasted text"})
+	if got := h.m.bodyInput.Value(); got != "pasted text" {
+		t.Fatalf("pasted note body = %q", got)
+	}
+}
+
+func TestPastingAfterEscRequiresDiscardConfirmationAgain(t *testing.T) {
+	h := newHarness(t, artifact.NoteKind)
+	h.send(tea.PasteMsg{Content: "initial text"})
+	h.send(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if !h.m.discardWarning {
+		t.Fatal("Esc did not show the unsaved-changes warning")
+	}
+
+	h.send(tea.PasteMsg{Content: " more text"})
+	if h.m.discardWarning {
+		t.Fatal("paste left the previous discard warning active")
+	}
+	h.send(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if !h.m.discardWarning || h.m.stage != stageNote {
+		t.Fatal("Esc after paste did not require a fresh discard confirmation")
 	}
 }
 
@@ -262,8 +303,8 @@ func (h *harness) hasDraft() bool {
 
 func TestMissingFileAsksForKindAndCreatesIt(t *testing.T) {
 	h := newHarness(t, "")
-	if h.m.stage != stageChooseKind || !strings.Contains(h.m.View(), "does not exist yet") {
-		t.Fatalf("stage = %d, view:\n%s", h.m.stage, h.m.View())
+	if h.m.stage != stageChooseKind || !strings.Contains(h.m.View().Content, "does not exist yet") {
+		t.Fatalf("stage = %d, view:\n%s", h.m.stage, h.m.View().Content)
 	}
 	if _, err := os.Stat(h.path); !os.IsNotExist(err) {
 		t.Fatalf("file created before a kind was chosen: %v", err)
@@ -425,7 +466,7 @@ func TestPendingCtrlCCancelsOperationAndQuits(t *testing.T) {
 	h := newHarness(t, "")
 	opCtx, cancel := context.WithCancel(context.Background())
 	h.m.pending, h.m.cancelOperation, h.m.stage = true, cancel, stageOpening
-	_, cmd := h.m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_, cmd := h.m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatal("Ctrl+C while opening did not request quit")
 	}
@@ -438,7 +479,7 @@ func TestPendingSaveCancellationKeepsEditorOpen(t *testing.T) {
 	h := newHarness(t, artifact.NoteKind)
 	opCtx, cancel := context.WithCancel(context.Background())
 	h.m.pending, h.m.cancelOperation = true, cancel
-	_, cmd := h.m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_, cmd := h.m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if cmd != nil || h.m.stage != stageNote || !h.m.pending {
 		t.Fatalf("cancelled save state: command=%v stage=%d pending=%t", cmd, h.m.stage, h.m.pending)
 	}
@@ -454,7 +495,7 @@ func TestPendingSaveCancellationKeepsEditorOpen(t *testing.T) {
 func TestSmallTerminalQClosesOnlyCleanNote(t *testing.T) {
 	h := newHarness(t, artifact.NoteKind)
 	h.send(tea.WindowSizeMsg{Width: 30, Height: 8})
-	if view := h.m.View(); !strings.Contains(view, "too small") {
+	if view := h.m.View().Content; !strings.Contains(view, "too small") {
 		t.Fatalf("small terminal view = %q", view)
 	}
 	h.m.bodyInput.SetValue("unsaved")
@@ -473,7 +514,7 @@ func TestViewSanitizesTerminalControlSequences(t *testing.T) {
 	h := newHarness(t, artifact.NoteKind)
 	h.m.path = "/tmp/parch\x1b]52;c;payload\a.md"
 	h.m.bodyInput.SetValue("Body\x1b]52;c;payload\a\nnext")
-	view := h.m.View()
+	view := h.m.View().Content
 	for _, unsafe := range []string{"\x1b[2J", "\x1b]52;", "\x07"} {
 		if strings.Contains(view, unsafe) {
 			t.Errorf("view contains terminal control sequence %q", unsafe)
@@ -483,7 +524,7 @@ func TestViewSanitizesTerminalControlSequences(t *testing.T) {
 		t.Fatalf("view did not visibly sanitize the path: %q", view)
 	}
 	h.key("f5")
-	if view := h.m.View(); strings.Contains(view, "\x1b]52;") || !strings.Contains(view, "Preview") {
+	if view := h.m.View().Content; strings.Contains(view, "\x1b]52;") || !strings.Contains(view, "Preview") {
 		t.Fatalf("preview = %q", view)
 	}
 	h.key("q")
@@ -543,13 +584,13 @@ func TestPreviewCanScroll(t *testing.T) {
 	h.open(artifact.NoteKind)
 	h.send(tea.WindowSizeMsg{Width: 100, Height: 16})
 	h.key("f5")
-	if view := ansi.Strip(h.m.View()); !strings.Contains(view, "Line 01") || strings.Contains(view, "Line 60") {
+	if view := ansi.Strip(h.m.View().Content); !strings.Contains(view, "Line 01") || strings.Contains(view, "Line 60") {
 		t.Fatalf("initial preview = %q", view)
 	}
 	for range 6 {
 		h.key("pgdown")
 	}
-	if view := ansi.Strip(h.m.View()); !strings.Contains(view, "Line 3") {
+	if view := ansi.Strip(h.m.View().Content); !strings.Contains(view, "Line 3") {
 		t.Fatalf("scrolled preview = %q", view)
 	}
 	h.key("esc")
@@ -579,8 +620,8 @@ func TestNoteAutosaveIsOfferedOnReopen(t *testing.T) {
 
 	// Simulate a crash: reopen without closing.
 	h.open(artifact.NoteKind)
-	if h.m.stage != stageRecovery || !strings.Contains(h.m.View(), "autosaved draft") {
-		t.Fatalf("stage = %d, view:\n%s", h.m.stage, h.m.View())
+	if h.m.stage != stageRecovery || !strings.Contains(h.m.View().Content, "autosaved draft") {
+		t.Fatalf("stage = %d, view:\n%s", h.m.stage, h.m.View().Content)
 	}
 	h.key("r")
 	if h.m.stage != stageNote || h.m.bodyInput.Value() != "Recovered body" {
@@ -759,8 +800,8 @@ func TestSpreadsheetAutosaveIsOfferedOnReopen(t *testing.T) {
 	}
 
 	hSheet.open(artifact.SpreadsheetKind)
-	if hSheet.m.stage != stageRecovery || !strings.Contains(hSheet.m.View(), "autosaved draft") {
-		t.Fatalf("spreadsheet stage = %d, view:\n%s", hSheet.m.stage, hSheet.m.View())
+	if hSheet.m.stage != stageRecovery || !strings.Contains(hSheet.m.View().Content, "autosaved draft") {
+		t.Fatalf("spreadsheet stage = %d, view:\n%s", hSheet.m.stage, hSheet.m.View().Content)
 	}
 	hSheet.key("r")
 	if hSheet.m.stage != stageSpreadsheet {
@@ -1012,12 +1053,12 @@ func TestClosingNormallyDeletesDraft(t *testing.T) {
 
 func TestKindPromptCreatesSpreadsheetAndPresentation(t *testing.T) {
 	h := newHarness(t, "")
-	if view := h.m.View(); !strings.Contains(view, "s  Spreadsheet") || !strings.Contains(view, "p  Presentation") {
+	if view := h.m.View().Content; !strings.Contains(view, "s  Spreadsheet") || !strings.Contains(view, "p  Presentation") {
 		t.Fatalf("kind prompt = %q", view)
 	}
 	h.key("s")
-	if h.m.stage != stageSpreadsheet || !strings.Contains(h.m.View(), "A1") {
-		t.Fatalf("stage = %d, error = %q, view:\n%s", h.m.stage, h.m.errMessage, h.m.View())
+	if h.m.stage != stageSpreadsheet || !strings.Contains(h.m.View().Content, "A1") {
+		t.Fatalf("stage = %d, error = %q, view:\n%s", h.m.stage, h.m.errMessage, h.m.View().Content)
 	}
 	if book, err := h.sheets.Get(context.Background(), h.path); err != nil || len(book.Sheets) != 1 {
 		t.Fatalf("created spreadsheet = %+v, %v", book, err)
@@ -1029,8 +1070,8 @@ func TestKindPromptCreatesSpreadsheetAndPresentation(t *testing.T) {
 
 	h = newHarness(t, "")
 	h.key("p")
-	if h.m.stage != stagePresentation || !strings.Contains(h.m.View(), "report") {
-		t.Fatalf("stage = %d, error = %q, view:\n%s", h.m.stage, h.m.errMessage, h.m.View())
+	if h.m.stage != stagePresentation || !strings.Contains(h.m.View().Content, "report") {
+		t.Fatalf("stage = %d, error = %q, view:\n%s", h.m.stage, h.m.errMessage, h.m.View().Content)
 	}
 	deck, err := h.decks.Get(context.Background(), h.path)
 	if err != nil || !strings.HasPrefix(deck.Source, "# report") {
@@ -1058,12 +1099,12 @@ func TestPlainMarkdownOpensAsNoteAndStaysPlain(t *testing.T) {
 func TestNoteClickPositionsBodyCursor(t *testing.T) {
 	h := newHarness(t, artifact.NoteKind)
 	h.m.bodyInput.SetValue("alpha\nbravo")
-	h.send(tea.MouseMsg{X: 4, Y: 4, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	h.send(mouseEvent{X: 4, Y: 4, Action: mousePress, Button: mouseLeft})
 	h.m.bodyInput.InsertString("!")
 	if h.m.bodyInput.Value() != "alpha\nbr!avo" {
 		t.Fatalf("note click positioned cursor at %q", h.m.bodyInput.Value())
 	}
-	h.send(tea.MouseMsg{X: 1, Y: 0, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	h.send(mouseEvent{X: 1, Y: 0, Action: mousePress, Button: mouseLeft})
 	h.m.bodyInput.InsertString("?")
 	if h.m.bodyInput.Value() != "alpha\nbr!?avo" {
 		t.Fatalf("header click moved note cursor: %q", h.m.bodyInput.Value())
@@ -1075,12 +1116,12 @@ func TestDocumentClickPositionsBodyCursor(t *testing.T) {
 	s := h.m.documents
 	s.body.SetValue("alpha\nbravo")
 	y := toolbarTop + s.toolbarRows() + 1
-	h.send(tea.MouseMsg{X: 4, Y: y + 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	h.send(mouseEvent{X: 4, Y: y + 1, Action: mousePress, Button: mouseLeft})
 	s.body.InsertString("!")
 	if s.body.Value() != "alpha\nbr!avo" {
 		t.Fatalf("document click positioned cursor at %q", s.body.Value())
 	}
-	h.send(tea.MouseMsg{X: 1, Y: 0, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	h.send(mouseEvent{X: 1, Y: 0, Action: mousePress, Button: mouseLeft})
 	s.body.InsertString("?")
 	if s.body.Value() != "alpha\nbr!?avo" {
 		t.Fatalf("header click moved document cursor: %q", s.body.Value())
@@ -1387,14 +1428,14 @@ func TestModelUpdateKeyHandlingByStage(t *testing.T) {
 			if h.m.stage != stageChooseKind {
 				t.Fatalf("stage = %v, want stageChooseKind", h.m.stage)
 			}
-			_, cmd := h.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+			_, cmd := h.m.Update(tea.KeyPressMsg{Code: []rune(string(key))[0], Text: string(key)})
 			if cmd == nil {
 				t.Errorf("expected non-nil cmd for key %q in stageChooseKind", key)
 			}
 		}
 
 		h := newHarness(t, "")
-		_, cmdQ := h.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+		_, cmdQ := h.m.Update(tea.KeyPressMsg{Code: []rune(string("q"))[0], Text: string("q")})
 		if cmdQ == nil || cmdQ() != tea.Quit() {
 			t.Errorf("expected tea.Quit for 'q', got %v", cmdQ)
 		}
@@ -1404,14 +1445,14 @@ func TestModelUpdateKeyHandlingByStage(t *testing.T) {
 		for _, key := range []string{"q", "esc", "ctrl+c"} {
 			h := newHarness(t, "")
 			h.m.stage = stageFailed
-			var kMsg tea.KeyMsg
+			var kMsg tea.KeyPressMsg
 			switch key {
 			case "q":
-				kMsg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")}
+				kMsg = tea.KeyPressMsg{Code: []rune(string("q"))[0], Text: string("q")}
 			case "esc":
-				kMsg = tea.KeyMsg{Type: tea.KeyEsc}
+				kMsg = tea.KeyPressMsg{Code: tea.KeyEsc}
 			case "ctrl+c":
-				kMsg = tea.KeyMsg{Type: tea.KeyCtrlC}
+				kMsg = tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 			}
 			_, cmd := h.m.Update(kMsg)
 			if cmd == nil || cmd() != tea.Quit() {
@@ -1432,7 +1473,7 @@ func TestModelUpdateKeyHandlingByStage(t *testing.T) {
 			return func() tea.Msg { return nil }
 		}
 		hR.m.stage = stageRecovery
-		_, cmdR := hR.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+		_, cmdR := hR.m.Update(tea.KeyPressMsg{Code: []rune(string("r"))[0], Text: string("r")})
 		if cmdR == nil {
 			t.Error("expected cmd for 'r'")
 		}
@@ -1440,7 +1481,7 @@ func TestModelUpdateKeyHandlingByStage(t *testing.T) {
 		// 'd' discards draft
 		hD := newHarness(t, artifact.NoteKind)
 		hD.m.stage = stageRecovery
-		_, cmdD := hD.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+		_, cmdD := hD.m.Update(tea.KeyPressMsg{Code: []rune(string("d"))[0], Text: string("d")})
 		if cmdD == nil {
 			t.Error("expected cmd for 'd'")
 		}
@@ -1448,7 +1489,7 @@ func TestModelUpdateKeyHandlingByStage(t *testing.T) {
 		// 'esc' quits
 		hEsc := newHarness(t, artifact.NoteKind)
 		hEsc.m.stage = stageRecovery
-		_, cmdEsc := hEsc.m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		_, cmdEsc := hEsc.m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 		if cmdEsc == nil || cmdEsc() != tea.Quit() {
 			t.Error("expected tea.Quit for 'esc' in stageRecovery")
 		}
@@ -1459,7 +1500,7 @@ func TestModelUpdateKeyHandlingByStage(t *testing.T) {
 		h.m.pending = true
 		h.m.status = ""
 
-		h.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+		h.m.Update(tea.KeyPressMsg{Code: []rune(string("a"))[0], Text: string("a")})
 		if h.m.status != "Please wait for the current operation to finish" {
 			t.Errorf("status = %q, want 'Please wait for the current operation to finish'", h.m.status)
 		}
@@ -1472,26 +1513,26 @@ func TestModelUpdateNoteKeyHandling(t *testing.T) {
 		h.m.bodyInput.SetValue("Sample Note Text")
 
 		// F5 enters preview
-		h.m.Update(tea.KeyMsg{Type: tea.KeyF5})
+		h.m.Update(tea.KeyPressMsg{Code: tea.KeyF5})
 		if !h.m.previewing {
 			t.Fatal("F5 did not set previewing=true")
 		}
 
 		// Non-closing key in preview delegates to preview model
-		h.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		h.m.Update(tea.KeyPressMsg{Code: []rune(string("j"))[0], Text: string("j")})
 		if !h.m.previewing {
 			t.Error("previewing set to false on non-exit key")
 		}
 
 		// F5 exits preview mode
-		h.m.Update(tea.KeyMsg{Type: tea.KeyF5})
+		h.m.Update(tea.KeyPressMsg{Code: tea.KeyF5})
 		if h.m.previewing {
 			t.Fatal("F5 in preview did not set previewing=false")
 		}
 
 		// Re-enter preview, Ctrl+C requests close
-		h.m.Update(tea.KeyMsg{Type: tea.KeyF5})
-		h.m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+		h.m.Update(tea.KeyPressMsg{Code: tea.KeyF5})
+		h.m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 		if h.quit {
 			t.Error("Ctrl+C in preview on clean note quit immediately without closing")
 		}
@@ -1503,7 +1544,7 @@ func TestModelUpdateNoteKeyHandling(t *testing.T) {
 		h.m.bodyInput.Selection = editor.Selection{Active: true}
 
 		// Ctrl+C with selection active should NOT quit or trigger requestClose
-		h.m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+		h.m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 		if h.m.discardWarning {
 			t.Error("Ctrl+C with active selection triggered discardWarning")
 		}
@@ -1513,7 +1554,7 @@ func TestModelUpdateNoteKeyHandling(t *testing.T) {
 		h := newHarness(t, artifact.NoteKind)
 		h.m.bodyInput.SetValue("New content to save")
 
-		_, cmd := h.m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+		_, cmd := h.m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 		if cmd == nil {
 			t.Fatal("Ctrl+S did not return save cmd")
 		}
@@ -1531,7 +1572,7 @@ func TestModelUpdateNoteKeyHandling(t *testing.T) {
 		}
 
 		// Ctrl+Y redoes input directly
-		h.m.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+		h.m.Update(tea.KeyPressMsg{Code: 'y', Mod: tea.ModCtrl})
 		if h.m.bodyInput.Value() != "Hello" {
 			t.Errorf("Ctrl+Y did not redo input, value=%q", h.m.bodyInput.Value())
 		}

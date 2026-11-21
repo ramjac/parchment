@@ -2,18 +2,18 @@ package tui
 
 import (
 	"context"
-	"fmt"
 	"strings"
+	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/document"
+	"example.com/parchment/internal/tui/editor"
 )
 
-// The document reader shows the saved document as printed pages, with an
+// The document reader shows the saved document continuously, with an
 // outline of its headings beside them on wide terminals. Existing documents
 // open here; e switches to the editor and leaving the editor returns here.
 
@@ -23,53 +23,78 @@ func (s *documentsScreen) startReading(d document.Document) {
 	s.loadDocument(d)
 	s.body.Blur()
 	s.reading = true
+	s.readerClicks.reset()
 	s.prompt, s.previewing, s.showChanges, s.reviewing = promptNone, false, false, false
 	s.refreshReader()
 }
 
-// refreshReader paginates the saved document and rebuilds its outline,
-// keeping the current page when it still exists.
+// refreshReader reflows the saved document at the reader's current width.
 func (s *documentsScreen) refreshReader() {
-	s.readerPages, s.outline, s.readerLinks = nil, nil, nil
-	pages, links, err := s.paginateDocumentWithLinks(s.snapshot)
+	s.renderReader()
+}
+
+func (s *documentsScreen) renderReader() {
+	offset, current := s.reader.YOffset(), s.readerMatch
+	matchOffset := -1
+	if current >= 0 && current < len(s.readerMatches) {
+		row := s.readerMatches[current].row - offset
+		if row >= 0 && row < s.reader.Height() {
+			matchOffset = row
+		}
+	}
+	section := s.currentSection()
+	relative := 0
+	if section >= 0 {
+		relative = offset - s.readerRows[section]
+	}
+	width, height := s.width-4, s.height-5
+	if s.wideReader() {
+		_, preview := s.readerPaneWidths()
+		width = preview - 2
+	}
+	s.reader.SetWidth(max(width, 1))
+	s.reader.SetHeight(max(height, 1))
+	lines, outline, rows, links, err := s.renderReaderDocument(s.snapshot, s.reader.Width())
 	if err != nil {
 		s.errMessage = err.Error()
 	} else {
-		s.readerPages = pages
-		s.readerLinks = links
-		s.outline = append([]document.Section(nil), s.imageState.outline...)
+		s.readerLines, s.outline, s.readerRows, s.readerLinks = lines, outline, rows, links
 	}
-	s.readerPage = min(max(s.readerPage, 0), max(len(s.readerPages)-1, 0))
-	s.resizeReader()
-}
-
-func (s *documentsScreen) resizeReader() {
-	offset, current := s.reader.YOffset, s.readerMatch
-	width, height := s.width-4, s.height-6
-	if s.wideReader() {
-		_, preview := s.readerPaneWidths()
-		width, height = preview-2, s.height-6
+	if section >= 0 && section < len(rows) && rows[section] >= 0 {
+		offset = rows[section] + relative
 	}
-	s.reader.Width, s.reader.Height = max(width, 1), max(height, 1)
 	if s.find.visible && s.find.query() != "" {
 		s.rebuildReaderMatches(s.find.query())
 		s.readerMatch = min(max(current, 0), len(s.readerMatches)-1)
+		if matchOffset >= 0 && s.readerMatch >= 0 {
+			offset = s.readerMatches[s.readerMatch].row - matchOffset
+		}
 	}
-	s.showReaderPage()
+	s.showReaderContent()
 	s.reader.SetYOffset(offset)
 }
 
-func (s *documentsScreen) showReaderPage() {
-	if s.readerPage >= len(s.readerPages) {
-		s.reader.SetContent("")
+func (s *documentsScreen) resizeReader() {
+	width := s.width - 4
+	if s.wideReader() {
+		_, preview := s.readerPaneWidths()
+		width = preview - 2
+	}
+	if s.reader.Width() != max(width, 1) || s.readerLines == nil {
+		s.renderReader()
 		return
 	}
-	content := pageText(s.readerPages[s.readerPage], s.reader.Width)
+	s.reader.SetHeight(max(s.height-5, 1))
+}
+
+func (s *documentsScreen) showReaderContent() {
+	offset := s.reader.YOffset()
+	content := strings.Join(s.readerLines, "\n")
 	if s.find.visible && s.find.query() != "" {
 		content = highlightRenderedText(content, s.find.query(), s.theme)
 	}
 	s.reader.SetContent(content)
-	s.reader.GotoTop()
+	s.reader.SetYOffset(offset)
 }
 
 func (s *documentsScreen) searchReader(query string) {
@@ -79,14 +104,12 @@ func (s *documentsScreen) searchReader(query string) {
 		s.gotoReaderMatch()
 		return
 	}
-	s.showReaderPage()
+	s.showReaderContent()
 }
 
 func (s *documentsScreen) rebuildReaderMatches(query string) {
 	s.readerMatches = nil
-	for page, content := range s.readerPages {
-		s.readerMatches = append(s.readerMatches, renderedMatches(strings.Split(pageText(content, s.reader.Width), "\n"), query, page)...)
-	}
+	s.readerMatches = renderedMatches(s.readerLines, query, 0)
 	s.readerMatch = -1
 }
 
@@ -95,9 +118,9 @@ func (s *documentsScreen) gotoReaderMatch() {
 		return
 	}
 	match := s.readerMatches[s.readerMatch]
-	s.readerPage = match.page
-	s.showReaderPage()
+	s.showReaderContent()
 	s.reader.SetYOffset(match.row)
+	s.readerSection = -1
 }
 
 func (s *documentsScreen) moveReaderMatch(step int) {
@@ -118,41 +141,13 @@ func (s *documentsScreen) readerPaneWidths() (outline, preview int) {
 	return outline, max(s.width-outline-4, 30)
 }
 
-// changeReaderPage moves by step pages, wrapping around when wrap is set,
-// and reports whether the page changed.
-func (s *documentsScreen) changeReaderPage(step int, wrap bool) bool {
-	if len(s.readerPages) == 0 {
-		return false
-	}
-	next := s.readerPage + step
-	if wrap {
-		next = (next + len(s.readerPages)) % len(s.readerPages)
-	}
-	if next < 0 || next >= len(s.readerPages) || next == s.readerPage {
-		return false
-	}
-	s.readerPage = next
-	s.showReaderPage()
-	return true
-}
-
-// scrollReader scrolls within the page, continuing onto the neighbouring
-// page at either end.
-func (s *documentsScreen) scrollReader(down bool, msg tea.Msg) {
-	if down && s.reader.AtBottom() {
-		s.changeReaderPage(1, false)
-		return
-	}
-	if !down && s.reader.AtTop() {
-		if s.changeReaderPage(-1, false) {
-			s.reader.GotoBottom()
-		}
-		return
-	}
+func (s *documentsScreen) scrollReader(msg tea.Msg) {
 	s.reader, _ = s.reader.Update(msg)
+	s.readerSection = -1
 }
 
-func (s *documentsScreen) updateReaderKey(msg tea.KeyMsg) tea.Cmd {
+func (s *documentsScreen) updateReaderKey(msg tea.KeyPressMsg) tea.Cmd {
+	s.readerClicks.reset()
 	if s.prompt != promptNone {
 		return s.updatePrompt(msg)
 	}
@@ -185,10 +180,22 @@ func (s *documentsScreen) updateReaderKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		return s.close()
 	case "e":
+		line, col, row := 0, 0, 0
+		if offset := s.reader.YOffset(); offset > 0 {
+			preferredLine := sourceLineForSection(s.snapshot.Body, s.outline, s.sectionAtReaderRow(offset))
+			if mappedLine, mappedCol, mappedRow, found := sourcePositionAtViewport(
+				s.readerLines, offset, s.reader.Height(), s.snapshot.Body, preferredLine,
+			); found {
+				line, col, row = mappedLine, mappedCol, mappedRow
+			} else {
+				line = preferredLine
+			}
+		}
 		cmd, ok := s.startEdit(s.snapshot)
 		if !ok {
 			return nil
 		}
+		s.body.SetCursorAtRow(editor.Point{Line: line, Col: col}, row)
 		s.reading = false
 		return cmd
 	case "ctrl+p":
@@ -201,61 +208,117 @@ func (s *documentsScreen) updateReaderKey(msg tea.KeyMsg) tea.Cmd {
 		return s.history(false)
 	case "ctrl+o":
 		s.outlineVisible = !s.outlineVisible
-	case "right", "]":
-		s.changeReaderPage(1, key == "]")
-	case "left", "[":
-		s.changeReaderPage(-1, key == "[")
 	case "{":
 		s.stepSection(-1)
 	case "}":
 		s.stepSection(1)
-	case "down", "j", "pgdown", " ":
-		s.scrollReader(true, msg)
+	case "down", "j", "pgdown", "space":
+		s.scrollReader(msg)
 	case "up", "k", "pgup":
-		s.scrollReader(false, msg)
-	case "home", "end", "g", "G":
-		s.reader, _ = s.reader.Update(msg)
+		s.scrollReader(msg)
+	case "home", "g":
+		s.reader.GotoTop()
+		s.readerSection = -1
+	case "end", "G":
+		s.reader.GotoBottom()
+		s.readerSection = -1
 	}
 	return nil
 }
 
-func (s *documentsScreen) updateReaderMouse(msg tea.MouseMsg) {
-	if s.prompt != promptNone || msg.Action != tea.MouseActionPress {
-		return
+func (s *documentsScreen) updateReaderMouse(msg mouseEvent) tea.Cmd {
+	if s.prompt != promptNone || msg.Action != mousePress {
+		return nil
 	}
 	switch msg.Button {
-	case tea.MouseButtonLeft:
+	case mouseLeft:
 		if s.wideReader() {
 			outlineWidth, _ := s.readerPaneWidths()
-			if msg.X >= 1 && msg.X <= outlineWidth+1 {
+			if msg.X >= 1 && msg.X < outlineWidth+1 {
 				s.clickOutline(msg.X, msg.Y)
-				return
+				s.readerClicks.reset()
+				return nil
 			}
 		}
-		s.clickReaderLink(msg.X, msg.Y)
-	case tea.MouseButtonWheelDown:
-		s.scrollReader(true, msg)
-	case tea.MouseButtonWheelUp:
-		s.scrollReader(false, msg)
+		if s.clickReaderLink(msg.X, msg.Y) {
+			s.readerClicks.reset()
+			return nil
+		}
+		if msg.Y < 3 || msg.Y >= 3+s.reader.Height() {
+			s.readerClicks.reset()
+			return nil
+		}
+		pageRow := msg.Y - 3 + s.reader.YOffset()
+		pageCol := msg.X - 2
+		if s.wideReader() {
+			outlineWidth, _ := s.readerPaneWidths()
+			pageCol = msg.X - (outlineWidth + 1)
+		}
+		if pageRow < 0 || pageRow >= len(s.readerLines) || pageCol < 0 || pageCol >= s.reader.Width() {
+			s.readerClicks.reset()
+			return nil
+		}
+		clickColumn := pageCol
+		if _, start, ok := renderedWordHit(s.readerLines[pageRow], pageCol); ok {
+			clickColumn = start
+		}
+		if s.readerClicks.click(clickColumn, pageRow, time.Now()) {
+			return s.editAtReaderLocation(pageRow, pageCol)
+		}
+	case mouseWheelDown:
+		s.scrollReader(toTeaMouseMessage(msg))
+	case mouseWheelUp:
+		s.scrollReader(toTeaMouseMessage(msg))
 	}
+	return nil
 }
 
-func (s *documentsScreen) clickReaderLink(x, y int) {
-	if s.readerPage >= len(s.readerPages) {
-		return
+func (s *documentsScreen) clickReaderLink(x, y int) bool {
+	if y < 3 || y >= 3+s.reader.Height() {
+		return false
 	}
-	pageRow := (y - 4) + s.reader.YOffset
-	pageCol := x - 1
+	pageRow := (y - 3) + s.reader.YOffset()
+	pageCol := x - 2
 	if s.wideReader() {
 		outlineWidth, _ := s.readerPaneWidths()
-		pageCol = x - (outlineWidth + 2)
+		pageCol = x - (outlineWidth + 1)
+	}
+	if pageCol < 0 || pageCol >= s.reader.Width() {
+		return false
 	}
 	for _, box := range s.readerLinks {
-		if box.page == s.readerPage && box.row == pageRow && pageCol >= box.startCol && pageCol < box.endCol {
+		if box.row == pageRow && pageCol >= box.startCol && pageCol < box.endCol {
 			s.navigateToTarget(box.target)
-			return
+			return true
 		}
 	}
+	return false
+}
+
+func (s *documentsScreen) editAtReaderLocation(row, column int) tea.Cmd {
+	preferredLine := sourceLineForSection(s.snapshot.Body, s.outline, s.sectionAtReaderRow(row))
+	line, col, found := sourcePositionForRenderedWord(s.readerLines[row], column, s.snapshot.Body, preferredLine)
+	if !found {
+		line, col = preferredLine, 0
+	}
+	viewportRow := row - s.reader.YOffset()
+	cmd, ok := s.startEdit(s.snapshot)
+	if !ok {
+		return nil
+	}
+	s.body.SetCursorAtRow(editor.Point{Line: line, Col: col}, viewportRow)
+	s.reading = false
+	return cmd
+}
+
+func (s *documentsScreen) sectionAtReaderRow(row int) int {
+	section := -1
+	for index, sectionRow := range s.readerRows {
+		if sectionRow >= 0 && sectionRow <= row && (section < 0 || sectionRow >= s.readerRows[section]) {
+			section = index
+		}
+	}
+	return section
 }
 
 func (s *documentsScreen) navigateToTarget(target string) {
@@ -263,36 +326,22 @@ func (s *documentsScreen) navigateToTarget(target string) {
 	if clean == "" {
 		return
 	}
-	targetPage := -1
-	targetTitle := ""
-	for _, sec := range s.outline {
+	for i, sec := range s.outline {
 		if strings.EqualFold(sec.Slug, clean) {
-			targetPage = sec.Page - 1
-			targetTitle = sec.Title
-			break
-		}
-	}
-	if targetPage < 0 || targetPage >= len(s.readerPages) {
-		return
-	}
-	s.readerPage = targetPage
-	s.showReaderPage()
-	if targetTitle != "" {
-		for r, line := range s.readerPages[targetPage].Lines {
-			if strings.Contains(ansi.Strip(line), targetTitle) {
-				s.reader.SetYOffset(max(0, r-1))
-				break
-			}
+			s.gotoSection(i)
+			return
 		}
 	}
 }
 
-// currentSection is the last outline entry that starts on or before the page
-// being read, or -1 before the first heading.
+// currentSection is the last section at or above the top of the viewport.
 func (s *documentsScreen) currentSection() int {
+	if s.readerSection >= 0 && s.readerSection < len(s.readerRows) {
+		return s.readerSection
+	}
 	current := -1
-	for i, section := range s.outline {
-		if section.Page <= s.readerPage+1 {
+	for i, row := range s.readerRows {
+		if row >= 0 && row <= s.reader.YOffset()+1 {
 			current = i
 		}
 	}
@@ -307,8 +356,10 @@ func (s *documentsScreen) stepSection(step int) {
 }
 
 func (s *documentsScreen) gotoSection(index int) {
-	s.readerPage = min(max(s.outline[index].Page-1, 0), max(len(s.readerPages)-1, 0))
-	s.showReaderPage()
+	if index >= 0 && index < len(s.readerRows) && s.readerRows[index] >= 0 {
+		s.reader.SetYOffset(s.readerRows[index])
+		s.readerSection = index
+	}
 }
 
 // outlineLines renders the outline pane. targets maps each line to an
@@ -345,24 +396,17 @@ func (s *documentsScreen) clickOutline(x, y int) {
 		return
 	}
 	outlineWidth, _ := s.readerPaneWidths()
-	if x < 1 || x > outlineWidth+1 {
+	if x < 1 || x >= outlineWidth+1 {
 		return
 	}
 	_, targets := s.outlineLines()
-	if row := y - 2; row >= 0 && row < len(targets) && targets[row] >= 0 {
+	if row := y - 3; row >= 0 && row < len(targets) && targets[row] >= 0 {
 		s.gotoSection(targets[row])
 	}
 }
 
-func (s *documentsScreen) readerPageLabel() string {
-	if len(s.readerPages) == 0 {
-		return "–"
-	}
-	return fmt.Sprintf("%d/%d", s.readerPage+1, len(s.readerPages))
-}
-
 func (s *documentsScreen) readerView(header string) string {
-	shortcuts := "e edit  Ctrl+P PDF  ↑/↓ scroll  ←/→ or [ ] page  { } section  v changes  u undo  Ctrl+R redo  esc/q quit"
+	shortcuts := "e edit  Ctrl+P PDF  ↑/↓ scroll  { } section  v changes  u undo  Ctrl+R redo  esc/q quit"
 	if s.prompt != promptNone {
 		shortcuts = "Enter export PDF  ·  Esc cancel"
 		if s.prompt == promptPDFOverwrite {
@@ -374,12 +418,8 @@ func (s *documentsScreen) readerView(header string) string {
 		readerContent = s.promptInput.View() + "\n" + readerContent
 	}
 	if !s.wideReader() {
-		content := readerContent
-		if s.prompt == promptNone {
-			content = "Page " + s.readerPageLabel() + "\n" + content
-		}
 		shortcuts = runewidth.Truncate(shortcuts, max(s.width, 1), "…")
-		return chromeLayout(s.width, s.height, header, shortcuts, content, s.readerStatus(), s.theme.BorderColor)
+		return chromeLayout(s.width, s.height, header, shortcuts, readerContent, s.readerStatus(), s.theme.BorderColor)
 	}
 	outlineWidth, previewWidth := s.readerPaneWidths()
 	lines, _ := s.outlineLines()
@@ -394,14 +434,10 @@ func (s *documentsScreen) readerView(header string) string {
 		PaddingRight(1).
 		Render(strings.Join(lines, "\n"))
 
-	pageContent := readerContent
-	if s.prompt == promptNone {
-		pageContent = "Page " + s.readerPageLabel() + "\n" + pageContent
-	}
 	right := lipgloss.NewStyle().
 		Width(previewWidth - 2).
 		PaddingLeft(1).
-		Render(pageContent)
+		Render(readerContent)
 
 	content := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	if s.prompt == promptNone {

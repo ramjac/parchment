@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -77,10 +77,11 @@ func TestSpreadsheetEnablesModifiedKeysAndRestoresTerminal(t *testing.T) {
 			terminal := &keyboardTestTerminal{input: terminalInput, xterm: protocol == "xterm"}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			program := tea.NewProgram(loadedSpreadsheetInputModel{m},
+			program := tea.NewProgram(terminalModel{Model: loadedSpreadsheetInputModel{m}},
 				tea.WithContext(ctx), tea.WithInput(input),
 				tea.WithOutput(keyboardOutput{terminal}),
-				tea.WithAltScreen(), tea.WithoutSignalHandler(),
+				tea.WithWindowSize(m.width, m.height),
+				tea.WithoutSignalHandler(),
 			)
 			if _, err := program.Run(); err != nil {
 				t.Fatal(err)
@@ -102,13 +103,13 @@ type keyboardCaptureModel struct {
 	keys []string
 }
 
-func (*keyboardCaptureModel) Init() tea.Cmd { return nil }
-func (*keyboardCaptureModel) View() string  { return "" }
+func (*keyboardCaptureModel) Init() tea.Cmd  { return nil }
+func (*keyboardCaptureModel) View() tea.View { return tea.NewView("") }
 func (m *keyboardCaptureModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch key := normalizeTerminalKey(message).(type) {
 	case shiftEnterMsg:
 		m.keys = append(m.keys, "shift+enter")
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		m.keys = append(m.keys, key.String())
 		if key.String() == "ctrl+c" {
 			return m, tea.Quit

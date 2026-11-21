@@ -15,15 +15,23 @@ func TestSpreadsheetChartsCLI(t *testing.T) {
 	c.must("spreadsheet", "create", "chart.md")
 	c.must("spreadsheet", "cell", "chart.md", "A1", "3")
 	c.must("spreadsheet", "cell", "chart.md", "A2", "=A1*2", "--formula")
-	id := strings.TrimSpace(c.must("spreadsheet", "chart", "create", "chart.md", "bar", "A1:A2", "--title", "Values"))
-	if out := c.must("spreadsheet", "chart", "list", "chart.md"); !strings.Contains(out, id) {
-		t.Fatalf("missing chart: %q", out)
+	c.must("spreadsheet", "cell", "chart.md", "B1", "4")
+	c.must("spreadsheet", "cell", "chart.md", "B2", "5")
+	if _, err := c.run("spreadsheet", "chart", "create", "chart.md", "C1", "pie", "A1:A2"); err == nil {
+		t.Fatal("pie chart creation succeeded")
 	}
+	if _, err := c.run("spreadsheet", "chart", "create", "chart.md", "C1", "bar", "A1:B2"); err == nil {
+		t.Fatal("multi-series bar chart creation succeeded")
+	}
+	id := strings.TrimSpace(c.must("spreadsheet", "chart", "create", "chart.md", "C1", "bar", "A1:A2", "--title", "Values"))
 	svg := c.must("spreadsheet", "chart", "export", "chart.md", id)
 	if err := xml.Unmarshal([]byte(svg), new(any)); err != nil {
 		t.Fatalf("invalid SVG: %v", err)
 	}
 	c.must("spreadsheet", "chart", "edit", "chart.md", id, "--type", "line")
+	if _, err := c.run("spreadsheet", "chart", "edit", "chart.md", id, "--type", "pie"); err == nil {
+		t.Fatal("pie chart edit succeeded")
+	}
 	c.must("spreadsheet", "chart", "export", "chart.md", id, "--format", "pdf", "-o", "chart.pdf")
 	if _, err := c.run("spreadsheet", "chart", "export", "chart.md", id, "--format", "pdf", "-o", "chart.pdf"); err == nil {
 		t.Fatal("overwriting a chart PDF without force succeeded")
@@ -39,9 +47,30 @@ func TestSpreadsheetChartsCLI(t *testing.T) {
 		t.Fatal("overwriting the workbook succeeded")
 	}
 	c.must("spreadsheet", "chart", "delete", "chart.md", id)
-	if out := c.must("spreadsheet", "chart", "list", "chart.md"); strings.Contains(out, id) {
-		t.Fatalf("deleted chart remains: %q", out)
+	if _, err := c.run("spreadsheet", "chart", "edit", "chart.md", id, "--title", "Deleted"); err == nil {
+		t.Fatal("deleted chart remains")
 	}
+}
+
+func TestSpreadsheetSpanCLI(t *testing.T) {
+	c := newCLI(t)
+	c.must("spreadsheet", "create", "span.md")
+	c.must("spreadsheet", "cell", "span.md", "A1", "42")
+	c.must("spreadsheet", "span", "span.md", "A1:B2")
+	if out := c.must("spreadsheet", "cell", "span.md", "A2"); strings.TrimSpace(out) != "" {
+		t.Fatalf("covered cell = %q", out)
+	}
+	if _, err := c.run("spreadsheet", "cell", "span.md", "B2", "lost"); err == nil {
+		t.Fatal("covered cell accepted a write")
+	}
+	if _, err := c.run("spreadsheet", "unspan", "span.md", "B2"); err == nil {
+		t.Fatal("covered cell accepted as an anchor")
+	}
+	if out := c.must("spreadsheet", "export", "span.md", "--csv"); out != "42,\n,\n" {
+		t.Fatalf("CSV did not preserve blank covered cells: %q", out)
+	}
+	c.must("spreadsheet", "unspan", "span.md", "A1")
+	c.must("spreadsheet", "cell", "span.md", "B2", "now editable")
 }
 
 func TestSpreadsheetCLIFormulasAndGridOperations(t *testing.T) {

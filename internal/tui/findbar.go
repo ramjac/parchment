@@ -5,8 +5,9 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 )
@@ -42,15 +43,21 @@ func newFindBar(theme Theme) findBar {
 	input.Prompt = "Find: "
 	input.Placeholder = "type to search"
 	input.CharLimit = 4096
-	input.PromptStyle = theme.Chrome
-	input.TextStyle = theme.Muted
+	setTextInputStyles(&input, theme.Chrome, theme.Muted)
 	return findBar{input: input}
+}
+
+func setTextInputStyles(input *textinput.Model, prompt, text lipgloss.Style) {
+	styles := input.Styles()
+	styles.Focused.Prompt, styles.Blurred.Prompt = prompt, prompt
+	styles.Focused.Text, styles.Blurred.Text = text, text
+	input.SetStyles(styles)
 }
 
 func (f *findBar) open(width int) tea.Cmd {
 	f.active = true
 	f.visible = true
-	f.input.Width = max(width-32, 1)
+	f.input.SetWidth(max(width-32, 1))
 	return f.input.Focus()
 }
 
@@ -68,7 +75,7 @@ func (f *findBar) blur() {
 }
 
 func (f *findBar) update(msg tea.Msg) (findAction, tea.Cmd) {
-	if key, ok := msg.(tea.KeyMsg); ok {
+	if key, ok := msg.(tea.KeyPressMsg); ok {
 		switch key.String() {
 		case "esc":
 			return findClosed, f.close()
@@ -96,7 +103,7 @@ func (f *findBar) view(matches, current, width int) string {
 	}
 	help := "  Enter/↓ next · ↑/Shift+Tab prev · Esc close"
 	suffix := "  " + summary + help
-	f.input.Width = max(width-runewidth.StringWidth(suffix)-2, 1)
+	f.input.SetWidth(max(width-runewidth.StringWidth(suffix)-2, 1))
 	return ansi.Truncate(f.input.View()+suffix, max(width, 1), "…")
 }
 

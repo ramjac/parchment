@@ -7,8 +7,8 @@ import (
 	"io"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/atotto/clipboard"
-	tea "github.com/charmbracelet/bubbletea"
 
 	"example.com/parchment/internal/spreadsheet"
 )
@@ -30,12 +30,9 @@ func readSystemClipboard() (string, error)   { return clipboard.ReadAll() }
 func writeSystemClipboard(text string) error { return clipboard.WriteAll(text) }
 
 func (m *spreadsheetModel) copySelection() tea.Cmd {
-	firstRow, lastRow, firstColumn, lastColumn := m.row, m.row, m.column, m.column
-	if m.selecting {
-		firstRow, lastRow = min(m.row, m.selectionRow), max(m.row, m.selectionRow)
-		firstColumn, lastColumn = min(m.column, m.selectionColumn), max(m.column, m.selectionColumn)
-	}
-	copy, err := spreadsheet.CopyRange(m.book, m.book.Sheets[m.sheet].Name, firstRow+1, firstColumn+1, lastRow+1, lastColumn+1)
+	selection := m.selectedCellRange()
+	copy, err := spreadsheet.CopyRange(m.book, m.book.Sheets[m.sheet].Name,
+		selection.FirstRow, selection.FirstColumn, selection.LastRow, selection.LastColumn)
 	if err != nil {
 		m.setError("Copy failed", err)
 		return nil

@@ -59,8 +59,18 @@ func cloneBlocksExcept(blocks map[string]json.RawMessage, excluded ...string) ma
 
 // Sheet is a named two-dimensional array of cells.
 type Sheet struct {
-	Name string   `json:"name"`
-	Rows [][]Cell `json:"rows"`
+	ID    string     `json:"id,omitempty"`
+	Name  string     `json:"name"`
+	Rows  [][]Cell   `json:"rows"`
+	Spans []CellSpan `json:"spans,omitempty"`
+}
+
+// Workbook contains spreadsheet data without artifact identity or persistence.
+// Documents and presentations can embed this value without pretending it is a
+// standalone spreadsheet artifact.
+type Workbook struct {
+	Sheets []Sheet `json:"sheets"`
+	Charts []Chart `json:"charts,omitempty"`
 }
 
 // Spreadsheet is a complete, self-contained text workbook.
@@ -71,6 +81,20 @@ type Spreadsheet struct {
 	Charts            []Chart                    `json:"charts,omitempty"`
 	Body              string                     `json:"-"`
 	Blocks            map[string]json.RawMessage `json:"-"`
+}
+
+// Workbook returns a detached copy of the workbook data.
+func (book Spreadsheet) Workbook() Workbook {
+	return cloneWorkbook(Workbook{Sheets: book.Sheets, Charts: book.Charts})
+}
+
+// Spreadsheet attaches standalone metadata to workbook data.
+func (book Workbook) Spreadsheet(item artifact.Artifact) Spreadsheet {
+	clone := cloneWorkbook(book)
+	return Spreadsheet{
+		Artifact: item, Version: FileVersion,
+		Sheets: clone.Sheets, Charts: clone.Charts,
+	}
 }
 
 type fileContent struct {
@@ -270,24 +294,70 @@ func Normalize(book *Spreadsheet) error {
 	}
 	book.CreatedAt = book.CreatedAt.UTC()
 	book.ModifiedAt = book.ModifiedAt.UTC()
-	if len(book.Sheets) == 0 || len(book.Sheets) > MaxSheets {
+	workbook := book.Workbook()
+	if err := NormalizeWorkbook(&workbook); err != nil {
+		return err
+	}
+	book.Sheets, book.Charts = workbook.Sheets, workbook.Charts
+	return nil
+}
+
+// NormalizeWorkbook validates workbook data without requiring standalone
+// artifact metadata. An empty workbook is valid for a host with no embeds.
+func NormalizeWorkbook(book *Workbook) error {
+	if len(book.Sheets) == 0 {
+		if len(book.Charts) != 0 {
+			return errors.New("workbook cannot contain charts without sheets")
+		}
+		return nil
+	}
+	if len(book.Sheets) > MaxSheets {
 		return fmt.Errorf("spreadsheet must have between 1 and %d sheets", MaxSheets)
 	}
+	view := book.spreadsheetView()
 	var names []string
-	for i := range book.Sheets {
-		sheet := &book.Sheets[i]
+	ids := make(map[string]bool, len(view.Sheets))
+	for i := range view.Sheets {
+		sheet := &view.Sheets[i]
 		if err := validateSheetName(sheet, names); err != nil {
 			return err
+		}
+		if sheet.ID != "" {
+			if len(sheet.ID) > 128 || !utf8.ValidString(sheet.ID) || ids[sheet.ID] {
+				return errors.New("sheet IDs must be unique, nonempty UTF-8 strings")
+			}
+			ids[sheet.ID] = true
 		}
 		names = append(names, sheet.Name)
 		if err := normalizeSheetGrid(sheet); err != nil {
 			return err
 		}
+		if err := validateCellSpans(*sheet); err != nil {
+			return fmt.Errorf("sheet %q: %w", sheet.Name, err)
+		}
 	}
-	if err := validateCharts(book.Charts); err != nil {
+	if err := validateCharts(view.Charts); err != nil {
 		return err
 	}
-	return validateFormulas(book)
+	for _, chart := range view.Charts {
+		if !chart.Invalid {
+			if _, err := SheetIndex(*view, chart.Sheet); err != nil {
+				return fmt.Errorf("chart source: %w", err)
+			}
+		}
+		if err := validateChartPlacement(view, chart); err != nil {
+			return err
+		}
+		index, _ := SheetIndex(*view, chart.PlaceSheet)
+		if err := setCellInBook(view, index, SetCellOptions{Row: chart.PlaceRow, Column: chart.PlaceColumn}); err != nil {
+			return err
+		}
+	}
+	if err := validateFormulas(view); err != nil {
+		return err
+	}
+	book.Sheets, book.Charts = view.Sheets, view.Charts
+	return nil
 }
 
 func validateSheetName(sheet *Sheet, seen []string) error {
@@ -383,12 +453,23 @@ func cloneRows(rows [][]Cell) [][]Cell {
 
 func cloneSpreadsheet(book Spreadsheet) Spreadsheet {
 	book.Blocks = cloneBlocks(book.Blocks)
-	book.Charts = append([]Chart(nil), book.Charts...)
+	workbook := cloneWorkbook(book.Workbook())
+	book.Sheets, book.Charts = workbook.Sheets, workbook.Charts
+	return book
+}
+
+func cloneWorkbook(book Workbook) Workbook {
 	book.Sheets = append([]Sheet(nil), book.Sheets...)
 	for i := range book.Sheets {
 		book.Sheets[i].Rows = cloneRows(book.Sheets[i].Rows)
+		book.Sheets[i].Spans = append([]CellSpan(nil), book.Sheets[i].Spans...)
 	}
+	book.Charts = append([]Chart(nil), book.Charts...)
 	return book
+}
+
+func (book Workbook) spreadsheetView() *Spreadsheet {
+	return &Spreadsheet{Version: FileVersion, Sheets: book.Sheets, Charts: book.Charts}
 }
 
 func (s *Service) change(ctx context.Context, before, after *Spreadsheet, description string) error {
@@ -426,6 +507,11 @@ func shiftFormulas(book *Spreadsheet, sheetIndex, fromRow, fromColumn int, delet
 
 // SheetIndex finds a sheet name case-insensitively.
 func SheetIndex(book Spreadsheet, name string) (int, error) {
+	return SheetIndexInWorkbook(book.Workbook(), name)
+}
+
+// SheetIndexInWorkbook finds a sheet name case-insensitively.
+func SheetIndexInWorkbook(book Workbook, name string) (int, error) {
 	for i := range book.Sheets {
 		if strings.EqualFold(book.Sheets[i].Name, name) {
 			return i, nil
@@ -589,6 +675,13 @@ func SetCellInBook(book *Spreadsheet, opts SetCellOptions) error {
 	if err != nil {
 		return err
 	}
+	if _, ok := ChartAt(book, book.Sheets[index].Name, opts.Row, opts.Column); ok {
+		return errors.New("cannot edit a chart cell as an ordinary cell")
+	}
+	if span, ok := SpanAt(book.Sheets[index], opts.Row, opts.Column); ok &&
+		(span.FirstRow != opts.Row || span.FirstColumn != opts.Column) {
+		return errors.New("cannot edit a covered cell; edit its span anchor")
+	}
 	spills, err := NewEvaluator(book).SpillCells(index)
 	if err != nil {
 		return err
@@ -627,6 +720,8 @@ func InsertRowInBook(book *Spreadsheet, name string, row int) error {
 	*grid = append(*grid, nil)
 	copy((*grid)[row:], (*grid)[row-1:])
 	(*grid)[row-1] = inserted
+	shiftChartPlacements(book, index, row, true, false)
+	insertCellSpans(&book.Sheets[index], row, true)
 	shiftFormulas(book, index, row, 0, false)
 	shiftCharts(book, name, row, 0, false)
 	return nil
@@ -648,6 +743,8 @@ func InsertColumnInBook(book *Spreadsheet, name string, column int) error {
 		copy((*grid)[i][column:], (*grid)[i][column-1:])
 		(*grid)[i][column-1] = Cell{}
 	}
+	shiftChartPlacements(book, index, column, false, false)
+	insertCellSpans(&book.Sheets[index], column, false)
 	shiftFormulas(book, index, 0, column, false)
 	shiftCharts(book, name, 0, column, false)
 	return nil
@@ -671,9 +768,12 @@ func DeleteRowFromBook(book *Spreadsheet, name string, row int) error {
 	}
 	shiftFormulas(book, index, row, 0, true)
 	shiftCharts(book, name, row, 0, true)
+	shiftChartPlacements(book, index, row, true, true)
+	moved := deleteCellSpans(&book.Sheets[index], row, true)
 	copy((*grid)[row-1:], (*grid)[row:])
 	(*grid)[len(*grid)-1] = nil
 	*grid = (*grid)[:len(*grid)-1]
+	restoreSpanAnchors(book, index, moved)
 	return nil
 }
 
@@ -690,6 +790,8 @@ func DeleteColumnFromBook(book *Spreadsheet, name string, column int) error {
 	}
 	shiftFormulas(book, index, 0, column, true)
 	shiftCharts(book, name, 0, column, true)
+	shiftChartPlacements(book, index, column, false, true)
+	moved := deleteCellSpans(&book.Sheets[index], column, false)
 	for i := range *grid {
 		if column <= len((*grid)[i]) {
 			copy((*grid)[i][column-1:], (*grid)[i][column:])
@@ -697,6 +799,7 @@ func DeleteColumnFromBook(book *Spreadsheet, name string, column int) error {
 			(*grid)[i] = (*grid)[i][:len((*grid)[i])-1]
 		}
 	}
+	restoreSpanAnchors(book, index, moved)
 	return nil
 }
 
@@ -709,11 +812,17 @@ func DeleteSheetFromBook(book *Spreadsheet, name string) error {
 	if err != nil {
 		return err
 	}
-	for i := range book.Charts {
-		if strings.EqualFold(book.Charts[i].Sheet, name) {
-			book.Charts[i].Invalid = true
+	charts := book.Charts[:0]
+	for _, chart := range book.Charts {
+		if strings.EqualFold(chart.PlaceSheet, name) {
+			continue
 		}
+		if strings.EqualFold(chart.Sheet, name) {
+			chart.Invalid = true
+		}
+		charts = append(charts, chart)
 	}
+	book.Charts = charts
 	copy(book.Sheets[index:], book.Sheets[index+1:])
 	book.Sheets = book.Sheets[:len(book.Sheets)-1]
 	return nil

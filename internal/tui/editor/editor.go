@@ -6,9 +6,9 @@ import (
 	"time"
 	"unicode"
 
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/atotto/clipboard"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/tui/theme"
@@ -30,6 +30,54 @@ type Selection struct {
 type MatchSpan struct {
 	Start Point
 	End   Point
+}
+
+type mouseAction uint8
+
+const (
+	mousePress mouseAction = iota
+	mouseMotion
+	mouseRelease
+)
+
+type mouseButton uint8
+
+const (
+	mouseNone mouseButton = iota
+	mouseLeft
+	mouseRight
+	mouseMiddle
+	mouseWheelUp
+	mouseWheelDown
+	mouseWheelLeft
+	mouseWheelRight
+)
+
+type mouseEvent struct {
+	X, Y   int
+	Action mouseAction
+	Button mouseButton
+}
+
+func normalizeMouse(mouse tea.Mouse, action mouseAction) mouseEvent {
+	button := mouseNone
+	switch mouse.Button {
+	case tea.MouseLeft:
+		button = mouseLeft
+	case tea.MouseRight:
+		button = mouseRight
+	case tea.MouseMiddle:
+		button = mouseMiddle
+	case tea.MouseWheelUp:
+		button = mouseWheelUp
+	case tea.MouseWheelDown:
+		button = mouseWheelDown
+	case tea.MouseWheelLeft:
+		button = mouseWheelLeft
+	case tea.MouseWheelRight:
+		button = mouseWheelRight
+	}
+	return mouseEvent{X: mouse.X, Y: mouse.Y, Action: action, Button: button}
 }
 
 type editKind int
@@ -62,6 +110,7 @@ type Model struct {
 	SelectStyle   lipgloss.Style
 	CursorStyle   lipgloss.Style
 	MatchStyle    lipgloss.Style
+	markdown      markdownPalette
 	searchMatches []MatchSpan
 	activeMatch   int
 
@@ -236,6 +285,7 @@ func (m *Model) SetTheme(theme theme.Theme) {
 	m.SelectStyle = theme.Selection
 	m.CursorStyle = theme.Cursor
 	m.MatchStyle = theme.Match
+	m.markdown = editorMarkdownPalette(theme)
 }
 
 // SetSearch updates match spans using smart-case matching and selects the first
@@ -446,6 +496,31 @@ func (m Model) LineCount() int {
 // Line returns the current cursor line.
 func (m Model) Line() int {
 	return m.Cursor.Line
+}
+
+// SetCursorAtRow moves the cursor and positions its visual row in the viewport.
+// The requested row is clamped to the viewport and available preceding text.
+func (m *Model) SetCursorAtRow(point Point, row int) {
+	if len(m.Lines) == 0 {
+		return
+	}
+	m.Cursor = point
+	m.clampCursor()
+	m.Selection = Selection{Anchor: m.Cursor}
+	m.updateStickyCol()
+
+	m.TopLine = m.Cursor.Line
+	m.TopRowOffset = m.cursorVisualRow()
+	for row = min(max(row, 0), max(m.Height-1, 0)); row > 0; row-- {
+		if m.TopRowOffset > 0 {
+			m.TopRowOffset--
+		} else if m.TopLine > 0 {
+			m.TopLine--
+			m.TopRowOffset = len(m.getVisualRows(m.TopLine)) - 1
+		} else {
+			break
+		}
+	}
 }
 
 // SetWidth updates the editor width.
@@ -707,18 +782,7 @@ func (m *Model) clampCursor() {
 func (m *Model) ensureCursorVisible() {
 	m.clampCursor()
 
-	// Find cursor's visual row
-	cursorRows := m.getVisualRows(m.Cursor.Line)
-	cursorRowIdx := 0
-	for i, r := range cursorRows {
-		if m.Cursor.Col >= r.startCol && m.Cursor.Col <= r.endCol {
-			if m.Cursor.Col == r.endCol && i < len(cursorRows)-1 {
-				continue
-			}
-			cursorRowIdx = i
-			break
-		}
-	}
+	cursorRowIdx := m.cursorVisualRow()
 
 	for m.Cursor.Line < m.TopLine || (m.Cursor.Line == m.TopLine && cursorRowIdx < m.TopRowOffset) {
 		if m.TopRowOffset > 0 {
@@ -760,6 +824,19 @@ func (m *Model) ensureCursorVisible() {
 			m.TopRowOffset = 0
 		}
 	}
+}
+
+func (m Model) cursorVisualRow() int {
+	cursorRows := m.getVisualRows(m.Cursor.Line)
+	for i, r := range cursorRows {
+		if m.Cursor.Col >= r.startCol && m.Cursor.Col <= r.endCol {
+			if m.Cursor.Col == r.endCol && i < len(cursorRows)-1 {
+				continue
+			}
+			return i
+		}
+	}
+	return 0
 }
 
 func isWordChar(r rune) bool {
@@ -818,17 +895,28 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		return *m, nil
 	}
 	switch k := msg.(type) {
-	case tea.MouseMsg:
+	case mouseEvent:
 		m.handleMouse(k)
-	case tea.KeyMsg:
+	case tea.MouseClickMsg:
+		m.handleMouse(normalizeMouse(k.Mouse(), mousePress))
+	case tea.MouseReleaseMsg:
+		m.handleMouse(normalizeMouse(k.Mouse(), mouseRelease))
+	case tea.MouseMotionMsg:
+		m.handleMouse(normalizeMouse(k.Mouse(), mouseMotion))
+	case tea.MouseWheelMsg:
+		m.handleMouse(normalizeMouse(k.Mouse(), mousePress))
+	case tea.KeyPressMsg:
 		m.handleKey(k)
+	case tea.PasteMsg:
+		m.lastEditType = editNone
+		m.InsertString(k.Content)
 	}
 	return *m, nil
 }
 
-func (m *Model) handleMouse(msg tea.MouseMsg) {
+func (m *Model) handleMouse(msg mouseEvent) {
 	m.lastEditType = editNone
-	if msg.Button == tea.MouseButtonWheelUp {
+	if msg.Button == mouseWheelUp {
 		if m.TopLine > 0 {
 			m.TopLine -= 3
 			if m.TopLine < 0 {
@@ -837,7 +925,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) {
 		}
 		return
 	}
-	if msg.Button == tea.MouseButtonWheelDown {
+	if msg.Button == mouseWheelDown {
 		maxTop := len(m.Lines) - m.Height
 		if maxTop < 0 {
 			maxTop = 0
@@ -857,7 +945,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) {
 	pos := m.pointFromVisual(msg.X, msg.Y)
 
 	switch msg.Action {
-	case tea.MouseActionPress:
+	case mousePress:
 		now := time.Now()
 		if now.Sub(m.lastClickTime) < 400*time.Millisecond && pos.Line == m.lastClickPos.Line {
 			m.clickCount++
@@ -916,7 +1004,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) {
 		}
 		m.ensureCursorVisible()
 
-	case tea.MouseActionMotion:
+	case mouseMotion:
 		if m.isDragging {
 			m.Cursor = pos
 			m.updateStickyCol()
@@ -924,7 +1012,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) {
 			m.ensureCursorVisible()
 		}
 
-	case tea.MouseActionRelease:
+	case mouseRelease:
 		m.isDragging = false
 		if m.Selection.Anchor == m.Cursor && m.clickCount == 1 {
 			m.Selection.Active = false
@@ -932,19 +1020,19 @@ func (m *Model) handleMouse(msg tea.MouseMsg) {
 	}
 }
 
-func isShiftKey(msg tea.KeyMsg) bool {
-	switch msg.Type {
-	case tea.KeyShiftLeft, tea.KeyShiftRight, tea.KeyShiftUp, tea.KeyShiftDown,
-		tea.KeyShiftHome, tea.KeyShiftEnd,
-		tea.KeyCtrlShiftLeft, tea.KeyCtrlShiftRight, tea.KeyCtrlShiftUp, tea.KeyCtrlShiftDown,
-		tea.KeyCtrlShiftHome, tea.KeyCtrlShiftEnd:
-		return true
+func isShiftKey(msg tea.KeyPressMsg) bool {
+	if msg.Mod&tea.ModShift == 0 {
+		return false
 	}
-	keyStr := msg.String()
-	return strings.HasPrefix(keyStr, "shift+") || strings.HasPrefix(keyStr, "ctrl+shift+")
+	switch msg.Code {
+	case tea.KeyLeft, tea.KeyRight, tea.KeyUp, tea.KeyDown, tea.KeyHome, tea.KeyEnd:
+		return true
+	default:
+		return false
+	}
 }
 
-func (m *Model) handleKey(msg tea.KeyMsg) {
+func (m *Model) handleKey(msg tea.KeyPressMsg) {
 	shift := isShiftKey(msg)
 	keyStr := msg.String()
 
@@ -1172,8 +1260,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 		m.InsertString("  ")
 
 	default:
-		if msg.Type == tea.KeyRunes || (len(msg.Runes) > 0 && !unicode.IsControl(msg.Runes[0])) {
-			for _, r := range msg.Runes {
+		if msg.Mod&(tea.ModCtrl|tea.ModAlt) == 0 && msg.Text != "" && !unicode.IsControl([]rune(msg.Text)[0]) {
+			for _, r := range msg.Text {
 				m.InsertRune(r)
 			}
 		}
@@ -1197,6 +1285,12 @@ func (m Model) View() string {
 
 	lineIdx := m.TopLine
 	rowOffset := m.TopRowOffset
+	var fence markdownFence
+	for _, line := range m.Lines[:min(max(lineIdx, 0), len(m.Lines))] {
+		fence.consume(line)
+	}
+	var lineRoles []markdownRole
+	styledLine := -1
 
 	for i := 0; i < visibleHeight; i++ {
 		if lineIdx >= len(m.Lines) {
@@ -1212,7 +1306,40 @@ func (m Model) View() string {
 
 		r := rows[rowOffset]
 		lineRunes := m.Lines[lineIdx]
+		if styledLine != lineIdx {
+			var next []rune
+			if lineIdx+1 < len(m.Lines) {
+				next = m.Lines[lineIdx+1]
+			}
+			lineRoles = markdownLineRoles(lineRunes, next, &fence)
+			styledLine = lineIdx
+		}
 		var sb strings.Builder
+		var run strings.Builder
+		var currentRole markdownRole
+		currentOverlay := 0
+		flush := func() {
+			if run.Len() == 0 {
+				return
+			}
+			text := run.String()
+			switch currentOverlay {
+			case 1:
+				text = m.SelectStyle.Render(text)
+			case 2:
+				text = m.MatchStyle.Render(text)
+			case 3:
+				style := m.CursorStyle
+				if color := m.markdown[currentRole].GetForeground(); color != nil {
+					style = style.Foreground(color)
+				}
+				text = style.Render(text)
+			default:
+				text = m.markdown[currentRole].Render(text)
+			}
+			sb.WriteString(text)
+			run.Reset()
+		}
 		currentX := 0
 
 		// Render the visual row
@@ -1232,20 +1359,26 @@ func (m Model) View() string {
 				charStr = ""
 			}
 
+			overlay := 0
 			if isSelected {
-				charStr = m.SelectStyle.Render(charStr)
+				overlay = 1
 			} else if m.isSearchMatch(pt) {
-				charStr = m.MatchStyle.Render(charStr)
+				overlay = 2
 			} else if isCursor {
+				overlay = 3
 				if charStr == "" {
 					charStr = " "
 				}
-				charStr = m.CursorStyle.Render(charStr)
 			}
-
-			sb.WriteString(charStr)
+			role := lineRoles[colIdx]
+			if role != currentRole || overlay != currentOverlay {
+				flush()
+				currentRole, currentOverlay = role, overlay
+			}
+			run.WriteString(charStr)
 			currentX += charWidth
 		}
+		flush()
 
 		// Handle trailing cursor or selection at the end of the logical line
 		if rowOffset == len(rows)-1 {

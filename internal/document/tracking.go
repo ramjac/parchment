@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/spreadsheet"
 )
 
 const (
@@ -21,27 +22,65 @@ const (
 // TrackedChange records a replacement at a UTF-8 byte boundary in the current
 // body. Inserted text remains in the body; deleted text is kept for rejection.
 type TrackedChange struct {
-	ID        string    `json:"id"`
-	Group     string    `json:"group,omitempty"`
-	Offset    int       `json:"offset"`
-	Deleted   string    `json:"deleted,omitempty"`
-	Inserted  string    `json:"inserted,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        string                 `json:"id"`
+	Kind      string                 `json:"kind,omitempty"`
+	Group     string                 `json:"group,omitempty"`
+	Offset    int                    `json:"offset"`
+	Deleted   string                 `json:"deleted,omitempty"`
+	Inserted  string                 `json:"inserted,omitempty"`
+	Workbook  *TrackedWorkbookChange `json:"workbook,omitempty"`
+	CreatedAt time.Time              `json:"created_at"`
+}
+
+const trackedWorkbookKind = "workbook"
+
+// TrackedWorkbookChange stores the state needed to accept or reject one
+// spreadsheet editing session.
+type TrackedWorkbookChange struct {
+	Before spreadsheet.Workbook `json:"before"`
+	After  spreadsheet.Workbook `json:"after"`
 }
 
 // ValidateTracking checks that pending anchors match the canonical body.
 func ValidateTracking(d Document) error {
-	return validateTrackedChanges(d.Body, d.TrackedChanges)
+	return validateTrackedChanges(d.Body, d.TrackedChanges, d.Workbook)
 }
 
-func validateTrackedChanges(body string, changes []TrackedChange) error {
+func validateTrackedChanges(body string, changes []TrackedChange, workbooks ...spreadsheet.Workbook) error {
 	if !utf8.ValidString(body) || len(changes) > maxTrackedChanges {
 		return errors.New("invalid document tracking data")
 	}
 	seen := make(map[string]bool, len(changes))
 	previousEnd := -1
 	total := 0
+	workbookChanges := 0
 	for _, change := range changes {
+		if change.Kind == trackedWorkbookKind {
+			workbookChanges++
+			if workbookChanges > 1 || !validChangeID(change.ID) || seen[change.ID] ||
+				change.CreatedAt.IsZero() || !validChangeID(change.Group) || change.Offset != 0 ||
+				change.Deleted != "" || change.Inserted != "" || change.Workbook == nil ||
+				change.Workbook.Before.Equal(change.Workbook.After) {
+				return errors.New("invalid tracked spreadsheet change")
+			}
+			before, beforeErr := spreadsheet.EncodeEmbeddedWorkbook(change.Workbook.Before)
+			after, afterErr := spreadsheet.EncodeEmbeddedWorkbook(change.Workbook.After)
+			if beforeErr != nil || afterErr != nil {
+				return errors.New("invalid tracked spreadsheet workbook")
+			}
+			total += len(before) + len(after)
+			if len(workbooks) > 0 && !change.Workbook.After.Equal(workbooks[0]) {
+				return errors.New("tracked spreadsheet change no longer matches workbook")
+			}
+			seen[change.ID] = true
+			if total > maxTrackedBytes {
+				return errors.New("document tracked changes exceed the size limit")
+			}
+			continue
+		}
+		if change.Kind != "" || change.Workbook != nil {
+			return errors.New("unknown document tracked change kind")
+		}
 		total += len(change.Deleted) + len(change.Inserted)
 		end := change.Offset + len(change.Inserted)
 		if !validChangeID(change.ID) || seen[change.ID] || change.CreatedAt.IsZero() ||
@@ -72,7 +111,7 @@ func EditTrackedBody(d *Document, body string, track bool, now time.Time) error 
 	if !utf8.ValidString(body) {
 		return errors.New("document body must be valid UTF-8")
 	}
-	if err := validateTrackedChanges(d.Body, d.TrackedChanges); err != nil {
+	if err := validateTrackedChanges(d.Body, d.TrackedChanges, d.Workbook); err != nil {
 		return err
 	}
 	old := d.Body
@@ -252,6 +291,9 @@ func editTrackedSplice(d *Document, body string, track bool, now time.Time) erro
 	for expanded := true; expanded; {
 		expanded = false
 		for i, change := range d.TrackedChanges {
+			if change.Kind == trackedWorkbookKind {
+				continue
+			}
 			end := change.Offset + len(change.Inserted)
 			if !selected[i] && change.Offset <= hi && end >= lo {
 				if !track {
@@ -271,6 +313,9 @@ func editTrackedSplice(d *Document, body string, track bool, now time.Time) erro
 			continue
 		}
 		change := d.TrackedChanges[i]
+		if change.Kind == trackedWorkbookKind {
+			continue
+		}
 		relative := change.Offset - lo
 		original = original[:relative] + change.Deleted + original[relative+len(change.Inserted):]
 		copy := change
@@ -284,6 +329,10 @@ func editTrackedSplice(d *Document, body string, track bool, now time.Time) erro
 	changes := make([]TrackedChange, 0, len(d.TrackedChanges)+1)
 	for i, change := range d.TrackedChanges {
 		if selected[i] {
+			continue
+		}
+		if change.Kind == trackedWorkbookKind {
+			changes = append(changes, change)
 			continue
 		}
 		if change.Offset > hi {
@@ -362,7 +411,7 @@ func editTrackedSplice(d *Document, body string, track bool, now time.Time) erro
 	if len(changes) == 0 {
 		changes = nil
 	}
-	if err := validateTrackedChanges(body, changes); err != nil {
+	if err := validateTrackedChanges(body, changes, d.Workbook); err != nil {
 		return err
 	}
 	d.Body, d.TrackedChanges = body, changes
@@ -372,7 +421,7 @@ func editTrackedSplice(d *Document, body string, track bool, now time.Time) erro
 // ResolveTrackedChange accepts or rejects a single change (and its move group).
 // An empty id resolves all pending changes as one transaction.
 func ResolveTrackedChange(d *Document, id string, accept bool) error {
-	if err := validateTrackedChanges(d.Body, d.TrackedChanges); err != nil {
+	if err := validateTrackedChanges(d.Body, d.TrackedChanges, d.Workbook); err != nil {
 		return err
 	}
 	selected := make([]bool, len(d.TrackedChanges))
@@ -393,6 +442,7 @@ func ResolveTrackedChange(d *Document, id string, accept bool) error {
 		selected[i] = id == "" || change.ID == id || group != "" && change.Group == group
 	}
 	body := d.Body
+	workbook := d.Workbook.Clone()
 	changes := append([]TrackedChange(nil), d.TrackedChanges...)
 	if !accept {
 		for i := len(changes) - 1; i >= 0; i-- {
@@ -400,6 +450,10 @@ func ResolveTrackedChange(d *Document, id string, accept bool) error {
 				continue
 			}
 			change := changes[i]
+			if change.Kind == trackedWorkbookKind {
+				workbook = change.Workbook.Before.Clone()
+				continue
+			}
 			end := change.Offset + len(change.Inserted)
 			body = body[:change.Offset] + change.Deleted + body[end:]
 			delta := len(change.Deleted) - len(change.Inserted)
@@ -419,15 +473,20 @@ func ResolveTrackedChange(d *Document, id string, accept bool) error {
 	if len(remaining) == 0 {
 		remaining = nil
 	}
-	if err := validateTrackedChanges(body, remaining); err != nil {
+	if err := validateTrackedChanges(body, remaining, workbook); err != nil {
 		return err
 	}
-	d.Body, d.TrackedChanges = body, remaining
+	d.Body, d.Workbook, d.TrackedChanges = body, workbook, remaining
 	return nil
 }
 
 // TrackingSummary returns an accessible, terminal-neutral review description.
 func TrackingSummary(change TrackedChange) string {
+	if change.Kind == trackedWorkbookKind && change.Workbook != nil {
+		before, after := change.Workbook.Before, change.Workbook.After
+		return fmt.Sprintf("Spreadsheet editing session: %d → %d sheets; %d → %d charts",
+			len(before.Sheets), len(after.Sheets), len(before.Charts), len(after.Charts))
+	}
 	var parts []string
 	if change.Deleted != "" {
 		parts = append(parts, "--- Deleted ---\n"+change.Deleted)

@@ -256,6 +256,7 @@ func TestChartPersistenceAndRangeBinding(t *testing.T) {
 		{{Value: "Feb"}, {Formula: "=B2*2"}},
 	}
 	chart, err := AddChartToBook(&book, Chart{Title: "Sales", Type: "bar", Sheet: book.Sheets[0].Name,
+		PlaceSheet: book.Sheets[0].Name, PlaceRow: 1, PlaceColumn: 3,
 		FirstRow: 1, FirstColumn: 1, LastRow: 3, LastColumn: 2, Header: true, Labels: true})
 	if err != nil {
 		t.Fatal(err)
@@ -281,20 +282,30 @@ func TestChartPersistenceAndRangeBinding(t *testing.T) {
 	}
 }
 
-func TestChartRejectsInvalidPieData(t *testing.T) {
+func TestChartTypesAndBarSeriesLimit(t *testing.T) {
 	book := formulaChain(0)
-	book.Sheets[0].Rows = [][]Cell{{{Value: "0"}}, {{Value: "-1"}}}
-	chart, err := AddChartToBook(&book, Chart{Type: "pie", Sheet: book.Sheets[0].Name,
-		FirstRow: 1, FirstColumn: 1, LastRow: 2, LastColumn: 1})
+	book.Sheets[0].Rows = [][]Cell{
+		{{Value: "Month"}, {Value: "North"}, {Value: "South"}},
+		{{Value: "Jan"}, {Value: "2"}, {Value: "3"}},
+		{{Value: "Feb"}, {Value: "4"}, {Value: "5"}},
+	}
+	if _, err := AddChartToBook(&book, Chart{Type: "pie", Sheet: book.Sheets[0].Name,
+		FirstRow: 1, FirstColumn: 1, LastRow: 3, LastColumn: 2}); err == nil {
+		t.Fatal("unsupported pie chart accepted")
+	}
+	if _, err := AddChartToBook(&book, Chart{Type: "bar", Sheet: book.Sheets[0].Name,
+		FirstRow: 1, FirstColumn: 2, LastRow: 3, LastColumn: 3, Header: true}); err == nil {
+		t.Fatal("multi-series bar chart accepted")
+	}
+	line, err := AddChartToBook(&book, Chart{Type: "line", Sheet: book.Sheets[0].Name,
+		PlaceSheet: book.Sheets[0].Name, PlaceRow: 1, PlaceColumn: 4,
+		FirstRow: 1, FirstColumn: 1, LastRow: 3, LastColumn: 3, Header: true, Labels: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := EvaluateChart(&book, chart); err == nil {
-		t.Fatal("negative pie data accepted")
-	}
-	book.Sheets[0].Rows[1][0].Value = "0"
-	if _, err := EvaluateChart(&book, chart); err == nil {
-		t.Fatal("zero total pie data accepted")
+	data, err := EvaluateChart(&book, line)
+	if err != nil || len(data.Series) != 2 || len(data.Labels) != 2 {
+		t.Fatalf("multi-series line chart = %#v, %v", data, err)
 	}
 }
 
@@ -302,6 +313,7 @@ func TestChartReadsLiveSpillsAfterReopen(t *testing.T) {
 	book := formulaChain(0)
 	book.Sheets[0].Rows = [][]Cell{{{Formula: "=SEQUENCE(3,1,2)"}}}
 	chart, err := AddChartToBook(&book, Chart{Type: "bar", Sheet: book.Sheets[0].Name,
+		PlaceSheet: book.Sheets[0].Name, PlaceRow: 1, PlaceColumn: 2,
 		FirstRow: 1, FirstColumn: 1, LastRow: 3, LastColumn: 1})
 	if err != nil {
 		t.Fatal(err)

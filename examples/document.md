@@ -58,6 +58,20 @@ Workbooks store named sheets and formula cells in a structured block; plain
 text that looks like a formula is not evaluated unless it is marked as one.
 Open [`budget.md`](budget.md) to inspect a multi-sheet planning example.
 
+### A chart in a document
+
+This chart compares planned and completed work. Its data and the chart itself
+live in the embedded sheet below; the chart reference displays it separately.
+
+![Chart](parchment-chart:effort-chart)
+
+![Spreadsheet](parchment-sheet:effort-data)
+
+In the document editor, place the cursor on the sheet reference and press
+`Ctrl+Shift+E` to open the native spreadsheet editor. The chart is anchored
+at E1. Edit a planned value and the completed-work formulas and chart update
+from the same sheet. Save the sheet, then save the document.
+
 ### Presentations turn Markdown into slides
 
 Presentations use `#` for the deck title, `##` for slides, and `: ` for
@@ -142,6 +156,41 @@ unchanged.
     {
       "name": "image-04509606a67711eb.png",
       "data": "iVBORw0KGgoAAAANSUhEUgAAAUAAAAC0CAIAAABqhmJGAAAC9klEQVR42u3dTUrDUBSA0a6mKxAKnbkLcaLTzgTFTXUxD1yFU6eO7LAEqSY37y/vwJmmDfflI6SkyS59fgGd2hkBCBgQMCBgEDAgYEDAgIBBwICAAQGDgAEBAwIGBAwCBgQMCBgQMAgYGCzg74/n2ywJNBfwn90qGRoNeEG9Gob6AS9OV8ZQOeBV6tUwVAh4xXo1DEUDXr1eDYOAQcCV6tUwZA84a70aBgGDgAUMGwu4QL0aBgGDgAUMAhYwCBgELGAQsIBBwAIGAYOABQwCFjC4FxoQMAhYwLCVgJMnckDXASfPxAIBCxjqBJw8Fxq6Djh5MwN0HXDybiToOuBgxpYH6gecvB8Yug74/yVbEmg3YEDAgIBBwICAAQGDgAEBAwIGBAwCBgQMCBgEbAogYEDAgIBBwICAAQEDAgYBAwIGBAwCBgQMCBgQMAgYEDAgYEDAIGBAwICAQcCAgAEBAwIGAQMCBgQMCBgEDAgYEDAIGBAwIGDg94Dfz09ApwQMAgYEDAgYBAwIGOL2r8drBtJKwKf7PReTA3TWtiPMPzKf3ASMgAUsYAELWMACFnCDA7lNwK0E/Ph2iJisa/DTspp1gE62zRfww8tdmyYDqbszAhZwaM8FLGABC1jAAhawgIvUJeBtBhy5khSwgAXsDCxgAQtYwAIWsIAFXCbgWVcuAhawgJ2BBSxgAQtYwALO8UUC7oiABRwiYAELWMDjBhzcYQELWMACFnDBrpq65UvAAt5mwG3+aCxgAQtYwAJerdjgnScCFrCAnYEFLOBh/g8sYAELWMACFrCABSxgAQtYwAIWsIAFLGABC1jAAhawgAV8QMACFrCABSxgAQsYAQtYwAIWMAIWsIAFLGABC1jAAhawgAUsYAELWMACFrCAxSlgAQtYwAJGwAIWsIAFLOByAbOA+fc7fwEjYAELWMAI2AEkYPMfK2BAwCBgQMCAgAEBg4ABAQMCBgQMAgYEDAgYBAwIGBAwIGAQMCBgQMCAgEHAQBU/mxL2k2O7ASEAAAAASUVORK5CYII="
+    }
+  ]
+}
+```
+
+```parchment-workbook
+{
+  "version": 1,
+  "sheets": [
+    {
+      "id": "effort-data",
+      "name": "Effort",
+      "rows": [
+        [{"value": "Month"}, {"value": "Planned"}, {"value": "Completed"}],
+        [{"value": "Jan"}, {"value": "12"}, {"formula": "=B2-2"}],
+        [{"value": "Feb"}, {"value": "24"}, {"formula": "=B3-3"}],
+        [{"value": "Mar"}, {"value": "18"}, {"formula": "=B4+2"}]
+      ]
+    }
+  ],
+  "charts": [
+    {
+      "id": "effort-chart",
+      "place_sheet": "Effort",
+      "place_row": 1,
+      "place_column": 5,
+      "title": "Planned and completed work",
+      "type": "line",
+      "sheet": "Effort",
+      "first_row": 1,
+      "first_column": 1,
+      "last_row": 4,
+      "last_column": 3,
+      "header": true,
+      "labels": true
     }
   ]
 }

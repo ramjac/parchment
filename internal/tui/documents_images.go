@@ -11,8 +11,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"charm.land/lipgloss/v2/compat"
 	glamouransi "github.com/charmbracelet/glamour/ansi"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
@@ -24,6 +24,8 @@ import (
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
+	"example.com/parchment/internal/printing"
+	"example.com/parchment/internal/spreadsheet"
 	"example.com/parchment/internal/tui/termimg"
 )
 
@@ -45,14 +47,15 @@ type documentImagePlacement struct {
 }
 
 type documentImageState struct {
-	rows         map[rune]documentImageRow
-	nextMarker   rune
-	graphicsUsed bool
-	prepared     map[string][]string
-	outline      []document.Section
-	navigation   map[rune]int
-	source       string
-	frame        uint64
+	rows           map[rune]documentImageRow
+	nextMarker     rune
+	graphicsUsed   bool
+	prepared       map[string][]string
+	outline        []document.Section
+	navigation     map[rune]int
+	markNavigation bool
+	source         string
+	frame          uint64
 }
 
 var documentImageAnchorRE = regexp.MustCompile(`(?i)<a\s+(?:id|name)=["']([^"']+)["'][^>]*>`)
@@ -70,6 +73,23 @@ func (s *documentsScreen) documentMarkdownFormatter(doc document.Document) docum
 		assets[img.Name] = img
 	}
 	return func(lines []string, width, _ int, _ string) []string {
+		sourceText := strings.Join(lines, "\n")
+		terminalCharts := make(map[string]spreadsheet.ChartData)
+		var expanded string
+		if termimg.DetectProtocol() == termimg.ProtocolNone {
+			expanded, _ = printing.ExpandEmbeddedReferencesWithChartRenderer(sourceText, doc.Workbook, func(data spreadsheet.ChartData) string {
+				slot := string(s.nextDocumentImageMarker())
+				terminalCharts[slot] = data
+				return "![Chart](" + slot + ")"
+			})
+		} else {
+			var chartImages []artifact.Image
+			expanded, chartImages, _ = printing.ExpandEmbeddedReferencesWithImages(sourceText, doc.Workbook)
+			for _, img := range chartImages {
+				assets[img.Name] = img
+			}
+		}
+		lines = strings.Split(expanded, "\n")
 		rewritten, _ := extractAndRewriteLinks(lines)
 		source := []byte(strings.Join(rewritten, "\n"))
 		context := parser.NewContext()
@@ -81,6 +101,7 @@ func (s *documentsScreen) documentMarkdownFormatter(doc document.Document) docum
 		var images []*ast.Image
 		var headings []*ast.Heading
 		var anchors []*ast.RawHTML
+		var htmlBlocks []*ast.HTMLBlock
 		_ = ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
 			if entering {
 				switch node := node.(type) {
@@ -90,11 +111,13 @@ func (s *documentsScreen) documentMarkdownFormatter(doc document.Document) docum
 					headings = append(headings, node)
 				case *ast.RawHTML:
 					anchors = append(anchors, node)
+				case *ast.HTMLBlock:
+					htmlBlocks = append(htmlBlocks, node)
 				}
 			}
 			return ast.WalkContinue, nil
 		})
-		if len(assets) > 0 {
+		if len(assets) > 0 || s.imageState.markNavigation {
 			for _, heading := range headings {
 				if heading.Parent() != root {
 					continue
@@ -107,6 +130,25 @@ func (s *documentsScreen) documentMarkdownFormatter(doc document.Document) docum
 						source = append(source, []byte(string(marker))...)
 						heading.InsertBefore(heading, heading.FirstChild(), ast.NewTextSegment(text.NewSegment(start, len(source))))
 						break
+					}
+				}
+			}
+			if s.imageState.markNavigation {
+				for _, block := range htmlBlocks {
+					for _, match := range documentImageAnchorRE.FindAllStringSubmatch(string(block.Text(source)), -1) {
+						for index, section := range s.imageState.outline {
+							if !section.Anchor || section.Slug != match[1] || s.documentSectionMarked(index) {
+								continue
+							}
+							marker := s.nextDocumentImageMarker()
+							s.imageState.navigation[marker] = index
+							start := len(source)
+							source = append(source, []byte(string(marker))...)
+							paragraph := ast.NewParagraph()
+							paragraph.AppendChild(paragraph, ast.NewTextSegment(text.NewSegment(start, len(source))))
+							block.Parent().InsertBefore(block.Parent(), block, paragraph)
+							break
+						}
 					}
 				}
 			}
@@ -143,6 +185,12 @@ func (s *documentsScreen) documentMarkdownFormatter(doc document.Document) docum
 				parent.ReplaceChild(parent, img, ast.NewTextSegment(text.NewSegment(start, len(source))))
 			}
 			name := strings.TrimPrefix(string(img.Destination), "./")
+			if data, ok := terminalCharts[name]; ok {
+				slot := s.nextDocumentImageMarker()
+				slots[slot] = strings.Split(renderEmbeddedTerminalChart(data, max(width-4, 1), 16, s.theme), "\n")
+				replaceImage(string(slot))
+				continue
+			}
 			if path.Base(name) != name || !artifact.IsImageName(name) {
 				continue
 			}
@@ -167,7 +215,7 @@ func (s *documentsScreen) documentMarkdownFormatter(doc document.Document) docum
 		}
 		ar := glamouransi.NewRenderer(glamouransi.Options{
 			WordWrap: width, PreserveNewLines: true,
-			ColorProfile: lipgloss.ColorProfile(), Styles: s.theme.Markdown,
+			ColorProfile: glamourColorProfile(compat.Profile), Styles: s.theme.Markdown,
 		})
 		md.SetRenderer(renderer.NewRenderer(renderer.WithNodeRenderers(util.Prioritized(ar, 1000))))
 		var out bytes.Buffer

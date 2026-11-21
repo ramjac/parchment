@@ -5,10 +5,11 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2/compat"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
+	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/config"
@@ -48,15 +49,15 @@ func TestExtractAndRewriteLinks(t *testing.T) {
 }
 
 func TestDocumentReaderClickableInternalLinks(t *testing.T) {
-	previousProfile := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(previousProfile) })
+	previousProfile := compat.Profile
+	compat.Profile = colorprofile.TrueColor
+	t.Cleanup(func() { compat.Profile = previousProfile })
 
 	h := newHarness(t, "")
 	brk := "\n\n" + document.PageBreakMarkup + "\n\n"
-	body := "# Page One\n\nClick [Jump to Section Two](#section-two) for details.\n\nAlso [Unresolved](#non-existent) link." +
+	body := "# Page One\n\nClick [Jump to Section Two](#section-two) for details.\n\nAlso [Unresolved](#non-existent) link.\n\n" + strings.Repeat("Filler.\n\n", 20) +
 		brk +
-		"# Section Two\n\nWelcome to section two."
+		"# Section Two\n\nWelcome to section two.\n\n" + strings.Repeat("More.\n\n", 20)
 
 	if _, err := h.docs.Create(context.Background(), h.path, document.Draft{Body: body}); err != nil {
 		t.Fatal(err)
@@ -69,11 +70,11 @@ func TestDocumentReaderClickableInternalLinks(t *testing.T) {
 	if !s.reading {
 		t.Fatal("expected document to open in reader")
 	}
-	if s.readerPage != 0 {
-		t.Fatalf("expected initial readerPage 0, got %d", s.readerPage)
+	if s.reader.YOffset() != 0 {
+		t.Fatalf("expected initial offset 0, got %d", s.reader.YOffset())
 	}
 
-	view := h.m.View()
+	view := h.m.View().Content
 	clean := ansi.Strip(view)
 
 	// Glamour must not print raw (#section-two) URL
@@ -106,18 +107,18 @@ func TestDocumentReaderClickableInternalLinks(t *testing.T) {
 	// Calculate terminal click position
 	outlineWidth, _ := s.readerPaneWidths()
 	clickX := (outlineWidth + 2) + targetBox.startCol + 1
-	clickY := targetBox.row + 4 - s.reader.YOffset
+	clickY := targetBox.row + 3 - s.reader.YOffset()
 
 	// Click on link
-	h.send(tea.MouseMsg{
+	h.send(mouseEvent{
 		X:      clickX,
 		Y:      clickY,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonLeft,
+		Action: mousePress,
+		Button: mouseLeft,
 	})
 
-	if s.readerPage != 1 {
-		t.Fatalf("expected readerPage to jump to 1, got %d", s.readerPage)
+	if s.reader.YOffset() != s.readerRows[1] {
+		t.Fatalf("expected jump to section row %d, got %d", s.readerRows[1], s.reader.YOffset())
 	}
 }
 
@@ -150,7 +151,7 @@ func TestDocumentPreviewClickableInternalLinks(t *testing.T) {
 		t.Fatalf("expected editPage 0, got %d", s.editPage)
 	}
 
-	view := h.m.View()
+	view := h.m.View().Content
 	clean := ansi.Strip(view)
 	if strings.Contains(clean, "(#second-page)") {
 		t.Fatalf("raw target URL leaked into preview view:\n%s", clean)
@@ -170,15 +171,71 @@ func TestDocumentPreviewClickableInternalLinks(t *testing.T) {
 	clickX := targetBox.startCol + 1
 	clickY := targetBox.row + 2 - s.editPageLine
 
-	h.send(tea.MouseMsg{
+	h.send(mouseEvent{
 		X:      clickX,
 		Y:      clickY,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonLeft,
+		Action: mousePress,
+		Button: mouseLeft,
 	})
 
 	if s.editPage != 1 {
 		t.Fatalf("expected preview to jump to page 1, got %d", s.editPage)
+	}
+}
+
+func TestReaderScrolledLinkAndResize(t *testing.T) {
+	h := newHarness(t, "")
+	body := "# Start\n\n" + strings.Repeat("Long text that wraps when the reader becomes narrow.\n\n", 20) +
+		"界 prefix [Jump](#target)\n\n" + strings.Repeat("More content.\n\n", 15) +
+		"# Target\n\n" + strings.Repeat("After target.\n\n", 20)
+	if _, err := h.docs.Create(context.Background(), h.path, document.Draft{Body: body}); err != nil {
+		t.Fatal(err)
+	}
+	h.open(artifact.DocumentKind)
+	for _, width := range []int{100, 60} {
+		h.send(tea.WindowSizeMsg{Width: width, Height: 20})
+		s := h.m.documents
+		if len(s.readerLinks) != 1 {
+			t.Fatalf("width %d: link boxes = %+v", width, s.readerLinks)
+		}
+		box := s.readerLinks[0]
+		s.reader.SetYOffset(box.row)
+		view := strings.Split(ansi.Strip(h.m.View().Content), "\n")
+		x, y := -1, -1
+		for i, line := range view {
+			if idx := strings.Index(line, "Jump"); idx >= 0 {
+				x, y = runewidth.StringWidth(line[:idx]), i
+				break
+			}
+		}
+		if x < 0 {
+			t.Fatalf("width %d: link not visible", width)
+		}
+		h.send(mouseEvent{X: x, Y: y, Action: mousePress, Button: mouseLeft})
+		if s.currentSection() != 1 {
+			t.Fatalf("width %d: click at %d,%d did not navigate: offset=%d boxes=%+v", width, x, y, s.reader.YOffset(), s.readerLinks)
+		}
+		s.reader.GotoTop()
+		h.send(mouseEvent{Action: mousePress, Button: mouseWheelDown})
+		if s.reader.YOffset() == 0 {
+			t.Fatalf("width %d: wheel did not scroll", width)
+		}
+		h.send(mouseEvent{Action: mousePress, Button: mouseWheelUp})
+		if s.reader.YOffset() != 0 {
+			t.Fatalf("width %d: wheel did not scroll up", width)
+		}
+		h.key("pgdown")
+		if s.reader.YOffset() == 0 {
+			t.Fatalf("width %d: Page Down did not scroll", width)
+		}
+		h.key("pgup")
+		if s.reader.YOffset() != 0 {
+			t.Fatalf("width %d: Page Up did not scroll", width)
+		}
+		h.key("space")
+		if s.reader.YOffset() == 0 {
+			t.Fatalf("width %d: Space did not scroll", width)
+		}
 	}
 }
 
@@ -193,7 +250,7 @@ func TestUnresolvedAndExternalLinksDoNotNavigate(t *testing.T) {
 	h.send(tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	s := h.m.documents
-	initialPage := s.readerPage
+	initialOffset := s.reader.YOffset()
 
 	// Click unresolved link
 	var brokenBox *linkHitBox
@@ -209,16 +266,16 @@ func TestUnresolvedAndExternalLinksDoNotNavigate(t *testing.T) {
 
 	outlineWidth, _ := s.readerPaneWidths()
 	clickX := (outlineWidth + 2) + brokenBox.startCol + 1
-	clickY := brokenBox.row + 4 - s.reader.YOffset
+	clickY := brokenBox.row + 3 - s.reader.YOffset()
 
-	h.send(tea.MouseMsg{
+	h.send(mouseEvent{
 		X:      clickX,
 		Y:      clickY,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonLeft,
+		Action: mousePress,
+		Button: mouseLeft,
 	})
 
-	if s.readerPage != initialPage {
-		t.Fatalf("unresolved link caused navigation to page %d", s.readerPage)
+	if s.reader.YOffset() != initialOffset {
+		t.Fatalf("unresolved link caused navigation to row %d", s.reader.YOffset())
 	}
 }

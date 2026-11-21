@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/spreadsheet"
@@ -19,7 +19,7 @@ type spreadsheetPDFExportedMsg struct {
 }
 
 func (m *spreadsheetModel) resizePDFPrompt() {
-	m.pdfInput.Width = max(m.width-4-runewidth.StringWidth(m.pdfInput.Prompt), 1)
+	m.pdfInput.SetWidth(max(m.width-4-runewidth.StringWidth(m.pdfInput.Prompt), 1))
 }
 
 func (m *spreadsheetModel) openPDFPrompt() tea.Cmd {
@@ -42,7 +42,7 @@ func (m *spreadsheetModel) closePDFPrompt() tea.Cmd {
 	return nil
 }
 
-func (m *spreadsheetModel) updatePDFPrompt(msg tea.KeyMsg) tea.Cmd {
+func (m *spreadsheetModel) updatePDFPrompt(msg tea.KeyPressMsg) tea.Cmd {
 	if m.pdfPrompt == promptPDFOverwrite {
 		switch msg.String() {
 		case "y", "Y":

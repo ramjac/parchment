@@ -12,8 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/bubbles/cursor"
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"example.com/parchment/internal/artifact"
@@ -25,7 +24,7 @@ import (
 // driveSheet sends a message and feeds command results back into the model.
 func driveSheet(t *testing.T, m *spreadsheetModel, message tea.Msg) tea.Msg {
 	t.Helper()
-	m.find.input.Cursor.SetMode(cursor.CursorStatic)
+	setTextInputCursorStatic(&m.find.input)
 	_, cmd := m.Update(message)
 	var last tea.Msg
 	var run func(tea.Cmd)
@@ -55,38 +54,38 @@ func driveSheet(t *testing.T, m *spreadsheetModel, message tea.Msg) tea.Msg {
 	return last
 }
 
-func sheetKey(name string) tea.KeyMsg {
+func sheetKey(name string) tea.KeyPressMsg {
 	switch name {
 	case "up":
-		return tea.KeyMsg{Type: tea.KeyUp}
+		return tea.KeyPressMsg{Code: tea.KeyUp}
 	case "down":
-		return tea.KeyMsg{Type: tea.KeyDown}
+		return tea.KeyPressMsg{Code: tea.KeyDown}
 	case "left":
-		return tea.KeyMsg{Type: tea.KeyLeft}
+		return tea.KeyPressMsg{Code: tea.KeyLeft}
 	case "right":
-		return tea.KeyMsg{Type: tea.KeyRight}
+		return tea.KeyPressMsg{Code: tea.KeyRight}
 	case "enter":
-		return tea.KeyMsg{Type: tea.KeyEnter}
+		return tea.KeyPressMsg{Code: tea.KeyEnter}
 	case "shift+enter":
-		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("shift+enter")}
+		return tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift}
 	case "alt+enter":
-		return tea.KeyMsg{Type: tea.KeyEnter, Alt: true}
+		return tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt}
 	case "esc":
-		return tea.KeyMsg{Type: tea.KeyEsc}
+		return tea.KeyPressMsg{Code: tea.KeyEsc}
 	case "delete":
-		return tea.KeyMsg{Type: tea.KeyDelete}
+		return tea.KeyPressMsg{Code: tea.KeyDelete}
 	case "ctrl+c":
-		return tea.KeyMsg{Type: tea.KeyCtrlC}
+		return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 	case "ctrl+s":
-		return tea.KeyMsg{Type: tea.KeyCtrlS}
+		return tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl}
 	case "ctrl+z":
-		return tea.KeyMsg{Type: tea.KeyCtrlZ}
+		return tea.KeyPressMsg{Code: 'z', Mod: tea.ModCtrl}
 	case "ctrl+r":
-		return tea.KeyMsg{Type: tea.KeyCtrlR}
+		return tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl}
 	case "ctrl+u":
-		return tea.KeyMsg{Type: tea.KeyCtrlU}
+		return tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}
 	}
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(name)}
+	return tea.KeyPressMsg{Code: []rune(string(name))[0], Text: string(name)}
 }
 
 func newTestRepository(t *testing.T) *filerepo.Repository {
@@ -328,7 +327,7 @@ func TestSpreadsheetViewShowsValuesAndFormulas(t *testing.T) {
 		{{Value: "Food"}, {Value: "300"}},
 		{{Value: "Total"}, {Formula: "=B1+B2"}},
 	})
-	view := m.View()
+	view := m.View().Content
 	for _, want := range []string{"budget.md", "Rent", "1200", "1500", " A ", " B "} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
@@ -337,11 +336,11 @@ func TestSpreadsheetViewShowsValuesAndFormulas(t *testing.T) {
 	driveSheet(t, m, sheetKey("down"))
 	driveSheet(t, m, sheetKey("down"))
 	driveSheet(t, m, sheetKey("right"))
-	if view := m.View(); !strings.Contains(view, "B3 │ =B1+B2") {
+	if view := m.View().Content; !strings.Contains(view, "B3 │ =B1+B2") {
 		t.Fatalf("formula bar missing formula:\n%s", view)
 	}
 	driveSheet(t, m, sheetKey("f"))
-	if view := m.View(); !strings.Contains(view, "=B1+B2") || strings.Contains(view, "1500") {
+	if view := m.View().Content; !strings.Contains(view, "=B1+B2") || strings.Contains(view, "1500") {
 		t.Fatalf("formula view not shown:\n%s", view)
 	}
 }
@@ -367,8 +366,8 @@ func TestSpreadsheetEditDistinguishesFormulasAndLiterals(t *testing.T) {
 	if got := storedCell(t, service, id, 1, 2); got != (spreadsheet.Cell{}) {
 		t.Fatalf("formula was persisted before Ctrl+S: %#v", got)
 	}
-	if !strings.Contains(m.View(), "6") {
-		t.Fatalf("evaluated formula missing:\n%s", m.View())
+	if !strings.Contains(m.View().Content, "6") {
+		t.Fatalf("evaluated formula missing:\n%s", m.View().Content)
 	}
 
 	driveSheet(t, m, sheetKey("down"))
@@ -410,8 +409,8 @@ func TestSpreadsheetEditDistinguishesFormulasAndLiterals(t *testing.T) {
 	if got := m.cell(1, 0); got != (spreadsheet.Cell{Value: "hello"}) {
 		t.Fatalf("buffer undo cell = %#v", got)
 	}
-	if !strings.Contains(m.View(), "hello") || !strings.Contains(m.status, "Undid") {
-		t.Fatalf("undo not reflected: status %q\n%s", m.status, m.View())
+	if !strings.Contains(m.View().Content, "hello") || !strings.Contains(m.status, "Undid") {
+		t.Fatalf("undo not reflected: status %q\n%s", m.status, m.View().Content)
 	}
 	driveSheet(t, m, sheetKey("ctrl+r"))
 	if got := m.cell(1, 0); got != (spreadsheet.Cell{}) {
@@ -478,7 +477,7 @@ func TestSpreadsheetAutosaveRestartsAroundPDFExport(t *testing.T) {
 	if m.pdfPrompt != promptPDFOverwrite || !m.autosaveActive {
 		t.Fatalf("overwrite prompt state: prompt=%v autosave=%v", m.pdfPrompt, m.autosaveActive)
 	}
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	_, _ = m.Update(tea.KeyPressMsg{Code: []rune(string("n"))[0], Text: string("n")})
 	if m.pdfPrompt != promptNone || !m.autosaveActive {
 		t.Fatalf("cancelled overwrite state: prompt=%v autosave=%v", m.pdfPrompt, m.autosaveActive)
 	}
@@ -487,7 +486,7 @@ func TestSpreadsheetAutosaveRestartsAroundPDFExport(t *testing.T) {
 	if cmd == nil || m.autosaveActive {
 		t.Fatal("second export did not pause autosave")
 	}
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if !m.autosaveActive || m.pending {
 		t.Fatalf("cancelled export state: pending=%v autosave=%v", m.pending, m.autosaveActive)
 	}
@@ -756,7 +755,7 @@ func TestSpreadsheetResizeKeepsSelectionVisible(t *testing.T) {
 	if m.rowOffset == 0 || m.columnOffset == 0 {
 		t.Fatalf("offsets = %d,%d", m.rowOffset, m.columnOffset)
 	}
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "31") || !strings.Contains(view, " M ") || strings.Contains(view, "top") {
 		t.Fatalf("scrolled view wrong:\n%s", view)
 	}
@@ -765,14 +764,14 @@ func TestSpreadsheetResizeKeepsSelectionVisible(t *testing.T) {
 		m.column < m.columnOffset || m.column >= m.columnOffset+m.visibleColumns() {
 		t.Fatalf("selection %d,%d not visible after resize (offset %d,%d)", m.row, m.column, m.rowOffset, m.columnOffset)
 	}
-	for _, line := range strings.Split(m.View(), "\n") {
+	for _, line := range strings.Split(m.View().Content, "\n") {
 		if w := len([]rune(line)); w > 40*4 {
 			t.Fatalf("line too long after resize: %q", line)
 		}
 	}
 	driveSheet(t, m, tea.WindowSizeMsg{Width: 10, Height: 3})
-	if !strings.Contains(m.View(), "too small") {
-		t.Fatalf("tiny view = %q", m.View())
+	if !strings.Contains(m.View().Content, "too small") {
+		t.Fatalf("tiny view = %q", m.View().Content)
 	}
 }
 
@@ -814,8 +813,8 @@ func TestSpreadsheetLoadErrorAllowsRetryAndQuit(t *testing.T) {
 	m := newSpreadsheetModel(spreadsheet.NewService(repository, 10), filepath.Join(t.TempDir(), "missing.md"), Theme{}, 10)
 	driveSheet(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
 	driveSheet(t, m, m.Init()())
-	if m.loaded || m.errMessage == "" || !strings.Contains(m.View(), "Error:") {
-		t.Fatalf("load error not shown: %q\n%s", m.errMessage, m.View())
+	if m.loaded || m.errMessage == "" || !strings.Contains(m.View().Content, "Error:") {
+		t.Fatalf("load error not shown: %q\n%s", m.errMessage, m.View().Content)
 	}
 	if msg := driveSheet(t, m, sheetKey("enter")); msg != nil || m.editing {
 		t.Fatal("editing allowed without a loaded spreadsheet")
@@ -831,9 +830,9 @@ func TestSpreadsheetTabSwitchesSheets(t *testing.T) {
 		t.Fatal(err)
 	}
 	driveSheet(t, m, sheetKey("r"))
-	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyTab})
-	if m.sheet != 1 || !strings.Contains(m.View(), "Second") {
-		t.Fatalf("tab did not switch sheet:\n%s", m.View())
+	driveSheet(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+	if m.sheet != 1 || !strings.Contains(m.View().Content, "Second") {
+		t.Fatalf("tab did not switch sheet:\n%s", m.View().Content)
 	}
 	driveSheet(t, m, sheetKey("enter"))
 	driveSheet(t, m, sheetKey("second"))
@@ -867,7 +866,7 @@ func TestSpreadsheetOpenedBeforeFirstResizeUsesTerminalSize(t *testing.T) {
 		h.m = &model
 		h.run(h.m.Init())
 		h.send(tea.WindowSizeMsg{Width: 100, Height: 30})
-		if view := h.m.View(); strings.Contains(view, "too small") {
+		if view := h.m.View().Content; strings.Contains(view, "too small") {
 			t.Fatalf("%s opened before the first resize stayed too small:\n%s", kind, view)
 		}
 	}
@@ -933,11 +932,11 @@ func TestSpreadsheetUpdateMouseMsg(t *testing.T) {
 	// Grid starts at Y=4. Row offset 0 means Y=4 is row 0, Y=5 is row 1.
 	// X: rowHeaderWidth is len(" 1")+1 = 2+1 = 3. gridX = X - 2.
 	// Header end is X = 2 + rowHeaderWidth() + 1 = 6. Column 0 is at X=6..17, Column 1 starts at X=19.
-	mouseGridMsg := tea.MouseMsg{
+	mouseGridMsg := mouseEvent{
 		X:      20,
 		Y:      5,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonLeft,
+		Action: mousePress,
+		Button: mouseLeft,
 	}
 	m.Update(mouseGridMsg)
 	if m.row != 1 || m.column != 1 {
@@ -946,7 +945,7 @@ func TestSpreadsheetUpdateMouseMsg(t *testing.T) {
 
 	// 2. Mouse click ignored if pending
 	m.pending = true
-	m.Update(tea.MouseMsg{X: 20, Y: 4, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m.Update(mouseEvent{X: 20, Y: 4, Action: mousePress, Button: mouseLeft})
 	if m.row != 1 || m.column != 1 {
 		t.Fatalf("mouse click should be ignored when pending")
 	}
@@ -957,11 +956,11 @@ func TestSpreadsheetUpdateMouseMsg(t *testing.T) {
 	if !m.editing {
 		t.Fatal("expected editing mode")
 	}
-	mouseFormulaMsg := tea.MouseMsg{
+	mouseFormulaMsg := mouseEvent{
 		X:      15,
 		Y:      1,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonLeft,
+		Action: mousePress,
+		Button: mouseLeft,
 	}
 	m.Update(mouseFormulaMsg)
 	// input cursor position should have been updated
@@ -1078,7 +1077,7 @@ func TestSpreadsheetUpdateNavigationAndSheetSwitch(t *testing.T) {
 	if m.sheet != 0 {
 		t.Fatalf("expected sheet 0 initially")
 	}
-	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyShiftTab})
+	driveSheet(t, m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	if m.sheet != 1 {
 		t.Fatalf("shift+tab expected sheet 1 (cycling backwards), got %d", m.sheet)
 	}
@@ -1125,7 +1124,7 @@ func TestSpreadsheetViewEditingAndHelp(t *testing.T) {
 	if !m.editing {
 		t.Fatal("expected model to be in editing mode")
 	}
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "A1 >") {
 		t.Fatalf("editing formula bar missing prompt:\n%s", view)
 	}
@@ -1138,7 +1137,7 @@ func TestSpreadsheetViewUnloadedAndError(t *testing.T) {
 	repository := newTestRepository(t)
 	m := newSpreadsheetModel(spreadsheet.NewService(repository, 10), "", Theme{}, 10)
 	m.width, m.height = 80, 20
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "Spreadsheet") {
 		t.Fatalf("unloaded title missing 'Spreadsheet':\n%s", view)
 	}
@@ -1147,7 +1146,7 @@ func TestSpreadsheetViewUnloadedAndError(t *testing.T) {
 	}
 
 	m.errMessage = "custom failure"
-	viewWithError := m.View()
+	viewWithError := m.View().Content
 	if !strings.Contains(viewWithError, "Error: custom failure") {
 		t.Fatalf("error message missing from status line:\n%s", viewWithError)
 	}
@@ -1159,13 +1158,13 @@ func TestSpreadsheetViewMultipleSheetsTitle(t *testing.T) {
 		t.Fatal(err)
 	}
 	driveSheet(t, m, sheetKey("r"))
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "— Sheet1") {
 		t.Fatalf("multi-sheet title missing sheet suffix:\n%s", view)
 	}
 
-	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyTab})
-	view2 := m.View()
+	driveSheet(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+	view2 := m.View().Content
 	if !strings.Contains(view2, "— CustomSheet") {
 		t.Fatalf("switched sheet title missing '— CustomSheet':\n%s", view2)
 	}
@@ -1175,7 +1174,7 @@ func TestSpreadsheetViewMaxRowsEdge(t *testing.T) {
 	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "cell"}}})
 	m.rowOffset = spreadsheet.MaxRows - 2
 	m.height = 30 // visible rows extends past MaxRows
-	view := m.View()
+	view := m.View().Content
 	if view == "" {
 		t.Fatal("empty view returned for MaxRows edge case")
 	}
@@ -1191,8 +1190,8 @@ func TestSpreadsheetUpdateWindowSizeMsg(t *testing.T) {
 	if m.width != 80 || m.height != 24 {
 		t.Fatalf("expected width 80, height 24, got %d, %d", m.width, m.height)
 	}
-	if m.input.Width != 68 {
-		t.Fatalf("expected input width 68, got %d", m.input.Width)
+	if m.input.Width() != 68 {
+		t.Fatalf("expected input width 68, got %d", m.input.Width())
 	}
 }
 
@@ -1288,33 +1287,48 @@ func TestSpreadsheetUpdateMouseMsgEdgeCases(t *testing.T) {
 	m.row, m.column = 0, 0
 
 	// Mouse release (not press) should be ignored
-	m.Update(tea.MouseMsg{X: 10, Y: 5, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
+	m.Update(mouseEvent{X: 10, Y: 5, Action: mouseRelease, Button: mouseLeft})
 	if m.row != 0 || m.column != 0 {
 		t.Fatalf("expected row 0, col 0 on release")
 	}
 
 	// Mouse right click should be ignored
-	m.Update(tea.MouseMsg{X: 10, Y: 5, Action: tea.MouseActionPress, Button: tea.MouseButtonRight})
+	m.Update(mouseEvent{X: 10, Y: 5, Action: mousePress, Button: mouseRight})
 	if m.row != 0 || m.column != 0 {
 		t.Fatalf("expected row 0, col 0 on right click")
 	}
 
 	// Mouse click on header row (Y = 1) while browsing (not editing)
-	m.Update(tea.MouseMsg{X: 10, Y: 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m.Update(mouseEvent{X: 10, Y: 1, Action: mousePress, Button: mouseLeft})
 	if m.row != 0 || m.column != 0 {
 		t.Fatalf("expected row 0, col 0 on header click while browsing")
 	}
 
 	// Mouse click below visible grid (Y >= 4 + visibleRows)
-	m.Update(tea.MouseMsg{X: 10, Y: 100, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m.Update(mouseEvent{X: 10, Y: 100, Action: mousePress, Button: mouseLeft})
 	if m.row != 0 || m.column != 0 {
 		t.Fatalf("expected row 0, col 0 on click below grid")
 	}
 
 	// Mouse click on row header (X <= rowHeaderWidth + 2)
-	m.Update(tea.MouseMsg{X: 2, Y: 5, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m.Update(mouseEvent{X: 2, Y: 5, Action: mousePress, Button: mouseLeft})
 	if m.row != 0 || m.column != 0 {
 		t.Fatalf("expected row 0, col 0 on row header click")
+	}
+}
+
+func TestSpreadsheetDoubleClickEditsSelectedCell(t *testing.T) {
+	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "existing"}}})
+	msg := mouseEvent{
+		X: m.rowHeaderWidth() + 3, Y: 4, Action: mousePress, Button: mouseLeft,
+	}
+	m.Update(msg)
+	if m.editing {
+		t.Fatal("single click unexpectedly started editing")
+	}
+	m.Update(msg)
+	if !m.editing || m.input.Value() != "existing" {
+		t.Fatalf("double click did not edit the selected cell: editing=%t input=%q", m.editing, m.input.Value())
 	}
 }
 
@@ -1323,19 +1337,19 @@ func TestSpreadsheetView_TerminalTooSmall(t *testing.T) {
 
 	// Width too small
 	m.width, m.height = 19, 20
-	if view := m.View(); view != "Terminal too small. Press q to quit." {
+	if view := m.View().Content; view != "Terminal too small. Press q to quit." {
 		t.Fatalf("expected terminal too small message for width < 20, got:\n%s", view)
 	}
 
 	// Height too small (spreadsheetChromeLines = 7, so height < 8)
 	m.width, m.height = 80, 7
-	if view := m.View(); view != "Terminal too small. Press q to quit." {
+	if view := m.View().Content; view != "Terminal too small. Press q to quit." {
 		t.Fatalf("expected terminal too small message for height < 8, got:\n%s", view)
 	}
 
 	// Boundary size (width = 20, height = 8) should show normal view
 	m.width, m.height = 20, 8
-	if view := m.View(); strings.Contains(view, "Terminal too small") {
+	if view := m.View().Content; strings.Contains(view, "Terminal too small") {
 		t.Fatalf("unexpected terminal too small message at boundary size 20x8:\n%s", view)
 	}
 }
@@ -1348,7 +1362,7 @@ func TestSpreadsheetView_HeaderAndStatus(t *testing.T) {
 
 	// Default status line when status is empty and spreadsheet is loaded should display sheet dimensions "2×2"
 	m.status = ""
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "2×2") {
 		t.Fatalf("expected status line to show dimensions '2×2', view:\n%s", view)
 	}
@@ -1371,7 +1385,7 @@ func TestSpreadsheetView_HeaderAndStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	driveSheet(t, m, sheetKey("r"))
-	viewMulti := m.View()
+	viewMulti := m.View().Content
 	if !strings.Contains(viewMulti, "— Sheet1") {
 		t.Fatalf("multi-sheet workbook should append sheet suffix '— Sheet1', view:\n%s", viewMulti)
 	}
@@ -1386,7 +1400,7 @@ func TestSpreadsheetView_HeaderAndStatus(t *testing.T) {
 		t.Fatalf("sheet dimensions missing beside centered indicator: %q", statusLine)
 	}
 	driveSheet(t, m, sheetKey("tab"))
-	viewLines = strings.Split(m.View(), "\n")
+	viewLines = strings.Split(m.View().Content, "\n")
 	statusLine = viewLines[len(viewLines)-1]
 	if !strings.Contains(statusLine, "Sheet 2/2") {
 		t.Fatalf("sheet indicator did not follow active sheet: %q", statusLine)
@@ -1397,7 +1411,7 @@ func TestSpreadsheetView_EditingAndHelp(t *testing.T) {
 	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "Value1"}}})
 
 	// Browsing help message
-	viewBrowsing := m.View()
+	viewBrowsing := m.View().Content
 	if !strings.Contains(viewBrowsing, "arrows move • enter edit • ctrl+s save • del clear") {
 		t.Fatalf("expected browsing help text, got:\n%s", viewBrowsing)
 	}
@@ -1407,7 +1421,7 @@ func TestSpreadsheetView_EditingAndHelp(t *testing.T) {
 	if !m.editing {
 		t.Fatal("expected model to enter editing state")
 	}
-	viewEditing := m.View()
+	viewEditing := m.View().Content
 	if !strings.Contains(viewEditing, "A1 >") {
 		t.Fatalf("expected editing formula bar prompt 'A1 >', got:\n%s", viewEditing)
 	}
@@ -1420,7 +1434,7 @@ func TestSpreadsheetView_EditingAndHelp(t *testing.T) {
 	repo := newTestRepository(t)
 	mUnloaded := newSpreadsheetModel(spreadsheet.NewService(repo, 10), "missing.md", Theme{}, 10)
 	mUnloaded.width, mUnloaded.height = 80, 20
-	viewUnloaded := mUnloaded.View()
+	viewUnloaded := mUnloaded.View().Content
 	if !strings.Contains(viewUnloaded, "r retry • esc/q quit") {
 		t.Fatalf("expected unloaded help text, got:\n%s", viewUnloaded)
 	}
@@ -1431,14 +1445,14 @@ func TestSpreadsheetView_CustomSheetNameAndEmptyPath(t *testing.T) {
 
 	// Case 1: Single sheet with custom name (not "Sheet1")
 	m.book.Sheets[0].Name = "CustomName"
-	viewCustomSheet := m.View()
+	viewCustomSheet := m.View().Content
 	if !strings.Contains(viewCustomSheet, "— CustomName") {
 		t.Fatalf("expected title to contain '— CustomName', got:\n%s", viewCustomSheet)
 	}
 
 	// Case 2: Empty path
 	m.path = ""
-	viewEmptyPath := m.View()
+	viewEmptyPath := m.View().Content
 	if strings.Contains(viewEmptyPath, id) {
 		t.Fatalf("expected view with empty path to not contain file path, got:\n%s", viewEmptyPath)
 	}
@@ -1446,7 +1460,7 @@ func TestSpreadsheetView_CustomSheetNameAndEmptyPath(t *testing.T) {
 	// Case 3: Explicit m.status shown in renderStatus
 	m.status = "Saved cell successfully"
 	m.errMessage = ""
-	viewStatus := m.View()
+	viewStatus := m.View().Content
 	if !strings.Contains(viewStatus, "Saved cell successfully") {
 		t.Fatalf("expected status 'Saved cell successfully', got:\n%s", viewStatus)
 	}
@@ -1465,8 +1479,8 @@ func TestSpreadsheetTUI_DeleteShortcuts(t *testing.T) {
 
 	// Ensure not loaded (shortcut guarded by !m.loaded)
 	m.loaded = false
-	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
-	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	driveSheet(t, m, tea.KeyPressMsg{Code: 'd', Text: "d"})
+	driveSheet(t, m, tea.KeyPressMsg{Code: 'c', Text: "c"})
 
 	m.Init()
 	book, _ := service.Get(ctx, path)
@@ -1474,8 +1488,8 @@ func TestSpreadsheetTUI_DeleteShortcuts(t *testing.T) {
 
 	// Delete sheet
 	m.sheet = 1
-	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
-	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	driveSheet(t, m, tea.KeyPressMsg{Code: 'd', Text: "d"})
+	driveSheet(t, m, tea.KeyPressMsg{Code: 's', Text: "s"})
 
 	if len(m.book.Sheets) != 1 {
 		t.Fatalf("expected 1 sheet, got %d", len(m.book.Sheets))
@@ -1493,8 +1507,8 @@ func TestSpreadsheetTUI_DeleteShortcuts(t *testing.T) {
 	}
 
 	// Delete row
-	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
-	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	driveSheet(t, m, tea.KeyPressMsg{Code: 'd', Text: "d"})
+	driveSheet(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"})
 
 	if len(m.book.Sheets[0].Rows) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(m.book.Sheets[0].Rows))
@@ -1505,8 +1519,8 @@ func TestSpreadsheetTUI_DeleteShortcuts(t *testing.T) {
 	}
 
 	// Delete column
-	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
-	driveSheet(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	driveSheet(t, m, tea.KeyPressMsg{Code: 'd', Text: "d"})
+	driveSheet(t, m, tea.KeyPressMsg{Code: 'c', Text: "c"})
 
 	if len(m.book.Sheets[0].Rows[0]) != 1 {
 		t.Fatalf("expected 1 column, got %d", len(m.book.Sheets[0].Rows[0]))

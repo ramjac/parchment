@@ -13,17 +13,18 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/tui/editor"
 	"example.com/parchment/internal/tui/termimg"
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/recovery"
+	"example.com/parchment/internal/spreadsheet"
 )
 
 // documentMessage marks results of document operations, which are routed to
@@ -95,7 +96,8 @@ type documentAutosaveState struct {
 
 func (a documentAutosaveState) equal(b documentAutosaveState) bool {
 	return document.Equal(a.snapshot, b.snapshot) && a.draft.Body == b.draft.Body &&
-		a.draft.Layout == b.draft.Layout && sameImages(a.draft.Images, b.draft.Images)
+		a.draft.Layout == b.draft.Layout && sameImages(a.draft.Images, b.draft.Images) &&
+		a.draft.Workbook.Equal(b.draft.Workbook)
 }
 
 func sameImages(left, right []artifact.Image) bool {
@@ -212,6 +214,7 @@ type documentEditorState struct {
 	body           editor.Model
 	layout         document.Layout
 	images         []artifact.Image
+	workbook       spreadsheet.Workbook
 	original       editorDraft
 	focus          editorFocus
 	toolbarIndex   int
@@ -233,11 +236,13 @@ type documentReaderState struct {
 	// reading reports that the reader, not the editor, is shown.
 	reading       bool
 	reader        viewport.Model
-	readerPages   []document.Page
+	readerLines   []string
 	readerLinks   []linkHitBox
-	readerPage    int
+	readerRows    []int
+	readerSection int
 	readerMatches []renderedMatch
 	readerMatch   int
+	readerClicks  mouseClickTracker
 	outline       []document.Section
 }
 
@@ -245,6 +250,8 @@ type documentReaderState struct {
 // It owns UI state only; document rules live in the document service.
 type documentsScreen struct {
 	imageState     documentImageState
+	embeddedEditor *spreadsheetModel
+	embeddedRef    string
 	service        *document.Service
 	path           string
 	width, height  int
@@ -279,6 +286,12 @@ type documentsScreen struct {
 type editorDraft struct {
 	body, images string
 	layout       document.Layout
+	workbook     spreadsheet.Workbook
+}
+
+func (d editorDraft) equal(other editorDraft) bool {
+	return d.body == other.body && d.images == other.images && d.layout == other.layout &&
+		d.workbook.Equal(other.workbook)
 }
 
 func newDocumentEditorState(undoLimit int, theme Theme) documentEditorState {
@@ -296,13 +309,14 @@ func newDocumentEditorState(undoLimit int, theme Theme) documentEditorState {
 
 func newDocumentChangesState() documentChangesState {
 	return documentChangesState{
-		changeReview: viewport.New(0, 0),
+		changeReview: viewport.New(),
 	}
 }
 
 func newDocumentReaderState() documentReaderState {
 	return documentReaderState{
-		reader: viewport.New(0, 0),
+		reader:        viewport.New(),
+		readerSection: -1,
 	}
 }
 
@@ -329,6 +343,9 @@ func (s *documentsScreen) resize(width, height int) {
 	if s.reading {
 		s.resizeReader()
 	}
+	if s.embeddedEditor != nil {
+		_, _ = s.embeddedEditor.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	}
 }
 
 // resumeAutosave restarts autosave when the editor is open.
@@ -348,6 +365,43 @@ func (s *documentsScreen) update(message tea.Msg) tea.Cmd {
 }
 
 func (s *documentsScreen) updateDocument(message tea.Msg) tea.Cmd {
+	if s.embeddedEditor != nil {
+		switch msg := message.(type) {
+		case documentAutosaveTickMsg:
+			if msg.session == s.autosaveSession {
+				return s.saveDocumentRecovery(msg.session)
+			}
+		case documentAutosaveFinishedMsg:
+			return s.autosaveFinished(msg)
+		}
+		if msg, ok := message.(spreadsheetEmbeddedFinishedMsg); ok {
+			if msg.committed {
+				s.workbook = msg.workbook.Clone()
+				if msg.chartReferenceID != "" {
+					reference, err := spreadsheet.FormatReference(spreadsheet.Reference{
+						Kind: spreadsheet.ChartReferenceKind, ID: msg.chartReferenceID,
+					})
+					if err != nil {
+						s.errMessage = err.Error()
+					} else {
+						insertEmbeddedReference(&s.body, reference, "")
+					}
+				} else if s.embeddedRef != "" {
+					insertEmbeddedReference(&s.body, s.embeddedRef, "")
+				}
+				s.status = "Embedded spreadsheet updated; save the document to keep changes"
+			} else {
+				s.status = "Embedded spreadsheet changes discarded"
+			}
+			s.embeddedEditor, s.embeddedRef = nil, ""
+			return tea.Batch(s.focusBody(), s.scheduleDocumentAutosave(s.autosaveSession))
+		}
+		child, cmd := s.embeddedEditor.Update(message)
+		if updated, ok := child.(*spreadsheetModel); ok {
+			s.embeddedEditor = updated
+		}
+		return cmd
+	}
 	switch msg := message.(type) {
 	case documentDraftDiscardedMsg:
 		s.draftDiscarded(msg)
@@ -368,14 +422,24 @@ func (s *documentsScreen) updateDocument(message tea.Msg) tea.Cmd {
 		return s.documentPDFExported(msg)
 	case imageLoadedMsg:
 		return s.imageLoaded(msg)
-	case tea.KeyMsg:
+	case tea.PasteMsg:
+		if s.find.active {
+			break
+		}
+		if s.prompt != promptNone || s.pending || s.reading || s.previewing || s.showChanges {
+			return nil
+		}
+		var cmd tea.Cmd
+		s.body, cmd = s.body.Update(msg)
+		s.layoutEditor()
+		return cmd
+	case tea.KeyPressMsg:
 		cmd := s.updateKey(msg)
 		s.layoutEditor()
 		return cmd
-	case tea.MouseMsg:
+	case mouseEvent:
 		if s.reading && !s.pending && !s.showChanges {
-			s.updateReaderMouse(msg)
-			return nil
+			return s.updateReaderMouse(msg)
 		}
 		cmd := s.updateMouse(msg)
 		s.layoutEditor()
@@ -524,7 +588,8 @@ func (s *documentsScreen) exportPDF(path string, overwrite bool) tea.Cmd {
 	}
 	d := s.snapshot
 	tracked := len(s.snapshot.TrackedChanges) > 0 ||
-		(!s.reading && s.snapshot.Tracking && s.body.Value() != s.snapshot.Body)
+		(!s.reading && s.snapshot.Tracking &&
+			(s.body.Value() != s.snapshot.Body || !s.workbook.Equal(s.snapshot.Workbook)))
 	if !s.reading {
 		d = s.editorDocument()
 	}
@@ -562,7 +627,7 @@ func (s *documentsScreen) documentPDFExported(msg documentPDFExportedMsg) tea.Cm
 	return s.resumeAutosave()
 }
 
-func (s *documentsScreen) updateKey(msg tea.KeyMsg) tea.Cmd {
+func (s *documentsScreen) updateKey(msg tea.KeyPressMsg) tea.Cmd {
 	key := msg.String()
 	if s.width < 40 || s.height < 10 {
 		if key == "q" && !s.pending && !s.dirty() {
@@ -630,7 +695,7 @@ func (s *documentsScreen) reload(showChanges bool, run func(context.Context) (st
 	}
 }
 
-func (s *documentsScreen) updateChangesKey(msg tea.KeyMsg) tea.Cmd {
+func (s *documentsScreen) updateChangesKey(msg tea.KeyPressMsg) tea.Cmd {
 	key := msg.String()
 	if s.reviewing {
 		switch key {
@@ -694,9 +759,9 @@ func (s *documentsScreen) resolveTracked(id string, accept bool) tea.Cmd {
 }
 
 func (s *documentsScreen) resizeChangeReview() {
-	offset := s.changeReview.YOffset
-	s.changeReview.Width = max(s.width-4, 1)
-	s.changeReview.Height = max(s.height-8, 1)
+	offset := s.changeReview.YOffset()
+	s.changeReview.SetWidth(max(s.width-4, 1))
+	s.changeReview.SetHeight(max(s.height-8, 1))
 	if s.reviewing {
 		s.setChangeReviewContent()
 		s.changeReview.SetYOffset(offset)
@@ -719,7 +784,7 @@ func (s *documentsScreen) setChangeReviewContent() {
 			}
 		}
 	}
-	s.changeReview.SetContent(wrapReviewText(content, max(s.changeReview.Width, 1)))
+	s.changeReview.SetContent(wrapReviewText(content, max(s.changeReview.Width(), 1)))
 	s.changeReview.GotoTop()
 }
 
@@ -836,6 +901,9 @@ func pageText(page document.Page, width int) string {
 
 // view renders the document screen below the shared header.
 func (s *documentsScreen) view(header string) string {
+	if s.embeddedEditor != nil {
+		return s.embeddedEditor.View().Content
+	}
 	view := s.renderDocumentImages(s.documentView(header), max(s.width, 1))
 	if s.imageState.graphicsUsed && termimg.DetectProtocol() != termimg.ProtocolNone {
 		view = repaintImageFrame(view, s.imageState.frame)
@@ -906,11 +974,19 @@ func (s *documentsScreen) statusLine() string {
 	return sanitizeTerminalLine(message) + "  ·  " + undo + "  ·  " + redo
 }
 
-func (s *documentsScreen) dirty() bool { return s.currentDraft() != s.original }
+func (s *documentsScreen) dirty() bool { return !s.currentDraft().equal(s.original) }
 
 func (s *documentsScreen) currentDraft() editorDraft {
+	body := s.body.Value()
+	workbook := s.workbook.Clone()
+	if s.embeddedEditor != nil {
+		workbook = s.embeddedEditor.book.Workbook()
+		if s.embeddedRef != "" {
+			body = sourceWithEmbeddedReference(body, s.body.Cursor, s.embeddedRef, "")
+		}
+	}
 	return editorDraft{
-		body: s.body.Value(), layout: s.layout, images: imageKey(s.images),
+		body: body, layout: s.layout, images: imageKey(s.images), workbook: workbook,
 	}
 }
 

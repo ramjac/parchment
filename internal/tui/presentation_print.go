@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -39,7 +39,7 @@ func (m *presentationModel) resizePDFPrompt() {
 		rows = 1
 	}
 	m.editor.SetHeight(max(1, m.height-5-rows))
-	m.pdfInput.Width = max(m.width-4-runewidth.StringWidth(m.pdfInput.Prompt), 1)
+	m.pdfInput.SetWidth(max(m.width-4-runewidth.StringWidth(m.pdfInput.Prompt), 1))
 }
 
 func (m *presentationModel) closePDFPrompt() {
@@ -48,7 +48,7 @@ func (m *presentationModel) closePDFPrompt() {
 	m.resizePDFPrompt()
 }
 
-func (m *presentationModel) updatePDFPrompt(msg tea.KeyMsg) tea.Cmd {
+func (m *presentationModel) updatePDFPrompt(msg tea.KeyPressMsg) tea.Cmd {
 	if m.pdfPrompt == promptPDFOverwrite {
 		switch msg.String() {
 		case "y", "Y":
@@ -98,7 +98,8 @@ func (m *presentationModel) exportPDF(path string, overwrite bool) tea.Cmd {
 	}
 	item := m.item
 	if m.editing {
-		item.Source = m.editor.Value()
+		item.Source = m.recoverySource()
+		item.Workbook = m.pendingWorkbook()
 	}
 	ctx, seq := m.startOperation()
 	m.pdfPending = true

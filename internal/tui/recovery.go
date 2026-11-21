@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
@@ -37,6 +37,7 @@ type spreadsheetRecoveryData struct {
 type presentationRecoveryData struct {
 	Baseline presentation.Presentation `json:"baseline"`
 	Source   string                    `json:"source"`
+	Workbook spreadsheet.Workbook      `json:"workbook,omitempty"`
 }
 
 // noteRecoveryData is the autosaved note editor state: the saved note the
@@ -176,6 +177,9 @@ func (m *Model) recoverDraft() tea.Cmd {
 		m.deck.newOperationContext = m.newOperationContext
 		m.deck.width, m.deck.height = m.width, m.height
 		m.deck.setItem(data.Baseline)
+		if len(data.Workbook.Sheets) == 0 && len(data.Baseline.Workbook.Sheets) > 0 {
+			data.Workbook = data.Baseline.Workbook
+		}
 		m.deck.status = "Recovered unsaved presentation draft"
 		if !presentation.Equal(data.Baseline, opened.deck) {
 			m.deck.status += "; the file changed after the draft was saved, so saving will report a conflict"
@@ -183,7 +187,7 @@ func (m *Model) recoverDraft() tea.Cmd {
 		m.stage = stagePresentation
 		m.draftStored = true
 		_, sizeCmd := m.deck.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-		restoreCmd := m.deck.restoreDraft(data.Source)
+		restoreCmd := m.deck.restoreDraft(data.Source, data.Workbook)
 		return tea.Batch(sizeCmd, restoreCmd)
 	case artifact.SpreadsheetKind:
 		var data spreadsheetRecoveryData

@@ -12,11 +12,12 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/compat"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
-	"github.com/muesli/termenv"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/config"
@@ -27,10 +28,10 @@ import (
 )
 
 func TestTUIRenderGoldens(t *testing.T) {
-	previousProfile := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
+	previousProfile := compat.Profile
+	compat.Profile = colorprofile.TrueColor
 	t.Cleanup(func() {
-		lipgloss.SetColorProfile(previousProfile)
+		compat.Profile = previousProfile
 	})
 
 	darkTheme := config.Theme{Mode: "dark"}
@@ -47,7 +48,7 @@ func TestTUIRenderGoldens(t *testing.T) {
 		}
 		h.openWithTheme(artifact.NoteKind, false, darkTheme)
 		prepareGoldenView(h, 80, 24)
-		assertTUIViewGolden(t, "note-editor", h.m.View(), 80, 24)
+		assertTUIViewGolden(t, "note-editor", h.m.View().Content, 80, 24)
 	})
 
 	t.Run("note-preview", func(t *testing.T) {
@@ -63,7 +64,7 @@ func TestTUIRenderGoldens(t *testing.T) {
 		h.openWithTheme(artifact.NoteKind, false, darkTheme)
 		h.key("f5")
 		prepareGoldenView(h, 80, 24)
-		assertTUIViewGolden(t, "note-preview", h.m.View(), 80, 24)
+		assertTUIViewGolden(t, "note-preview", h.m.View().Content, 80, 24)
 	})
 
 	t.Run("document-reader", func(t *testing.T) {
@@ -73,9 +74,9 @@ func TestTUIRenderGoldens(t *testing.T) {
 			t.Fatal(err)
 		}
 		h.openWithTheme(artifact.DocumentKind, false, darkTheme)
-		assertRenderedDocumentMarkdown(t, h.m.documents.readerPages)
+		assertRenderedDocumentMarkdown(t, []document.Page{{Lines: h.m.documents.readerLines}})
 		prepareGoldenView(h, 120, 40)
-		assertTUIViewGolden(t, "document-reader", h.m.View(), 120, 40)
+		assertTUIViewGolden(t, "document-reader", h.m.View().Content, 120, 40)
 	})
 
 	for _, mode := range []string{"editor", "reader", "preview", "small-reader"} {
@@ -106,10 +107,10 @@ func TestTUIRenderGoldens(t *testing.T) {
 				_, row := firstDocumentImageRow(t, s, s.editPages)
 				s.editPageLine = max(row-5, 0)
 			default:
-				_, row := firstDocumentImageRow(t, s, s.readerPages)
+				_, row := firstDocumentImageRow(t, s, []document.Page{{Lines: s.readerLines}})
 				s.reader.SetYOffset(max(row-5, 0))
 			}
-			view := h.m.View()
+			view := h.m.View().Content
 			if mode == "preview" {
 				if got := tuiScreenWidth(view); got != width {
 					t.Fatalf("preview width = %d, want %d", got, width)
@@ -126,33 +127,75 @@ func TestTUIRenderGoldens(t *testing.T) {
 		h := newHarness(t, artifact.SpreadsheetKind)
 		h.openWithTheme(artifact.SpreadsheetKind, false, darkTheme)
 		prepareGoldenView(h, 80, 24)
-		assertTUIViewGolden(t, "spreadsheet-grid", h.m.View(), 80, 24)
+		assertTUIViewGolden(t, "spreadsheet-grid", h.m.View().Content, 80, 24)
 	})
 
-	t.Run("spreadsheet-chart-list", func(t *testing.T) {
-		h := newHarness(t, artifact.SpreadsheetKind)
-		book, err := h.sheets.Get(context.Background(), h.path)
-		if err != nil {
-			t.Fatal(err)
+	t.Run("spreadsheet-spans", func(t *testing.T) {
+		m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "A cell spanning columns"}, {}, {Value: "next"}}})
+		m.path = "fixtures/example.md"
+		m.theme = resolveTheme(darkTheme)
+		if !m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+			return spreadsheet.SpanCellsInBook(book, "Sheet1", spreadsheet.CellSpan{FirstRow: 1, FirstColumn: 1, LastRow: 3, LastColumn: 2})
+		}) {
+			t.Fatal(m.errMessage)
 		}
-		_, err = spreadsheet.AddChartToBook(&book, spreadsheet.Chart{
-			ID: "chart-one", Title: "Sales", Type: "bar", Sheet: book.Sheets[0].Name,
-			FirstRow: 1, LastRow: 1, FirstColumn: 1, LastColumn: 1,
+		driveSheet(t, m, tea.WindowSizeMsg{Width: 80, Height: 16})
+		assertTUIViewGolden(t, "spreadsheet-span", m.View().Content, 80, 16)
+		driveSheet(t, m, tea.WindowSizeMsg{Width: 30, Height: 10})
+		m.rowOffset, m.columnOffset = 1, 1
+		assertTUIViewGolden(t, "spreadsheet-span-small", m.View().Content, 30, 10)
+	})
+
+	t.Run("spreadsheet-chart-grid", func(t *testing.T) {
+		m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "3"}}, {{Value: "4"}}})
+		m.path = "fixtures/example.md"
+		m.theme = resolveTheme(darkTheme)
+		if !m.editWorkbook(func(book *spreadsheet.Spreadsheet) error {
+			if err := spreadsheet.SpanCellsInBook(book, "Sheet1", spreadsheet.CellSpan{FirstRow: 1, FirstColumn: 3, LastRow: 8, LastColumn: 5}); err != nil {
+				return err
+			}
+			_, err := spreadsheet.AddChartToBook(book, spreadsheet.Chart{
+				ID: "chart-one", Title: "Sales", Type: "bar", Sheet: "Sheet1",
+				PlaceSheet: "Sheet1", PlaceRow: 1, PlaceColumn: 3,
+				FirstRow: 1, LastRow: 2, FirstColumn: 1, LastColumn: 1,
+			})
+			return err
+		}) {
+			t.Fatal(m.errMessage)
+		}
+		m.row, m.column = 0, 2
+		driveSheet(t, m, tea.WindowSizeMsg{Width: 80, Height: 16})
+		assertTUIViewGolden(t, "spreadsheet-chart-grid", m.View().Content, 80, 16)
+		driveSheet(t, m, tea.WindowSizeMsg{Width: 30, Height: 10})
+		m.rowOffset, m.columnOffset = 2, 3
+		assertTUIViewGolden(t, "spreadsheet-chart-grid-clipped", m.View().Content, 30, 10)
+	})
+
+	t.Run("spreadsheet-chart-form", func(t *testing.T) {
+		m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{
+			{{Value: "Month"}, {Value: "Sales"}},
+			{{Value: "Jan"}, {Value: "2"}},
+			{{Value: "Feb"}, {Value: "4"}},
 		})
-		if err != nil {
-			t.Fatal(err)
+		m.path = "fixtures/example.md"
+		m.theme = resolveTheme(darkTheme)
+		driveSheet(t, m, tea.WindowSizeMsg{Width: 100, Height: 24})
+		m.column = 2
+		assertTUIViewGolden(t, "spreadsheet-chart-form-before", m.View().Content, 100, 24)
+		driveSheet(t, m, sheetKey("g"))
+		m.charts.fields[2].SetValue("A1:B3")
+		for i := range m.charts.fields {
+			setTextInputCursorStatic(&m.charts.fields[i])
 		}
-		expected, err := h.sheets.Get(context.Background(), h.path)
-		if err != nil {
-			t.Fatal(err)
+		for i := 0; i < 3; i++ {
+			driveSheet(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
 		}
-		if _, err := h.sheets.Update(context.Background(), expected, book); err != nil {
-			t.Fatal(err)
-		}
-		h.openWithTheme(artifact.SpreadsheetKind, false, darkTheme)
-		prepareGoldenView(h, 80, 24)
-		h.key("g")
-		assertTUIViewGolden(t, "spreadsheet-chart-list", h.m.View(), 80, 24)
+		driveSheet(t, m, sheetKey("right"))
+		driveSheet(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+		driveSheet(t, m, sheetKey("right"))
+		assertTUIViewGolden(t, "spreadsheet-chart-form-after", m.View().Content, 100, 24)
+		driveSheet(t, m, tea.WindowSizeMsg{Width: 35, Height: 12})
+		assertTUIViewGolden(t, "spreadsheet-chart-form-small", m.View().Content, 35, 12)
 	})
 
 	t.Run("presentation", func(t *testing.T) {
@@ -168,7 +211,27 @@ func TestTUIRenderGoldens(t *testing.T) {
 		h.openWithTheme(artifact.PresentationKind, false, darkTheme)
 		h.m.deck.goToPage(1)
 		prepareGoldenView(h, 120, 40)
-		assertTUIViewGolden(t, "presentation", h.m.View(), 120, 40)
+		assertTUIViewGolden(t, "presentation", h.m.View().Content, 120, 40)
+	})
+
+	t.Run("presentation-transition", func(t *testing.T) {
+		h := newHarness(t, artifact.PresentationKind)
+		item, err := h.decks.Get(context.Background(), h.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.decks.Update(context.Background(), item,
+			"# A Short Deck\n\n## First Slide\n\nA paragraph with **emphasis** and `code`.\n"); err != nil {
+			t.Fatal(err)
+		}
+		h.openWithTheme(artifact.PresentationKind, false, darkTheme)
+		prepareGoldenView(h, 120, 40)
+		deck := h.m.deck
+		_, _ = deck.Update(sheetKey("right"))
+		for range 12 {
+			_, _ = deck.Update(presentationTransitionTickMsg{generation: deck.generation})
+		}
+		assertTUIViewGolden(t, "presentation-transition", h.m.View().Content, 120, 40)
 	})
 
 	t.Run("presentation-image", func(t *testing.T) {
@@ -198,13 +261,13 @@ func TestTUIRenderGoldens(t *testing.T) {
 		})
 		h.m.deck.goToPage(1)
 		prepareGoldenView(h, 80, 24)
-		assertTUIViewGolden(t, "presentation-image", h.m.View(), 80, 24)
+		assertTUIViewGolden(t, "presentation-image", h.m.View().Content, 80, 24)
 	})
 
 	t.Run("small-terminal", func(t *testing.T) {
 		h := newHarness(t, artifact.NoteKind)
 		prepareGoldenView(h, 80, 9)
-		view := h.m.View()
+		view := h.m.View().Content
 		if !strings.Contains(view, "terminal too small") {
 			t.Fatalf("small terminal did not show the size warning:\n%s", view)
 		}
@@ -217,7 +280,7 @@ func TestTUIRenderGoldens(t *testing.T) {
 		h.typeText("unsaved content")
 		h.key("esc")
 		prepareGoldenView(h, 80, 24)
-		assertTUIViewGolden(t, "note-discard-confirmation", h.m.View(), 0, 0)
+		assertTUIViewGolden(t, "note-discard-confirmation", h.m.View().Content, 0, 0)
 	})
 
 	t.Run("open-error", func(t *testing.T) {
@@ -225,16 +288,16 @@ func TestTUIRenderGoldens(t *testing.T) {
 		h.openWithTheme(artifact.NoteKind, false, darkTheme)
 		h.m.stage = stageFailed
 		prepareGoldenView(h, 80, 24)
-		assertTUIViewGolden(t, "open-error", h.m.View(), 0, 0)
+		assertTUIViewGolden(t, "open-error", h.m.View().Content, 0, 0)
 	})
 }
 
 func TestMarkdownContentColors(t *testing.T) {
-	previousProfile := lipgloss.ColorProfile()
-	t.Cleanup(func() { lipgloss.SetColorProfile(previousProfile) })
+	previousProfile := compat.Profile
+	t.Cleanup(func() { compat.Profile = previousProfile })
 
-	for _, profile := range []termenv.Profile{termenv.TrueColor, termenv.ANSI256, termenv.ANSI} {
-		lipgloss.SetColorProfile(profile)
+	for _, profile := range []colorprofile.Profile{colorprofile.TrueColor, colorprofile.ANSI256, colorprofile.ANSI} {
+		compat.Profile = profile
 		for _, mode := range []string{"light", "dark"} {
 			styles := tuitheme.Resolve(config.Theme{Mode: mode})
 			for _, tt := range []struct {
@@ -252,9 +315,8 @@ func TestMarkdownContentColors(t *testing.T) {
 					t.Fatalf("%s has no semantic color", tt.name)
 				}
 				rendered := renderMarkdown(tt.source, 60, styles)
-				sample := lipgloss.NewStyle().Foreground(lipgloss.Color(*tt.color)).Render("sample")
-				colorSequence, _, _ := strings.Cut(sample, "sample")
-				colorParams := strings.TrimSuffix(strings.TrimPrefix(colorSequence, "\x1b["), "m")
+				expectedColor := glamourColorProfile(profile).FromColor(lipgloss.Color(*tt.color)).Sequence(false)
+				colorParams := strings.TrimSuffix(strings.TrimPrefix(expectedColor, "\x1b["), "m")
 				if colorParams == "" || !strings.Contains(rendered, colorParams) ||
 					!strings.Contains(ansi.Strip(rendered), tt.text) {
 					t.Errorf("%s, mode %s, profile %v: expected color %s and text %q in %q",
@@ -262,6 +324,34 @@ func TestMarkdownContentColors(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestArtifactEditorsUseViewerMarkdownColors(t *testing.T) {
+	previousProfile := compat.Profile
+	compat.Profile = colorprofile.TrueColor
+	t.Cleanup(func() { compat.Profile = previousProfile })
+	styles := tuitheme.Resolve(config.Theme{Mode: "dark", Primary: "#123456"})
+
+	note := newNoteEditor(10, styles)
+	document := newDocumentEditorState(10, styles)
+	presentation := newPresentationModel(nil, "", styles)
+	for _, tt := range []struct {
+		name string
+		set  func(string)
+		view func() string
+	}{
+		{"note", note.bodyInput.SetValue, func() string { return note.bodyInput.View() }},
+		{"document", document.body.SetValue, func() string { return document.body.View() }},
+		{"presentation", presentation.editor.SetValue, func() string { return presentation.editor.View() }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.set("# Colored heading")
+			want := lipgloss.NewStyle().Foreground(lipgloss.Color(*styles.Markdown.H1.Color)).Render(" Colored heading")
+			if view := tt.view(); !strings.Contains(view, want) {
+				t.Fatalf("heading does not use viewer color: %q", view)
+			}
+		})
 	}
 }
 
@@ -288,10 +378,10 @@ func assertRenderedDocumentMarkdown(t *testing.T, pages []document.Page) {
 }
 
 func TestMarkdownHeadingsRemainDistinctWithoutColor(t *testing.T) {
-	previousProfile := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.Ascii)
+	previousProfile := compat.Profile
+	compat.Profile = colorprofile.Ascii
 	t.Cleanup(func() {
-		lipgloss.SetColorProfile(previousProfile)
+		compat.Profile = previousProfile
 	})
 
 	rendered := renderMarkdown("# Title\n\n## Section\n\nBody text.", 40, tuitheme.Resolve(config.Theme{Mode: "dark"}))

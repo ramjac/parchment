@@ -7,7 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/filerepo"
+	"example.com/parchment/internal/presentation"
+	"example.com/parchment/internal/spreadsheet"
 )
 
 func TestDocumentCLI(t *testing.T) {
@@ -203,6 +206,72 @@ func TestPrintExampleDocumentPDF(t *testing.T) {
 	if !strings.HasPrefix(pdf, "%PDF-") {
 		t.Fatal("example document output is missing the PDF signature")
 	}
+	printed := c.must("document", "print", example)
+	if !strings.Contains(printed, "Planned and completed work") ||
+		strings.Contains(printed, "parchment-chart:") {
+		t.Fatal("example document did not render its embedded chart")
+	}
+}
+
+func TestExampleChartsRespondToSheetEdits(t *testing.T) {
+	documentPath, err := filepath.Abs("../../examples/document.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	presentationPath, err := filepath.Abs("../../examples/presentation.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newCLI(t)
+	repo, settings, err := openStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := document.NewService(repo, settings.UndoLimit).Get(t.Context(), documentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deck, err := presentation.NewService(repo, settings.UndoLimit).Get(t.Context(), presentationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name             string
+		book             spreadsheet.Workbook
+		sheet            string
+		anchorColumn     int
+		newValue         string
+		seriesIndex, row int
+		before, after    float64
+	}{
+		{"document", doc.Workbook, "Effort", 5, "20", 1, 0, 10, 18},
+		{"presentation", deck.Workbook, "Revenue", 4, "50", 0, 1, 58, 66},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			chart, ok := spreadsheet.ChartAtInWorkbook(&tt.book, tt.sheet, 1, tt.anchorColumn)
+			if !ok {
+				t.Fatal("example chart is not at its documented sheet anchor")
+			}
+			data, err := spreadsheet.EvaluateChartInWorkbook(&tt.book, chart)
+			if err != nil || len(data.Series) <= tt.seriesIndex ||
+				len(data.Series[tt.seriesIndex].Values) <= tt.row ||
+				data.Series[tt.seriesIndex].Values[tt.row] != tt.before {
+				t.Fatalf("initial chart data: %+v, %v", data, err)
+			}
+			err = tt.book.SetCell(spreadsheet.SetCellOptions{
+				Sheet: tt.sheet, Row: 2, Column: 2, Cell: spreadsheet.Cell{Value: tt.newValue},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err = spreadsheet.EvaluateChartInWorkbook(&tt.book, chart)
+			if err != nil || len(data.Series) <= tt.seriesIndex ||
+				len(data.Series[tt.seriesIndex].Values) <= tt.row ||
+				data.Series[tt.seriesIndex].Values[tt.row] != tt.after {
+				t.Fatalf("chart data after editing source: %+v, %v", data, err)
+			}
+		})
+	}
 }
 
 func TestDocumentTrackingKeepsEmbeddedImages(t *testing.T) {
@@ -279,6 +348,61 @@ func TestDocumentExportCLI(t *testing.T) {
 	}
 	if !strings.Contains(errOutput, "warning: 1 pending tracked change(s) not exported") {
 		t.Fatalf("expected pending changes warning, got: %q", errOutput)
+	}
+}
+
+func TestDocumentEmbeddedOfficeExportWarningsAndPDF(t *testing.T) {
+	c := newCLI(t)
+	repo, settings, err := openStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := document.NewService(repo, settings.UndoLimit)
+	path := filepath.Join(c.dir, "embedded.md")
+	item, err := service.Create(t.Context(), path, document.Draft{
+		Body: "![Spreadsheet](parchment-sheet:data-sheet)\n\n![Chart](parchment-chart:revenue-chart)",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workbook := spreadsheet.Workbook{
+		Sheets: []spreadsheet.Sheet{
+			{ID: "data-sheet", Name: "Data", Rows: [][]spreadsheet.Cell{
+				{{Value: "Region"}, {Value: "Revenue"}},
+				{{Value: "North"}, {Value: "42"}},
+			}},
+			{ID: "chart-sheet", Name: "Charts", Rows: [][]spreadsheet.Cell{{{}}}},
+		},
+		Charts: []spreadsheet.Chart{{
+			ID: "revenue-chart", PlaceSheet: "Charts", PlaceRow: 1, PlaceColumn: 1,
+			Title: "Revenue", Type: "bar", Sheet: "Data",
+			FirstRow: 1, FirstColumn: 1, LastRow: 2, LastColumn: 2,
+			Header: true, Labels: true,
+		}},
+	}
+	_, err = service.Save(t.Context(), item, document.Draft{
+		Body: item.Body, Layout: item.Layout, Images: item.Images, Workbook: workbook,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pdfPath := filepath.Join(c.dir, "embedded.pdf")
+	c.must("document", "print", path, "--format", "pdf", "-o", pdfPath)
+	pdf, err := os.ReadFile(pdfPath)
+	if err != nil || !bytes.HasPrefix(pdf, []byte("%PDF-")) {
+		t.Fatalf("embedded chart PDF was not generated: %v", err)
+	}
+
+	for _, extension := range []string{"docx", "odt"} {
+		output := filepath.Join(c.dir, "embedded."+extension)
+		_, warning, err := c.runWithStderr("document", "export", path, "-o", output)
+		if err != nil {
+			t.Fatalf("export %s: %v", extension, err)
+		}
+		if got := strings.Count(warning, "editable office objects are unavailable"); got != 2 {
+			t.Fatalf("%s approximation warnings = %d, want one per embedded object: %q", extension, got, warning)
+		}
 	}
 }
 

@@ -24,6 +24,8 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 	group.AddCommand(newSpreadsheetCreateCmd(streams))
 	group.AddCommand(newSpreadsheetShowCmd(streams))
 	group.AddCommand(newSpreadsheetCellCmd(streams))
+	group.AddCommand(newSpreadsheetSpanCmd(false))
+	group.AddCommand(newSpreadsheetSpanCmd(true))
 	addSpreadsheetInsertCommands(group)
 	addSpreadsheetDeleteCommands(group)
 	group.AddCommand(newSpreadsheetDeleteSheetCmd())
@@ -31,6 +33,49 @@ func addSpreadsheetCommands(root *cobra.Command, streams output) {
 	group.AddCommand(newSpreadsheetExportCmd(streams))
 	addSpreadsheetChartCommands(group, streams)
 	group.AddCommand(newPrintCmd(artifact.SpreadsheetKind, streams))
+}
+
+func newSpreadsheetSpanCmd(split bool) *cobra.Command {
+	name, argument := "span", "<A1:B2>"
+	if split {
+		name, argument = "unspan", "<cell>"
+	}
+	cmd := &cobra.Command{
+		Use: name + " <file> " + argument, Short: "Change spreadsheet cell spanning",
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			parts := strings.Split(args[1], ":")
+			if split && len(parts) != 1 || !split && len(parts) != 2 {
+				return errors.New("invalid cell or range")
+			}
+			row, col, err := spreadsheet.CellCoordinates(parts[0])
+			if err != nil {
+				return err
+			}
+			repo, service, err := openSpreadsheets(cmd)
+			if err != nil {
+				return err
+			}
+			sheet, _ := cmd.Flags().GetString("sheet")
+			if split {
+				_, err = service.SplitCell(cmd.Context(), args[0], sheet, row, col)
+			} else {
+				lastRow, lastCol, parseErr := spreadsheet.CellCoordinates(parts[1])
+				if parseErr != nil {
+					return parseErr
+				}
+				_, err = service.SpanCells(cmd.Context(), args[0], sheet, spreadsheet.CellSpan{
+					FirstRow: row, FirstColumn: col, LastRow: lastRow, LastColumn: lastCol,
+				})
+			}
+			if err == nil {
+				drainWarnings(repo, output{err: cmd.ErrOrStderr()})
+			}
+			return err
+		},
+	}
+	cmd.Flags().String("sheet", "Sheet1", "sheet to edit")
+	return cmd
 }
 
 func newSpreadsheetCreateCmd(streams output) *cobra.Command {

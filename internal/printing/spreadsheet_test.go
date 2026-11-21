@@ -1,6 +1,7 @@
 package printing
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -33,6 +34,26 @@ func TestSpreadsheetPrintAcrossColumnsBeforeRows(t *testing.T) {
 		if !strings.Contains(text, check.contains) || strings.Contains(text, check.excludes) {
 			t.Fatalf("page %d has wrong band:\n%s", i+1, text)
 		}
+	}
+}
+
+func TestWorkbookSheetPagesUseSharedWorkbookContext(t *testing.T) {
+	book := spreadsheet.Workbook{Sheets: []spreadsheet.Sheet{
+		{Name: "Sales", Rows: [][]spreadsheet.Cell{{{Value: "3"}}}},
+		{Name: "Summary", Rows: [][]spreadsheet.Cell{{{Formula: "=Sales!A1+1"}}}},
+	}}
+	if err := spreadsheet.NormalizeWorkbook(&book); err != nil {
+		t.Fatal(err)
+	}
+	pages, err := WorkbookSheetPagesContext(context.Background(), book, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pages) == 0 || pages[0].SheetIndex != 1 || !strings.Contains(strings.Join(pages[0].Lines, "\n"), "4") {
+		t.Fatalf("embedded sheet pages = %+v", pages)
+	}
+	if pages, err := WorkbookPagesContext(context.Background(), spreadsheet.Workbook{}); err != nil || len(pages) != 0 {
+		t.Fatalf("empty host workbook pages = %v, %v", pages, err)
 	}
 }
 
@@ -71,6 +92,33 @@ func TestSpreadsheetPrintIncludesSpilledCells(t *testing.T) {
 	for _, value := range []string{"1", "2", "3", "4"} {
 		if !strings.Contains(text, value) {
 			t.Fatalf("missing spilled value %q:\n%s", value, text)
+		}
+	}
+}
+
+func TestSpreadsheetPrintSpanAcrossPageBands(t *testing.T) {
+	rows := make([][]spreadsheet.Cell, 60)
+	for i := range rows {
+		rows[i] = make([]spreadsheet.Cell, 5)
+	}
+	rows[0][0].Value = strings.Repeat("x", 50) + "QXYZ"
+	book := spreadsheet.Spreadsheet{Sheets: []spreadsheet.Sheet{{Name: "Span", Rows: rows,
+		Spans: []spreadsheet.CellSpan{{FirstRow: 1, FirstColumn: 1, LastRow: 60, LastColumn: 5}}}}}
+	pages, err := SpreadsheetPages(book)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pages) < 4 || len(pages[0].Spans) != 1 || len(pages[1].Spans) != 1 {
+		t.Fatalf("span was not clipped into page bands: %+v", pages)
+	}
+	first := strings.Join(pages[0].Lines, "\n")
+	second := strings.Join(pages[1].Lines, "\n")
+	if !strings.Contains(first, strings.Repeat("x", 50)+"Q") || !strings.Contains(second, "XYZ") {
+		t.Fatalf("span content lost at column boundary:\n%s\n%s", first, second)
+	}
+	for _, page := range pages[2:] {
+		if strings.Contains(strings.Join(page.Lines, "\n"), "QXYZ") {
+			t.Fatal("span content was duplicated on another row band")
 		}
 	}
 }

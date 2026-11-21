@@ -1,9 +1,12 @@
 package theme
 
 import (
+	"image/color"
+	"os"
+
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/glamour/ansi"
 	glamourstyles "github.com/charmbracelet/glamour/styles"
-	"github.com/charmbracelet/lipgloss"
 
 	"example.com/parchment/internal/config"
 )
@@ -21,7 +24,7 @@ type Theme struct {
 	Image       lipgloss.Style
 	Code        lipgloss.Style
 	Cursor      lipgloss.Style
-	BorderColor lipgloss.TerminalColor
+	BorderColor color.Color
 	Markdown    ansi.StyleConfig
 }
 
@@ -30,23 +33,23 @@ type Theme struct {
 func Resolve(c config.Theme) Theme {
 	dark := c.Mode == "dark"
 	if c.Mode == "auto" || c.Mode == "" {
-		dark = lipgloss.HasDarkBackground()
+		dark = lipgloss.HasDarkBackground(os.Stdin, os.Stdout)
 	}
 
 	colors := palette{
-		accent:    terminalColor(c.Primary, "#805500", "#f2c66d", c.Mode),
-		chrome:    terminalColor("", "#3e796d", "#72bfb0", c.Mode),
-		border:    terminalColor(c.Border, "#4f8277", "#64a99a", c.Mode),
-		err:       terminalColor(c.Error, "#b42318", "#f87171", c.Mode),
-		selection: terminalColor(c.Selection, "#b7d9cf", "#15564d", c.Mode),
-		match:     terminalColor(c.Match, "#fde68a", "#854d0e", c.Mode),
-		muted:     terminalColor("", "#626a67", "#adb8b3", c.Mode),
-		link:      terminalColor("", "#6941a5", "#ae81ff", c.Mode),
-		image:     terminalColor("", "#b31961", "#f779b0", c.Mode),
-		code:      terminalColor("", "#a63d00", "#fd971f", c.Mode),
-		codeBG:    terminalColor("", "#f7f3e8", "#2d2b24", c.Mode),
-		selectFG:  terminalColor("", "#17332d", "#ffffff", c.Mode),
-		matchFG:   terminalColor("", "#241f35", "#ffffff", c.Mode),
+		accent:    terminalColor(c.Primary, "#805500", "#f2c66d", dark),
+		chrome:    terminalColor("", "#3e796d", "#72bfb0", dark),
+		border:    terminalColor(c.Border, "#4f8277", "#64a99a", dark),
+		err:       terminalColor(c.Error, "#b42318", "#f87171", dark),
+		selection: terminalColor(c.Selection, "#b7d9cf", "#15564d", dark),
+		match:     terminalColor(c.Match, "#fde68a", "#854d0e", dark),
+		muted:     terminalColor("", "#626a67", "#adb8b3", dark),
+		link:      terminalColor("", "#6941a5", "#ae81ff", dark),
+		image:     terminalColor("", "#b31961", "#f779b0", dark),
+		code:      terminalColor("", "#a63d00", "#fd971f", dark),
+		codeBG:    terminalColor("", "#f7f3e8", "#2d2b24", dark),
+		selectFG:  terminalColor("", "#17332d", "#ffffff", dark),
+		matchFG:   terminalColor("", "#241f35", "#ffffff", dark),
 	}
 
 	accentHex := resolvedHex(c.Primary, "#805500", "#f2c66d", dark)
@@ -80,23 +83,19 @@ func Resolve(c config.Theme) Theme {
 }
 
 type palette struct {
-	accent, border, err, selection, match          lipgloss.TerminalColor
-	chrome, muted, code, codeBG, selectFG, matchFG lipgloss.TerminalColor
-	link, image                                    lipgloss.TerminalColor
+	accent, border, err, selection, match          color.Color
+	chrome, muted, code, codeBG, selectFG, matchFG color.Color
+	link, image                                    color.Color
 }
 
-func terminalColor(override, light, dark, mode string) lipgloss.TerminalColor {
+func terminalColor(override, light, dark string, darkBackground bool) color.Color {
 	if override != "" {
 		return lipgloss.Color(override)
 	}
-	switch mode {
-	case "light":
-		return lipgloss.Color(light)
-	case "dark":
+	if darkBackground {
 		return lipgloss.Color(dark)
-	default:
-		return lipgloss.AdaptiveColor{Light: light, Dark: dark}
 	}
+	return lipgloss.Color(light)
 }
 
 func resolvedHex(override, light, dark string, darkBackground bool) string {

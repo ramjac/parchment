@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"golang.org/x/sys/unix"
 
 	"example.com/parchment/internal/artifact"
@@ -63,12 +63,12 @@ func TestArtifactEditorsDetectTerminalSizeWithKeyboardReporting(t *testing.T) {
 			program := tea.NewProgram(terminalSizeModel{h.m},
 				tea.WithContext(ctx), tea.WithInput(strings.NewReader("")),
 				tea.WithOutput(keyboardTerminalOutput{terminal}),
-				tea.WithAltScreen(), tea.WithoutSignalHandler(),
+				tea.WithoutSignalHandler(),
 			)
 			if _, err := program.Run(); err != nil {
 				t.Fatalf("editor did not receive terminal dimensions: %v", err)
 			}
-			if h.m.width != 100 || h.m.height != 24 || strings.Contains(h.m.View(), "Terminal too small") {
+			if h.m.width != 100 || h.m.height != 24 || strings.Contains(h.m.View().Content, "Terminal too small") {
 				t.Fatalf("editor dimensions = %dx%d, want 100x24", h.m.width, h.m.height)
 			}
 		})

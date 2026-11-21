@@ -128,7 +128,7 @@ func lipglossImportNames(file *ast.File) (map[string]bool, bool) {
 	dotImport := false
 	for _, spec := range file.Imports {
 		importPath, err := strconv.Unquote(spec.Path.Value)
-		if err != nil || importPath != "github.com/charmbracelet/lipgloss" {
+		if err != nil || importPath != "charm.land/lipgloss/v2" {
 			continue
 		}
 		if spec.Name == nil {
@@ -183,7 +183,7 @@ const accent = "#aabbcc"
 		{
 			name: "lipgloss color literal",
 			source: `package sample
-import lipgloss "github.com/charmbracelet/lipgloss"
+import lipgloss "charm.land/lipgloss/v2"
 var accent = lipgloss.Color("red")
 `,
 			wantMessage: "literal passed to lipgloss.Color",
@@ -191,7 +191,7 @@ var accent = lipgloss.Color("red")
 		{
 			name: "aliased adaptive palette",
 			source: `package sample
-import lg "github.com/charmbracelet/lipgloss"
+import lg "charm.land/lipgloss/v2"
 var accent = lg.AdaptiveColor{Light: "#112233", Dark: "#aabbcc"}
 `,
 			wantMessage: "AdaptiveColor palettes",
@@ -199,7 +199,7 @@ var accent = lg.AdaptiveColor{Light: "#112233", Dark: "#aabbcc"}
 		{
 			name: "dot-imported color literal",
 			source: `package sample
-import . "github.com/charmbracelet/lipgloss"
+import . "charm.land/lipgloss/v2"
 var accent = Color("#abcdef")
 `,
 			wantMessage: "literal passed to lipgloss.Color",
@@ -207,7 +207,7 @@ var accent = Color("#abcdef")
 		{
 			name: "dynamic image color",
 			source: `package sample
-import lipgloss "github.com/charmbracelet/lipgloss"
+import lipgloss "charm.land/lipgloss/v2"
 func render(imageColor string) {
 	_ = lipgloss.NewStyle().Foreground(lipgloss.Color(imageColor))
 }

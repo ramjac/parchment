@@ -57,6 +57,16 @@ func (e *evaluator) prepareSpills() error {
 		e.spillsReady = true
 		return nil
 	}
+	spanned := make(map[cellCoordinate]bool)
+	for sheet, page := range e.book.Sheets {
+		for _, span := range page.Spans {
+			for row := span.FirstRow; row <= span.LastRow; row++ {
+				for col := span.FirstColumn; col <= span.LastColumn; col++ {
+					spanned[cellCoordinate{sheet, row, col}] = true
+				}
+			}
+		}
+	}
 	for pass := 0; pass <= maxFormulaDepth; pass++ {
 		e.cache = make(map[cellCoordinate]Value)
 		e.depth = make(map[cellCoordinate]int)
@@ -78,6 +88,10 @@ func (e *evaluator) prepareSpills() error {
 				errors[anchor] = true
 				continue
 			}
+			if spanned[anchor] && (grid.rows > 1 || grid.cols > 1) {
+				errors[anchor] = true
+				continue
+			}
 			blocked := false
 			for r := 0; r < grid.rows && !blocked; r++ {
 				for c := 0; c < grid.cols; c++ {
@@ -85,7 +99,7 @@ func (e *evaluator) prepareSpills() error {
 						continue
 					}
 					coordinate := cellCoordinate{anchor.sheet, anchor.row + r, anchor.column + c}
-					if _, exists := next[coordinate]; exists || e.hasStoredCell(coordinate) {
+					if _, exists := next[coordinate]; exists || spanned[coordinate] || e.hasStoredCell(coordinate) {
 						blocked = true
 						break
 					}
@@ -116,6 +130,9 @@ func (e *evaluator) prepareSpills() error {
 }
 
 func (e *evaluator) hasStoredCell(c cellCoordinate) bool {
+	if _, ok := ChartAt(e.book, e.book.Sheets[c.sheet].Name, c.row, c.column); ok {
+		return true
+	}
 	rows := e.book.Sheets[c.sheet].Rows
 	return c.row <= len(rows) && c.column <= len(rows[c.row-1]) && rows[c.row-1][c.column-1] != (Cell{})
 }

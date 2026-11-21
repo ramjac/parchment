@@ -17,7 +17,7 @@ require an account, workspace, or managed library.
 
 ## Install
 
-Parchment requires Go 1.24 or newer. Clone this repository, then install the
+Parchment requires Go 1.26.8 or newer. Clone this repository, then install the
 command from its module directory:
 
 ```sh

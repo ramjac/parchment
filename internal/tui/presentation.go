@@ -6,21 +6,26 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"math"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/harmonica"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/presentation"
+	"example.com/parchment/internal/printing"
 	"example.com/parchment/internal/recovery"
+	"example.com/parchment/internal/spreadsheet"
 	"example.com/parchment/internal/tui/editor"
 	"example.com/parchment/internal/tui/termimg"
 )
@@ -28,7 +33,11 @@ import (
 // presentationChromeLines counts the header, status, and help lines.
 const presentationChromeLines = 3
 
+const presentationTransitionFPS = 60
+
 type presentationAutosaveTickMsg struct{ session uint64 }
+
+type presentationTransitionTickMsg struct{ generation uint64 }
 
 type presentationAutosaveFinishedMsg struct {
 	session uint64
@@ -71,6 +80,7 @@ type presentationViewState struct {
 	width, height int
 	searchMatches []renderedMatch
 	searchMatch   int
+	browseClicks  mouseClickTracker
 }
 
 type presentationEditorState struct {
@@ -104,40 +114,58 @@ type presentationImageViewState struct {
 	revision                    uint64
 }
 
+type presentationTransitionState struct {
+	from       string
+	spring     harmonica.Spring
+	position   float64
+	velocity   float64
+	generation uint64
+	direction  int
+	active     bool
+}
+
 // presentationModel is a single-deck slide viewer and Markdown source editor.
 // It owns only UI state; it reads and edits the deck file through the
 // presentation service.
 type presentationModel struct {
-	service *presentation.Service
-	theme   Theme
-	path    string
-	item    presentation.Presentation
-	deck    presentation.Deck
-	loaded  bool
+	service  *presentation.Service
+	theme    Theme
+	path     string
+	item     presentation.Presentation
+	deck     presentation.Deck
+	workbook spreadsheet.Workbook
+	loaded   bool
 
-	recoveryStore     recovery.Store
-	autosaveScheduler func(session uint64) tea.Cmd
-	autosaveSession   uint64
-	autosaveCancel    context.CancelFunc
-	draftStored       bool
-	pdfStore          PDFExportStore
-	lastPDFPath       string
-	pdfPrompt         promptKind
-	pdfInput          textinput.Model
-	pdfOverwritePath  string
-	pdfPending        bool
-	pdfTwoUp          bool
-	find              findBar
-	imageRenderCache  map[string]renderedPresentationImage
-	imageRowMarkers   map[rune]presentationImageRow
-	nextImageMarker   rune
-	imageGraphicsUsed bool
-	imageFrame        uint64
-	imageRevision     uint64
+	recoveryStore       recovery.Store
+	autosaveScheduler   func(session uint64) tea.Cmd
+	transitionScheduler func(generation uint64) tea.Cmd
+	autosaveSession     uint64
+	autosaveCancel      context.CancelFunc
+	draftStored         bool
+	pdfStore            PDFExportStore
+	lastPDFPath         string
+	pdfPrompt           promptKind
+	pdfInput            textinput.Model
+	pdfOverwritePath    string
+	pdfPending          bool
+	pdfTwoUp            bool
+	find                findBar
+	imageRenderCache    map[string]renderedPresentationImage
+	chartImages         map[string]artifact.Image
+	imageRowMarkers     map[rune]presentationImageRow
+	nextImageMarker     rune
+	imageGraphicsUsed   bool
+	imageFrame          uint64
+	imageRevision       uint64
 
 	presentationOpState
 	presentationViewState
 	presentationEditorState
+	presentationTransitionState
+
+	embeddedEditor *spreadsheetModel
+	embeddedRef    string
+	embeddedNotes  bool
 }
 
 func newPresentationModel(service *presentation.Service, path string, theme Theme, undoLimits ...int) *presentationModel {
@@ -150,12 +178,18 @@ func newPresentationModel(service *presentation.Service, path string, theme Them
 	pdfInput := textinput.New()
 	pdfInput.CharLimit = 64 << 10
 	return &presentationModel{
-		service:          service,
-		path:             path,
-		theme:            theme,
-		pdfInput:         pdfInput,
-		find:             newFindBar(theme),
+		service:  service,
+		path:     path,
+		theme:    theme,
+		pdfInput: pdfInput,
+		find:     newFindBar(theme),
+		transitionScheduler: func(generation uint64) tea.Cmd {
+			return tea.Tick(time.Second/presentationTransitionFPS, func(time.Time) tea.Msg {
+				return presentationTransitionTickMsg{generation: generation}
+			})
+		},
 		imageRenderCache: make(map[string]renderedPresentationImage),
+		chartImages:      make(map[string]artifact.Image),
 		presentationEditorState: presentationEditorState{
 			editor: body,
 		},
@@ -180,10 +214,76 @@ func (m *presentationModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *presentationModel) updatePresentation(message tea.Msg) (tea.Model, tea.Cmd) {
+	if m.embeddedEditor != nil {
+		if msg, ok := message.(spreadsheetEmbeddedFinishedMsg); ok {
+			if msg.committed {
+				m.workbook = msg.workbook.Clone()
+				if msg.chartReferenceID != "" {
+					reference, err := spreadsheet.FormatReference(spreadsheet.Reference{
+						Kind: spreadsheet.ChartReferenceKind, ID: msg.chartReferenceID,
+					})
+					if err != nil {
+						m.errMessage = err.Error()
+					} else {
+						notePrefix := ""
+						if m.embeddedNotes {
+							notePrefix = ": "
+						}
+						insertEmbeddedReference(&m.editor, reference, notePrefix)
+					}
+				} else if m.embeddedRef != "" {
+					notePrefix := ""
+					if m.embeddedNotes {
+						notePrefix = ": "
+					}
+					insertEmbeddedReference(&m.editor, m.embeddedRef, notePrefix)
+				}
+				m.status = "Embedded spreadsheet updated; save the presentation to keep changes"
+				clear(m.imageRenderCache)
+				clear(m.chartImages)
+			} else {
+				m.status = "Embedded spreadsheet changes discarded"
+			}
+			m.embeddedEditor, m.embeddedRef, m.embeddedNotes = nil, "", false
+			return m, tea.Batch(m.editor.Focus(), m.scheduleAutosave(m.autosaveSession))
+		}
+		switch msg := message.(type) {
+		case presentationAutosaveTickMsg:
+			if msg.session == m.autosaveSession && m.editing {
+				return m, m.saveRecovery(msg.session)
+			}
+		case presentationAutosaveFinishedMsg:
+			if msg.session == m.autosaveSession {
+				if m.autosaveCancel != nil {
+					m.autosaveCancel()
+					m.autosaveCancel = nil
+				}
+				if msg.cleared && msg.err == nil {
+					m.draftStored = false
+				}
+				if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
+					m.errMessage = "Autosave failed: " + msg.err.Error()
+				}
+				return m, m.scheduleAutosave(msg.session)
+			}
+			return m, nil
+		}
+		if _, isResize := message.(tea.WindowSizeMsg); !isResize {
+			child, cmd := m.embeddedEditor.Update(message)
+			if updated, ok := child.(*spreadsheetModel); ok {
+				m.embeddedEditor = updated
+			}
+			return m, cmd
+		}
+	}
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
+		m.cancelPageTransition()
 		m.width, m.height = msg.Width, msg.Height
 		m.editor.SetWidth(max(1, m.width-4))
+		if m.embeddedEditor != nil {
+			_, _ = m.embeddedEditor.Update(msg)
+		}
 		m.resizePDFPrompt()
 		if !m.editing && m.find.visible && m.find.query() != "" {
 			current := m.searchMatch
@@ -192,6 +292,8 @@ func (m *presentationModel) updatePresentation(message tea.Msg) (tea.Model, tea.
 		}
 		m.clampScroll()
 		return m, nil
+	case presentationTransitionTickMsg:
+		return m, m.updatePageTransition(msg)
 	case presentationPDFExportedMsg:
 		return m, m.presentationPDFExported(msg)
 	case presentationLoadedMsg:
@@ -264,7 +366,8 @@ func (m *presentationModel) updatePresentation(message tea.Msg) (tea.Model, tea.
 		cmd := m.load()
 		m.loadedStatus = msg.description
 		return m, cmd
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
+		m.browseClicks.reset()
 		var cmd tea.Cmd
 		if m.pdfPrompt != promptNone {
 			cmd = m.updatePDFPrompt(msg)
@@ -276,14 +379,46 @@ func (m *presentationModel) updatePresentation(message tea.Msg) (tea.Model, tea.
 			cmd = m.updateBrowseKey(msg)
 		}
 		return m, cmd
-	case tea.MouseMsg:
+	case mouseEvent:
 		if m.editing && !m.pending && m.pdfPrompt == promptNone {
 			mouseMsg := msg
 			mouseMsg.Y = msg.Y - 2
 			mouseMsg.X = msg.X - 2
 			var cmd tea.Cmd
-			m.editor, cmd = m.editor.Update(mouseMsg)
+			m.editor, cmd = m.editor.Update(toTeaMouseMessage(mouseMsg))
 			return m, cmd
+		}
+		if !m.editing && !m.pending && m.pdfPrompt == promptNone && !m.find.active &&
+			!m.active && msg.Action == mousePress && msg.Button == mouseLeft {
+			if msg.Y < 2 || msg.Y >= m.height-3 || msg.X < 2 || msg.X >= m.width-2 {
+				m.browseClicks.reset()
+				return m, nil
+			}
+			row := msg.Y - 2 + m.scroll
+			lines := m.pageLines()
+			if row >= 0 && row < len(lines) {
+				clickColumn := msg.X - 2
+				if _, start, ok := renderedWordHit(lines[row], clickColumn); ok {
+					clickColumn = start
+				}
+				if m.browseClicks.click(clickColumn, row, time.Now()) {
+					preferredLine := slideSourceLine(m.item.Source, m.page)
+					startLine, endLine := sourceSectionLineRange(m.item.Source, preferredLine, 2)
+					line, column, found := sourcePositionForRenderedWordInRange(
+						lines[row], msg.X-2, m.item.Source, preferredLine, startLine, endLine,
+					)
+					if !found {
+						line, column = preferredLine, 0
+					}
+					cmd := m.beginEdit()
+					m.editor.SetCursorAtRow(editor.Point{Line: line, Col: column}, row-m.scroll)
+					return m, cmd
+				}
+			} else {
+				m.browseClicks.reset()
+			}
+		} else if !m.editing && msg.Action == mousePress {
+			m.browseClicks.reset()
 		}
 		return m, nil
 	}
@@ -298,7 +433,7 @@ func (m *presentationModel) updatePresentation(message tea.Msg) (tea.Model, tea.
 	return m, nil
 }
 
-func (m *presentationModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
+func (m *presentationModel) updateEditKey(msg tea.KeyPressMsg) tea.Cmd {
 	key := msg.String()
 	if m.find.active {
 		return m.updateFindKey(msg)
@@ -338,6 +473,8 @@ func (m *presentationModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
 		return m.openPDFPrompt()
 	case "ctrl+s":
 		return m.save()
+	case "ctrl+shift+e":
+		return m.openEmbeddedSpreadsheet()
 	case "ctrl+z", "ctrl+r", "ctrl+y", "ctrl+shift+z":
 		if key == "ctrl+z" && m.editor.CanUndo() {
 			m.editor.Undo()
@@ -370,19 +507,20 @@ func (m *presentationModel) updateEditKey(msg tea.KeyMsg) tea.Cmd {
 func (m *presentationModel) updateFindKey(msg tea.Msg) tea.Cmd {
 	action, cmd := m.find.update(msg)
 	if !m.editing {
+		var transitionCmd tea.Cmd
 		switch action {
 		case findChanged:
-			m.searchSlides(m.find.query())
+			transitionCmd = m.searchSlides(m.find.query())
 		case findNext:
-			m.moveSearchMatch(1)
+			transitionCmd = m.moveSearchMatch(1)
 			m.find.blur()
 		case findPrevious:
-			m.moveSearchMatch(-1)
+			transitionCmd = m.moveSearchMatch(-1)
 			m.find.blur()
 		case findClosed:
-			m.searchSlides("")
+			transitionCmd = m.searchSlides("")
 		}
-		return cmd
+		return tea.Batch(cmd, transitionCmd)
 	}
 	switch action {
 	case findChanged:
@@ -398,16 +536,17 @@ func (m *presentationModel) updateFindKey(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
-func (m *presentationModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
+func (m *presentationModel) updateBrowseKey(msg tea.KeyPressMsg) tea.Cmd {
 	key := msg.String()
+	if m.active && !isPresentationPageNavigationKey(key, m.find.visible) {
+		m.cancelPageTransition()
+	}
 	if m.find.visible && !m.pending {
 		switch key {
 		case "n":
-			m.moveSearchMatch(1)
-			return nil
+			return m.moveSearchMatch(1)
 		case "N":
-			m.moveSearchMatch(-1)
-			return nil
+			return m.moveSearchMatch(-1)
 		case "esc":
 			m.find.close()
 			m.searchSlides("")
@@ -445,20 +584,20 @@ func (m *presentationModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	if key == "/" || key == "ctrl+f" {
-		m.searchSlides(m.find.query())
-		return m.find.open(m.width)
+		transitionCmd := m.searchSlides(m.find.query())
+		return tea.Batch(transitionCmd, m.find.open(m.width))
 	}
 	switch key {
 	case "ctrl+p":
 		return m.openPDFPrompt()
-	case "right", "l", "n", " ", "pgdown":
-		m.goToPage(m.page + 1)
+	case "right", "l", "n", "space", "pgdown":
+		return m.navigateToPage(m.page + 1)
 	case "left", "h", "p", "pgup":
-		m.goToPage(m.page - 1)
+		return m.navigateToPage(m.page - 1)
 	case "home", "g":
-		m.goToPage(0)
+		return m.navigateToPage(0)
 	case "end", "G":
-		m.goToPage(m.pageCount() - 1)
+		return m.navigateToPage(m.pageCount() - 1)
 	case "down", "j":
 		m.scroll++
 		m.clampScroll()
@@ -501,19 +640,98 @@ func (m *presentationModel) updateBrowseKey(msg tea.KeyMsg) tea.Cmd {
 func (m *presentationModel) pageCount() int { return len(m.deck.Slides) + 1 }
 
 func (m *presentationModel) goToPage(page int) {
+	m.cancelPageTransition()
 	page = min(max(page, 0), m.pageCount()-1)
 	if page != m.page {
 		m.page, m.scroll = page, 0
 	}
 }
 
-func (m *presentationModel) searchSlides(query string) {
+func isPresentationPageNavigationKey(key string, searching bool) bool {
+	switch key {
+	case "right", "l", "n", "space", "pgdown", "left", "h", "p", "pgup", "home", "g", "end", "G":
+		return true
+	case "N":
+		return searching
+	default:
+		return false
+	}
+}
+
+func (m *presentationModel) navigateToPage(page int) tea.Cmd {
+	page = min(max(page, 0), m.pageCount()-1)
+	if page == m.page {
+		return nil
+	}
+
+	fromPage := m.page
+	outgoing := ""
+	// Terminal image placements cannot be composited safely as text frames.
+	animate := !m.editing && m.loaded && m.width >= 40 && m.height >= 10 &&
+		!m.pageHasImageDirectiveAt(fromPage) && !m.pageHasImageDirectiveAt(page)
+	if animate {
+		outgoing = m.renderSlideContent()
+	}
+
+	m.goToPage(page)
+	if !animate {
+		return nil
+	}
+	m.startPageTransition(outgoing, page-fromPage)
+	return m.schedulePageTransition(m.generation)
+}
+
+func (m *presentationModel) startPageTransition(outgoing string, direction int) {
+	m.generation++
+	m.from = outgoing
+	m.spring = harmonica.NewSpring(harmonica.FPS(presentationTransitionFPS), 12, 1)
+	m.position, m.velocity = 0, 0
+	m.direction = 1
+	if direction < 0 {
+		m.direction = -1
+	}
+	m.active = true
+}
+
+func (m *presentationModel) cancelPageTransition() {
+	if !m.active {
+		return
+	}
+	m.active = false
+	m.from = ""
+	m.generation++
+}
+
+func (m *presentationModel) schedulePageTransition(generation uint64) tea.Cmd {
+	if m.transitionScheduler != nil {
+		return m.transitionScheduler(generation)
+	}
+	return nil
+}
+
+func (m *presentationModel) updatePageTransition(msg presentationTransitionTickMsg) tea.Cmd {
+	if !m.active || msg.generation != m.generation {
+		return nil
+	}
+	m.position, m.velocity = m.spring.Update(m.position, m.velocity, 1)
+	if 1-m.position < 0.01 && math.Abs(m.velocity) < 0.05 {
+		m.position, m.velocity = 1, 0
+		m.active = false
+		m.from = ""
+		m.generation++
+		return nil
+	}
+	return m.schedulePageTransition(msg.generation)
+}
+
+func (m *presentationModel) searchSlides(query string) tea.Cmd {
 	m.rebuildSlideMatches(query)
 	if len(m.searchMatches) > 0 {
 		m.searchMatch = 0
-		m.gotoSearchMatch()
+		return m.gotoSearchMatch()
 	} else {
 		m.clampScroll()
+		return nil
 	}
 }
 
@@ -543,55 +761,101 @@ func (m *presentationModel) rebuildSlideMatches(query string) {
 	m.page, m.showNotes, m.scroll = page, showNotes, scroll
 }
 
-func (m *presentationModel) gotoSearchMatch() {
+func (m *presentationModel) gotoSearchMatch() tea.Cmd {
 	if m.searchMatch < 0 || m.searchMatch >= len(m.searchMatches) {
-		return
+		return nil
 	}
 	match := m.searchMatches[m.searchMatch]
 	if match.page < 0 || match.page >= m.pageCount() {
 		m.searchMatches, m.searchMatch = nil, -1
-		return
+		return nil
 	}
-	m.page = match.page
+	transitionCmd := m.navigateToPage(match.page)
 	if match.inNotes {
 		m.showNotes = true
 	}
 	m.scroll = max(match.row-m.visibleLines()/2, 0)
 	m.clampScroll()
+	return transitionCmd
 }
 
-func (m *presentationModel) moveSearchMatch(step int) {
+func (m *presentationModel) moveSearchMatch(step int) tea.Cmd {
 	if len(m.searchMatches) == 0 {
-		return
+		return nil
 	}
 	m.searchMatch = (m.searchMatch + step) % len(m.searchMatches)
 	if m.searchMatch < 0 {
 		m.searchMatch += len(m.searchMatches)
 	}
-	m.gotoSearchMatch()
+	return m.gotoSearchMatch()
 }
 
 func (m *presentationModel) beginEdit() tea.Cmd {
+	line, col, row := slideSourceLine(m.item.Source, m.page), 0, 0
+	if m.scroll > 0 {
+		if mappedLine, mappedCol, mappedRow, found := sourcePositionAtViewport(
+			m.pageLines(), m.scroll, m.visibleLines(), m.item.Source, line,
+		); found {
+			line, col, row = mappedLine, mappedCol, mappedRow
+		}
+	}
 	m.editing, m.discardWarning = true, false
 	m.status, m.errMessage = "", ""
 	m.editor.SetValue(m.item.Source)
-	m.moveEditorToLine(slideSourceLine(m.item.Source, m.page))
+	m.editor.SetCursorAtRow(editor.Point{Line: line, Col: col}, row)
 	m.startAutosaveSession()
 	return tea.Batch(m.editor.Focus(), m.scheduleAutosave(m.autosaveSession))
 }
 
-func (m *presentationModel) restoreDraft(source string) tea.Cmd {
+func (m *presentationModel) restoreDraft(source string, workbook spreadsheet.Workbook) tea.Cmd {
 	m.editing, m.discardWarning = true, false
 	m.errMessage = ""
 	m.draftStored = true
 	m.editor.SetValue(source)
+	m.workbook = workbook.Clone()
 	m.moveEditorToLine(slideSourceLine(source, m.page))
 	m.startAutosaveSession()
 	return tea.Batch(m.editor.Focus(), m.scheduleAutosave(m.autosaveSession))
 }
 
+func (m *presentationModel) openEmbeddedSpreadsheet() tea.Cmd {
+	if !m.editing || m.pending {
+		return nil
+	}
+	selection, err := selectEmbeddedSheet(m.workbook, sourceLineAt(m.editor))
+	if err != nil {
+		m.status, m.errMessage = "", err.Error()
+		return nil
+	}
+	m.embeddedEditor = newEmbeddedSpreadsheetModel(selection.workbook, selection.activeSheet, m.theme, 100)
+	m.embeddedEditor.width, m.embeddedEditor.height = m.width, m.height
+	m.embeddedRef, m.embeddedNotes = selection.insertReference, selection.speakerNotes
+	m.editor.Blur()
+	_, cmd := m.embeddedEditor.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	return cmd
+}
+
 func (m *presentationModel) dirty() bool {
-	return m.editing && m.editor.Value() != m.item.Source
+	return m.editing && (m.editor.Value() != m.item.Source || !m.pendingWorkbook().Equal(m.item.Workbook))
+}
+
+func (m *presentationModel) pendingWorkbook() spreadsheet.Workbook {
+	if m.embeddedEditor != nil {
+		return m.embeddedEditor.book.Workbook()
+	}
+	return m.workbook.Clone()
+}
+
+func (m *presentationModel) recoverySource() string {
+	source := m.editor.Value()
+	if m.embeddedEditor == nil || m.embeddedRef == "" {
+		return source
+	}
+	notePrefix := ""
+	if m.embeddedNotes {
+		notePrefix = ": "
+	}
+	return sourceWithEmbeddedReference(source, m.editor.Cursor, m.embeddedRef, notePrefix)
 }
 
 func (m *presentationModel) startAutosaveSession() {
@@ -633,7 +897,8 @@ func (m *presentationModel) saveRecovery(session uint64) tea.Cmd {
 	m.draftStored = true
 	data := presentationRecoveryData{
 		Baseline: m.item,
-		Source:   m.editor.Value(),
+		Source:   m.recoverySource(),
+		Workbook: m.pendingWorkbook(),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.autosaveCancel = cancel
@@ -654,18 +919,13 @@ func (m *presentationModel) saveRecovery(session uint64) tea.Cmd {
 }
 
 func (m *presentationModel) close() tea.Cmd {
+	m.cancelPageTransition()
 	m.stopAutosave()
 	return closeEditor(m.recoveryStore, m.path)
 }
 
 func (m *presentationModel) moveEditorToLine(line int) {
-	if len(m.editor.Lines) > 0 {
-		m.editor.Cursor.Line = min(max(line, 0), len(m.editor.Lines)-1)
-	} else {
-		m.editor.Cursor.Line = 0
-	}
-	m.editor.Cursor.Col = 0
-	m.editor.StickyCol = 0
+	m.editor.SetCursorAtRow(editor.Point{Line: line}, 0)
 }
 
 func trimLeftSpaces(s string) string {
@@ -782,7 +1042,7 @@ func (m *presentationModel) leaveEditor() {
 
 func (m *presentationModel) save() tea.Cmd {
 	draft := m.editor.Value()
-	if draft == m.item.Source {
+	if draft == m.item.Source && m.workbook.Equal(m.item.Workbook) {
 		m.leaveEditor()
 		m.status, m.errMessage = "No changes", ""
 		return nil
@@ -794,8 +1054,9 @@ func (m *presentationModel) save() tea.Cmd {
 	ctx, seq := m.startOperation()
 	m.status, m.errMessage = "Saving…", ""
 	service, expected := m.service, m.item
+	workbook := m.workbook.Clone()
 	return func() tea.Msg {
-		item, err := service.Update(ctx, expected, draft)
+		item, err := service.UpdateContent(ctx, expected, draft, workbook)
 		return presentationSavedMsg{seq: seq, item: item, err: err}
 	}
 }
@@ -860,15 +1121,18 @@ func (m *presentationModel) setError(prefix string, err error) {
 }
 
 func (m *presentationModel) setItem(item presentation.Presentation) {
+	m.cancelPageTransition()
 	deck, err := presentation.Parse(item.Source)
 	if err != nil {
 		m.status, m.errMessage = "", "Invalid presentation: "+err.Error()
 		return
 	}
 	m.item, m.deck, m.loaded = item, deck, true
+	m.workbook = item.Workbook.Clone()
 	m.imageGraphicsUsed = m.imageGraphicsUsed || len(item.Images) > 0
 	m.imageRevision++
 	clear(m.imageRenderCache)
+	clear(m.chartImages)
 	m.find.close()
 	m.editor.ClearSearch()
 	m.searchMatches, m.searchMatch = nil, -1
@@ -884,27 +1148,29 @@ func (m *presentationModel) pageLines() []string {
 	}
 	m.imageRowMarkers = make(map[rune]presentationImageRow)
 	m.nextImageMarker = 0xf0000
+	clear(m.chartImages)
 	width := max(1, m.width-4)
 	var text strings.Builder
 	var title string
 	imageSlots := make(map[string]presentationImageSlot)
+	terminalCharts := make(map[string]spreadsheet.ChartData)
+	nextSlot := 0
+	slotFor := func(name, height, imageWidth string) string {
+		slot := fmt.Sprintf("PIMG%d__", nextSlot)
+		nextSlot++
+		imageSlots[slot] = presentationImageSlot{name: name, height: height, width: imageWidth}
+		return slot
+	}
 	if m.page == 0 {
 		title = m.deck.Title
-		text.WriteString(m.deck.Header)
+		text.WriteString(m.embeddedImageReferences(m.deck.Header, slotFor, terminalCharts))
 	} else {
 		slide := m.deck.Slides[m.page-1]
 		title = slide.Title
-		nextSlot := 0
+		body := m.embeddedImageReferences(slide.Body, slotFor, terminalCharts)
 		expanded, err := presentation.ExpandDirectivesContextWithImageRenderer(
-			context.Background(), slide.Body, filepath.Dir(m.path), m.item.Images,
-			func(name, height, imageWidth string) string {
-				slot := fmt.Sprintf("PIMG%d__", nextSlot)
-				nextSlot++
-				imageSlots[slot] = presentationImageSlot{name: name, height: height, width: imageWidth}
-				return slot
-			},
+			context.Background(), body, filepath.Dir(m.path), m.item.Images, slotFor,
 		)
-		body := slide.Body
 		if err == nil {
 			body = expanded
 		}
@@ -914,7 +1180,7 @@ func (m *presentationModel) pageLines() []string {
 			if slide.Notes == "" {
 				text.WriteString("(none)")
 			} else {
-				text.WriteString(strings.TrimSpace(slide.Notes))
+				text.WriteString(strings.TrimSpace(m.embeddedImageReferences(slide.Notes, slotFor, terminalCharts)))
 			}
 		}
 	}
@@ -936,10 +1202,19 @@ func (m *presentationModel) pageLines() []string {
 					slotAt := strings.Index(line, slot)
 					prefixWidth := ansi.StringWidth(line[:slotAt])
 					availableCols := max(1, width-prefixWidth)
+					if data, ok := terminalCharts[slot]; ok {
+						chart := renderEmbeddedTerminalChart(data, availableCols, remainingRows, m.theme)
+						for _, chartLine := range strings.Split(chart, "\n") {
+							lines = append(lines, strings.Repeat(" ", prefixWidth)+chartLine)
+						}
+						matchedSlot = true
+						break
+					}
 					image := m.renderPresentationImage(
 						directive.name, directive.height, directive.width, remainingRows, availableCols,
 					)
 					if termimg.IsGraphicsOutput(termimg.DetectProtocol(), image.output) && image.pixels != nil {
+						m.imageGraphicsUsed = true
 						marker := m.nextPresentationImageMarker(body, image, 0)
 						lines = append(lines, strings.Replace(line, slot, string(marker), 1))
 						for row := 1; row < max(image.rows, 1); row++ {
@@ -969,6 +1244,24 @@ func (m *presentationModel) pageLines() []string {
 	return lines
 }
 
+func (m *presentationModel) embeddedImageReferences(source string, slotFor func(string, string, string) string, terminalCharts map[string]spreadsheet.ChartData) string {
+	if termimg.DetectProtocol() == termimg.ProtocolNone {
+		expanded, _ := printing.ExpandEmbeddedReferencesWithChartRenderer(source, m.workbook, func(data spreadsheet.ChartData) string {
+			slot := slotFor("", "", "")
+			terminalCharts[slot] = data
+			return slot
+		})
+		return expanded
+	}
+	expanded, images, _ := printing.ExpandEmbeddedReferencesWithImages(source, m.workbook)
+	for _, img := range images {
+		m.chartImages[img.Name] = img
+		pattern := regexp.MustCompile(`!\[[^]]*\]\(` + regexp.QuoteMeta(img.Name) + `\)`)
+		expanded = pattern.ReplaceAllString(expanded, slotFor(img.Name, "", ""))
+	}
+	return expanded
+}
+
 func (m *presentationModel) nextPresentationImageMarker(
 	source string,
 	rendered renderedPresentationImage,
@@ -992,7 +1285,13 @@ func (m *presentationModel) renderPresentationImage(
 	availableRows, availableCols int,
 ) renderedPresentationImage {
 	var data []byte
+	if img, ok := m.chartImages[name]; ok {
+		data = img.Data
+	}
 	for _, img := range m.item.Images {
+		if data != nil {
+			break
+		}
 		if img.Name == name {
 			data = img.Data
 			break
@@ -1075,7 +1374,14 @@ func (m *presentationModel) clampScroll() {
 	m.scroll = min(max(m.scroll, 0), limit)
 }
 
-func (m *presentationModel) View() string {
+func (m *presentationModel) View() tea.View {
+	if m.embeddedEditor != nil {
+		return m.embeddedEditor.View()
+	}
+	return tea.NewView(m.viewContent())
+}
+
+func (m *presentationModel) viewContent() string {
 	view := m.presentationView()
 	if m.imageGraphicsUsed && termimg.DetectProtocol() != termimg.ProtocolNone {
 		view = m.paintPresentationImages(view)
@@ -1189,10 +1495,14 @@ func (m *presentationModel) presentationView() string {
 }
 
 func (m *presentationModel) pageHasImageDirective() bool {
-	if !m.loaded || m.page <= 0 || m.page > len(m.deck.Slides) {
+	return m.pageHasImageDirectiveAt(m.page)
+}
+
+func (m *presentationModel) pageHasImageDirectiveAt(page int) bool {
+	if !m.loaded || page <= 0 || page > len(m.deck.Slides) {
 		return false
 	}
-	for _, line := range strings.Split(m.deck.Slides[m.page-1].Body, "\n") {
+	for _, line := range strings.Split(m.deck.Slides[page-1].Body, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), ".image ") {
 			return true
 		}
@@ -1233,8 +1543,22 @@ func (m *presentationModel) renderSlideContent() string {
 	if m.find.visible && m.find.query() != "" {
 		lines = highlightLines(lines, m.find.query(), m.theme)
 	}
+	visibleLines := m.visibleLines()
+	if m.active {
+		current := make([]string, visibleLines)
+		for i := range current {
+			if index := m.scroll + i; index < len(lines) {
+				current[i] = lines[index]
+			}
+		}
+		lines = presentationTransitionLines(
+			strings.Split(m.from, "\n"), current, max(m.width-4, 1),
+			m.position, m.direction,
+		)
+		return strings.Join(lines, "\n")
+	}
 	var slideBuf strings.Builder
-	for i := 0; i < m.visibleLines(); i++ {
+	for i := 0; i < visibleLines; i++ {
 		if i > 0 {
 			slideBuf.WriteByte('\n')
 		}
@@ -1243,6 +1567,33 @@ func (m *presentationModel) renderSlideContent() string {
 		}
 	}
 	return slideBuf.String()
+}
+
+func presentationTransitionLines(from, to []string, width int, position float64, direction int) []string {
+	shift := min(max(int(float64(width)*position+0.5), 0), width)
+	lines := make([]string, max(len(from), len(to)))
+	for row := range lines {
+		var oldLine, newLine string
+		if row < len(from) {
+			oldLine = from[row]
+		}
+		if row < len(to) {
+			newLine = to[row]
+		}
+		if direction >= 0 {
+			leftWidth := width - shift
+			lines[row] = fitPresentationTransitionPart(ansi.Cut(oldLine, shift, width), leftWidth) +
+				fitPresentationTransitionPart(ansi.Cut(newLine, 0, shift), shift)
+		} else {
+			lines[row] = fitPresentationTransitionPart(ansi.Cut(newLine, width-shift, width), shift) +
+				fitPresentationTransitionPart(ansi.Cut(oldLine, 0, width-shift), width-shift)
+		}
+	}
+	return lines
+}
+
+func fitPresentationTransitionPart(part string, width int) string {
+	return part + strings.Repeat(" ", max(width-ansi.StringWidth(part), 0))
 }
 
 func (m *presentationModel) renderStatus() string {
@@ -1262,7 +1613,7 @@ func (m *presentationModel) renderStatus() string {
 func (m *presentationModel) renderHelp(muted lipgloss.Style) string {
 	help := "ctrl+p PDF • ←/→ slide • ↑/↓ scroll • e edit • s notes • f font • u undo • ctrl+r redo • r reload • esc/q quit"
 	if m.editing {
-		help = "ctrl+f find • ctrl+p PDF • ctrl+s save • esc cancel • ctrl+c quit"
+		help = "ctrl+f find • ctrl+p PDF • ctrl+s save • esc cancel • ctrl+c quit • ctrl+shift+e sheet"
 	} else if !m.loaded {
 		help = "r retry • esc/q quit"
 	}

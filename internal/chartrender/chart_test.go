@@ -32,12 +32,17 @@ func TestChartOutputsAndValidation(t *testing.T) {
 	if got := color.RGBAModel.Convert(img.At(200, 120)).(color.RGBA); got == (color.RGBA{R: 255, G: 255, B: 255, A: 255}) {
 		t.Fatal("raster did not draw the positive bar")
 	}
+	data.Type = "line"
+	data.Series = append(data.Series, spreadsheet.ChartSeries{Name: "Other", Values: []float64{1, 4}})
+	if _, err := Layout(data); err != nil {
+		t.Fatalf("multi-series line chart: %v", err)
+	}
 	data.Type = "pie"
 	if _, err := Layout(data); err == nil {
-		t.Fatal("negative pie value accepted")
+		t.Fatal("unsupported pie chart accepted")
 	}
-	data.Series[0].Values = []float64{0, 0}
+	data.Type = "bar"
 	if _, err := Layout(data); err == nil {
-		t.Fatal("zero total accepted")
+		t.Fatal("multi-series bar chart accepted")
 	}
 }

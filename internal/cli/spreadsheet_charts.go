@@ -30,21 +30,27 @@ func chartRange(value string) (int, int, int, int, error) {
 	return r1, c1, r2, c2, nil
 }
 
-func findChart(book spreadsheet.Spreadsheet, id string) (spreadsheet.Chart, error) {
-	for _, chart := range book.Charts {
-		if chart.ID == id {
-			return chart, nil
-		}
+func findChart(book spreadsheet.Spreadsheet, sheet, cell string) (spreadsheet.Chart, error) {
+	if sheet == "" {
+		sheet = book.Sheets[0].Name
 	}
-	return spreadsheet.Chart{}, fmt.Errorf("chart %q not found", id)
+	row, column, err := spreadsheet.CellCoordinates(cell)
+	if err != nil {
+		return spreadsheet.Chart{}, err
+	}
+	if chart, ok := spreadsheet.ChartAt(&book, sheet, row, column); ok {
+		return chart, nil
+	}
+	return spreadsheet.Chart{}, fmt.Errorf("chart at %s!%s not found", sheet, cell)
 }
 
 func addSpreadsheetChartCommands(group *cobra.Command, streams output) {
-	chart := &cobra.Command{Use: "chart", Short: "Manage range-bound spreadsheet charts"}
+	chart := &cobra.Command{Use: "chart", Short: "Edit charts in spreadsheet cells"}
+	chart.PersistentFlags().String("sheet", "", "placement sheet (defaults to first)")
 	group.AddCommand(chart)
 	create := &cobra.Command{
-		Use: "create <file> <pie|bar|line> <range>", Args: cobra.ExactArgs(3),
-		Short: "Create a chart from a sheet range",
+		Use: "create <file> <cell> <bar|line> <range>", Args: cobra.ExactArgs(4),
+		Short: "Create a chart in a cell from a source range",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openSpreadsheets(cmd)
 			if err != nil {
@@ -61,7 +67,15 @@ func addSpreadsheetChartCommands(group *cobra.Command, streams output) {
 			if _, err := spreadsheet.SheetIndex(book, sheet); err != nil {
 				return err
 			}
-			r1, c1, r2, c2, err := chartRange(args[2])
+			row, column, err := spreadsheet.CellCoordinates(args[1])
+			if err != nil {
+				return err
+			}
+			source, _ := cmd.Flags().GetString("source-sheet")
+			if source == "" {
+				source = sheet
+			}
+			r1, c1, r2, c2, err := chartRange(args[3])
 			if err != nil {
 				return err
 			}
@@ -69,43 +83,23 @@ func addSpreadsheetChartCommands(group *cobra.Command, streams output) {
 			header, _ := cmd.Flags().GetBool("header")
 			labels, _ := cmd.Flags().GetBool("labels")
 			book, err = service.CreateChart(cmd.Context(), args[0], spreadsheet.Chart{
-				Title: title, Type: args[1], Sheet: sheet, FirstRow: r1, FirstColumn: c1,
+				Title: title, Type: args[2], Sheet: source, PlaceSheet: sheet, PlaceRow: row, PlaceColumn: column, FirstRow: r1, FirstColumn: c1,
 				LastRow: r2, LastColumn: c2, Header: header, Labels: labels,
 			})
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintln(streams.out, book.Charts[len(book.Charts)-1].ID)
+			_, err = fmt.Fprintln(streams.out, spreadsheet.CellName(row, column))
 			return err
 		},
 	}
-	create.Flags().String("sheet", "", "source sheet (defaults to first)")
+	create.Flags().String("source-sheet", "", "source sheet (defaults to placement sheet)")
 	create.Flags().String("title", "", "chart title")
 	create.Flags().Bool("header", false, "first row contains series names")
 	create.Flags().Bool("labels", false, "first column contains category labels")
 	chart.AddCommand(create)
-	chart.AddCommand(&cobra.Command{
-		Use: "list <file>", Args: cobra.ExactArgs(1), Short: "List chart definitions",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			_, service, err := openSpreadsheets(cmd)
-			if err != nil {
-				return err
-			}
-			book, err := service.Get(cmd.Context(), args[0])
-			if err != nil {
-				return err
-			}
-			for _, c := range book.Charts {
-				if _, err := fmt.Fprintf(streams.out, "%s\t%s\t%s\t%s!%s:%s\n", c.ID, c.Type, c.Title,
-					c.Sheet, spreadsheet.CellName(c.FirstRow, c.FirstColumn), spreadsheet.CellName(c.LastRow, c.LastColumn)); err != nil {
-					return err
-				}
-			}
-			return nil
-		},
-	})
 	edit := &cobra.Command{
-		Use: "edit <file> <chart-id>", Args: cobra.ExactArgs(2), Short: "Edit a chart definition",
+		Use: "edit <file> <cell>", Args: cobra.ExactArgs(2), Short: "Edit a chart in a cell",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openSpreadsheets(cmd)
 			if err != nil {
@@ -115,7 +109,8 @@ func addSpreadsheetChartCommands(group *cobra.Command, streams output) {
 			if err != nil {
 				return err
 			}
-			c, err := findChart(book, args[1])
+			sheet, _ := cmd.Flags().GetString("sheet")
+			c, err := findChart(book, sheet, args[1])
 			if err != nil {
 				return err
 			}
@@ -125,8 +120,8 @@ func addSpreadsheetChartCommands(group *cobra.Command, streams output) {
 			if cmd.Flags().Changed("type") {
 				c.Type, _ = cmd.Flags().GetString("type")
 			}
-			if cmd.Flags().Changed("sheet") {
-				c.Sheet, _ = cmd.Flags().GetString("sheet")
+			if cmd.Flags().Changed("source-sheet") {
+				c.Sheet, _ = cmd.Flags().GetString("source-sheet")
 			}
 			if cmd.Flags().Changed("range") {
 				value, _ := cmd.Flags().GetString("range")
@@ -150,25 +145,34 @@ func addSpreadsheetChartCommands(group *cobra.Command, streams output) {
 		},
 	}
 	edit.Flags().String("title", "", "chart title")
-	edit.Flags().String("type", "", "pie, bar, or line")
-	edit.Flags().String("sheet", "", "source sheet")
+	edit.Flags().String("type", "", "bar or line")
+	edit.Flags().String("source-sheet", "", "source sheet")
 	edit.Flags().String("range", "", "source range")
 	edit.Flags().Bool("header", false, "first row contains series names")
 	edit.Flags().Bool("labels", false, "first column contains category labels")
 	chart.AddCommand(edit)
 	chart.AddCommand(&cobra.Command{
-		Use: "delete <file> <chart-id>", Args: cobra.ExactArgs(2), Short: "Delete a chart definition",
+		Use: "delete <file> <cell>", Args: cobra.ExactArgs(2), Short: "Delete a chart from a cell",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, service, err := openSpreadsheets(cmd)
 			if err != nil {
 				return err
 			}
-			_, err = service.DeleteChart(cmd.Context(), args[0], args[1])
+			book, err := service.Get(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			sheet, _ := cmd.Flags().GetString("sheet")
+			c, err := findChart(book, sheet, args[1])
+			if err != nil {
+				return err
+			}
+			_, err = service.DeleteChart(cmd.Context(), args[0], c.ID)
 			return err
 		},
 	})
 	export := &cobra.Command{
-		Use: "export <file> <chart-id>", Args: cobra.ExactArgs(2), Short: "Export a chart as SVG or PDF",
+		Use: "export <file> <cell>", Args: cobra.ExactArgs(2), Short: "Export a chart as SVG or PDF",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			repo, service, err := openSpreadsheets(cmd)
 			if err != nil {
@@ -178,7 +182,8 @@ func addSpreadsheetChartCommands(group *cobra.Command, streams output) {
 			if err != nil {
 				return err
 			}
-			c, err := findChart(book, args[1])
+			sheet, _ := cmd.Flags().GetString("sheet")
+			c, err := findChart(book, sheet, args[1])
 			if err != nil {
 				return err
 			}

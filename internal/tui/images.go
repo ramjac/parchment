@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"example.com/parchment/internal/imageedit"
@@ -103,7 +103,7 @@ func (m *imageModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.width, m.height = msg.Width, msg.Height
 		for i := range m.fields {
-			m.fields[i].Width = max(1, m.width-18)
+			m.fields[i].SetWidth(max(1, m.width-18))
 		}
 		return m, m.renderPreview()
 	case imagePreviewMsg:
@@ -167,7 +167,7 @@ func (m *imageModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "Saved " + msg.img.Path()
 		m.prepared = imagePreparedMsg{}
 		return m, m.closePrompt()
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m, m.updateKey(msg)
 	}
 	if len(m.fields) > 0 && !m.pending {
@@ -178,7 +178,7 @@ func (m *imageModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *imageModel) updateKey(msg tea.KeyMsg) tea.Cmd {
+func (m *imageModel) updateKey(msg tea.KeyPressMsg) tea.Cmd {
 	key := msg.String()
 	if m.pending {
 		if key == "ctrl+c" && m.cancelOperation != nil {
@@ -282,9 +282,11 @@ func (m *imageModel) openForm(prompt imagePrompt, values ...string) tea.Cmd {
 			field.CharLimit = 64 << 10
 			field.Placeholder = "output.png or output.jpg"
 		}
-		field.Width = max(1, m.width-18)
-		field.TextStyle, field.PromptStyle = m.theme.Image, m.theme.Chrome
-		field.Cursor.Style = m.theme.Cursor
+		field.SetWidth(max(1, m.width-18))
+		setTextInputStyles(&field, m.theme.Chrome, m.theme.Image)
+		styles := field.Styles()
+		styles.Cursor.Color = m.theme.Accent.GetForeground()
+		field.SetStyles(styles)
 		field.Blur()
 		field.SetValue(value)
 		m.fields[i] = field
@@ -477,7 +479,11 @@ func (m *imageModel) renderPreview() tea.Cmd {
 	}
 }
 
-func (m *imageModel) View() string {
+func (m *imageModel) View() tea.View {
+	return tea.NewView(m.viewContent())
+}
+
+func (m *imageModel) viewContent() string {
 	clear := ""
 	if m.graphicsUsed && m.protocol == termimg.ProtocolKitty {
 		clear = termimg.ClearKittyPlacements()

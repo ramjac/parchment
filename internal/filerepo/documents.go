@@ -10,9 +10,11 @@ import (
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/artifactfile"
 	"example.com/parchment/internal/document"
+	"example.com/parchment/internal/spreadsheet"
 )
 
 const documentDataBlock = "parchment-document"
+const workbookDataBlock = "parchment-workbook"
 
 type embeddedDocumentImage struct {
 	Name string `json:"name"`
@@ -84,6 +86,10 @@ func encodeDocument(d document.Document) ([]byte, error) {
 	if err := document.ValidateTracking(d); err != nil {
 		return nil, err
 	}
+	workbook := d.Workbook.Clone()
+	if err := spreadsheet.NormalizeEmbeddedWorkbook(&workbook); err != nil {
+		return nil, fmt.Errorf("validate embedded workbook: %w", err)
+	}
 	payload := documentFileData{Layout: d.Layout, Tracking: d.Tracking, TrackedChanges: d.TrackedChanges}
 	if d.Tracking || len(d.TrackedChanges) > 0 {
 		payload.TrackingVersion = 1
@@ -101,6 +107,13 @@ func encodeDocument(d document.Document) ([]byte, error) {
 	}
 	blocks := encodeBlocks(d.Blocks)
 	blocks[documentDataBlock] = payload
+	if len(workbook.Sheets) > 0 {
+		encoded, err := spreadsheet.EncodeEmbeddedWorkbook(workbook)
+		if err != nil {
+			return nil, err
+		}
+		blocks[workbookDataBlock] = json.RawMessage(encoded)
+	}
 	data, err := artifactfile.Encode(d.Artifact, d.Body, blocks)
 	if err != nil {
 		return nil, fmt.Errorf("encode document: %w", err)
@@ -134,7 +147,13 @@ func decodeDocument(path string, content []byte) (document.Document, error) {
 	d := document.Document{
 		Artifact: file.Artifact, Body: file.Body, Layout: payload.Layout,
 		Tracking: payload.Tracking, TrackedChanges: payload.TrackedChanges,
-		Blocks: copyPayloadBlocks(file.Blocks, documentDataBlock),
+		Blocks: copyPayloadBlocks(file.Blocks, documentDataBlock, workbookDataBlock),
+	}
+	if data, ok := file.Blocks[workbookDataBlock]; ok {
+		d.Workbook, err = spreadsheet.DecodeEmbeddedWorkbook(data)
+		if err != nil {
+			return document.Document{}, fmt.Errorf("decode embedded workbook %s: %w", path, err)
+		}
 	}
 	if err := document.ValidateTracking(d); err != nil {
 		return document.Document{}, fmt.Errorf("validate document tracking %s: %w", path, err)

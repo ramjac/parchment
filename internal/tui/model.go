@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image/color"
 	"os"
 	"strings"
 	"time"
 	"unicode"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"example.com/parchment/internal/artifact"
@@ -287,7 +288,7 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if m.stage == stageDocument && m.documents != nil {
 		switch message.(type) {
-		case tea.KeyMsg, tea.MouseMsg:
+		case tea.KeyPressMsg, mouseEvent:
 			return m, m.documents.update(message)
 		}
 	}
@@ -306,10 +307,25 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.notePDFExported(msg)
 	case historyChangedMsg:
 		return m.handleHistoryChanged(msg)
-	case tea.MouseMsg:
+	case mouseEvent:
 		return m.handleMouse(msg)
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m, m.updateKey(msg)
+	case tea.PasteMsg:
+		if m.stage == stageNote && !m.pending && m.pdfPrompt == promptPDF {
+			var cmd tea.Cmd
+			m.pdfInput, cmd = m.pdfInput.Update(msg)
+			return m, cmd
+		}
+		if m.stage == stageNote && !m.pending && !m.previewing && m.pdfPrompt == promptNone {
+			if m.find.active {
+				return m, m.updateFindKey(msg)
+			}
+			m.discardWarning = false
+			var cmd tea.Cmd
+			m.bodyInput, cmd = m.bodyInput.Update(msg)
+			return m, cmd
+		}
 	}
 	if m.stage == stageDocument && m.documents != nil {
 		return m, m.documents.update(message)
@@ -434,13 +450,13 @@ func (m *Model) handleHistoryChanged(msg historyChangedMsg) (tea.Model, tea.Cmd)
 	return m, nil
 }
 
-func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+func (m *Model) handleMouse(msg mouseEvent) (tea.Model, tea.Cmd) {
 	if m.stage == stageNote && !m.pending && !m.previewing && m.pdfPrompt == promptNone {
 		mouseMsg := msg
 		mouseMsg.Y = msg.Y - 3
 		mouseMsg.X = msg.X - 2
 		var cmd tea.Cmd
-		m.bodyInput, cmd = m.bodyInput.Update(mouseMsg)
+		m.bodyInput, cmd = m.bodyInput.Update(toTeaMouseMessage(mouseMsg))
 		return m, cmd
 	}
 	return m, nil
@@ -569,7 +585,7 @@ func (m *Model) updatePendingKey(key string) tea.Cmd {
 	return nil
 }
 
-func (m *Model) updateKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) updateKey(msg tea.KeyPressMsg) tea.Cmd {
 	key := msg.String()
 	if m.pending {
 		return m.updatePendingKey(key)
@@ -589,7 +605,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-func (m *Model) updateNoteKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) updateNoteKey(msg tea.KeyPressMsg) tea.Cmd {
 	key := msg.String()
 	if m.tooSmall() {
 		if key == "q" && !m.dirty() {
@@ -724,9 +740,35 @@ func (m *Model) history(undo bool) tea.Cmd {
 }
 
 // View renders the current model without performing application operations.
-func (m Model) View() string {
+func (m Model) View() tea.View {
+	view := tea.NewView(m.viewContent())
+	view.AltScreen = true
+	view.MouseMode = tea.MouseModeCellMotion
+	return view
+}
+
+type terminalModel struct {
+	tea.Model
+}
+
+func (m terminalModel) Init() tea.Cmd { return m.Model.Init() }
+
+func (m terminalModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	model, cmd := m.Model.Update(message)
+	return terminalModel{Model: model}, cmd
+}
+
+func (m terminalModel) View() tea.View {
+	view := m.Model.View()
+	view.Content = protectITermGraphics(view.Content)
+	view.AltScreen = true
+	view.MouseMode = tea.MouseModeCellMotion
+	return view
+}
+
+func (m Model) viewContent() string {
 	if m.stage == stageImage && m.image != nil {
-		return m.image.View()
+		return m.image.View().Content
 	}
 	if m.tooSmall() {
 		cleanup := ""
@@ -765,9 +807,9 @@ func (m Model) View() string {
 	case stageDocument:
 		return m.documents.view(header)
 	case stageSpreadsheet:
-		return m.sheet.View()
+		return m.sheet.View().Content
 	case stagePresentation:
-		return m.deck.View()
+		return m.deck.View().Content
 	}
 	state := "Editing note"
 	if m.dirty() {
@@ -799,7 +841,7 @@ func (m Model) View() string {
 
 func (m Model) tooSmall() bool { return m.width < 40 || m.height < 10 }
 
-func chromeLayout(width, height int, header, shortcuts, content, status string, border lipgloss.TerminalColor) string {
+func chromeLayout(width, height int, header, shortcuts, content, status string, border color.Color) string {
 	chromeRows := lipgloss.Height(header) + lipgloss.Height(status)
 	if shortcuts != "" {
 		chromeRows += lipgloss.Height(shortcuts)
@@ -809,14 +851,9 @@ func chromeLayout(width, height int, header, shortcuts, content, status string, 
 	if paneHeight < 1 {
 		paneHeight = 1
 	}
-	paneWidth := width - 2
-	if paneWidth < 1 {
-		paneWidth = 1
-	}
-
 	pane := lipgloss.NewStyle().
-		Width(paneWidth).
-		Height(paneHeight).
+		Width(width).
+		Height(paneHeight+2).
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(border).
 		Padding(0, 1).
@@ -948,10 +985,10 @@ func Run(ctx context.Context, config Config, opts ...tea.ProgramOption) error {
 		model.documents.newOperationContext = model.newOperationContext
 	}
 	options := append([]tea.ProgramOption{
-		tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx),
+		tea.WithContext(ctx),
 		tea.WithOutput(keyboardTerminalOutput{os.Stdout}),
 	}, opts...)
-	program := tea.NewProgram(&model, options...)
+	program := tea.NewProgram(terminalModel{Model: &model}, options...)
 	_, err := program.Run()
 	return err
 }

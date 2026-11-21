@@ -1,12 +1,12 @@
 package theme
 
 import (
+	"image/color"
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 
 	"example.com/parchment/internal/config"
 )
@@ -105,13 +105,15 @@ func TestMarkdownHeadingsHideSourceMarkers(t *testing.T) {
 	}
 }
 
-func TestResolveUsesAdaptiveColorsInAutoMode(t *testing.T) {
+func TestResolveUsesExplicitColorsInAutoMode(t *testing.T) {
 	got := Resolve(config.Theme{Mode: "auto"})
-	if _, ok := got.Accent.GetForeground().(lipgloss.AdaptiveColor); !ok {
-		t.Fatalf("auto accent color = %T, want lipgloss.AdaptiveColor", got.Accent.GetForeground())
+	accent := got.Accent.GetForeground()
+	chrome := got.Chrome.GetForeground()
+	if accent != lipgloss.Color("#805500") && accent != lipgloss.Color("#f2c66d") {
+		t.Fatalf("auto accent color = %v, want an explicit light or dark palette color", accent)
 	}
-	if _, ok := got.Chrome.GetForeground().(lipgloss.AdaptiveColor); !ok {
-		t.Fatalf("auto chrome color = %T, want lipgloss.AdaptiveColor", got.Chrome.GetForeground())
+	if chrome != lipgloss.Color("#3e796d") && chrome != lipgloss.Color("#72bfb0") {
+		t.Fatalf("auto chrome color = %v, want an explicit light or dark palette color", chrome)
 	}
 	if got.Markdown.H1.Color == nil ||
 		(*got.Markdown.H1.Color != "#805500" && *got.Markdown.H1.Color != "#f2c66d") {
@@ -119,55 +121,33 @@ func TestResolveUsesAdaptiveColorsInAutoMode(t *testing.T) {
 	}
 }
 
-func TestContentAndChromeStayDistinctAcrossColorProfiles(t *testing.T) {
-	previousProfile := lipgloss.ColorProfile()
-	t.Cleanup(func() { lipgloss.SetColorProfile(previousProfile) })
-
-	for _, profile := range []termenv.Profile{termenv.TrueColor, termenv.ANSI256, termenv.ANSI} {
-		lipgloss.SetColorProfile(profile)
-		for _, mode := range []string{"light", "dark"} {
-			styles := Resolve(config.Theme{Mode: mode})
-			content := styles.Heading.Render("Title")
-			chrome := styles.Chrome.Render("Title")
-			if content == chrome || ansi.Strip(content) == content || ansi.Strip(chrome) == chrome {
-				t.Errorf("profile %v, mode %s: content and chrome need distinct colored output: %q, %q",
-					profile, mode, content, chrome)
-			}
+func TestContentAndChromeStayDistinct(t *testing.T) {
+	for _, mode := range []string{"light", "dark"} {
+		styles := Resolve(config.Theme{Mode: mode})
+		if styles.Heading.GetForeground() == styles.Chrome.GetForeground() {
+			t.Errorf("mode %s: content and chrome share a foreground color", mode)
 		}
 	}
 }
 
 func TestContentKindsUseDistinctColors(t *testing.T) {
-	previousProfile := lipgloss.ColorProfile()
-	t.Cleanup(func() { lipgloss.SetColorProfile(previousProfile) })
-
-	for _, profile := range []termenv.Profile{termenv.TrueColor, termenv.ANSI256} {
-		lipgloss.SetColorProfile(profile)
-		for _, mode := range []string{"light", "dark"} {
-			styles := Resolve(config.Theme{Mode: mode})
-			seen := map[string]string{}
-			for name, style := range map[string]lipgloss.Style{
-				"heading": styles.Heading, "link": styles.Link,
-				"image": styles.Image, "code": styles.Code, "chrome": styles.Chrome,
-			} {
-				rendered := lipgloss.NewStyle().Foreground(style.GetForeground()).Render("text")
-				if other, ok := seen[rendered]; ok {
-					t.Errorf("mode %s, profile %v: %s and %s share a foreground color",
-						mode, profile, name, other)
-				}
-				seen[rendered] = name
+	for _, mode := range []string{"light", "dark"} {
+		styles := Resolve(config.Theme{Mode: mode})
+		seen := map[color.Color]string{}
+		for name, style := range map[string]lipgloss.Style{
+			"heading": styles.Heading, "link": styles.Link,
+			"image": styles.Image, "code": styles.Code, "chrome": styles.Chrome,
+		} {
+			color := style.GetForeground()
+			if other, ok := seen[color]; ok {
+				t.Errorf("mode %s: %s and %s share a foreground color", mode, name, other)
 			}
+			seen[color] = name
 		}
 	}
 }
 
 func TestSemanticRolesRenderExpectedTruecolorANSI(t *testing.T) {
-	previousProfile := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() {
-		lipgloss.SetColorProfile(previousProfile)
-	})
-
 	styles := Resolve(config.Theme{Mode: "dark"})
 	if styles.Selection.GetUnderline() {
 		t.Fatal("selection style underlines cells")
@@ -191,14 +171,9 @@ func TestSemanticRolesRenderExpectedTruecolorANSI(t *testing.T) {
 }
 
 func TestSemanticSelectionFallsBackToPlainTextWithoutANSI(t *testing.T) {
-	previousProfile := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.Ascii)
-	t.Cleanup(func() {
-		lipgloss.SetColorProfile(previousProfile)
-	})
-
-	rendered := Resolve(config.Theme{Mode: "dark"}).Selection.Render("selected")
-	if rendered != "selected" {
-		t.Fatalf("monochrome selection = %q, want plain text without unsupported ANSI", rendered)
+	selection := Resolve(config.Theme{Mode: "dark"}).Selection
+	if selection.GetForeground() != lipgloss.Color("#ffffff") ||
+		selection.GetBackground() != lipgloss.Color("#15564d") {
+		t.Fatalf("monochrome selection lost its explicit colors: %v", selection)
 	}
 }
