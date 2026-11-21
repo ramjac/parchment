@@ -19,6 +19,7 @@ import (
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/imageedit"
 	"example.com/parchment/internal/note"
+	"example.com/parchment/internal/notetext"
 	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/recovery"
 	"example.com/parchment/internal/spreadsheet"
@@ -44,6 +45,7 @@ type Config struct {
 	UndoLimit     int
 	LastPDFPath   string
 	PDFStore      PDFExportStore
+	NoteEncoding  string
 }
 
 // PDFExportStore persists PDF output and the last destination path.
@@ -72,17 +74,19 @@ const (
 )
 
 type fileOpenedMsg struct {
-	kind     artifact.Kind
-	note     note.Note
-	document document.Document
-	book     spreadsheet.Spreadsheet
-	deck     presentation.Presentation
-	history  *historyAvailability
-	image    *imageedit.Image
-	created  bool
-	draft    recovery.Draft
-	hasDraft bool
-	err      error
+	kind        artifact.Kind
+	note        note.Note
+	text        *note.TextSnapshot
+	document    document.Document
+	book        spreadsheet.Spreadsheet
+	deck        presentation.Presentation
+	history     *historyAvailability
+	image       *imageedit.Image
+	created     bool
+	draft       recovery.Draft
+	hasDraft    bool
+	noteOpenErr error
+	err         error
 }
 
 type historyAvailability struct {
@@ -93,6 +97,7 @@ type historyAvailability struct {
 
 type noteSavedMsg struct {
 	note       note.Note
+	text       *note.TextSnapshot
 	history    *historyAvailability
 	err        error
 	cleanupErr error
@@ -101,6 +106,8 @@ type noteSavedMsg struct {
 type historyChangedMsg struct {
 	description string
 	note        note.Note
+	text        *note.TextSnapshot
+	changed     bool
 	history     *historyAvailability
 	err         error
 }
@@ -129,6 +136,7 @@ type Model struct {
 	recoveryStore recovery.Store
 	theme         Theme
 	undoLimit     int
+	noteEncoding  string
 	stage         stage
 	width         int
 	height        int
@@ -153,6 +161,9 @@ type Model struct {
 
 // NewModel creates the interactive editor for config.Path.
 func NewModel(config Config) Model {
+	if config.NoteEncoding == "" {
+		config.NoteEncoding = notetext.Auto
+	}
 	undoLimit := config.UndoLimit
 	if undoLimit < 1 {
 		undoLimit = 100
@@ -165,6 +176,7 @@ func NewModel(config Config) Model {
 		recoveryStore: config.Recovery,
 		theme:         resolvedTheme,
 		undoLimit:     undoLimit,
+		noteEncoding:  config.NoteEncoding,
 		noteEditor:    newNoteEditor(undoLimit, resolvedTheme),
 		newOperationContext: func() (context.Context, context.CancelFunc) {
 			return context.WithCancel(context.Background())
@@ -202,7 +214,7 @@ func (m *Model) Init() tea.Cmd {
 func (m *Model) openFile(kind artifact.Kind) tea.Cmd {
 	m.kind, m.stage, m.pending = kind, stageOpening, true
 	ctx := m.startOperation()
-	path, notes, store := m.path, m.service, m.recoveryStore
+	path, notes, store, encoding := m.path, m.service, m.recoveryStore, m.noteEncoding
 	sheets, decks := m.spreadsheets, m.presentations
 	images := m.images
 	var documents *document.Service
@@ -211,11 +223,23 @@ func (m *Model) openFile(kind artifact.Kind) tea.Cmd {
 	}
 	return func() tea.Msg {
 		msg := fileOpenedMsg{kind: kind}
+		if kind == artifact.NoteKind && store != nil {
+			msg.draft, msg.hasDraft, msg.err = store.LoadRecovery(ctx, path)
+			if msg.err != nil {
+				return msg
+			}
+		}
 		switch {
 		case kind == artifact.ImageKind && images != nil:
 			msg.image, msg.err = images.Load(ctx, path)
 		case kind == artifact.NoteKind && notes != nil:
-			msg.note, msg.err = notes.Get(ctx, path)
+			snapshot, openErr, err := openNoteText(ctx, notes, path, encoding, msg.draft, msg.hasDraft)
+			msg.err = err
+			msg.noteOpenErr = openErr
+			msg.note = snapshot.Note
+			if snapshot.Plain {
+				msg.text = &snapshot
+			}
 			if errors.Is(msg.err, note.ErrNotFound) {
 				msg.note, msg.err = notes.Create(ctx, path, "")
 				msg.created = true
@@ -249,7 +273,7 @@ func (m *Model) openFile(kind artifact.Kind) tea.Cmd {
 				msg.history = queryHistoryAvailability(ctx, documents.HistoryAvailability)
 			}
 		}
-		if msg.err == nil && store != nil && kind != artifact.ImageKind {
+		if msg.err == nil && store != nil && kind != artifact.ImageKind && kind != artifact.NoteKind {
 			msg.draft, msg.hasDraft, msg.err = store.LoadRecovery(ctx, path)
 		}
 		return msg
@@ -322,9 +346,7 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.updateFindKey(msg)
 			}
 			m.discardWarning = false
-			var cmd tea.Cmd
-			m.bodyInput, cmd = m.bodyInput.Update(msg)
-			return m, cmd
+			return m, m.updateNoteInput(msg)
 		}
 	}
 	if m.stage == stageDocument && m.documents != nil {
@@ -383,6 +405,9 @@ func (m *Model) handleRecoveryDiscarded(msg recoveryDiscardedMsg) (tea.Model, te
 		return m, nil
 	}
 	m.status = "Autosaved draft discarded"
+	if m.opened.noteOpenErr != nil {
+		return m, m.openFile(artifact.NoteKind)
+	}
 	return m, m.enterEditor()
 }
 
@@ -426,7 +451,11 @@ func (m *Model) handleNoteSaved(msg noteSavedMsg) (tea.Model, tea.Cmd) {
 		return m, m.scheduleAutosave(m.autosaveSession)
 	}
 	m.bodyInput.ResetHistory()
-	m.markSaved(msg.note)
+	if msg.text != nil {
+		m.markTextSaved(*msg.text)
+	} else {
+		m.markSaved(msg.note)
+	}
 	m.errMessage, m.status = "", "Saved “"+msg.note.Title+"”"
 	if msg.cleanupErr != nil {
 		m.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
@@ -442,11 +471,24 @@ func (m *Model) handleHistoryChanged(msg historyChangedMsg) (tea.Model, tea.Cmd)
 	m.applyHistoryAvailability(msg.history)
 	if msg.err != nil {
 		m.errMessage = msg.err.Error()
+		if msg.changed {
+			m.stage = stageFailed
+		}
 		return m, nil
 	}
-	m.loadNote(msg.note)
+	if msg.text != nil {
+		if !m.startTextEdit(*msg.text) {
+			m.stage = stageFailed
+			return m, nil
+		}
+	} else {
+		m.loadNote(msg.note)
+	}
 	m.errMessage, m.status = "", msg.description
 	m.applyHistoryAvailability(msg.history)
+	if msg.text != nil {
+		return m, m.scheduleAutosave(m.autosaveSession)
+	}
 	return m, nil
 }
 
@@ -473,7 +515,13 @@ func (m *Model) enterEditor() tea.Cmd {
 		_, cmd := m.image.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		return cmd
 	case artifact.NoteKind:
-		if !m.startEdit(m.opened.note) {
+		ok := false
+		if m.opened.text != nil {
+			ok = m.startTextEdit(*m.opened.text)
+		} else {
+			ok = m.startEdit(m.opened.note)
+		}
+		if !ok {
 			m.stage = stageFailed
 			return nil
 		}
@@ -686,9 +734,16 @@ func (m *Model) updateNoteKey(msg tea.KeyPressMsg) tea.Cmd {
 		}
 		return m.history(key == "ctrl+z")
 	}
-	var command tea.Cmd
-	m.bodyInput, command = m.bodyInput.Update(msg)
-	return command
+	return m.updateNoteInput(msg)
+}
+
+func (m *Model) updateNoteInput(msg tea.Msg) tea.Cmd {
+	var cmd tea.Cmd
+	m.bodyInput, cmd = m.bodyInput.Update(msg)
+	if err := m.bodyInput.TakeInputError(); err != nil {
+		m.errMessage = err.Error()
+	}
+	return cmd
 }
 
 // requestClose quits, first asking for confirmation when edits are unsaved.
@@ -721,7 +776,11 @@ func closeEditor(store recovery.Store, path string) tea.Cmd {
 func (m *Model) history(undo bool) tea.Cmd {
 	m.pending = true
 	ctx := m.startOperation()
-	service, path := m.service, m.path
+	service, path, encoding := m.service, m.path, m.noteEncoding
+	requested := encoding
+	if m.textSnapshot != nil {
+		encoding = m.textSnapshot.Format.Encoding
+	}
 	return func() tea.Msg {
 		run, prefix := service.Redo, "Redid "
 		if undo {
@@ -731,11 +790,18 @@ func (m *Model) history(undo bool) tea.Cmd {
 		if err != nil {
 			return historyChangedMsg{history: queryHistoryAvailability(ctx, service.HistoryAvailability), err: err}
 		}
-		n, err := service.Get(ctx, path)
-		return historyChangedMsg{
-			description: prefix + strings.ToLower(description), note: n,
+		snapshot, err := service.OpenText(ctx, path, encoding)
+		if err != nil && requested == notetext.Auto && encoding != notetext.Auto {
+			snapshot, err = service.OpenText(ctx, path, notetext.Auto)
+		}
+		msg := historyChangedMsg{
+			description: prefix + strings.ToLower(description), note: snapshot.Note, changed: true,
 			history: queryHistoryAvailability(ctx, service.HistoryAvailability), err: err,
 		}
+		if snapshot.Plain {
+			msg.text = &snapshot
+		}
+		return msg
 	}
 }
 
@@ -899,6 +965,18 @@ func (m *Model) startEdit(n note.Note) bool {
 	return true
 }
 
+func (m *Model) startTextEdit(snapshot note.TextSnapshot) bool {
+	if err := m.bodyInput.SetDocument(snapshot.Document); err != nil {
+		m.errMessage = err.Error()
+		return false
+	}
+	m.markTextSaved(snapshot)
+	m.resizeEditors()
+	m.errMessage = ""
+	m.startAutosaveSession()
+	return true
+}
+
 func isUnpreservableText(text string) bool {
 	if len(text) > 1_000_000 {
 		return true
@@ -917,16 +995,33 @@ func isUnpreservableText(text string) bool {
 
 func (m *Model) saveNote() tea.Cmd {
 	body, expected := m.bodyInput.Value(), m.snapshot
+	var text *note.TextSnapshot
+	doc := m.bodyInput.Document()
+	if m.textSnapshot != nil {
+		snapshot := m.textSnapshot.Clone()
+		text = &snapshot
+	}
 	store, path, service := m.recoveryStore, m.path, m.service
 	ctx := m.startOperation()
 	return func() tea.Msg {
-		n, err := service.UpdateExpected(ctx, expected, body)
+		var n note.Note
+		var savedText *note.TextSnapshot
+		var err error
+		if text != nil {
+			saved, saveErr := service.SaveTextExpected(ctx, *text, doc)
+			n, err = saved.Note, saveErr
+			if err == nil {
+				savedText = &saved
+			}
+		} else {
+			n, err = service.UpdateExpected(ctx, expected, body)
+		}
 		var cleanupErr error
 		if err == nil && store != nil {
 			cleanupErr = store.DeleteRecovery(context.Background(), path)
 		}
 		return noteSavedMsg{
-			note: n, history: queryHistoryAvailability(ctx, service.HistoryAvailability),
+			note: n, text: savedText, history: queryHistoryAvailability(ctx, service.HistoryAvailability),
 			err: err, cleanupErr: cleanupErr,
 		}
 	}
@@ -954,6 +1049,9 @@ func (m *Model) resizeEditors() {
 }
 
 func (m Model) dirty() bool {
+	if m.stage == stageNote && m.textSnapshot != nil {
+		return !m.bodyInput.Document().Equal(m.textSnapshot.Document)
+	}
 	return m.stage == stageNote && m.bodyInput.Value() != m.originalBody
 }
 

@@ -86,6 +86,40 @@ In the note editor, `Ctrl+S` saves, `F5` toggles a rendered Markdown preview,
 of the source; it does not replace the Markdown saved in the file. `Ctrl+P`
 exports the current text, including unsaved edits, to PDF.
 
+### External plain-text notes
+
+The Notes TUI opens existing plain `.md`, `.txt`, and otherwise named text
+files without adding a Parchment envelope. It automatically recognizes UTF-8
+with or without a byte order mark (BOM), and UTF-16LE/BE with a BOM. If UTF-8
+decoding fails, it tries Windows-1252, ISO-8859-1, and Shift-JIS, accepting a
+legacy encoding only when exactly one lossless, editor-safe interpretation
+exists. UTF-8 takes precedence when bytes are valid UTF-8.
+
+Ambiguous legacy files and UTF-16 files without a BOM need an explicit choice:
+
+```sh
+parchment todo.txt --encoding windows-1252
+parchment tui older-notes.txt --encoding utf-16le
+```
+
+The optional `--encoding` values are `auto` (the default), `utf-8`, `utf-16le`,
+`utf-16be`, `windows-1252`, `iso-8859-1`, and `shift-jis`. An override cannot
+contradict a BOM. It applies only to opening existing plain notes, not file
+creation, typed Parchment artifacts, or noninteractive note commands.
+
+Saving preserves the original encoding, BOM, and each existing LF, Windows
+CRLF, or older Mac CR line break, including mixed endings and a missing final
+newline. Enter and pasted breaks use the nearest existing ending; ties prefer
+the preceding ending, and a file without any breaks uses LF. Preview and PDF
+export use decoded text without changing the source file.
+
+Malformed input, unsafe controls, and edits that cannot be represented in the
+original encoding produce errors instead of replacement characters. Some
+noncanonical legacy byte sequences are also rejected when they cannot
+round-trip exactly. A failed save keeps the edits available for correction
+and autosave recovery. Recovery retains the chosen encoding and original
+bytes; it does not overwrite a file changed outside Parchment.
+
 ## Documents
 
 Documents add a reader, heading outline, clickable internal links, print

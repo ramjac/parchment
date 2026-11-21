@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/mattn/go-runewidth"
 
+	"example.com/parchment/internal/notetext"
 	"example.com/parchment/internal/tui/theme"
 )
 
@@ -89,30 +91,34 @@ const (
 )
 
 type editorSnapshot struct {
-	Lines  [][]rune
-	Cursor Point
+	Lines   [][]rune
+	Cursor  Point
+	Endings []notetext.Ending
 }
 
 // Model is a line-based rune buffer text editor with micro-style visual selections.
 type Model struct {
-	Lines         [][]rune
-	Cursor        Point
-	Selection     Selection
-	StickyCol     int
-	TopLine       int
-	TopRowOffset  int
-	Width         int
-	Height        int
-	Focused       bool
-	Placeholder   string
-	ShowLineNums  bool
-	Style         lipgloss.Style
-	SelectStyle   lipgloss.Style
-	CursorStyle   lipgloss.Style
-	MatchStyle    lipgloss.Style
-	markdown      markdownPalette
-	searchMatches []MatchSpan
-	activeMatch   int
+	Lines           [][]rune
+	Cursor          Point
+	Selection       Selection
+	StickyCol       int
+	TopLine         int
+	TopRowOffset    int
+	Width           int
+	Height          int
+	Focused         bool
+	Placeholder     string
+	ShowLineNums    bool
+	Style           lipgloss.Style
+	SelectStyle     lipgloss.Style
+	CursorStyle     lipgloss.Style
+	MatchStyle      lipgloss.Style
+	markdown        markdownPalette
+	searchMatches   []MatchSpan
+	activeMatch     int
+	preserveEndings bool
+	endings         []notetext.Ending
+	inputErr        error
 
 	// Undo/Redo history
 	undoStack    []editorSnapshot
@@ -388,8 +394,9 @@ func cloneLines(lines [][]rune) [][]rune {
 
 func (m *Model) saveSnapshot() {
 	m.undoStack = append(m.undoStack, editorSnapshot{
-		Lines:  cloneLines(m.Lines),
-		Cursor: m.Cursor,
+		Lines:   cloneLines(m.Lines),
+		Cursor:  m.Cursor,
+		Endings: slices.Clone(m.endings),
 	})
 	if len(m.undoStack) > m.undoLimit {
 		m.undoStack = append([]editorSnapshot(nil), m.undoStack[len(m.undoStack)-m.undoLimit:]...)
@@ -421,13 +428,15 @@ func (m *Model) Undo() bool {
 	}
 	m.lastEditType = editNone
 	m.redoStack = append(m.redoStack, editorSnapshot{
-		Lines:  cloneLines(m.Lines),
-		Cursor: m.Cursor,
+		Lines:   cloneLines(m.Lines),
+		Cursor:  m.Cursor,
+		Endings: slices.Clone(m.endings),
 	})
 	snap := m.undoStack[len(m.undoStack)-1]
 	m.undoStack = m.undoStack[:len(m.undoStack)-1]
 
 	m.Lines = cloneLines(snap.Lines)
+	m.endings = slices.Clone(snap.Endings)
 	m.Cursor = snap.Cursor
 	m.updateStickyCol()
 	m.Selection = Selection{Anchor: m.Cursor, Active: false}
@@ -443,13 +452,15 @@ func (m *Model) Redo() bool {
 	}
 	m.lastEditType = editNone
 	m.undoStack = append(m.undoStack, editorSnapshot{
-		Lines:  cloneLines(m.Lines),
-		Cursor: m.Cursor,
+		Lines:   cloneLines(m.Lines),
+		Cursor:  m.Cursor,
+		Endings: slices.Clone(m.endings),
 	})
 	snap := m.redoStack[len(m.redoStack)-1]
 	m.redoStack = m.redoStack[:len(m.redoStack)-1]
 
 	m.Lines = cloneLines(snap.Lines)
+	m.endings = slices.Clone(snap.Endings)
 	m.Cursor = snap.Cursor
 	m.updateStickyCol()
 	m.Selection = Selection{Anchor: m.Cursor, Active: false}
@@ -460,6 +471,7 @@ func (m *Model) Redo() bool {
 
 // SetValue loads text into the editor lines.
 func (m *Model) SetValue(text string) {
+	m.preserveEndings, m.endings, m.inputErr = false, nil, nil
 	lines := strings.Split(text, "\n")
 	m.Lines = make([][]rune, len(lines))
 	for i, l := range lines {
@@ -674,6 +686,9 @@ func (m *Model) DeleteSelection() bool {
 		newLines = append(newLines, merged)
 		newLines = append(newLines, m.Lines[end.Line+1:]...)
 		m.Lines = newLines
+		if m.preserveEndings {
+			m.endings = slices.Delete(m.endings, start.Line, end.Line)
+		}
 	}
 	m.Cursor = start
 	m.updateStickyCol()
@@ -684,6 +699,15 @@ func (m *Model) DeleteSelection() bool {
 
 // InsertRune inserts a rune at cursor position, deleting selection first if active.
 func (m *Model) InsertRune(r rune) {
+	if m.preserveEndings {
+		if r == '\n' {
+			m.insertNewline()
+			return
+		}
+		if !m.allowInsertion(string(r)) {
+			return
+		}
+	}
 	if m.Selection.Active && m.Selection.Anchor != m.Cursor {
 		m.DeleteSelection()
 	} else {
@@ -707,6 +731,12 @@ func (m *Model) InsertRune(r rune) {
 
 // InsertString inserts multiple lines/characters at cursor position.
 func (m *Model) InsertString(s string) {
+	if m.preserveEndings {
+		s = notetext.Split(s).Text
+		if !m.allowInsertion(s) {
+			return
+		}
+	}
 	if m.Selection.Active && m.Selection.Anchor != m.Cursor {
 		m.DeleteSelection()
 	} else {
@@ -714,9 +744,10 @@ func (m *Model) InsertString(s string) {
 		m.lastEditType = editOther
 	}
 	runes := []rune(s)
+	ending := m.nearestEnding()
 	for _, r := range runes {
 		if r == '\n' {
-			m.insertNewlineWithoutSnapshot()
+			m.insertNewlineWithoutSnapshot(ending)
 		} else {
 			m.insertRuneWithoutSnapshot(r)
 		}
@@ -734,7 +765,10 @@ func (m *Model) insertRuneWithoutSnapshot(r rune) {
 	m.ensureCursorVisible()
 }
 
-func (m *Model) insertNewlineWithoutSnapshot() {
+func (m *Model) insertNewlineWithoutSnapshot(ending notetext.Ending) {
+	if m.preserveEndings {
+		m.endings = slices.Insert(m.endings, m.Cursor.Line, ending)
+	}
 	current := m.Lines[m.Cursor.Line]
 	left := append([]rune{}, current[:m.Cursor.Col]...)
 	right := append([]rune{}, current[m.Cursor.Col:]...)
@@ -754,13 +788,16 @@ func (m *Model) insertNewlineWithoutSnapshot() {
 }
 
 func (m *Model) insertNewline() {
+	if m.preserveEndings && !m.allowInsertion("\n") {
+		return
+	}
 	if m.Selection.Active && m.Selection.Anchor != m.Cursor {
 		m.DeleteSelection()
 	} else {
 		m.saveSnapshot()
 		m.lastEditType = editOther
 	}
-	m.insertNewlineWithoutSnapshot()
+	m.insertNewlineWithoutSnapshot(m.nearestEnding())
 }
 
 func (m *Model) clampCursor() {
@@ -1234,6 +1271,9 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) {
 				prevLen := len(m.Lines[m.Cursor.Line-1])
 				m.Lines[m.Cursor.Line-1] = append(m.Lines[m.Cursor.Line-1], m.Lines[m.Cursor.Line]...)
 				m.Lines = append(m.Lines[:m.Cursor.Line], m.Lines[m.Cursor.Line+1:]...)
+				if m.preserveEndings {
+					m.endings = slices.Delete(m.endings, m.Cursor.Line-1, m.Cursor.Line)
+				}
 				m.Cursor.Line--
 				m.Cursor.Col = prevLen
 				m.updateStickyCol()
@@ -1250,6 +1290,9 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) {
 			} else if m.Cursor.Line < len(m.Lines)-1 {
 				m.Lines[m.Cursor.Line] = append(m.Lines[m.Cursor.Line], m.Lines[m.Cursor.Line+1]...)
 				m.Lines = append(m.Lines[:m.Cursor.Line+1], m.Lines[m.Cursor.Line+2:]...)
+				if m.preserveEndings {
+					m.endings = slices.Delete(m.endings, m.Cursor.Line, m.Cursor.Line+1)
+				}
 			}
 		}
 
@@ -1260,6 +1303,9 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) {
 		m.InsertString("  ")
 
 	default:
+		if m.preserveEndings && msg.Mod&(tea.ModCtrl|tea.ModAlt) == 0 && msg.Text != "" && !m.allowInsertion(msg.Text) {
+			return
+		}
 		if msg.Mod&(tea.ModCtrl|tea.ModAlt) == 0 && msg.Text != "" && !unicode.IsControl([]rune(msg.Text)[0]) {
 			for _, r := range msg.Text {
 				m.InsertRune(r)

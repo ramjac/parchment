@@ -16,6 +16,7 @@ import (
 	"example.com/parchment/internal/filerepo"
 	"example.com/parchment/internal/imageedit"
 	"example.com/parchment/internal/note"
+	"example.com/parchment/internal/notetext"
 	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/spreadsheet"
 	"example.com/parchment/internal/tui"
@@ -39,13 +40,39 @@ func tuiCommand() *cobra.Command {
 		},
 	}
 	command.Flags().String("kind", "", "kind to create when the file is missing: note, document, spreadsheet, or presentation")
+	addEncodingFlag(command)
 	return command
+}
+
+func addEncodingFlag(command *cobra.Command) {
+	command.Flags().String("encoding", notetext.Auto, "existing plain-note encoding: auto, utf-8, utf-16le, utf-16be, windows-1252, iso-8859-1, or shift-jis")
+}
+
+func resolveTUIEncoding(cmd *cobra.Command, path string, kind artifact.Kind) (string, error) {
+	name, _ := cmd.Flags().GetString("encoding")
+	encoding, err := notetext.ParseEncoding(name)
+	if err != nil {
+		return "", err
+	}
+	if cmd.Flags().Changed("encoding") {
+		if kind != artifact.NoteKind {
+			return "", errors.New("--encoding is only supported for existing plain-text notes")
+		}
+		if _, err := filerepo.Kind(path); !errors.Is(err, filerepo.ErrNotArtifact) {
+			return "", errors.New("--encoding is only supported for existing plain-text notes")
+		}
+	}
+	return encoding, nil
 }
 
 // runTUI opens arg in the interactive editor. edit opens an existing
 // document in its editor instead of its reader.
 func runTUI(cmd *cobra.Command, arg string, requested artifact.Kind, edit bool) error {
 	path, kind, err := resolveTUITarget(arg, requested)
+	if err != nil {
+		return err
+	}
+	encoding, err := resolveTUIEncoding(cmd, path, kind)
 	if err != nil {
 		return err
 	}
@@ -71,6 +98,7 @@ func runTUI(cmd *cobra.Command, arg string, requested artifact.Kind, edit bool) 
 		UndoLimit:     settings.UndoLimit,
 		LastPDFPath:   lastPDFPath,
 		PDFStore:      repo,
+		NoteEncoding:  encoding,
 	})
 	for _, w := range repo.Warnings() {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", w)

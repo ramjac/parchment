@@ -11,6 +11,7 @@ import (
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/note"
+	"example.com/parchment/internal/notetext"
 	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/recovery"
 	"example.com/parchment/internal/spreadsheet"
@@ -43,6 +44,11 @@ type presentationRecoveryData struct {
 // noteRecoveryData is the autosaved note editor state: the saved note the
 // edits started from and the unsaved body.
 type noteRecoveryData struct {
+	Version        int                        `json:"version,omitempty"`
+	Plain          bool                       `json:"plain,omitempty"`
+	Raw            []byte                     `json:"raw,omitempty"`
+	Format         notetext.Format            `json:"format,omitempty"`
+	Endings        []notetext.Ending          `json:"endings,omitempty"`
 	Snapshot       note.Note                  `json:"snapshot"`
 	SnapshotBody   string                     `json:"snapshot_body"`
 	SnapshotBlocks map[string]json.RawMessage `json:"snapshot_blocks,omitempty"`
@@ -87,6 +93,13 @@ func (m *Model) saveNoteRecovery(session uint64) tea.Cmd {
 		SnapshotBlocks: cloneRawMessages(m.snapshot.Blocks),
 		Body:           m.bodyInput.Value(),
 	}
+	if m.textSnapshot != nil {
+		data.Version, data.Plain = 2, true
+		data.Raw = append([]byte(nil), m.textSnapshot.Raw...)
+		data.Format = m.textSnapshot.Format
+		data.SnapshotBody = ""
+		data.Endings = m.bodyInput.Document().Endings
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.autosaveCancel = cancel
 	store := m.recoveryStore
@@ -129,6 +142,21 @@ func (m *Model) recoverDraft() tea.Cmd {
 		if err := json.Unmarshal(draft.Data, &data); err != nil {
 			m.errMessage = "Decode autosaved note: " + err.Error() + "; press d to discard it"
 			return nil
+		}
+		if data.Version != 0 && data.Version != 2 {
+			m.errMessage = "Unsupported autosaved note version; press d to discard it"
+			return nil
+		}
+		if data.Plain {
+			return m.recoverPlainNote(data)
+		}
+		if data.Version == 0 && opened.text != nil && opened.text.Plain {
+			data.Plain = true
+			data.Raw = []byte(data.SnapshotBody)
+			data.Format = notetext.Format{Encoding: notetext.UTF8}
+			data.Endings = notetext.Split(data.Body).Endings
+			data.Body = notetext.Split(data.Body).Text
+			return m.recoverPlainNote(data)
 		}
 		snapshot := data.Snapshot
 		snapshot.Body, snapshot.Blocks, snapshot.Path = data.SnapshotBody, cloneRawMessages(data.SnapshotBlocks), m.path
