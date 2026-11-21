@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"image"
 	"image/color"
 	"image/png"
@@ -9,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"example.com/parchment/internal/spreadsheet"
 )
 
 func TestPresentationCLI(t *testing.T) {
@@ -64,6 +67,38 @@ func TestPresentationPreviewResolvesEmbeddedChartReferences(t *testing.T) {
 		strings.Contains(preview, "parchment-chart:") ||
 		strings.Contains(preview, "Spreadsheet: Revenue") {
 		t.Fatalf("presentation preview did not resolve slide content independently from notes:\n%s", preview)
+	}
+}
+
+func TestPresentationPreviewResolvesEmbeddedReferencesInHeader(t *testing.T) {
+	c := newCLI(t)
+	sourcePath := filepath.Join(t.TempDir(), "deck.md")
+	source := "# A Talk\n\n![Spreadsheet](parchment-sheet:data)\n\n## Welcome\n\nHello.\n"
+	if err := os.WriteFile(sourcePath, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c.must("presentation", "create", "deck.md", "--body-file", sourcePath)
+	_, service, err := openPresentations(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := service.Get(context.Background(), "deck.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workbook := spreadsheet.Workbook{
+		Sheets: []spreadsheet.Sheet{{
+			ID: "data", Name: "Data",
+			Rows: [][]spreadsheet.Cell{{{Value: "expanded-header-value"}}},
+		}},
+	}
+	if _, err := service.UpdateContent(context.Background(), item, item.Source, workbook); err != nil {
+		t.Fatal(err)
+	}
+
+	preview := c.must("presentation", "preview", "deck.md")
+	if !strings.Contains(preview, "expanded-header-value") || strings.Contains(preview, "parchment-sheet:") {
+		t.Fatalf("presentation preview did not resolve its header reference:\n%s", preview)
 	}
 }
 

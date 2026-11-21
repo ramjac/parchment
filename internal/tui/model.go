@@ -312,6 +312,11 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m, m.updateKey(msg)
 	case tea.PasteMsg:
+		if m.stage == stageNote && !m.pending && m.pdfPrompt == promptPDF {
+			var cmd tea.Cmd
+			m.pdfInput, cmd = m.pdfInput.Update(msg)
+			return m, cmd
+		}
 		if m.stage == stageNote && !m.pending && !m.previewing && m.pdfPrompt == promptNone {
 			if m.find.active {
 				return m, m.updateFindKey(msg)

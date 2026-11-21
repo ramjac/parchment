@@ -118,6 +118,7 @@ func addPresentationCommands(root *cobra.Command, streams output) {
 			if err != nil {
 				return err
 			}
+			deck.Header, _ = printing.ExpandEmbeddedReferences(deck.Header, item.Workbook)
 			for index := range deck.Slides {
 				deck.Slides[index].Body, _ = printing.ExpandEmbeddedReferences(deck.Slides[index].Body, item.Workbook)
 			}

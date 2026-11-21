@@ -133,30 +133,30 @@ func (s *documentsScreen) documentMarkdownFormatter(doc document.Document) docum
 					}
 				}
 			}
+			if s.imageState.markNavigation {
+				for _, block := range htmlBlocks {
+					for _, match := range documentImageAnchorRE.FindAllStringSubmatch(string(block.Text(source)), -1) {
+						for index, section := range s.imageState.outline {
+							if !section.Anchor || section.Slug != match[1] || s.documentSectionMarked(index) {
+								continue
+							}
+							marker := s.nextDocumentImageMarker()
+							s.imageState.navigation[marker] = index
+							start := len(source)
+							source = append(source, []byte(string(marker))...)
+							paragraph := ast.NewParagraph()
+							paragraph.AppendChild(paragraph, ast.NewTextSegment(text.NewSegment(start, len(source))))
+							block.Parent().InsertBefore(block.Parent(), block, paragraph)
+							break
+						}
+					}
+				}
+			}
 			for _, anchor := range anchors {
 				var raw strings.Builder
 				for i := 0; i < anchor.Segments.Len(); i++ {
 					segment := anchor.Segments.At(i)
 					raw.Write(segment.Value(source))
-				}
-				if s.imageState.markNavigation {
-					for _, block := range htmlBlocks {
-						for _, match := range documentImageAnchorRE.FindAllStringSubmatch(string(block.Text(source)), -1) {
-							for index, section := range s.imageState.outline {
-								if !section.Anchor || section.Slug != match[1] || s.documentSectionMarked(index) {
-									continue
-								}
-								marker := s.nextDocumentImageMarker()
-								s.imageState.navigation[marker] = index
-								start := len(source)
-								source = append(source, []byte(string(marker))...)
-								paragraph := ast.NewParagraph()
-								paragraph.AppendChild(paragraph, ast.NewTextSegment(text.NewSegment(start, len(source))))
-								block.Parent().InsertBefore(block.Parent(), block, paragraph)
-								break
-							}
-						}
-					}
 				}
 				match := documentImageAnchorRE.FindStringSubmatch(raw.String())
 				if len(match) == 0 {

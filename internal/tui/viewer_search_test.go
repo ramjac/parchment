@@ -307,7 +307,7 @@ func TestSpreadsheetSearchInvalidatedByWorkbookChanges(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	driveSheet(t, m, m.load())
+	driveSheet(t, m, m.load()())
 	search := func() {
 		t.Helper()
 		driveSheet(t, m, sheetKey("/"))

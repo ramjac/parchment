@@ -1260,6 +1260,32 @@ func TestDocumentReaderContinuousRenderingAndNavigation(t *testing.T) {
 	}
 }
 
+func TestDocumentReaderStandaloneHTMLBlockAnchorNavigation(t *testing.T) {
+	h := newHarness(t, "")
+	body := "# Start\n\n" + strings.Repeat("Before.\n\n", 25) +
+		"<a id=\"destination\"></a>\n\n" + strings.Repeat("After.\n\n", 25)
+	if _, err := h.docs.Create(context.Background(), h.path, document.Draft{Body: body}); err != nil {
+		t.Fatal(err)
+	}
+	h.open(artifact.DocumentKind)
+	h.send(tea.WindowSizeMsg{Width: 100, Height: 20})
+	s := h.m.documents
+	anchor := -1
+	for index, section := range s.outline {
+		if section.Anchor && section.Slug == "destination" {
+			anchor = index
+			break
+		}
+	}
+	if anchor < 0 || s.readerRows[anchor] < 0 {
+		t.Fatalf("standalone HTML block anchor missing from reader outline: %+v rows=%v", s.outline, s.readerRows)
+	}
+	s.navigateToTarget("destination")
+	if s.reader.YOffset() != s.readerRows[anchor] {
+		t.Fatalf("anchor navigation landed on %d, want %d", s.reader.YOffset(), s.readerRows[anchor])
+	}
+}
+
 func TestDocumentReaderSectionNavigationInShortDocument(t *testing.T) {
 	h := newHarness(t, "")
 	if _, err := h.docs.Create(context.Background(), h.path, document.Draft{

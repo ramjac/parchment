@@ -69,6 +69,32 @@ func TestNotePDFExportUsesUnsavedEditsAndRemembersPath(t *testing.T) {
 	}
 }
 
+func TestNotePDFPromptAcceptsBracketedPaste(t *testing.T) {
+	h := newHarness(t, artifact.NoteKind)
+	h.send(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
+	if h.m.pdfPrompt != promptPDF {
+		t.Fatal("Ctrl+P did not open the note PDF prompt")
+	}
+	h.m.pdfInput.SetValue("")
+	h.send(tea.PasteMsg{Content: "/tmp/pasted.pdf"})
+	if got := h.m.pdfInput.Value(); got != "/tmp/pasted.pdf" {
+		t.Fatalf("pasted PDF output path = %q", got)
+	}
+
+	h.m.pending = true
+	h.send(tea.PasteMsg{Content: "ignored-pending"})
+	h.m.pending = false
+	if got := h.m.pdfInput.Value(); got != "/tmp/pasted.pdf" {
+		t.Fatalf("paste during a pending operation changed the output path: %q", got)
+	}
+
+	h.m.pdfPrompt = promptPDFOverwrite
+	h.send(tea.PasteMsg{Content: "ignored-overwrite"})
+	if got := h.m.pdfInput.Value(); got != "/tmp/pasted.pdf" {
+		t.Fatalf("paste during overwrite confirmation changed the output path: %q", got)
+	}
+}
+
 func notePDFContains(pdf []byte, text string) bool {
 	for _, stream := range bytes.Split(pdf, []byte("stream\n"))[1:] {
 		reader, err := zlib.NewReader(bytes.NewReader(stream))
