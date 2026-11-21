@@ -32,12 +32,24 @@ func (t *mouseClickTracker) reset() {
 }
 
 func sourcePositionForRenderedWord(line string, column int, source string, preferredLine int) (int, int, bool) {
-	word, _, ok := renderedWordHit(line, column)
+	start, end := sourceSectionLineRange(source, preferredLine, 0)
+	return sourcePositionForRenderedWordInRange(line, column, source, preferredLine, start, end)
+}
+
+func sourcePositionForRenderedWordInRange(
+	line string, column int, source string, preferredLine, startLine, endLine int,
+) (int, int, bool) {
+	word, before, after, ok := renderedWordContext(line, column)
 	if !ok {
 		return 0, 0, false
 	}
 	bestLine, bestColumn, bestDistance := 0, 0, int(^uint(0)>>1)
-	for lineNumber, sourceLine := range strings.Split(source, "\n") {
+	bestContext := -1
+	lines := strings.Split(source, "\n")
+	startLine = max(0, min(startLine, len(lines)))
+	endLine = max(startLine, min(endLine, len(lines)))
+	for lineNumber := startLine; lineNumber < endLine; lineNumber++ {
+		sourceLine := lines[lineNumber]
 		runes := []rune(sourceLine)
 		for start := 0; start < len(runes); {
 			if !wordRune(runes[start]) {
@@ -50,14 +62,130 @@ func sourcePositionForRenderedWord(line string, column int, source string, prefe
 			}
 			if strings.EqualFold(string(runes[start:end]), word) {
 				distance := abs(lineNumber - preferredLine)
-				if distance < bestDistance {
-					bestLine, bestColumn, bestDistance = lineNumber, start, distance
+				contextScore := sourceWordContextScore(runes, start, before, after)
+				if contextScore > bestContext ||
+					contextScore == bestContext && distance < bestDistance {
+					bestLine, bestColumn, bestContext, bestDistance = lineNumber, start, contextScore, distance
 				}
 			}
 			start = end
 		}
 	}
-	return bestLine, bestColumn, bestDistance != int(^uint(0)>>1)
+	return bestLine, bestColumn, bestContext >= 0
+}
+
+func sourceWordContextScore(source []rune, start int, before, after []string) int {
+	words := make([]string, 0)
+	clicked := -1
+	for i := 0; i < len(source); {
+		if !wordRune(source[i]) {
+			i++
+			continue
+		}
+		wordStart := i
+		for i < len(source) && wordRune(source[i]) {
+			i++
+		}
+		if wordStart == start {
+			clicked = len(words)
+		}
+		words = append(words, string(source[wordStart:i]))
+	}
+	if clicked < 0 {
+		return 0
+	}
+	score := 0
+	for distance := 1; distance <= len(before) && clicked-distance >= 0; distance++ {
+		if !strings.EqualFold(words[clicked-distance], before[len(before)-distance]) {
+			break
+		}
+		score++
+	}
+	for distance := 0; distance < len(after) && clicked+distance+1 < len(words); distance++ {
+		if !strings.EqualFold(words[clicked+distance+1], after[distance]) {
+			break
+		}
+		score++
+	}
+	return score
+}
+
+func renderedWordContext(line string, column int) (string, []string, []string, bool) {
+	word, startCell, ok := renderedWordHit(line, column)
+	if !ok {
+		return "", nil, nil, false
+	}
+	runes := []rune(ansi.Strip(line))
+	var words []string
+	clicked := -1
+	cell := 0
+	for i := 0; i < len(runes); {
+		if !wordRune(runes[i]) {
+			cell += runewidth.RuneWidth(runes[i])
+			i++
+			continue
+		}
+		start := i
+		startColumn := cell
+		for i < len(runes) && wordRune(runes[i]) {
+			cell += runewidth.RuneWidth(runes[i])
+			i++
+		}
+		words = append(words, string(runes[start:i]))
+		if startColumn == startCell {
+			clicked = len(words) - 1
+		}
+	}
+	if clicked < 0 {
+		return "", nil, nil, false
+	}
+	return word, words[:clicked], words[clicked+1:], true
+}
+
+func sourceSectionLineRange(source string, startLine, boundaryLevel int) (int, int) {
+	lines := strings.Split(source, "\n")
+	if startLine < 0 || startLine >= len(lines) {
+		return 0, len(lines)
+	}
+	level := sourceHeadingLevel(lines[startLine])
+	if level == 0 {
+		return 0, len(lines)
+	}
+	if boundaryLevel == 0 {
+		boundaryLevel = level
+	}
+	endLine := len(lines)
+	fence := ""
+	for lineNumber := startLine + 1; lineNumber < len(lines); lineNumber++ {
+		trimmed := trimLeftSpaces(lines[lineNumber])
+		if fence != "" {
+			if strings.HasPrefix(trimmed, fence) {
+				fence = ""
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			fence = trimmed[:3]
+			continue
+		}
+		if nextLevel := sourceHeadingLevel(trimmed); nextLevel > 0 && nextLevel <= boundaryLevel {
+			endLine = lineNumber
+			break
+		}
+	}
+	return startLine, endLine
+}
+
+func sourceHeadingLevel(line string) int {
+	trimmed := trimLeftSpaces(line)
+	level := 0
+	for level < len(trimmed) && trimmed[level] == '#' {
+		level++
+	}
+	if level == 0 || level > 6 || len(trimmed) <= level || trimmed[level] != ' ' {
+		return 0
+	}
+	return level
 }
 
 // sourcePositionAtViewport finds visible text near the top of a rendered view.

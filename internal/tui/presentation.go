@@ -403,7 +403,10 @@ func (m *presentationModel) updatePresentation(message tea.Msg) (tea.Model, tea.
 				}
 				if m.browseClicks.click(clickColumn, row, time.Now()) {
 					preferredLine := slideSourceLine(m.item.Source, m.page)
-					line, column, found := sourcePositionForRenderedWord(lines[row], msg.X-2, m.item.Source, preferredLine)
+					startLine, endLine := sourceSectionLineRange(m.item.Source, preferredLine, 2)
+					line, column, found := sourcePositionForRenderedWordInRange(
+						lines[row], msg.X-2, m.item.Source, preferredLine, startLine, endLine,
+					)
 					if !found {
 						line, column = preferredLine, 0
 					}

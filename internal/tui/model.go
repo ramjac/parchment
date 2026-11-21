@@ -321,6 +321,7 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.find.active {
 				return m, m.updateFindKey(msg)
 			}
+			m.discardWarning = false
 			var cmd tea.Cmd
 			m.bodyInput, cmd = m.bodyInput.Update(msg)
 			return m, cmd

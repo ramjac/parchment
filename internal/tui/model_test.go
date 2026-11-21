@@ -274,6 +274,24 @@ func TestNoteEditorPastesClipboardText(t *testing.T) {
 	}
 }
 
+func TestPastingAfterEscRequiresDiscardConfirmationAgain(t *testing.T) {
+	h := newHarness(t, artifact.NoteKind)
+	h.send(tea.PasteMsg{Content: "initial text"})
+	h.send(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if !h.m.discardWarning {
+		t.Fatal("Esc did not show the unsaved-changes warning")
+	}
+
+	h.send(tea.PasteMsg{Content: " more text"})
+	if h.m.discardWarning {
+		t.Fatal("paste left the previous discard warning active")
+	}
+	h.send(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if !h.m.discardWarning || h.m.stage != stageNote {
+		t.Fatal("Esc after paste did not require a fresh discard confirmation")
+	}
+}
+
 func (h *harness) hasDraft() bool {
 	h.t.Helper()
 	_, ok, err := h.repo.LoadRecovery(context.Background(), h.path)

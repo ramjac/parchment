@@ -273,6 +273,28 @@ func TestPresentationDoubleClickOpensEditorAtClickedWord(t *testing.T) {
 	}
 }
 
+func TestPresentationDoubleClickTargetsRepeatedWordOccurrence(t *testing.T) {
+	m, _, _ := newPresentationTestModel(t)
+	m.setItem(presentation.Presentation{
+		Source: "# Deck\n\n## Slide\n\nalpha beta alpha\n",
+	})
+	m.goToPage(1)
+	lines := m.pageLines()
+	row, _ := renderedWordPosition(lines, "alpha")
+	column := strings.LastIndex(ansi.Strip(lines[row]), "alpha")
+	msg := mouseEvent{X: column + 2, Y: row + 2, Action: mousePress, Button: mouseLeft}
+	drivePresentation(t, m, msg)
+	msg.X += 3
+	drivePresentation(t, m, msg)
+
+	if !m.editing {
+		t.Fatal("double click did not open the editor")
+	}
+	if got, want := m.editor.Cursor, (editor.Point{Line: 4, Col: len("alpha beta ")}); got != want {
+		t.Fatalf("editor cursor = %+v, want clicked occurrence at %+v", got, want)
+	}
+}
+
 func TestPresentationOpeningEditorPreservesScrolledLocation(t *testing.T) {
 	for _, action := range []string{"double click", "keyboard"} {
 		t.Run(action, func(t *testing.T) {

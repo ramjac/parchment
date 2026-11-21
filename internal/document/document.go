@@ -373,10 +373,6 @@ func (s *Service) applyWithTracking(ctx context.Context, expected Document, desc
 			}
 		}
 	}
-	existingChanges := make(map[string]bool, len(expected.TrackedChanges))
-	for _, change := range expected.TrackedChanges {
-		existingChanges[change.ID] = true
-	}
 	body := after.Body
 	after.Body = expected.Body
 	if err := EditTrackedBody(after, body, track, s.now()); err != nil {
@@ -387,8 +383,39 @@ func (s *Service) applyWithTracking(ctx context.Context, expected Document, desc
 		if err != nil {
 			return Document{}, fmt.Errorf("generate tracked spreadsheet change ID: %w", err)
 		}
+		existingByID := make(map[string]TrackedChange, len(expected.TrackedChanges))
+		for _, change := range expected.TrackedChanges {
+			existingByID[change.ID] = change
+		}
+		members := make(map[string]bool)
+		groups := make(map[string]bool)
 		for i := range after.TrackedChanges {
-			if !existingChanges[after.TrackedChanges[i].ID] {
+			change := after.TrackedChanges[i]
+			if change.Kind == trackedWorkbookKind {
+				continue
+			}
+			existing, ok := existingByID[change.ID]
+			if !ok || existing.Deleted != change.Deleted || existing.Inserted != change.Inserted {
+				members[change.ID] = true
+				if existing.Group != "" {
+					groups[existing.Group] = true
+				}
+				if change.Group != "" {
+					groups[change.Group] = true
+				}
+			}
+		}
+		for i := range after.TrackedChanges {
+			change := after.TrackedChanges[i]
+			if change.Kind == trackedWorkbookKind {
+				continue
+			}
+			if groups[change.Group] {
+				members[change.ID] = true
+			}
+		}
+		for i := range after.TrackedChanges {
+			if members[after.TrackedChanges[i].ID] {
 				after.TrackedChanges[i].Group = id
 			}
 		}

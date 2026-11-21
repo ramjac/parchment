@@ -256,6 +256,31 @@ func TestDocumentReaderDoubleClickOpensEditorAtClickedWord(t *testing.T) {
 	}
 }
 
+func TestDocumentReaderDoubleClickTargetsRepeatedWordOccurrence(t *testing.T) {
+	h := newDocumentHarness(t, document.Draft{})
+	s := h.m.documents
+	s.width = 70
+	s.snapshot = document.Document{
+		Body:   "# Heading\n\nalpha beta alpha",
+		Layout: document.DefaultLayout(),
+	}
+	s.startReading(s.snapshot)
+
+	row, _ := renderedWordPosition(s.readerLines, "alpha")
+	column := strings.LastIndex(ansi.Strip(s.readerLines[row]), "alpha")
+	msg := mouseEvent{X: column + 2, Y: row + 3, Action: mousePress, Button: mouseLeft}
+	s.updateReaderMouse(msg)
+	msg.X += 3
+	s.updateReaderMouse(msg)
+
+	if s.reading {
+		t.Fatal("double click did not open the editor")
+	}
+	if got, want := s.body.Cursor, (editor.Point{Line: 2, Col: len("alpha beta ")}); got != want {
+		t.Fatalf("editor cursor = %+v, want clicked occurrence at %+v", got, want)
+	}
+}
+
 func TestDocumentReaderOpeningEditorPreservesScrolledLocation(t *testing.T) {
 	for _, action := range []string{"double click", "keyboard"} {
 		t.Run(action, func(t *testing.T) {
