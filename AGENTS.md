@@ -104,11 +104,8 @@ For current commands and user workflows, see the [User Guide](docs/User_Guide.md
 - Changes to `main` must only be integrated by merging a Pull Request on GitHub.
   Never commit directly to `main` or update it outside a GitHub Pull Request
   merge.
-- Parchment has not had its first release and has no legacy artifacts or
-  compatibility obligations. Do not add legacy-format support, migrations, or
-  backwards-compatibility handling for artifact format changes. If format
-  requirements change incompatibly, update the implementation and the
-  checked-in files in `examples/`. Remove this instruction at the first release.
+- During the beta, artifact formats may change without backward-compatibility
+  guarantees. Communicate breaking changes and advise users to back up files.
 - Keep note behavior in the service layer and persistence in the filesystem
   repository; the CLI and TUI should orchestrate these rather than duplicate
   note rules.

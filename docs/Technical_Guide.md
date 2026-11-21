@@ -59,8 +59,8 @@ allowed). It is JSON and currently contains exactly:
 
 Do not add an ID, title, path, tags, or links to shared metadata. The file
 name is the user-visible name; runtime identity is derived from the path.
-Parchment has not had a first release and does not promise compatibility with
-older envelope formats.
+During the beta, artifact formats may change without backward-compatibility
+guarantees. Back up files before using the beta or upgrading.
 
 The exact `<!-- parchment-body -->` line separates the envelope from the
 canonical body. The body is retained as Markdown source; renderers must not

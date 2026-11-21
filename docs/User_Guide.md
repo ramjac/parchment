@@ -7,13 +7,31 @@ This guide covers the workflows shown in the [example artifacts](../examples/).
 
 ## Install and open files
 
-Parchment requires Go 1.26.8 or newer. From a clone of this repository:
+The [Linux amd64 beta release](https://github.com/ramjac/parchment/releases/tag/v0.5.0-beta.1)
+includes a prebuilt executable. Download and verify it:
+
+```sh
+curl -fLO https://github.com/ramjac/parchment/releases/download/v0.5.0-beta.1/parchment_v0.5.0-beta.1_linux_amd64.tar.gz
+curl -fLO https://github.com/ramjac/parchment/releases/download/v0.5.0-beta.1/checksums.txt
+sha256sum -c checksums.txt
+tar -xzf parchment_v0.5.0-beta.1_linux_amd64.tar.gz
+mkdir -p "$HOME/.local/bin"
+install -m 755 parchment "$HOME/.local/bin/parchment"
+```
+
+Ensure `~/.local/bin` is on `PATH`. Beta artifact formats may change without
+backward-compatibility guarantees; back up your files before using the beta or
+upgrading.
+
+Alternatively, building from source requires Go 1.26.8 or newer. From a clone
+of this repository:
 
 ```sh
 go install ./cmd/parchment
 ```
 
-Make sure `$(go env GOPATH)/bin` is on `PATH`, then check the command:
+Make sure `$(go env GOPATH)/bin` is on `PATH` when installing from source.
+Check either installation with:
 
 ```sh
 parchment --help

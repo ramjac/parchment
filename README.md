@@ -17,8 +17,27 @@ require an account, workspace, or managed library.
 
 ## Install
 
-Parchment requires Go 1.26.8 or newer. Clone this repository, then install the
-command from its module directory:
+### Linux amd64 binary
+
+Download and verify the [0.5.0 beta release](https://github.com/ramjac/parchment/releases/tag/v0.5.0-beta.1):
+
+```sh
+curl -fLO https://github.com/ramjac/parchment/releases/download/v0.5.0-beta.1/parchment_v0.5.0-beta.1_linux_amd64.tar.gz
+curl -fLO https://github.com/ramjac/parchment/releases/download/v0.5.0-beta.1/checksums.txt
+sha256sum -c checksums.txt
+tar -xzf parchment_v0.5.0-beta.1_linux_amd64.tar.gz
+mkdir -p "$HOME/.local/bin"
+install -m 755 parchment "$HOME/.local/bin/parchment"
+```
+
+Ensure `~/.local/bin` is on your `PATH`, then run `parchment --help`.
+This is a beta: artifact formats may change without backward-compatibility
+guarantees. Back up your files before using it or upgrading.
+
+### Build from source
+
+Building from source requires Go 1.26.8 or newer. Clone this repository, then
+install the command from its module directory:
 
 ```sh
 git clone https://github.com/ramjac/parchment.git
