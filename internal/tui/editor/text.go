@@ -29,11 +29,23 @@ func (m *Model) SetDocument(doc notetext.Document) error {
 	m.SetValue(doc.Text)
 	m.preserveEndings = true
 	m.endings = slices.Clone(doc.Endings)
+	m.normalizeEndings()
 	return nil
 }
 
 func (m Model) Document() notetext.Document {
 	return notetext.Document{Text: m.Value(), Endings: slices.Clone(m.endings)}
+}
+
+func (m *Model) normalizeEndings() {
+	if !m.preserveEndings {
+		return
+	}
+	for i := 1; i < len(m.endings); i++ {
+		if m.endings[i-1] == notetext.CR && m.endings[i] == notetext.LF && len(m.Lines[i]) == 0 {
+			m.endings[i] = notetext.CRLF
+		}
+	}
 }
 
 func (m *Model) TakeInputError() error {

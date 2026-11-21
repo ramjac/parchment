@@ -19,14 +19,15 @@ func openNoteText(ctx context.Context, notes *note.Service, path, encoding strin
 		return snapshot, nil, err
 	}
 	var data noteRecoveryData
-	if json.Unmarshal(draft.Data, &data) != nil || !data.Plain || data.Version != 2 {
+	if json.Unmarshal(draft.Data, &data) != nil ||
+		(data.Version != 0 && (!data.Plain || data.Version != 2)) {
 		return snapshot, nil, err
 	}
 	current, readErr := notes.Get(ctx, path)
 	if readErr != nil {
 		return snapshot, nil, err
 	}
-	if (encoding == "" || encoding == notetext.Auto) && bytes.Equal([]byte(current.Body), data.Raw) {
+	if data.Version == 2 && (encoding == "" || encoding == notetext.Auto) && bytes.Equal([]byte(current.Body), data.Raw) {
 		if decoded, decodeErr := notes.OpenText(ctx, path, data.Format.Encoding); decodeErr == nil {
 			return decoded, nil, nil
 		}

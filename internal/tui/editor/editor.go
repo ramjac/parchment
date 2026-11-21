@@ -690,6 +690,7 @@ func (m *Model) DeleteSelection() bool {
 			m.endings = slices.Delete(m.endings, start.Line, end.Line)
 		}
 	}
+	m.normalizeEndings()
 	m.Cursor = start
 	m.updateStickyCol()
 	m.Selection = Selection{Anchor: start, Active: false}
@@ -726,6 +727,7 @@ func (m *Model) InsertRune(r rune) {
 	m.Cursor.Col++
 	m.updateStickyCol()
 	m.Selection = Selection{Anchor: m.Cursor, Active: false}
+	m.normalizeEndings()
 	m.ensureCursorVisible()
 }
 
@@ -752,6 +754,7 @@ func (m *Model) InsertString(s string) {
 			m.insertRuneWithoutSnapshot(r)
 		}
 	}
+	m.normalizeEndings()
 }
 
 func (m *Model) insertRuneWithoutSnapshot(r rune) {
@@ -784,6 +787,7 @@ func (m *Model) insertNewlineWithoutSnapshot(ending notetext.Ending) {
 	m.Cursor.Col = 0
 	m.StickyCol = 0
 	m.Selection = Selection{Anchor: m.Cursor, Active: false}
+	m.normalizeEndings()
 	m.ensureCursorVisible()
 }
 
@@ -1313,6 +1317,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) {
 		}
 	}
 
+	m.normalizeEndings()
 	m.ensureCursorVisible()
 }
 

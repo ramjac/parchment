@@ -40,6 +40,40 @@ func TestPreservedBoundariesFollowEditsAndUndo(t *testing.T) {
 	}
 }
 
+func TestDeletingTextResolvesAdjacentCRLFBoundaries(t *testing.T) {
+	original := notetext.Split("a\rb\nc")
+	m := New()
+	if err := m.SetDocument(original); err != nil {
+		t.Fatal(err)
+	}
+	m.Cursor = Point{Line: 1, Col: 1}
+	m.Selection = Selection{Anchor: Point{Line: 1, Col: 0}, Active: true}
+	m.DeleteSelection()
+
+	edited := m.Document()
+	source, err := edited.Source()
+	if err != nil || source != "a\r\r\nc" {
+		t.Fatalf("edited source = %q, %v; want both newlines preserved", source, err)
+	}
+	if !m.Undo() || !m.Document().Equal(original) {
+		t.Fatal("undo did not restore original line endings")
+	}
+	if !m.Redo() || !m.Document().Equal(edited) {
+		t.Fatal("redo did not restore adjusted line endings")
+	}
+
+	recovered := New()
+	if err := recovered.SetDocument(notetext.Document{
+		Text: "a\n\nc", Endings: []notetext.Ending{notetext.CR, notetext.LF},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	source, err = recovered.Document().Source()
+	if err != nil || source != "a\r\r\nc" {
+		t.Fatalf("recovered source = %q, %v; want both saved newlines", source, err)
+	}
+}
+
 func TestNearestEndingAndPasteReplacement(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

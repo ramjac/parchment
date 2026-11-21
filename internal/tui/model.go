@@ -776,10 +776,10 @@ func closeEditor(store recovery.Store, path string) tea.Cmd {
 func (m *Model) history(undo bool) tea.Cmd {
 	m.pending = true
 	ctx := m.startOperation()
-	service, path, encoding := m.service, m.path, m.noteEncoding
-	requested := encoding
+	service, path, requested := m.service, m.path, m.noteEncoding
+	fallback := ""
 	if m.textSnapshot != nil {
-		encoding = m.textSnapshot.Format.Encoding
+		fallback = m.textSnapshot.Format.Encoding
 	}
 	return func() tea.Msg {
 		run, prefix := service.Redo, "Redid "
@@ -790,9 +790,16 @@ func (m *Model) history(undo bool) tea.Cmd {
 		if err != nil {
 			return historyChangedMsg{history: queryHistoryAvailability(ctx, service.HistoryAvailability), err: err}
 		}
-		snapshot, err := service.OpenText(ctx, path, encoding)
-		if err != nil && requested == notetext.Auto && encoding != notetext.Auto {
-			snapshot, err = service.OpenText(ctx, path, notetext.Auto)
+		encodings := []string{requested}
+		if fallback != "" && fallback != notetext.Auto && fallback != requested {
+			encodings = append(encodings, fallback)
+		}
+		var snapshot note.TextSnapshot
+		for _, encoding := range encodings {
+			snapshot, err = service.OpenText(ctx, path, encoding)
+			if err == nil {
+				break
+			}
 		}
 		msg := historyChangedMsg{
 			description: prefix + strings.ToLower(description), note: snapshot.Note, changed: true,

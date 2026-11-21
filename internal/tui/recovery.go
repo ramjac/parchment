@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -150,12 +151,20 @@ func (m *Model) recoverDraft() tea.Cmd {
 		if data.Plain {
 			return m.recoverPlainNote(data)
 		}
-		if data.Version == 0 && opened.text != nil && opened.text.Plain {
+		if data.Version == 0 && ((opened.text != nil && opened.text.Plain) || opened.noteOpenErr != nil) {
+			raw := []byte(data.SnapshotBody)
+			_, format, err := notetext.Decode(raw, notetext.Auto)
+			if err != nil {
+				m.errMessage = "Decode legacy note recovery baseline: " + err.Error() + "; press d to discard it"
+				return nil
+			}
 			data.Plain = true
-			data.Raw = []byte(data.SnapshotBody)
-			data.Format = notetext.Format{Encoding: notetext.UTF8}
-			data.Endings = notetext.Split(data.Body).Endings
-			data.Body = notetext.Split(data.Body).Text
+			data.Raw, data.Format = raw, format
+			if format.BOM {
+				data.Body = strings.TrimPrefix(data.Body, "\ufeff")
+			}
+			draft := notetext.Split(data.Body)
+			data.Endings, data.Body = draft.Endings, draft.Text
 			return m.recoverPlainNote(data)
 		}
 		snapshot := data.Snapshot
