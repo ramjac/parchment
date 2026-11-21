@@ -7,7 +7,7 @@ This guide covers the workflows shown in the [example artifacts](../examples/).
 
 ## Install and open files
 
-Parchment requires Go 1.24 or newer. From a clone of this repository:
+Parchment requires Go 1.26.8 or newer. From a clone of this repository:
 
 ```sh
 go install ./cmd/parchment

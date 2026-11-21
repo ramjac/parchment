@@ -6,7 +6,7 @@ codebase.
 
 ## Build, test, and format
 
-Use Go 1.24 or newer.
+Use Go 1.26.8 or newer.
 
 - Build: `go build ./cmd/parchment`
 - Run all tests: `go test ./...`
