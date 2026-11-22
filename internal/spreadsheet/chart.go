@@ -213,6 +213,22 @@ func DeleteChartFromBook(book *Spreadsheet, id string) error {
 
 // EvaluateChart binds chart labels and numeric series to the current workbook.
 func EvaluateChart(book *Spreadsheet, chart Chart) (ChartData, error) {
+	return evaluateChart(nil, book, chart)
+}
+
+// EvaluateChartContext evaluates a chart and stops when ctx is canceled.
+func EvaluateChartContext(ctx context.Context, book *Spreadsheet, chart Chart) (ChartData, error) {
+	if err := ctx.Err(); err != nil {
+		return ChartData{}, err
+	}
+	data, err := evaluateChart(ctx, book, chart)
+	if ctx.Err() != nil {
+		return ChartData{}, ctx.Err()
+	}
+	return data, err
+}
+
+func evaluateChart(ctx context.Context, book *Spreadsheet, chart Chart) (ChartData, error) {
 	if err := validateCharts([]Chart{chart}); err != nil {
 		return ChartData{}, err
 	}
@@ -236,7 +252,12 @@ func EvaluateChart(book *Spreadsheet, chart Chart) (ChartData, error) {
 	if chart.LastColumn-firstColumn+1 > 12 || (chart.LastRow-firstRow+1)*(chart.LastColumn-firstColumn+1) > 4096 {
 		return ChartData{}, errors.New("chart exceeds the limit of 12 series or 4096 values")
 	}
-	evaluator := NewEvaluator(book)
+	var evaluator *Evaluator
+	if ctx == nil {
+		evaluator = NewEvaluator(book)
+	} else {
+		evaluator = NewEvaluatorContext(ctx, book)
+	}
 	value := func(row, col int) (Value, error) { return evaluator.Evaluate(sheet, row, col) }
 	data := ChartData{Title: chart.Title, Type: chart.Type}
 	for c := firstColumn; c <= chart.LastColumn; c++ {

@@ -113,7 +113,8 @@ block names when encoding for deterministic output. A trailing block sequence
 may contain only reserved `parchment-*` fences; duplicate block names,
 duplicate metadata, malformed JSON, and invalid metadata are errors. Unknown
 reserved blocks can be preserved by artifact readers that do not own them.
-The current implementation caps a complete artifact at 64 MiB.
+The implementation caps complete Markdown artifacts at 16 MiB, including
+metadata and structured blocks. The same file-read cap applies to plain notes.
 
 ### Kind-specific data
 

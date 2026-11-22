@@ -63,6 +63,55 @@ type imageLoadedMsg struct {
 	err   error
 }
 type documentAutosaveTickMsg struct{ session uint64 }
+type documentReaderSearchMsg struct {
+	session uint64
+	query   string
+	matches []renderedMatch
+	err     error
+}
+type documentReaderIndexMsg struct {
+	session uint64
+	ctx     context.Context
+	doc     document.Document
+	outline []document.Section
+	rows    []int
+	width   int
+	theme   Theme
+	err     error
+}
+type documentReaderPreviewMsg struct {
+	session     uint64
+	lines       []string
+	sections    []readerSectionRow
+	next        <-chan tea.Msg
+	images      documentImageState
+	approximate bool
+}
+type documentReaderEarlyMsg struct {
+	session uint64
+	lines   []string
+	next    <-chan tea.Msg
+}
+type documentReaderRenderMsg struct {
+	session  uint64
+	lines    []string
+	sparse   []string
+	source   *readerWindowSource
+	outline  []document.Section
+	rows     []int
+	rowIndex []readerSectionRow
+	links    []linkHitBox
+	images   documentImageState
+	err      error
+}
+type documentReaderWindowMsg struct {
+	session uint64
+	offset  int
+	base    int
+	end     int
+	lines   []string
+	err     error
+}
 
 // documentDraftDiscardedMsg reports deleting the recovery draft after leaving
 // the editor.
@@ -174,6 +223,12 @@ func (documentChangesLoadedMsg) isDocumentMessage()    {}
 func (documentPDFExportedMsg) isDocumentMessage()      {}
 func (imageLoadedMsg) isDocumentMessage()              {}
 func (documentAutosaveTickMsg) isDocumentMessage()     {}
+func (documentReaderSearchMsg) isDocumentMessage()     {}
+func (documentReaderIndexMsg) isDocumentMessage()      {}
+func (documentReaderPreviewMsg) isDocumentMessage()    {}
+func (documentReaderEarlyMsg) isDocumentMessage()      {}
+func (documentReaderRenderMsg) isDocumentMessage()     {}
+func (documentReaderWindowMsg) isDocumentMessage()     {}
 func (documentAutosaveFinishedMsg) isDocumentMessage() {}
 func (documentDraftDiscardedMsg) isDocumentMessage()   {}
 
@@ -227,40 +282,83 @@ type documentEditorState struct {
 	previewMatches []renderedMatch
 	previewMatch   int
 	// editPageLine is the first page line shown by the print preview.
-	editPageLine   int
-	discardWarning bool
+	editPageLine        int
+	discardWarning      bool
+	editorOutlineOffset int
 }
 
 // documentReaderState holds state for reading/viewing a document.
 type documentReaderState struct {
 	// reading reports that the reader, not the editor, is shown.
-	reading       bool
-	reader        viewport.Model
-	readerLines   []string
-	readerLinks   []linkHitBox
-	readerRows    []int
-	readerSection int
-	readerMatches []renderedMatch
-	readerMatch   int
-	readerClicks  mouseClickTracker
-	outline       []document.Section
+	reading             bool
+	reader              viewport.Model
+	readerLines         []string
+	readerLinks         []linkHitBox
+	readerRows          []int
+	readerRowIndex      []readerSectionRow
+	readerSection       int
+	readerMatches       []renderedMatch
+	readerMatch         int
+	readerSearchSession uint64
+	readerSearchCancel  context.CancelFunc
+	readerSearching     bool
+	readerSearchSteps   int
+	readerSearchError   string
+	readerSearchRestore bool
+	readerSearchRow     int
+	backgroundReader    bool
+	readerRenderSession uint64
+	readerRenderRunning bool
+	readerRenderCancel  context.CancelFunc
+	readerRendering     bool
+	readerPreambleShown bool
+	readerStreamPreview bool
+	readerProvisional   bool
+	readerApproximate   bool
+	readerPreviewBase   int
+	readerWindowed      bool
+	readerCache         *readerWindowSource
+	readerCacheBase     int
+	readerCacheEnd      int
+	readerCacheTarget   int
+	readerCacheSession  uint64
+	readerCacheCancel   context.CancelFunc
+	readerCachePending  bool
+	readerCacheDispatch bool
+	readerQueuedInput   []tea.Msg
+	readerPreviewInputs int
+	readerPreviewStale  bool
+	readerReflowQuery   string
+	readerReflowMatch   int
+	readerReflowSteps   int
+	readerReflowPending bool
+	readerReflowRow     int
+	readerReflowOffset  int
+	readerReflowTarget  bool
+	readerClicks        mouseClickTracker
+	outline             []document.Section
+	readerOutlineOffset int
+	readerOutlineManual bool
 }
 
 // documentsScreen edits one document file and reviews its tracked changes.
 // It owns UI state only; document rules live in the document service.
 type documentsScreen struct {
-	imageState     documentImageState
-	embeddedEditor *spreadsheetModel
-	embeddedRef    string
-	service        *document.Service
-	path           string
-	width, height  int
-	pending        bool
-	outlineVisible bool
-	canUndo        bool
-	canRedo        bool
-	status         string
-	errMessage     string
+	imageState                documentImageState
+	readerSource              *readerWindowSource
+	readerProgress            func([]string) bool
+	readerProgressApproximate bool
+	embeddedEditor            *spreadsheetModel
+	embeddedRef               string
+	service                   *document.Service
+	path                      string
+	width, height             int
+	pending                   bool
+	outlineVisible            bool
+	canUndo                   bool
+	canRedo                   bool
+	status                    string
+	errMessage                string
 
 	theme               Theme
 	newOperationContext func() (context.Context, context.CancelFunc)
@@ -333,19 +431,27 @@ func newDocumentsScreen(service *document.Service, path string, newContext func(
 	}
 }
 
-func (s *documentsScreen) resize(width, height int) {
+func (s *documentsScreen) resize(width, height int) tea.Cmd {
 	if s.width != width || s.height != height {
 		s.imageState.frame++
 	}
 	s.width, s.height = width, height
 	s.resizeChangeReview()
 	s.layoutEditor()
+	var cmd tea.Cmd
 	if s.reading {
-		s.resizeReader()
+		cmd = s.resizeReader()
 	}
 	if s.embeddedEditor != nil {
 		_, _ = s.embeddedEditor.Update(tea.WindowSizeMsg{Width: width, Height: height})
 	}
+	if window := s.dispatchReaderWindow(); window != nil {
+		if cmd == nil {
+			return window
+		}
+		return tea.Batch(cmd, window)
+	}
+	return cmd
 }
 
 // resumeAutosave restarts autosave when the editor is open.
@@ -361,6 +467,12 @@ func (s *documentsScreen) update(message tea.Msg) tea.Cmd {
 	previous := s.documentImageFrame()
 	cmd := s.updateDocument(message)
 	s.invalidateDocumentImages(previous)
+	if window := s.dispatchReaderWindow(); window != nil {
+		if cmd == nil {
+			return window
+		}
+		return tea.Batch(cmd, window)
+	}
 	return cmd
 }
 
@@ -411,6 +523,20 @@ func (s *documentsScreen) updateDocument(message tea.Msg) tea.Cmd {
 		}
 	case documentAutosaveFinishedMsg:
 		return s.autosaveFinished(msg)
+	case documentReaderSearchMsg:
+		s.readerSearchFinished(msg)
+		return nil
+	case documentReaderIndexMsg:
+		return s.readerIndexFinished(msg)
+	case documentReaderPreviewMsg:
+		return s.readerPreviewFinished(msg)
+	case documentReaderEarlyMsg:
+		return s.readerEarlyFinished(msg)
+	case documentReaderRenderMsg:
+		return s.readerRenderFinished(msg)
+	case documentReaderWindowMsg:
+		s.readerWindowFinished(msg)
+		return nil
 	case documentSavedMsg:
 		return s.documentSaved(msg)
 	case documentReloadedMsg:
@@ -423,6 +549,14 @@ func (s *documentsScreen) updateDocument(message tea.Msg) tea.Cmd {
 	case imageLoadedMsg:
 		return s.imageLoaded(msg)
 	case tea.PasteMsg:
+		if s.reading && s.readerRendering {
+			if len(s.readerQueuedInput) < maxQueuedReaderInput {
+				s.readerQueuedInput = append(s.readerQueuedInput, msg)
+			} else {
+				s.errMessage = "Reader is still rendering; input queue is full"
+			}
+			return nil
+		}
 		if s.find.active {
 			break
 		}
@@ -511,12 +645,17 @@ func (s *documentsScreen) documentReloaded(msg documentReloadedMsg) tea.Cmd {
 		return s.resumeAutosave()
 	}
 	if !s.dirty() || msg.showChanges {
-		s.loadDocument(msg.document)
+		if s.reading {
+			s.loadReaderDocument(msg.document)
+		} else {
+			s.loadDocument(msg.document)
+		}
 	} else {
 		s.snapshot = msg.document
 	}
+	var readerCmd tea.Cmd
 	if s.reading {
-		s.refreshReader()
+		readerCmd = s.refreshReader()
 	}
 	s.changes = msg.changes
 	s.reviewSnapshot = msg.document
@@ -534,7 +673,7 @@ func (s *documentsScreen) documentReloaded(msg documentReloadedMsg) tea.Cmd {
 		s.status += " (could not remove recovery draft: " + msg.cleanupErr.Error() + ")"
 	}
 	s.applyHistoryAvailability(msg.history)
-	return s.resumeAutosave()
+	return tea.Batch(readerCmd, s.resumeAutosave())
 }
 
 func (s *documentsScreen) documentChangesLoaded(msg documentChangesLoadedMsg) {
@@ -974,7 +1113,9 @@ func (s *documentsScreen) statusLine() string {
 	return sanitizeTerminalLine(message) + "  ·  " + undo + "  ·  " + redo
 }
 
-func (s *documentsScreen) dirty() bool { return !s.currentDraft().equal(s.original) }
+func (s *documentsScreen) dirty() bool {
+	return !s.reading && !s.currentDraft().equal(s.original)
+}
 
 func (s *documentsScreen) currentDraft() editorDraft {
 	body := s.body.Value()

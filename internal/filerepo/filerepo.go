@@ -222,6 +222,9 @@ func (r *Repository) update(ctx context.Context, path string, create bool, notFo
 		if err != nil {
 			return err
 		}
+		if len(data) > artifactfile.MaxFileSize {
+			return fmt.Errorf("artifact file is larger than %d MiB", artifactfile.MaxFileSize>>20)
+		}
 		manifest, historyDir, tracked, err := r.prepareHistoryUnlocked(ctx, resolved, current, data, history.DescriptionFromContext(ctx), create)
 		if err != nil {
 			return fmt.Errorf("prepare history for %s: %w", path, err)

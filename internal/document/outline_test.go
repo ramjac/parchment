@@ -1,10 +1,64 @@
 package document
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"math/rand"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestReaderOutlineContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := ReaderOutlineContext(ctx, Document{Body: "# Heading", Layout: DefaultLayout()})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled outline returned %v", err)
+	}
+}
+
+func TestReaderOutlineMatchesPrintOutline(t *testing.T) {
+	parts := []string{
+		"# Duplicate", "## Duplicate", "# ` `", "### ` `", "# [Link](https://example.com)",
+		"plain text", "Exclamation!", "  \t", "\u00a0", "setext title", "-----",
+		"\t- item", "1. numbered", "+ item", "**bold**", "[label](target)", "`code`",
+		"", "```", "```parchment-hidden", "~~~", "# code", "```", "<a id=\"target\"></a>",
+		"<!-- comment -->", "- list item", "> quote", "| table |", "paragraph <a id=\"inline\"></a>",
+		"<A ID=\"capital\"></A>",
+		"<!-- parchment:page-break -->", "<!-- parchment:section-break columns=2 -->",
+	}
+	rng := rand.New(rand.NewSource(42))
+	for i := 0; i < 1000; i++ {
+		var lines []string
+		for j := 0; j < 60; j++ {
+			lines = append(lines, parts[rng.Intn(len(parts))])
+		}
+		layout := DefaultLayout()
+		layout.Columns = 1 + rng.Intn(3)
+		separator := "\n"
+		if i%2 != 0 {
+			separator = "\r\n"
+		}
+		doc := Document{Body: strings.Join(lines, separator), Layout: layout}
+		want, err := Outline(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var filtered []Section
+		for _, section := range want {
+			if !section.SectionBreak {
+				section.Page = 0
+				filtered = append(filtered, section)
+			}
+		}
+		got, err := ReaderOutline(doc)
+		if err != nil || !reflect.DeepEqual(got, filtered) {
+			t.Fatalf("case %d: got %+v, want %+v; err=%v\n%s", i, got, filtered, err, doc.Body)
+		}
+	}
+}
 
 func TestOutlineListsHeadingsWithPages(t *testing.T) {
 	var body strings.Builder

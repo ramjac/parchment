@@ -3,6 +3,7 @@ package artifactfile
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -22,7 +23,7 @@ const trailingBlocksBoundary = "<!-- parchment-blocks -->"
 const envelopeFormat = "parchment-single-file-v2"
 const envelopeFormatField = "parchment_format"
 
-const MaxFileSize = 64 << 20
+const MaxFileSize = 16 << 20
 
 // ErrMetadataMissing indicates the file has no embedded Parchment metadata.
 var ErrMetadataMissing = errors.New("Parchment metadata block is missing")
@@ -522,12 +523,32 @@ func titleFromBody(body string) string {
 // StripPrivateBlocks removes all fenced blocks whose info string starts with
 // "parchment-". Ordinary Markdown code fences are preserved.
 func StripPrivateBlocks(markdown string) string {
+	stripped, _ := StripPrivateBlocksContext(context.Background(), markdown)
+	return stripped
+}
+
+// StripPrivateBlocksContext removes reserved blocks and stops when cancelled.
+func StripPrivateBlocksContext(ctx context.Context, markdown string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if !strings.Contains(markdown, "parchment-") {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		return markdown, nil
+	}
 	var output strings.Builder
 	fence := ""
 	var containers fenceContainers
 	var lists []listContainer
 	skipping := false
-	for offset := 0; offset < len(markdown); {
+	for offset, lineNumber := 0, 0; offset < len(markdown); lineNumber++ {
+		if lineNumber%256 == 0 {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+		}
 		line, next := nextLine(markdown, offset)
 		containerLine, blockquotes := stripBlockquotePrefixes(line)
 		if fence != "" {
@@ -566,7 +587,10 @@ func StripPrivateBlocks(markdown string) string {
 		output.WriteString(line)
 		offset = next
 	}
-	return output.String()
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return output.String(), nil
 }
 
 type fenceContainers struct {

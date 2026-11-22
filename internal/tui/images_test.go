@@ -13,7 +13,6 @@ import (
 
 	"charm.land/bubbles/v2/cursor"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2/compat"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
 
@@ -282,9 +281,9 @@ func TestImageTUISmallTerminalPreservesForm(t *testing.T) {
 }
 
 func TestImageTUIGoldens(t *testing.T) {
-	old := compat.Profile
-	compat.Profile = colorprofile.TrueColor
-	t.Cleanup(func() { compat.Profile = old })
+	old := terminalColorProfile
+	terminalColorProfile = colorprofile.TrueColor
+	t.Cleanup(func() { terminalColorProfile = old })
 	documentImageEnv(t, "")
 	h := newImageHarness(t)
 	normalized := func() string {
@@ -310,9 +309,9 @@ func TestImageTUIGoldens(t *testing.T) {
 }
 
 func TestImageTUIMonochromeFallback(t *testing.T) {
-	old := compat.Profile
-	compat.Profile = colorprofile.Ascii
-	t.Cleanup(func() { compat.Profile = old })
+	old := terminalColorProfile
+	terminalColorProfile = colorprofile.Ascii
+	t.Cleanup(func() { terminalColorProfile = old })
 	documentImageEnv(t, "")
 	h := newImageHarness(t)
 	view := h.m.View().Content
@@ -322,9 +321,9 @@ func TestImageTUIMonochromeFallback(t *testing.T) {
 }
 
 func TestImageTUIBoundedViews(t *testing.T) {
-	old := compat.Profile
-	compat.Profile = colorprofile.TrueColor
-	t.Cleanup(func() { compat.Profile = old })
+	old := terminalColorProfile
+	terminalColorProfile = colorprofile.TrueColor
+	t.Cleanup(func() { terminalColorProfile = old })
 	for _, mode := range []string{"dark", "light"} {
 		for _, size := range [][2]int{{80, 24}, {120, 40}, {40, 10}, {25, 6}} {
 			t.Run(fmt.Sprintf("%s-%dx%d", mode, size[0], size[1]), func(t *testing.T) {

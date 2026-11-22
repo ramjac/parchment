@@ -3,6 +3,8 @@ package theme
 import (
 	"image/color"
 	"os"
+	"strconv"
+	"strings"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/glamour/ansi"
@@ -33,9 +35,38 @@ type Theme struct {
 func Resolve(c config.Theme) Theme {
 	dark := c.Mode == "dark"
 	if c.Mode == "auto" || c.Mode == "" {
-		dark = lipgloss.HasDarkBackground(os.Stdin, os.Stdout)
+		dark = AutoDark()
 	}
+	return resolve(c, dark)
+}
 
+// AutoDark provides a nonblocking initial palette until the terminal replies.
+func AutoDark() bool {
+	parts := strings.Split(os.Getenv("COLORFGBG"), ";")
+	background, err := strconv.Atoi(parts[len(parts)-1])
+	if err != nil || background < 0 || background > 255 {
+		return true
+	}
+	if background < 16 {
+		return background != 7 && background != 15
+	}
+	if background >= 232 {
+		return background < 244
+	}
+	value := background - 16
+	r, g, b := value/36, value/6%6, value%6
+	return 299*r+587*g+114*b < 2500
+}
+
+// ResolveBackground applies an asynchronously detected background to auto mode.
+func ResolveBackground(c config.Theme, dark bool) Theme {
+	if c.Mode != "" && c.Mode != "auto" {
+		return Resolve(c)
+	}
+	return resolve(c, dark)
+}
+
+func resolve(c config.Theme, dark bool) Theme {
 	colors := palette{
 		accent:    terminalColor(c.Primary, "#805500", "#f2c66d", dark),
 		chrome:    terminalColor("", "#3e796d", "#72bfb0", dark),

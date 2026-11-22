@@ -51,6 +51,11 @@ func evalArrayFunction(name string, args []Node, e *evaluator, sheet int) (Value
 		}
 		values := make([]Value, rows*cols)
 		for i := range values {
+			if i%1024 == 0 {
+				if err := e.contextErr(); err != nil {
+					return Value{}, err
+				}
+			}
 			num := start + float64(i)*step
 			if math.IsNaN(num) || math.IsInf(num, 0) {
 				return bad, nil
@@ -88,6 +93,11 @@ func evalArrayFunction(name string, args []Node, e *evaluator, sheet int) (Value
 		}
 		var selected []int
 		for i, value := range include.values {
+			if i%1024 == 0 {
+				if err := e.contextErr(); err != nil {
+					return Value{}, err
+				}
+			}
 			num, valueErr := coerceToNumber(value)
 			if valueErr != nil {
 				return *valueErr, nil
@@ -104,13 +114,23 @@ func evalArrayFunction(name string, args []Node, e *evaluator, sheet int) (Value
 		}
 		if byRows {
 			values := make([]Value, 0, len(selected)*grid.cols)
-			for _, row := range selected {
+			for i, row := range selected {
+				if i%32 == 0 {
+					if err := e.contextErr(); err != nil {
+						return Value{}, err
+					}
+				}
 				values = append(values, grid.values[row*grid.cols:(row+1)*grid.cols]...)
 			}
 			return arrayResult(len(selected), grid.cols, values), nil
 		}
 		values := make([]Value, 0, len(selected)*grid.rows)
 		for r := 0; r < grid.rows; r++ {
+			if r%32 == 0 {
+				if err := e.contextErr(); err != nil {
+					return Value{}, err
+				}
+			}
 			for _, c := range selected {
 				values = append(values, grid.values[r*grid.cols+c])
 			}
@@ -160,6 +180,11 @@ func evalArrayFunction(name string, args []Node, e *evaluator, sheet int) (Value
 		}
 		groups := make([]int, count)
 		for i := range groups {
+			if i%32 == 0 {
+				if err := e.contextErr(); err != nil {
+					return Value{}, err
+				}
+			}
 			groups[i] = i
 			for j := 0; j < width; j++ {
 				if value := get(i, j); value.Kind == ErrKind {
@@ -175,6 +200,11 @@ func evalArrayFunction(name string, args []Node, e *evaluator, sheet int) (Value
 			keys := make([]string, count)
 			frequency := make(map[string]int, count)
 			for i := range groups {
+				if i%32 == 0 {
+					if err := e.contextErr(); err != nil {
+						return Value{}, err
+					}
+				}
 				var key strings.Builder
 				for j := 0; j < width; j++ {
 					value := get(i, j)
@@ -202,6 +232,11 @@ func evalArrayFunction(name string, args []Node, e *evaluator, sheet int) (Value
 		}
 		values := make([]Value, rows*cols)
 		for i, group := range groups {
+			if i%32 == 0 {
+				if err := e.contextErr(); err != nil {
+					return Value{}, err
+				}
+			}
 			for j := 0; j < width; j++ {
 				if byCol {
 					values[j*cols+i] = get(group, j)

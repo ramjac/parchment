@@ -2,6 +2,7 @@ package artifactfile
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -218,16 +219,25 @@ func TestDecodeMetadataValidationZeroModifiedAt(t *testing.T) {
 func TestMaxFileSizeConstraints(t *testing.T) {
 	oversized := make([]byte, MaxFileSize+1)
 
-	if _, err := Decode(oversized); err == nil || !strings.Contains(err.Error(), "larger than 64 MiB") {
+	if _, err := Decode(oversized); err == nil || !strings.Contains(err.Error(), "larger than 16 MiB") {
 		t.Fatalf("Decode oversized data error = %v", err)
 	}
 
-	if _, err := ReadMetadata(oversized); err == nil || !strings.Contains(err.Error(), "larger than 64 MiB") {
+	if _, err := ReadMetadata(oversized); err == nil || !strings.Contains(err.Error(), "larger than 16 MiB") {
 		t.Fatalf("ReadMetadata oversized data error = %v", err)
 	}
 
+	metadata, err := Encode(testArtifact(), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy(oversized, metadata)
+	if _, err := ReadMetadata(oversized[:MaxFileSize]); err != nil {
+		t.Fatalf("ReadMetadata at the size limit: %v", err)
+	}
+
 	oversizedMeta := "```parchment-meta\n" + strings.Repeat("a", MaxFileSize+1) + "\n```\n"
-	if _, err := ReadMetadataFrom(strings.NewReader(oversizedMeta)); err == nil || !strings.Contains(err.Error(), "larger than 64 MiB") {
+	if _, err := ReadMetadataFrom(strings.NewReader(oversizedMeta)); err == nil || !strings.Contains(err.Error(), "larger than 16 MiB") {
 		t.Fatalf("ReadMetadataFrom oversized stream error = %v", err)
 	}
 
@@ -245,12 +255,20 @@ func TestEncodeValidationFailure(t *testing.T) {
 }
 
 func TestEncodeMaxFileSizeValidation(t *testing.T) {
+	empty, err := Encode(testArtifact(), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	atLimit := strings.Repeat("a", MaxFileSize-len(empty))
+	if encoded, err := Encode(testArtifact(), atLimit, nil); err != nil || len(encoded) != MaxFileSize {
+		t.Fatalf("Encode at size limit: length %d, error %v", len(encoded), err)
+	}
 	largeBody := strings.Repeat("a", MaxFileSize)
-	_, err := Encode(testArtifact(), largeBody, nil)
+	_, err = Encode(testArtifact(), largeBody, nil)
 	if err == nil {
 		t.Fatal("expected error when output exceeds MaxFileSize, got nil")
 	}
-	if !strings.Contains(err.Error(), "artifact file is larger than 64 MiB") {
+	if !strings.Contains(err.Error(), "artifact file is larger than 16 MiB") {
 		t.Fatalf("unexpected error message: %v", err)
 	}
 }
@@ -680,6 +698,36 @@ func runStripPrivateBlocksTests(t *testing.T, tests []stripPrivateBlocksTest) {
 				t.Errorf("StripPrivateBlocks(%q) =\n%q\nwant:\n%q", tt.markdown, got, tt.want)
 			}
 		})
+	}
+}
+
+type cancellingStripContext struct {
+	context.Context
+	checks, cancelAt int
+}
+
+func (c *cancellingStripContext) Err() error {
+	c.checks++
+	if c.checks >= c.cancelAt {
+		return context.Canceled
+	}
+	return nil
+}
+
+func TestStripPrivateBlocksContextCancellation(t *testing.T) {
+	ctx := &cancellingStripContext{Context: context.Background(), cancelAt: 3}
+	body := "parchment-ordinary\n" + strings.Repeat("plain text\n", 1000)
+	if got, err := StripPrivateBlocksContext(ctx, body); got != "" || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled strip returned %q, %v", got, err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got, err := StripPrivateBlocksContext(cancelled, "plain"); got != "" || !errors.Is(err, context.Canceled) {
+		t.Fatalf("pre-cancelled strip returned %q, %v", got, err)
+	}
+	ctx = &cancellingStripContext{Context: context.Background(), cancelAt: 2}
+	if got, err := StripPrivateBlocksContext(ctx, "plain"); got != "" || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled fast path returned %q, %v", got, err)
 	}
 }
 

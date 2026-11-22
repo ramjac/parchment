@@ -10,14 +10,19 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
 
 	"example.com/parchment/internal/artifact"
+	"example.com/parchment/internal/config"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/pdfrender"
 	"example.com/parchment/internal/recovery"
@@ -1029,6 +1034,30 @@ func TestEditorRefusesDocumentItCannotPreserve(t *testing.T) {
 	}
 }
 
+func TestDocumentReaderRefusesOversizedEditorAtScrolledLocation(t *testing.T) {
+	body := strings.Repeat("Uneditable paragraph.\n\n", 50000)
+	for _, click := range []bool{false, true} {
+		t.Run(fmt.Sprintf("click=%t", click), func(t *testing.T) {
+			s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+			s.reading = true
+			s.snapshot = document.Document{Body: body}
+			s.readerLines = []string{"first", "Uneditable paragraph.", "last"}
+			s.reader.SetContentLines(s.readerLines)
+			s.reader.SetHeight(1)
+			s.reader.SetYOffset(1)
+			if click {
+				s.editAtReaderLocation(1, 2)
+			} else {
+				s.updateReaderKey(tea.KeyPressMsg{Code: 'e', Text: "e"})
+			}
+			if !s.reading || s.reader.YOffset() != 1 || s.snapshot.Body != body ||
+				!strings.Contains(s.errMessage, "exceeds editor limits") {
+				t.Fatal("editor refusal changed reader position or saved document")
+			}
+		})
+	}
+}
+
 func TestDocumentAutosaveIsOfferedOnReopen(t *testing.T) {
 	h := newDocumentHarness(t, document.Draft{Body: "# Before\n\nOriginal"})
 	s := h.m.documents
@@ -1090,6 +1119,7 @@ func TestDocumentAutosaveStoresImagesOnceAndSkipsUnchangedState(t *testing.T) {
 	if len(s.images) != 1 {
 		t.Fatalf("images = %d", len(s.images))
 	}
+	h.key("e")
 	s.body.SetValue(s.body.Value() + "\n\nEdited")
 	h.run(s.saveDocumentRecovery(s.autosaveSession))
 	draft, ok, err := h.repo.LoadRecovery(ctx, h.path)
@@ -1176,6 +1206,9 @@ func TestDocumentOpensInReaderWithOutline(t *testing.T) {
 	if h.m.stage != stageDocument || !s.reading {
 		t.Fatalf("stage = %d, reading = %v", h.m.stage, s.reading)
 	}
+	if s.body.Value() != "" || s.dirty() {
+		t.Fatal("reader unnecessarily initialized an editor draft")
+	}
 	view := h.m.View().Content
 	for _, want := range []string{"Outline", "› Intro", "Middle", "Detail", "Hello."} {
 		if !strings.Contains(view, want) {
@@ -1207,7 +1240,7 @@ func TestDocumentOpensInReaderWithOutline(t *testing.T) {
 	}
 
 	h.key("e")
-	if s.reading || !strings.Contains(h.m.View().Content, "Editing document") {
+	if s.reading || s.body.Value() != body || !strings.Contains(h.m.View().Content, "Editing document") {
 		t.Fatal("e did not open the editor")
 	}
 	h.key("esc")
@@ -1217,6 +1250,119 @@ func TestDocumentOpensInReaderWithOutline(t *testing.T) {
 	h.key("q")
 	if !h.quit {
 		t.Fatal("q did not quit the reader")
+	}
+}
+
+func TestDocumentReaderOutlineMouseWheel(t *testing.T) {
+	var body strings.Builder
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&body, "# Section %02d\n\n%s\n\n", i, strings.Repeat("Paragraph.\n\n", 3))
+	}
+	h := newHarness(t, "")
+	if _, err := h.docs.Create(context.Background(), h.path, document.Draft{Body: body.String()}); err != nil {
+		t.Fatal(err)
+	}
+	h.open(artifact.DocumentKind)
+	h.send(tea.WindowSizeMsg{Width: 100, Height: 24})
+	s := h.m.documents
+	wheel := func(x, y int, button tea.MouseButton) {
+		h.send(tea.MouseWheelMsg(tea.Mouse{X: x, Y: y, Button: button}))
+	}
+	before := s.reader.YOffset()
+	wheel(3, 5, tea.MouseWheelDown)
+	_, targets := s.outlineLines()
+	if targets[1] != 3 || s.reader.YOffset() != before {
+		t.Fatalf("outline scroll: targets=%v reader offset=%d", targets, s.reader.YOffset())
+	}
+	for i := 0; i < 3; i++ {
+		wheel(3, 5, tea.MouseWheelUp)
+	}
+	_, targets = s.outlineLines()
+	if targets[1] != 0 || s.reader.YOffset() != before {
+		t.Fatalf("outline did not stop at top: %v", targets)
+	}
+	for i := 0; i < 30; i++ {
+		wheel(3, 5, tea.MouseWheelDown)
+	}
+	_, targets = s.outlineLines()
+	if targets[len(targets)-1] != len(s.outline)-1 {
+		t.Fatalf("outline did not reach last heading: %v", targets)
+	}
+	wheel(3, 5, tea.MouseWheelUp)
+	_, targets = s.outlineLines()
+	target := targets[1]
+	h.send(tea.MouseClickMsg(tea.Mouse{X: 3, Y: 4, Button: tea.MouseLeft}))
+	if s.currentSection() != target || s.reader.YOffset() != s.readerRows[target] {
+		t.Fatalf("scrolled outline click selected %d, want %d", s.currentSection(), target)
+	}
+	outlineWidth, _ := s.readerPaneWidths()
+	before = s.reader.YOffset()
+	wheel(outlineWidth+3, 5, tea.MouseWheelDown)
+	if s.reader.YOffset() <= before || s.readerOutlineManual {
+		t.Fatal("wheel over document did not scroll the document and resume outline tracking")
+	}
+	wheel(3, 5, tea.MouseWheelDown)
+	h.send(tea.WindowSizeMsg{Width: 100, Height: 40})
+	_, targets = s.outlineLines()
+	if targets[len(targets)-1] >= len(s.outline) {
+		t.Fatalf("invalid outline after resize: %v", targets)
+	}
+	h.send(tea.WindowSizeMsg{Width: 60, Height: 24})
+	before = s.reader.YOffset()
+	wheel(3, 5, tea.MouseWheelDown)
+	if s.reader.YOffset() <= before {
+		t.Fatal("wheel in narrow reader did not scroll the document")
+	}
+}
+
+func TestDocumentEditorOutlineMouseWheel(t *testing.T) {
+	var body strings.Builder
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&body, "# Section %02d\n\nParagraph.\n\n", i)
+	}
+	h := newDocumentHarness(t, document.Draft{Body: body.String()})
+	h.send(tea.WindowSizeMsg{Width: 100, Height: 24})
+	h.key("ctrl+o")
+	s := h.m.documents
+	y := toolbarTop + s.toolbarRows() + 1
+	wheel := func(x int, button tea.MouseButton) {
+		h.send(tea.MouseWheelMsg(tea.Mouse{X: x, Y: y + 1, Button: button}))
+	}
+	before := s.body.TopLine
+	wheel(3, tea.MouseWheelDown)
+	_, targets := s.editorOutlineLines()
+	if targets[1] != 3 || s.body.TopLine != before {
+		t.Fatalf("outline scroll: targets=%v editor top=%d", targets, s.body.TopLine)
+	}
+	wheel(3, tea.MouseWheelUp)
+	wheel(3, tea.MouseWheelUp)
+	_, targets = s.editorOutlineLines()
+	if targets[1] != 0 {
+		t.Fatalf("outline did not stop at top: %v", targets)
+	}
+	for i := 0; i < 30; i++ {
+		wheel(3, tea.MouseWheelDown)
+	}
+	_, targets = s.editorOutlineLines()
+	if targets[len(targets)-1] != 59 {
+		t.Fatalf("outline did not reach last heading: %v", targets)
+	}
+	wheel(3, tea.MouseWheelUp)
+	_, targets = s.editorOutlineLines()
+	target := targets[1]
+	h.send(tea.MouseClickMsg(tea.Mouse{X: 3, Y: y + 1, Button: tea.MouseLeft}))
+	if s.body.Cursor.Line != target*4 {
+		t.Fatalf("scrolled outline click moved to line %d, want %d", s.body.Cursor.Line, target*4)
+	}
+	h.key("tab")
+	outlineWidth, _ := s.readerPaneWidths()
+	before = s.body.TopLine
+	wheel(outlineWidth+4, tea.MouseWheelDown)
+	if s.body.TopLine <= before {
+		t.Fatal("wheel over editor did not scroll the editor")
+	}
+	if s.body.Value() != body.String() {
+		t.Fatal("scrolling changed the document")
 	}
 }
 
@@ -1308,6 +1454,1483 @@ func TestDocumentReaderStandaloneHTMLBlockAnchorNavigation(t *testing.T) {
 	s.navigateToTarget("destination")
 	if s.reader.YOffset() != s.readerRows[anchor] {
 		t.Fatalf("anchor navigation landed on %d, want %d", s.reader.YOffset(), s.readerRows[anchor])
+	}
+}
+
+func TestDocumentReaderRepeatedNavigationMarkers(t *testing.T) {
+	body := "# Same\n\n## Detail\n\nfirst <a id=\"inline\"></a> marker\n\n" +
+		"# Same\n\nsecond <a id=\"inline\"></a> marker\n\n" +
+		"<a id=\"block\"></a>\n\nbetween\n\n<a id=\"block\"></a>\n\n## Detail\n"
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.resize(80, 24)
+	s.startReading(document.Document{Body: body, Layout: document.DefaultLayout()})
+	if s.errMessage != "" {
+		t.Fatal(s.errMessage)
+	}
+	var headings, inline, block []int
+	for i, section := range s.outline {
+		if s.readerRows[i] < 0 {
+			t.Fatalf("unmapped section %+v", section)
+		}
+		switch {
+		case section.Anchor && section.Slug == "inline":
+			inline = append(inline, s.readerRows[i])
+		case section.Anchor && section.Slug == "block":
+			block = append(block, s.readerRows[i])
+		case !section.Anchor:
+			headings = append(headings, s.readerRows[i])
+		}
+	}
+	for name, rows := range map[string][]int{"headings": headings, "inline": inline, "block": block} {
+		want := 2
+		if name == "headings" {
+			want = 4
+		}
+		if len(rows) != want {
+			t.Fatalf("%s rows = %v, want %d", name, rows, want)
+		}
+		for i := 1; i < len(rows); i++ {
+			if rows[i] <= rows[i-1] {
+				t.Fatalf("%s out of order: %v", name, rows)
+			}
+		}
+	}
+	if s.snapshot.Body != body {
+		t.Fatal("reader changed the source")
+	}
+}
+
+func TestReaderPreambleMatchesFullRendering(t *testing.T) {
+	profile := terminalColorProfile
+	terminalColorProfile = colorprofile.TrueColor
+	t.Cleanup(func() { terminalColorProfile = profile })
+	bodies := []string{
+		"First plain paragraph.\n\n# Later\n\nMore text.",
+		"# First heading with words.\n\n## Later\n\nMore text.",
+		"### A smaller heading.\n\n# Later\n",
+		"# First\n\nFirst paragraph.\n\nSecond paragraph.\n\n## Later\n\nLast paragraph.\n\nA [link][later]\n\n[later]: https://example.com",
+		"First paragraph.\n\nSecond paragraph.\n\nA term\n: Definition\n\nEnd.",
+		"First paragraph.\n\nSecond paragraph.\n\n<div>HTML content</div>",
+		"First plain paragraph with several words that need wrapping at a narrow width.\n" +
+			"Another line with punctuation, and numbers 123.\n\n" +
+			"A [link][later]\n\n[later]: https://example.com",
+	}
+	for _, first := range []string{"First.", "# Heading", "Long first line.\nContinuation."} {
+		for _, second := range []string{"Second.", "## Heading", "Another line.\nContinued."} {
+			bodies = append(bodies, first+"\n\n"+second+"\n\nThird.\n\n[ref]: https://example.com")
+		}
+	}
+	for _, terminalWidth := range []int{24, 44, 120} {
+		for _, body := range bodies {
+			for _, theme := range []Theme{{}, resolveTheme(config.Theme{Mode: "dark"})} {
+				prefix := readerPreamble(body)
+				if prefix == "" {
+					t.Fatalf("plain paragraph was not accepted: %q", body)
+				}
+				doc := document.Document{Body: body, Layout: document.DefaultLayout()}
+				screen := newDocumentsScreen(nil, "", nil, theme, 10)
+				screen.snapshot = doc
+				screen.width, screen.height = terminalWidth, 24
+				screen.showReaderPreamble()
+				width := screen.reader.Width()
+				full, _, _, _, err := screen.renderReaderDocument(doc, width)
+				if err != nil {
+					t.Fatal(err)
+				}
+				partial := screen.readerLines
+				if len(partial) == 0 || len(partial) > len(full) || !slices.Equal(partial, full[:len(partial)]) {
+					t.Fatalf("width %d: partial %q differs from full prefix %q", width, partial, full)
+				}
+			}
+		}
+	}
+	if got := readerPreamble("First.\n\nSecond.\n\nThird.\n\n[ref]: target"); got != "First.\n\nSecond." {
+		t.Fatalf("preamble did not stop before the ambiguous block: %q", got)
+	}
+	if got := readerPreamble(strings.Repeat("Plain paragraph.\n\n", 1000) + "End."); len(got) > 8192 ||
+		strings.Count(got, "Plain paragraph.") > maxReaderPreambleBlocks {
+		t.Fatalf("preamble exceeded its limits: %d bytes, %d blocks", len(got), strings.Count(got, "Plain paragraph."))
+	}
+	for _, body := range []string{
+		"# Heading *emphasis*\n\ntext", "A [reference][later]\n\n[later]: target",
+		"A heading\n---\n\ntext", "    indented\n\ntext",
+		"# Heading\nnext paragraph line\n\ntext", strings.Repeat("x", 8193) + "\n\n",
+	} {
+		if got := readerPreamble(body); got != "" {
+			t.Fatalf("unsafe paragraph accepted: %q", body)
+		}
+	}
+}
+
+func TestDocumentReaderCoalescesRendersAndQueuesNavigation(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height = 80, 24
+	s.reading = true
+	s.snapshot = document.Document{Body: "First paragraph.\n\n# Heading\n\n" + strings.Repeat("text\n\n", 30), Layout: document.DefaultLayout()}
+	s.showReaderPreamble()
+	first := s.requestReaderRender()
+	firstSession := s.readerRenderSession
+	if first == nil || !s.readerRendering || !strings.Contains(s.readerContentView(), "First paragraph") {
+		t.Fatal("reader did not show a preamble while rendering")
+	}
+	s.updateReaderKey(tea.KeyPressMsg{Code: 'G', Text: "G"})
+	s.width, s.height = 100, 30
+	if cmd := s.requestReaderRender(); cmd != nil {
+		t.Fatal("resize started a second renderer")
+	}
+	stale := first().(documentReaderRenderMsg)
+	if stale.session != firstSession {
+		t.Fatal("first render lost its generation")
+	}
+	next := s.readerRenderFinished(stale)
+	if next == nil || !s.readerRendering {
+		t.Fatal("stale render did not schedule the latest size")
+	}
+	msg := next().(documentReaderRenderMsg)
+	s.readerRenderFinished(msg)
+	if s.readerRendering || len(s.readerQueuedInput) != 0 || !s.reader.AtBottom() {
+		t.Fatalf("queued end navigation not applied: rendering=%t offset=%d", s.readerRendering, s.reader.YOffset())
+	}
+}
+
+func TestDocumentReaderShowsOutlineBeforeRendering(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading, s.backgroundReader = 80, 24, true, true
+	s.snapshot = document.Document{
+		Body:   "<a id=\"same\"></a>\n\nFirst.\n\n<a id=\"same\"></a>\n\n" + strings.Repeat("More.\n\n", 30),
+		Layout: document.DefaultLayout(),
+	}
+	index := s.requestReaderRender()().(documentReaderIndexMsg)
+	render := s.readerIndexFinished(index)
+	if render == nil || !s.readerRendering || len(s.outline) != 2 ||
+		s.readerRows[0] != -1 || s.readerRows[1] != -1 {
+		t.Fatal("outline was not published before rendering")
+	}
+	s.updateReaderMouse(mouseEvent{X: 3, Y: 5, Action: mousePress, Button: mouseLeft})
+	if len(s.readerQueuedInput) != 1 {
+		t.Fatal("outline target was not queued while rendering")
+	}
+	s.readerRenderFinished(render().(documentReaderRenderMsg))
+	if s.currentSection() != 1 || s.reader.YOffset() != s.readerRows[1] {
+		t.Fatal("early outline click did not preserve the duplicate anchor")
+	}
+}
+
+func TestDocumentReaderShowsStreamedPreviewBeforeRenderCompletes(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading, s.backgroundReader = 80, 14, true, true
+	s.snapshot = document.Document{
+		Body:   "```go\nvar answer = 42\n```\n\n" + strings.Repeat("Paragraph with enough words to fill a row.\n\n", 4000),
+		Layout: document.DefaultLayout(),
+	}
+	firstResult := s.requestReaderRender()()
+	if early, ok := firstResult.(documentReaderEarlyMsg); ok {
+		next := s.readerEarlyFinished(early)
+		firstResult = next()
+	}
+	index := firstResult.(documentReaderIndexMsg)
+	render := s.readerIndexFinished(index)
+	first, ok := render().(documentReaderPreviewMsg)
+	if !ok {
+		t.Fatal("expected a streamed preview before the complete render")
+	}
+	next := s.readerPreviewFinished(first)
+	if next == nil || !s.readerRendering || !s.readerPreambleShown || len(s.readerLines) <= s.reader.Height() {
+		t.Fatal("streamed preview did not provide scrollable content")
+	}
+	s.reader.GotoBottom()
+	if !strings.Contains(s.readerContentView(), "Loading…") {
+		t.Fatal("preview has no loading indicator at its end")
+	}
+	s.reader.GotoTop()
+	s.updateReaderKey(tea.KeyPressMsg{Code: tea.KeyDown})
+	if s.reader.YOffset() != 1 || s.readerPreviewInputs != 1 {
+		t.Fatal("streamed preview did not handle scrolling while rendering")
+	}
+	var full documentReaderRenderMsg
+	previews := 1
+	for {
+		switch msg := next().(type) {
+		case documentReaderPreviewMsg:
+			previous := len(s.readerLines)
+			next = s.readerPreviewFinished(msg)
+			if len(s.readerLines) <= previous {
+				t.Fatal("subsequent preview did not grow")
+			}
+			previews++
+		case documentReaderRenderMsg:
+			full = msg
+			goto complete
+		default:
+			t.Fatalf("unexpected render result %T", msg)
+		}
+	}
+complete:
+	if previews < 2 || len(full.lines) < len(s.readerLines) {
+		t.Fatalf("got %d previews with %d of %d lines", previews, len(s.readerLines), len(full.lines))
+	}
+	for i, line := range s.readerLines {
+		if line != full.lines[i] {
+			t.Fatalf("preview row %d differs from completed rendering", i)
+		}
+	}
+	s.readerRenderFinished(full)
+	if s.readerRendering || s.reader.YOffset() != 1 || len(s.readerQueuedInput) != 0 {
+		t.Fatal("completed render did not preserve streamed preview navigation")
+	}
+	s.reader.GotoBottom()
+	if strings.Contains(s.readerContentView(), "Loading…") {
+		t.Fatal("loading indicator remained after rendering")
+	}
+}
+
+func TestDocumentReaderNavigatesSectionsAsBatchesArrive(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	defer s.cancelReaderRender()
+	s.width, s.height, s.reading, s.backgroundReader = 80, 14, true, true
+	paragraphs := strings.Repeat("Paragraph with enough words to fill a row.\n\n", 2000)
+	s.snapshot = document.Document{
+		Body:   "<a id=\"same\"></a>\n\n" + paragraphs + "<a id=\"same\"></a>\n\n" + paragraphs,
+		Layout: document.DefaultLayout(),
+	}
+	result := s.requestReaderRender()()
+	if early, ok := result.(documentReaderEarlyMsg); ok {
+		result = s.readerEarlyFinished(early)()
+	}
+	next := s.readerIndexFinished(result.(documentReaderIndexMsg))
+	first := next().(documentReaderPreviewMsg)
+	next = s.readerPreviewFinished(first)
+	if len(s.readerRows) != 2 || s.readerRows[0] < 0 || s.readerRows[1] >= 0 {
+		t.Fatalf("unexpected first-batch section rows: %v", s.readerRows)
+	}
+	s.updateReaderMouse(mouseEvent{X: 3, Y: 4, Action: mousePress, Button: mouseLeft})
+	if s.readerPreviewInputs != 1 || s.currentSection() != 0 {
+		t.Fatal("available outline target was not applied")
+	}
+	s.updateReaderMouse(mouseEvent{X: 3, Y: 5, Action: mousePress, Button: mouseLeft})
+	if s.readerPreviewInputs != 1 || len(s.readerQueuedInput) != 2 {
+		t.Fatal("unrendered outline target was not queued")
+	}
+	jumped := false
+	for {
+		switch msg := next().(type) {
+		case documentReaderPreviewMsg:
+			next = s.readerPreviewFinished(msg)
+			if s.readerPreviewInputs == 2 {
+				if s.currentSection() != 1 || s.readerOffset() != s.readerRows[1] {
+					t.Fatal("queued outline target did not jump when it became available")
+				}
+				jumped = true
+			}
+		case documentReaderRenderMsg:
+			if !jumped {
+				t.Fatal("outline target was not applied before rendering finished")
+			}
+			if !slices.Equal(s.readerRows, msg.rows) || !slices.Equal(s.readerRowIndex, msg.rowIndex) {
+				for i := range msg.rows {
+					if s.readerRows[i] != msg.rows[i] {
+						t.Fatalf("section %d: progressive row %d, completed row %d", i, s.readerRows[i], msg.rows[i])
+					}
+				}
+				for i := range min(len(s.readerRowIndex), len(msg.rowIndex)) {
+					if s.readerRowIndex[i] != msg.rowIndex[i] {
+						t.Fatalf("index %d: progressive %+v, completed %+v", i, s.readerRowIndex[i], msg.rowIndex[i])
+					}
+				}
+				t.Fatalf("index lengths: progressive %d, completed %d", len(s.readerRowIndex), len(msg.rowIndex))
+			}
+			s.readerRenderFinished(msg)
+			if s.currentSection() != 1 || s.readerOffset() != s.readerRows[1] {
+				t.Fatal("completed rendering did not preserve the outline jump")
+			}
+			return
+		default:
+			t.Fatalf("unexpected render result %T", msg)
+		}
+	}
+}
+
+func TestDocumentReaderQueuesSectionKeyUntilAvailable(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading, s.readerRendering = 60, 15, true, true
+	s.readerRenderSession = 1
+	s.readerPreambleShown, s.readerStreamPreview = true, true
+	s.reader.SetWidth(50)
+	s.reader.SetHeight(10)
+	s.outline = []document.Section{{Title: "First"}, {Title: "Second"}}
+	s.readerRows = []int{0, -1}
+	s.readerRowIndex = []readerSectionRow{{row: 0, section: 0, highestSection: 0}}
+	s.readerLines = make([]string, 100)
+	s.readerSection = 0
+	s.showReaderContent()
+	s.updateReaderKey(tea.KeyPressMsg{Code: '}', Text: "}"})
+	if len(s.readerQueuedInput) != 1 || s.readerPreviewInputs != 0 {
+		t.Fatal("unrendered section key was not queued")
+	}
+	s.readerPreviewFinished(documentReaderPreviewMsg{
+		session: 1, lines: make([]string, 100),
+		sections: []readerSectionRow{{row: 110, section: 1}},
+	})
+	if s.readerPreviewInputs != 1 || s.readerOffset() != 110 || s.currentSection() != 1 {
+		t.Fatal("section key did not apply when the target arrived")
+	}
+	s.readerRenderFinished(documentReaderRenderMsg{
+		session: 1, lines: make([]string, 200), outline: s.outline, rows: []int{0, 110},
+		rowIndex: []readerSectionRow{{row: 0, section: 0, highestSection: 0}, {row: 110, section: 1, highestSection: 1}},
+	})
+	if s.readerOffset() != 110 || s.currentSection() != 1 {
+		t.Fatal("completed rendering did not preserve the section key")
+	}
+}
+
+func TestDocumentReaderCheckpointWindowNavigationAndSearch(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	defer s.cancelReaderRender()
+	s.width, s.height, s.reading, s.backgroundReader = 80, 14, true, true
+	s.snapshot = document.Document{
+		Body: "# First\n\n[Jump to last](#last)\n\n" + strings.Repeat("Paragraph with enough words to fill a row.\n\n", 4000) +
+			"# Last\n\nUniqueNeedle appears here.\n\n" + strings.Repeat("The end.\n\n", 50),
+		Layout: document.DefaultLayout(),
+	}
+	next := s.requestReaderRender()
+	var full []string
+	var preview []string
+	for next != nil {
+		result := next()
+		if finished, ok := result.(documentReaderRenderMsg); ok {
+			if finished.err != nil {
+				t.Fatal(finished.err)
+			}
+			full = finished.lines
+			preview = s.readerLines
+			if finished.sparse != nil {
+				t.Fatal("progressive load allocated a separate sparse row index")
+			}
+		}
+		next = s.update(result)
+	}
+	if s.readerCache == nil || len(full) <= readerPreviewWindowLines ||
+		s.readerCacheEnd-s.readerCacheBase > readerPreviewWindowLines {
+		t.Fatal("completed reader did not retain a bounded checkpoint window")
+	}
+	if len(preview) != len(s.readerLines) || &preview[0] != &s.readerLines[0] {
+		t.Fatal("completed reader did not reuse the progressive row index")
+	}
+	if len(s.readerLinks) == 0 || s.readerLinks[0].target != "last" {
+		t.Fatal("cached reader did not retain the internal link")
+	}
+	for i := s.readerCacheEnd; i < len(s.readerLines); i++ {
+		if s.readerLines[i] != "" {
+			t.Fatalf("row %d retained outside the cached window", i)
+		}
+	}
+	stale := s.update(tea.KeyPressMsg{Code: tea.KeyEnd})
+	if stale == nil || !s.readerCachePending {
+		t.Fatal("distant navigation did not dispatch an asynchronous window")
+	}
+	s.update(tea.KeyPressMsg{Code: tea.KeyHome})
+	s.update(stale())
+	if s.readerCachePending || s.readerOffset() != 0 {
+		t.Fatal("stale window changed the reader position")
+	}
+	window := s.update(tea.KeyPressMsg{Code: tea.KeyEnd})
+	if window == nil {
+		t.Fatal("end navigation did not dispatch a window")
+	}
+	s.update(window())
+	offset := s.readerOffset()
+	if offset != len(full)-s.reader.Height() ||
+		!slices.Equal(s.readerLines[offset:offset+s.reader.Height()], full[offset:offset+s.reader.Height()]) {
+		t.Fatal("end window differs from completed rendering")
+	}
+	window = s.update(tea.KeyPressMsg{Code: tea.KeyHome})
+	if window == nil {
+		t.Fatal("home navigation did not dispatch a window")
+	}
+	s.update(window())
+	s.find.visible = true
+	s.find.input.SetValue("UniqueNeedle")
+	search := s.searchReader(s.find.query())
+	if search == nil {
+		t.Fatal("cached reader search was not asynchronous")
+	}
+	result := search().(documentReaderSearchMsg)
+	want, err := renderedReaderMatchesContext(context.Background(), full, s.find.query(), maxReaderSearchMatches)
+	if err != nil || !slices.Equal(result.matches, want) {
+		t.Fatalf("cached search differs from completed render: %v", err)
+	}
+	window = s.update(result)
+	if window == nil {
+		t.Fatal("search match did not dispatch its distant window")
+	}
+	s.update(window())
+	if len(want) != 1 || s.readerOffset() != want[0].row {
+		t.Fatal("cached search did not navigate to the match")
+	}
+	oldCache := s.readerCache
+	s.width = 100
+	if s.requestReaderRender() == nil {
+		t.Fatal("resize did not start a reflow")
+	}
+	s.readerRenderFinished(documentReaderRenderMsg{session: s.readerRenderSession, err: errors.New("reflow failed")})
+	if s.readerCache != oldCache {
+		t.Fatal("failed reflow discarded the previous checkpoint source")
+	}
+	window = s.update(tea.KeyPressMsg{Code: tea.KeyHome})
+	if window == nil {
+		t.Fatal("cached navigation stopped working after failed reflow")
+	}
+	s.update(window())
+	if s.readerOffset() != 0 || !slices.Equal(s.readerLines[:s.reader.Height()], full[:s.reader.Height()]) {
+		t.Fatal("failed reflow did not preserve the old reader")
+	}
+	stale = s.update(tea.KeyPressMsg{Code: tea.KeyEnd})
+	if stale == nil || !s.readerCachePending {
+		t.Fatal("end did not request a distant window")
+	}
+	s.width = 110
+	if s.requestReaderRender() == nil {
+		t.Fatal("resize did not start a reflow with a pending window")
+	}
+	window = s.update(documentReaderRenderMsg{session: s.readerRenderSession, err: errors.New("reflow failed")})
+	if window == nil || !s.readerCachePending {
+		t.Fatal("failed reflow did not restore pending navigation")
+	}
+	s.update(stale())
+	s.update(window())
+	if s.readerOffset() != len(full)-s.reader.Height() {
+		t.Fatal("failed reflow lost the requested position")
+	}
+	window = s.update(tea.KeyPressMsg{Code: tea.KeyHome})
+	s.update(window())
+	stale = s.update(tea.KeyPressMsg{Code: tea.KeyEnd})
+	s.width = 120
+	if s.requestReaderRender() == nil {
+		t.Fatal("resize did not start a second reflow")
+	}
+	rows := append([]int(nil), s.readerRows...)
+	rowIndex := append([]readerSectionRow(nil), s.readerRowIndex...)
+	oldLines := s.readerLines
+	oldContents := slices.Clone(oldLines)
+	sparse := make([]string, len(full))
+	s.update(documentReaderRenderMsg{
+		session: s.readerRenderSession, lines: full, outline: s.outline, rows: rows,
+		rowIndex: rowIndex, source: oldCache, sparse: sparse,
+	})
+	s.update(stale())
+	if s.readerOffset() != len(full)-s.reader.Height() {
+		t.Fatal("successful reflow lost the requested position")
+	}
+	if &s.readerLines[0] != &sparse[0] || !slices.Equal(oldLines, oldContents) {
+		t.Fatal("reflow reused or modified the previous reader's rows")
+	}
+}
+
+func TestDocumentReaderCheckpointWindowDisplaysDistantImage(t *testing.T) {
+	documentImageEnv(t, "none")
+	img := documentTestImage(t)
+	body := strings.Repeat("Paragraph with enough words to fill a row.\n\n", 3500) +
+		"\n![Distant](" + img.Name + ")\n\n" + strings.Repeat("After image.\n\n", 100)
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	defer s.cancelReaderRender()
+	s.width, s.height, s.reading, s.backgroundReader = 80, 14, true, true
+	s.snapshot = document.Document{Body: body, Images: []artifact.Image{img}, Layout: document.DefaultLayout()}
+	cmd := s.requestReaderRender()
+	var full []string
+	for cmd != nil {
+		result := cmd()
+		if completed, ok := result.(documentReaderRenderMsg); ok {
+			full = completed.lines
+		}
+		cmd = s.update(result)
+	}
+	if s.errMessage != "" || s.readerCache == nil {
+		t.Fatalf("media reader failed: %s", s.errMessage)
+	}
+	imageRow := -1
+	for row, line := range full {
+		for marker := range s.imageState.rows {
+			if strings.ContainsRune(line, marker) {
+				imageRow = row
+				break
+			}
+		}
+		if imageRow >= 0 {
+			break
+		}
+	}
+	if imageRow < 0 {
+		t.Fatal("completed render did not contain the image")
+	}
+	s.setReaderOffset(imageRow)
+	cmd = s.dispatchReaderWindow()
+	if cmd == nil {
+		t.Fatal("distant image did not request a window")
+	}
+	s.update(cmd())
+	if !strings.Contains(ansi.Strip(s.view("")), "▀") {
+		t.Fatal("cached window did not display the image")
+	}
+}
+
+func TestDocumentReaderProgressiveSectionIndexMatchesCompletion(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	defer s.cancelReaderRender()
+	s.width, s.height, s.reading, s.backgroundReader = 80, 14, true, true
+	s.snapshot = document.Document{
+		Body: strings.Repeat("# Repeated\n\nText <a id=\"inline\"></a> and <a id=\"other\"></a>.\n\n"+
+			"<a id=\"block\"></a>\n\nParagraph with more words.\n\n", 1800),
+		Layout: document.DefaultLayout(),
+	}
+	result := s.requestReaderRender()()
+	if early, ok := result.(documentReaderEarlyMsg); ok {
+		result = s.readerEarlyFinished(early)()
+	}
+	next := s.readerIndexFinished(result.(documentReaderIndexMsg))
+	for {
+		switch msg := next().(type) {
+		case documentReaderPreviewMsg:
+			next = s.readerPreviewFinished(msg)
+		case documentReaderRenderMsg:
+			if msg.err != nil {
+				t.Fatal(msg.err)
+			}
+			if len(s.readerLines) != len(msg.lines) {
+				t.Fatalf("last batch has %d lines; completed rendering has %d", len(s.readerLines), len(msg.lines))
+			}
+			for i, row := range msg.rows {
+				want := row
+				if row >= len(s.readerLines) {
+					want = -1
+				}
+				if s.readerRows[i] != want {
+					t.Fatalf("section %d: progressive row %d, want %d", i, s.readerRows[i], want)
+				}
+			}
+			end := 0
+			for end < len(msg.rowIndex) && msg.rowIndex[end].row < len(s.readerLines) {
+				end++
+			}
+			if !slices.Equal(s.readerRowIndex, msg.rowIndex[:end]) {
+				t.Fatal("progressive section index differs from completed rendering")
+			}
+			s.readerRenderFinished(msg)
+			return
+		default:
+			t.Fatalf("unexpected render result %T", msg)
+		}
+	}
+}
+
+func TestDocumentReaderShowsFullEarlyViewportBeforeIndex(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.backgroundReader = 80, 24, true
+	body := "# **Heading**\n\n[Visible][later]\n\n![Chart](parchment-chart:missing)\n\n" +
+		strings.Repeat("Paragraph with enough words to fill a row.\n\n", 4000) +
+		"\n[later]: https://example.com\n"
+	doc := document.Document{Body: body, Layout: document.DefaultLayout()}
+	cmd := s.startReading(doc)
+	if cmd == nil {
+		t.Fatal("reader did not start background loading")
+	}
+	early, ok := cmd().(documentReaderEarlyMsg)
+	if !ok || len(early.lines) < s.reader.Height() ||
+		!strings.Contains(ansi.Strip(strings.Join(early.lines, "\n")), "[image: Chart]") {
+		t.Fatalf("early preview has %d lines, want at least %d", len(early.lines), s.reader.Height())
+	}
+	next := s.readerEarlyFinished(early)
+	if next == nil || !s.readerProvisional || !strings.Contains(s.readerStatus(), "preview may change") {
+		t.Fatal("full early viewport was not marked provisional")
+	}
+	offset := s.reader.YOffset()
+	s.updateReaderKey(tea.KeyPressMsg{Code: tea.KeyDown})
+	if s.reader.YOffset() != offset || len(s.readerQueuedInput) != 1 {
+		t.Fatal("provisional navigation was not queued")
+	}
+	index := next().(documentReaderIndexMsg)
+	next = s.readerIndexFinished(index)
+	sawVerified := false
+	for {
+		switch msg := next().(type) {
+		case documentReaderPreviewMsg:
+			next = s.readerPreviewFinished(msg)
+			if s.readerProvisional || !s.readerStreamPreview || s.reader.YOffset() != 1 {
+				t.Fatal("verified preview did not replay queued navigation")
+			}
+			sawVerified = true
+		case documentReaderRenderMsg:
+			s.readerRenderFinished(msg)
+			if !sawVerified || s.readerRendering || s.snapshot.Body != body {
+				t.Fatal("reader did not complete without changing the source")
+			}
+			return
+		default:
+			t.Fatalf("unexpected render result %T", msg)
+		}
+	}
+}
+
+func TestDocumentReaderStreamsLinksAndImages(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading, s.backgroundReader = 80, 14, true, true
+	img := documentTestImage(t)
+	body := "# Heading\n\n[Jump to destination](#destination)\n\n![Picture](" + img.Name + ")\n\n" +
+		strings.Repeat("Paragraph with enough words to fill a row.\n\n", 4000) +
+		"# Destination\n\nDone."
+	s.snapshot = document.Document{Body: body, Images: []artifact.Image{img}, Layout: document.DefaultLayout()}
+	first := s.requestReaderRender()()
+	if early, ok := first.(documentReaderEarlyMsg); ok {
+		if len(early.lines) < s.reader.Height() || !strings.Contains(ansi.Strip(strings.Join(early.lines, "\n")), "[image: Picture]") {
+			t.Fatal("early viewport did not use an image placeholder")
+		}
+		next := s.readerEarlyFinished(early)
+		first = next()
+	} else {
+		t.Fatal("expected an early viewport")
+	}
+	next := s.readerIndexFinished(first.(documentReaderIndexMsg))
+	var full documentReaderRenderMsg
+	previews := 0
+	for {
+		switch msg := next().(type) {
+		case documentReaderPreviewMsg:
+			if !msg.approximate {
+				t.Fatal("preview omitted pending link styling")
+			}
+			next = s.readerPreviewFinished(msg)
+			if !strings.Contains(s.readerStatus(), "link styling pending") || len(s.imageState.rows) == 0 {
+				t.Fatal("preview lost pending link styling or image data")
+			}
+			previews++
+		case documentReaderRenderMsg:
+			full = msg
+			goto complete
+		default:
+			t.Fatalf("unexpected render result %T", msg)
+		}
+	}
+complete:
+	if previews < 2 || len(s.readerLines) > len(full.lines) || len(full.links) == 0 {
+		t.Fatal("reader did not progressively render linked media")
+	}
+	if full.source == nil {
+		t.Fatal("linked media did not use checkpoint windows")
+	}
+	for _, start := range []int{0, len(full.lines) / 2, len(full.lines) - 25} {
+		end := min(start+25, len(full.lines))
+		got, err := full.source.lines(context.Background(), start, end)
+		if err != nil || !slices.Equal(got, full.lines[start:end]) {
+			t.Fatalf("linked media window %d:%d differs: %v", start, end, err)
+		}
+	}
+	for i, line := range s.readerLines {
+		if ansi.Strip(line) != ansi.Strip(full.lines[i]) {
+			t.Fatalf("preview row %d differs from completed content", i)
+		}
+	}
+	s.readerRenderFinished(full)
+	if s.readerRendering || s.readerApproximate || s.snapshot.Body != body || s.readerCache == nil {
+		t.Fatal("linked media render did not complete without changing the source")
+	}
+}
+
+func TestDocumentReaderStreamsLaterImagesWithTheirBatches(t *testing.T) {
+	documentImageEnv(t, "none")
+	first := documentTestImage(t)
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, image.NewNRGBA(image.Rect(0, 0, 24, 12))); err != nil {
+		t.Fatal(err)
+	}
+	second, err := artifact.NewImage(encoded.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	paragraphs := strings.Repeat("Paragraph with enough words to fill a row.\n\n", 1200)
+	body := paragraphs + "![First](" + first.Name + ")\n\n" + paragraphs +
+		"![Second](" + second.Name + ")\n\n" + paragraphs
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading, s.backgroundReader = 80, 14, true, true
+	s.snapshot = document.Document{Body: body, Images: []artifact.Image{first, second}, Layout: document.DefaultLayout()}
+	result := s.requestReaderRender()()
+	if early, ok := result.(documentReaderEarlyMsg); ok {
+		result = s.readerEarlyFinished(early)()
+	}
+	next := s.readerIndexFinished(result.(documentReaderIndexMsg))
+	for {
+		switch msg := next().(type) {
+		case documentReaderPreviewMsg:
+			next = s.readerPreviewFinished(msg)
+			for _, line := range msg.lines {
+				for _, marker := range line {
+					if marker >= 0xf0000 {
+						if _, ok := s.imageState.rows[marker]; !ok {
+							t.Fatalf("image marker %U arrived without its pixels", marker)
+						}
+					}
+				}
+			}
+		case documentReaderRenderMsg:
+			if msg.err != nil || len(s.imageState.rows) < 2 {
+				t.Fatalf("streamed image rows=%d, error=%v", len(s.imageState.rows), msg.err)
+			}
+			s.readerRenderFinished(msg)
+			return
+		default:
+			t.Fatalf("unexpected render result %T", msg)
+		}
+	}
+}
+
+func TestDocumentReaderProgressWindowScrollsAcrossBatches(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading, s.readerRendering = 60, 15, true, true
+	s.readerRenderSession = 1
+	s.readerPreambleShown, s.readerStreamPreview = true, true
+	s.reader.SetWidth(50)
+	s.reader.SetHeight(10)
+	for i := 0; i < 2000; i++ {
+		s.readerLines = append(s.readerLines, fmt.Sprintf("line %04d", i))
+	}
+	s.showReaderContent()
+	for i := 0; i < 130; i++ {
+		s.updateReaderKey(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	}
+	offset := s.readerPreviewBase + s.reader.YOffset()
+	if offset != 1300 || s.readerPreviewBase == 0 || s.reader.TotalLineCount() > readerPreviewWindowLines+1 {
+		t.Fatalf("offset=%d base=%d window=%d", offset, s.readerPreviewBase, s.reader.TotalLineCount())
+	}
+	more := make([]string, 500)
+	for i := range more {
+		more[i] = fmt.Sprintf("line %04d", 2000+i)
+	}
+	next := make(chan tea.Msg, 1)
+	s.readerPreviewFinished(documentReaderPreviewMsg{session: 1, lines: more, next: next})
+	if s.readerPreviewBase+s.reader.YOffset() != offset || !strings.Contains(s.readerContentView(), "line 1300") {
+		t.Fatal("appending a batch changed the visible position")
+	}
+	full := append([]string(nil), s.readerLines...)
+	s.readerRenderFinished(documentReaderRenderMsg{session: 1, lines: full})
+	if s.reader.YOffset() != offset || s.readerRendering {
+		t.Fatalf("completed reader offset=%d, want %d", s.reader.YOffset(), offset)
+	}
+}
+
+func TestDocumentReaderCancelsBlockedProgressPublisher(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading, s.backgroundReader = 80, 14, true, true
+	s.snapshot = document.Document{
+		Body:   strings.Repeat("Paragraph with enough words to fill a row.\n\n", 4000),
+		Layout: document.DefaultLayout(),
+	}
+	first := s.requestReaderRender()()
+	if early, ok := first.(documentReaderEarlyMsg); ok {
+		first = s.readerEarlyFinished(early)()
+	}
+	render := s.readerIndexFinished(first.(documentReaderIndexMsg))
+	preview, ok := render().(documentReaderPreviewMsg)
+	if !ok {
+		t.Fatal("expected a progress message")
+	}
+	s.cancelReaderRender()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case result := <-preview.next:
+			if final, ok := result.(documentReaderRenderMsg); ok {
+				if !errors.Is(final.err, context.Canceled) {
+					t.Fatalf("final error = %v", final.err)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("canceled publisher did not finish")
+		}
+	}
+}
+
+func TestEarlyReaderPrefixIsBounded(t *testing.T) {
+	body := strings.Repeat("line\n", 600)
+	if prefix := earlyReaderPrefix(body); strings.Count(prefix, "\n") != 500 {
+		t.Fatalf("prefix has %d lines", strings.Count(prefix, "\n"))
+	}
+	body = strings.Repeat("界", maxEarlyReaderBytes)
+	if prefix := earlyReaderPrefix(body); len(prefix) > maxEarlyReaderBytes || !utf8.ValidString(prefix) {
+		t.Fatalf("prefix is %d bytes or invalid UTF-8", len(prefix))
+	}
+}
+
+func TestDocumentReaderRenderFailureDiscardsPartialPreview(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading = 80, 24, true
+	s.snapshot = document.Document{Body: "First paragraph.\n\nSecond paragraph.", Layout: document.DefaultLayout()}
+	s.showReaderPreamble()
+	if !s.readerPreambleShown {
+		t.Fatal("expected a preview")
+	}
+	s.readerRendering = true
+	s.readerRenderSession = 1
+	s.readerRows = []int{0}
+	s.readerRowIndex = []readerSectionRow{{row: 0, section: 0, highestSection: 0}}
+	s.readerSection = 0
+	s.readerQueuedInput = []tea.Msg{tea.KeyPressMsg{Code: 'G', Text: "G"}}
+	s.readerRenderFinished(documentReaderRenderMsg{session: 1, err: errReaderRenderLimit})
+	if len(s.readerLines) != 0 || s.readerRendering || len(s.readerQueuedInput) != 0 ||
+		len(s.readerRows) != 0 || len(s.readerRowIndex) != 0 || s.readerSection != -1 {
+		t.Fatal("failed render retained a partial preview or queued navigation")
+	}
+	if !strings.Contains(s.readerStatus(), errReaderRenderLimit.Error()) ||
+		s.snapshot.Body != "First paragraph.\n\nSecond paragraph." {
+		t.Fatal("render failure was not displayed or changed the source")
+	}
+}
+
+func TestDocumentReaderDiscardsStaleOutline(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading, s.backgroundReader = 80, 24, true, true
+	s.snapshot = document.Document{Body: "# Old\n\nText.", Layout: document.DefaultLayout()}
+	first := s.requestReaderRender()
+	s.snapshot.Body = "# New\n\nText."
+	if cmd := s.requestReaderRender(); cmd != nil {
+		t.Fatal("reload launched a concurrent index")
+	}
+	next := s.readerIndexFinished(first().(documentReaderIndexMsg))
+	if next == nil || len(s.outline) != 0 {
+		t.Fatal("stale index was accepted or not replaced")
+	}
+	render := s.readerIndexFinished(next().(documentReaderIndexMsg))
+	if render == nil || len(s.outline) != 1 || s.outline[0].Title != "New" {
+		t.Fatalf("latest outline was not published: %+v", s.outline)
+	}
+	s.readerRenderFinished(render().(documentReaderRenderMsg))
+	if s.readerRendering || len(s.outline) != 1 || s.outline[0].Title != "New" {
+		t.Fatal("latest render was not accepted")
+	}
+}
+
+func TestDocumentReaderCoalescesResizeAfterIndex(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading, s.backgroundReader = 80, 24, true, true
+	s.snapshot = document.Document{Body: "# Heading\n\nText.", Layout: document.DefaultLayout()}
+	index := s.requestReaderRender()().(documentReaderIndexMsg)
+	render := s.readerIndexFinished(index)
+	s.width = 100
+	if cmd := s.requestReaderRender(); cmd != nil {
+		t.Fatal("resize launched a concurrent render")
+	}
+	stale := render().(documentReaderRenderMsg)
+	if !errors.Is(stale.err, context.Canceled) {
+		t.Fatalf("stale render returned %v", stale.err)
+	}
+	next := s.readerRenderFinished(stale)
+	if next == nil {
+		t.Fatal("stale render did not schedule the latest index")
+	}
+	latest := s.readerIndexFinished(next().(documentReaderIndexMsg))
+	s.readerRenderFinished(latest().(documentReaderRenderMsg))
+	if s.readerRendering || s.reader.Width() <= index.width {
+		t.Fatal("latest render did not use the resized viewport")
+	}
+}
+
+func TestDocumentReaderScrollsEarlyOutline(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading, s.backgroundReader = 80, 24, true, true
+	var body strings.Builder
+	for i := 0; i < 30; i++ {
+		fmt.Fprintf(&body, "# Heading %d\n\nText.\n\n", i)
+	}
+	s.snapshot = document.Document{Body: body.String(), Layout: document.DefaultLayout()}
+	index := s.requestReaderRender()().(documentReaderIndexMsg)
+	render := s.readerIndexFinished(index)
+	s.updateReaderMouse(mouseEvent{X: 3, Y: 5, Action: mousePress, Button: mouseWheelDown})
+	if !s.readerOutlineManual || s.readerOutlineStart() != 3 || len(s.readerQueuedInput) != 0 {
+		t.Fatal("outline wheel input waited for the document render")
+	}
+	s.updateReaderMouse(mouseEvent{X: 3, Y: 4, Action: mousePress, Button: mouseLeft})
+	s.readerRenderFinished(render().(documentReaderRenderMsg))
+	if s.currentSection() != 3 || s.reader.YOffset() != s.readerRows[3] {
+		t.Fatalf("early scrolled-outline click landed at section %d", s.currentSection())
+	}
+}
+
+func TestDocumentReaderPreviewScrollReplaysAfterResize(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading = 60, 10, true
+	s.snapshot = document.Document{
+		Body:   strings.Repeat("Plain paragraph with several words.\n\n", 18) + "Final text.",
+		Layout: document.DefaultLayout(),
+	}
+	s.showReaderPreamble()
+	first := s.requestReaderRender()
+	s.updateReaderKey(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	s.updateReaderMouse(mouseEvent{X: 4, Y: 4, Action: mousePress, Button: mouseWheelDown})
+	if s.reader.YOffset() != 4 || s.readerPreviewInputs != 2 {
+		t.Fatalf("preview scroll offset=%d inputs=%d, want 4 and 2", s.reader.YOffset(), s.readerPreviewInputs)
+	}
+	s.width = 44
+	if cmd := s.requestReaderRender(); cmd != nil {
+		t.Fatal("resize started a concurrent render")
+	}
+	if s.reader.YOffset() != 4 || s.readerPreviewStale {
+		t.Fatalf("preview position after resize: %d, stale=%t", s.reader.YOffset(), s.readerPreviewStale)
+	}
+	next := s.readerRenderFinished(first().(documentReaderRenderMsg))
+	if next == nil {
+		t.Fatal("resize did not start a replacement render")
+	}
+	s.readerRenderFinished(next().(documentReaderRenderMsg))
+	if s.reader.YOffset() != 4 || len(s.readerQueuedInput) != 0 || s.readerPreviewInputs != 0 {
+		t.Fatalf("completed offset=%d queued=%d preview=%d", s.reader.YOffset(), len(s.readerQueuedInput), s.readerPreviewInputs)
+	}
+}
+
+func TestDocumentReaderPreviewQueuesScrollBeyondKnownContent(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading = 60, 10, true
+	s.snapshot = document.Document{
+		Body:   strings.Repeat("Plain paragraph.\n\n", 20) + "Final text.",
+		Layout: document.DefaultLayout(),
+	}
+	s.showReaderPreamble()
+	cmd := s.requestReaderRender()
+	s.updateReaderKey(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	s.updateReaderKey(tea.KeyPressMsg{Code: 'G', Text: "G"})
+	s.updateReaderKey(tea.KeyPressMsg{Code: 'k', Text: "k"})
+	if s.reader.YOffset() != 1 || s.readerPreviewInputs != 1 || len(s.readerQueuedInput) != 3 {
+		t.Fatalf("preview applied queued input out of order: offset=%d applied=%d queued=%d",
+			s.reader.YOffset(), s.readerPreviewInputs, len(s.readerQueuedInput))
+	}
+	s.readerRenderFinished(cmd().(documentReaderRenderMsg))
+	if s.reader.YOffset() != s.reader.TotalLineCount()-s.reader.Height()-1 {
+		t.Fatalf("queued end then up landed at %d", s.reader.YOffset())
+	}
+}
+
+func TestDocumentReaderPreviewQueuesAfterHeightResize(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading = 60, 10, true
+	s.snapshot = document.Document{
+		Body:   strings.Repeat("Plain paragraph.\n\n", 20) + "Final text.",
+		Layout: document.DefaultLayout(),
+	}
+	s.showReaderPreamble()
+	cmd := s.requestReaderRender()
+	s.updateReaderKey(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if s.reader.YOffset() != 5 {
+		t.Fatalf("preview page down landed at %d", s.reader.YOffset())
+	}
+	s.height = 40
+	if resize := s.resizeReader(); resize != nil || !s.readerPreviewStale {
+		t.Fatal("height resize did not defer the no-longer-visible preview movement")
+	}
+	s.updateReaderKey(tea.KeyPressMsg{Code: 'k', Text: "k"})
+	if s.readerPreviewInputs != 1 || len(s.readerQueuedInput) != 2 {
+		t.Fatal("input after a stale preview was applied out of order")
+	}
+	s.readerRenderFinished(cmd().(documentReaderRenderMsg))
+	if s.reader.YOffset() != s.reader.TotalLineCount()-s.reader.Height()-1 {
+		t.Fatalf("resized queued navigation landed at %d", s.reader.YOffset())
+	}
+}
+
+func TestDocumentReaderPreviewScrollDoesNotDelayClosing(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading = 60, 10, true
+	s.snapshot = document.Document{
+		Body:   strings.Repeat("Plain paragraph.\n\n", 20) + "Final text.",
+		Layout: document.DefaultLayout(),
+	}
+	s.showReaderPreamble()
+	s.requestReaderRender()
+	s.updateReaderKey(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	if cmd := s.updateReaderKey(tea.KeyPressMsg{Code: 'q', Text: "q"}); cmd == nil || s.readerRendering {
+		t.Fatal("closing after preview scroll waited for the render")
+	}
+}
+
+func TestDocumentReaderPendingNavigationDoesNotDelayClosing(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading = 60, 10, true
+	s.snapshot = document.Document{Body: strings.Repeat("Paragraph.\n\n", 20), Layout: document.DefaultLayout()}
+	s.showReaderPreamble()
+	s.requestReaderRender()
+	s.updateReaderKey(tea.KeyPressMsg{Code: 'G', Text: "G"})
+	if cmd := s.updateReaderKey(tea.KeyPressMsg{Code: 'q', Text: "q"}); cmd == nil || s.readerRendering {
+		t.Fatal("closing after pending navigation waited for the render")
+	}
+}
+
+func TestDocumentReaderPendingFindKeepsEscapeInOrder(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.reading, s.readerRendering = true, true
+	s.updateReaderKey(tea.KeyPressMsg{Code: '/', Text: "/"})
+	s.updateReaderKey(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if !s.readerRendering || len(s.readerQueuedInput) != 2 {
+		t.Fatal("escape bypassed pending find input")
+	}
+}
+
+func TestDocumentReaderCompactsAppliedPreviewScrolls(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading, s.readerRendering, s.readerPreambleShown = 60, 10, true, true, true
+	s.reader.SetWidth(56)
+	s.reader.SetHeight(5)
+	lines := make([]string, 2000)
+	s.readerLines = lines
+	s.showReaderContent()
+	for range 700 {
+		s.queueReaderInput(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	}
+	for range 400 {
+		s.queueReaderInput(tea.KeyPressMsg{Code: 'k', Text: "k"})
+	}
+	if offset := s.readerPreviewBase + s.reader.YOffset(); offset != 300 || s.errMessage != "" {
+		t.Fatalf("preview offset=%d error=%q", offset, s.errMessage)
+	}
+	s.reader.SetHeight(8)
+	s.replayReaderPreview()
+	if offset := s.readerPreviewBase + s.reader.YOffset(); offset != 300 || s.readerPreviewStale {
+		t.Fatalf("replayed preview offset=%d stale=%t", offset, s.readerPreviewStale)
+	}
+	s.readerRenderFinished(documentReaderRenderMsg{session: s.readerRenderSession, lines: lines})
+	if s.reader.YOffset() != 300 || len(s.readerQueuedInput) != 0 {
+		t.Fatalf("completed offset=%d queued=%d", s.reader.YOffset(), len(s.readerQueuedInput))
+	}
+}
+
+func TestLargeDocumentReaderUsesBoundedViewport(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading, s.readerRendering, s.backgroundReader = 60, 11, true, true, true
+	s.reader.SetWidth(56)
+	s.reader.SetHeight(6)
+	s.snapshot = document.Document{Body: strings.Repeat("x", asyncReaderSearchBytes)}
+	lines := make([]string, 5000)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %04d", i)
+	}
+	lines[3000] = "unique search term"
+	const marker = '\U000f0000'
+	lines[3200] = strings.Repeat(string(marker), 2)
+	lines[4000] = "return link"
+	outline := []document.Section{{Title: "First", Slug: "first"}, {Title: "Far", Slug: "far"}}
+	rows := []int{0, 4500}
+	rowIndex, err := indexReaderSectionRows(context.Background(), rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.readerRenderFinished(documentReaderRenderMsg{
+		session: s.readerRenderSession, lines: lines, outline: outline, rows: rows, rowIndex: rowIndex,
+		links: []linkHitBox{{row: 4000, startCol: 0, endCol: 6, target: "first"}},
+		images: documentImageState{rows: map[rune]documentImageRow{
+			marker: {pixels: image.NewNRGBA(image.Rect(0, 0, 16, 16)), width: 2},
+		}},
+	})
+	if !s.readerWindowed || s.reader.TotalLineCount() > readerPreviewWindowLines {
+		t.Fatalf("completed viewport is not bounded: %d lines", s.reader.TotalLineCount())
+	}
+	for range 1800 {
+		s.updateReaderKey(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	}
+	if s.readerOffset() != 1800 || !strings.Contains(s.readerContentView(), "line 1800") {
+		t.Fatalf("scrolled to %d", s.readerOffset())
+	}
+	s.gotoSection(1)
+	if s.readerOffset() != 4500 || s.currentSection() != 1 || !strings.Contains(s.readerContentView(), "line 4500") {
+		t.Fatalf("section jump landed at %d, section %d", s.readerOffset(), s.currentSection())
+	}
+	s.find.visible = true
+	s.find.input.SetValue("unique")
+	search := s.searchReader("unique")
+	s.readerSearchFinished(search().(documentReaderSearchMsg))
+	if s.readerOffset() != 3000 || !strings.Contains(ansi.Strip(s.readerContentView()), "unique search term") {
+		t.Fatalf("search landed at %d", s.readerOffset())
+	}
+	s.find.visible = false
+	s.setReaderOffset(3200)
+	if _, placements := s.documentImagePlacements(s.readerContentView(), s.reader.Width()); len(placements) != 1 || placements[0].y != 0 {
+		t.Fatalf("windowed image placements = %+v", placements)
+	}
+	s.setReaderOffset(4000)
+	s.updateReaderMouse(mouseEvent{X: 2, Y: 3, Action: mousePress, Button: mouseLeft})
+	if s.readerOffset() != 0 {
+		t.Fatalf("link landed at %d", s.readerOffset())
+	}
+	s.updateReaderKey(tea.KeyPressMsg{Code: tea.KeyEnd})
+	if s.readerOffset() != len(lines)-s.reader.Height() {
+		t.Fatalf("end landed at %d", s.readerOffset())
+	}
+	s.updateReaderMouse(mouseEvent{X: 5, Y: 4, Action: mousePress, Button: mouseWheelUp})
+	if s.readerOffset() != len(lines)-s.reader.Height()-s.reader.MouseWheelDelta {
+		t.Fatalf("wheel landed at %d", s.readerOffset())
+	}
+	s.updateReaderKey(tea.KeyPressMsg{Code: tea.KeyHome})
+	if s.readerOffset() != 0 || s.reader.TotalLineCount() > readerPreviewWindowLines {
+		t.Fatalf("home landed at %d with %d viewport lines", s.readerOffset(), s.reader.TotalLineCount())
+	}
+}
+
+func TestLargeDocumentReaderReplaysPreviewScrollIntoWindow(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading, s.readerRendering, s.backgroundReader = 60, 10, true, true, true
+	s.readerPreambleShown = true
+	s.reader.SetWidth(56)
+	s.reader.SetHeight(5)
+	s.readerLines = make([]string, 2000)
+	s.showReaderContent()
+	for range 1300 {
+		s.queueReaderInput(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	}
+	s.readerRenderFinished(documentReaderRenderMsg{session: s.readerRenderSession, lines: make([]string, 5000)})
+	if got := s.readerOffset(); got != 1300 || s.reader.TotalLineCount() > readerPreviewWindowLines {
+		t.Fatalf("completed offset=%d, viewport lines=%d", got, s.reader.TotalLineCount())
+	}
+}
+
+func TestLargeDocumentReaderPreservesEditorLocation(t *testing.T) {
+	for _, action := range []string{"keyboard", "click"} {
+		t.Run(action, func(t *testing.T) {
+			s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+			s.width, s.height, s.reading, s.backgroundReader, s.readerWindowed = 60, 24, true, true, true
+			s.reader.SetWidth(56)
+			s.reader.SetHeight(19)
+			lines := make([]string, 2000)
+			for i := range lines {
+				lines[i] = fmt.Sprintf("unique%04d content", i)
+			}
+			s.snapshot = document.Document{Body: strings.Join(lines, "\n"), Layout: document.DefaultLayout()}
+			s.readerLines = lines
+			s.showReaderContent()
+			s.setReaderOffset(1300)
+			if action == "keyboard" {
+				s.updateReaderKey(tea.KeyPressMsg{Code: 'e', Text: "e"})
+				if got := s.body.Cursor.Line; got != 1300 {
+					t.Fatalf("editor cursor line=%d, want 1300", got)
+				}
+			} else {
+				s.editAtReaderLocation(1302, 0)
+				if got := s.body.Cursor.Line; got != 1302 || s.body.TopLine != 1300 {
+					t.Fatalf("editor cursor line=%d, top=%d, want 1302 and 1300", got, s.body.TopLine)
+				}
+			}
+		})
+	}
+}
+
+func TestLargeDocumentReaderPreservesWindowAcrossReflowAndFailure(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading, s.backgroundReader, s.readerWindowed = 60, 10, true, true, true
+	s.reader.SetWidth(56)
+	s.reader.SetHeight(5)
+	s.readerLines = make([]string, 5000)
+	s.outline = []document.Section{{Title: "First", Slug: "first"}}
+	s.readerRows = []int{0}
+	s.readerRowIndex, _ = indexReaderSectionRows(context.Background(), s.readerRows)
+	s.showReaderContent()
+	s.setReaderOffset(1300)
+	s.readerRendering = true
+	s.readerRenderFinished(documentReaderRenderMsg{session: s.readerRenderSession, err: errors.New("render failed")})
+	if s.readerOffset() != 1300 || !s.readerWindowed {
+		t.Fatal("failed reflow discarded the previous window position")
+	}
+	s.readerRendering = true
+	rows := []int{50}
+	rowIndex, _ := indexReaderSectionRows(context.Background(), rows)
+	s.readerRenderFinished(documentReaderRenderMsg{
+		session: s.readerRenderSession, lines: make([]string, 5000), outline: s.outline, rows: rows, rowIndex: rowIndex,
+	})
+	if got := s.readerOffset(); got != 1350 {
+		t.Fatalf("reflow offset=%d, want 1350", got)
+	}
+}
+
+func TestDocumentReaderCompactionPreservesPendingInput(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading, s.readerRendering, s.readerPreambleShown = 60, 10, true, true, true
+	s.reader.SetWidth(56)
+	s.reader.SetHeight(5)
+	lines := make([]string, 2000)
+	s.readerLines = lines
+	s.showReaderContent()
+	for range 200 {
+		s.queueReaderInput(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	}
+	s.queueReaderInput(tea.KeyPressMsg{Code: 'G', Text: "G"})
+	for range 55 {
+		s.queueReaderInput(tea.KeyPressMsg{Code: 'k', Text: "k"})
+	}
+	s.queueReaderInput(tea.KeyPressMsg{Code: 'k', Text: "k"})
+	if s.errMessage != "" {
+		t.Fatalf("input was lost: %s", s.errMessage)
+	}
+	s.readerRenderFinished(documentReaderRenderMsg{session: s.readerRenderSession, lines: lines})
+	if got, want := s.reader.YOffset(), len(lines)-s.reader.Height()-56; got != want {
+		t.Fatalf("completed offset=%d, want %d", got, want)
+	}
+}
+
+func TestDocumentReaderCompactedPageAndWheelReplay(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		input       tea.Msg
+		wantBefore  int
+		wantResized int
+	}{
+		{"page", tea.KeyPressMsg{Code: tea.KeyPgDown}, 1350, 1620},
+		{"wheel", readerQueuedWheel{event: mouseEvent{Button: mouseWheelDown}}, 810, 810},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+			s.width, s.height, s.reading, s.readerRendering, s.readerPreambleShown = 60, 10, true, true, true
+			s.reader.SetWidth(56)
+			s.reader.SetHeight(5)
+			lines := make([]string, 2000)
+			s.readerLines = lines
+			s.showReaderContent()
+			for range 270 {
+				s.queueReaderInput(tc.input)
+			}
+			if got := s.readerPreviewBase + s.reader.YOffset(); got != tc.wantBefore {
+				t.Fatalf("preview offset=%d, want %d", got, tc.wantBefore)
+			}
+			s.reader.SetHeight(6)
+			s.replayReaderPreview()
+			if got := s.readerPreviewBase + s.reader.YOffset(); got != tc.wantResized || s.readerPreviewStale {
+				t.Fatalf("resized preview offset=%d stale=%t, want %d", got, s.readerPreviewStale, tc.wantResized)
+			}
+			s.readerRenderFinished(documentReaderRenderMsg{session: s.readerRenderSession, lines: lines})
+			if got := s.reader.YOffset(); got != tc.wantResized {
+				t.Fatalf("completed offset=%d, want %d", got, tc.wantResized)
+			}
+		})
+	}
+}
+
+func TestDocumentReaderCompactsPendingScrollAndAdvancesWithBatches(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading, s.readerRendering, s.readerPreambleShown = 60, 10, true, true, true
+	s.readerProvisional = true
+	s.reader.SetWidth(56)
+	s.reader.SetHeight(5)
+	for range 700 {
+		s.queueReaderInput(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	}
+	if s.errMessage != "" || len(s.readerQueuedInput) >= maxQueuedReaderInput {
+		t.Fatalf("pending scrolls were not compacted: %q, %d entries", s.errMessage, len(s.readerQueuedInput))
+	}
+	s.readerPreviewFinished(documentReaderPreviewMsg{session: s.readerRenderSession, lines: make([]string, 200)})
+	if got, want := s.readerPreviewBase+s.reader.YOffset(), 196; got != want {
+		t.Fatalf("first batch offset=%d, want %d", got, want)
+	}
+	s.readerPreviewFinished(documentReaderPreviewMsg{session: s.readerRenderSession, lines: make([]string, 400)})
+	if got, want := s.readerPreviewBase+s.reader.YOffset(), 596; got != want {
+		t.Fatalf("second batch offset=%d, want %d", got, want)
+	}
+	s.readerRenderFinished(documentReaderRenderMsg{session: s.readerRenderSession, lines: make([]string, 2000)})
+	if got := s.reader.YOffset(); got != 700 {
+		t.Fatalf("completed offset=%d, want 700", got)
+	}
+}
+
+func TestDocumentReaderDoesNotCompactPendingFindInput(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.readerRendering = true
+	s.queueReaderInput(tea.KeyPressMsg{Code: '/', Text: "/"})
+	for range maxQueuedReaderInput - 1 {
+		s.queueReaderInput(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	}
+	s.queueReaderInput(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	if len(s.readerQueuedInput) != maxQueuedReaderInput || s.errMessage == "" {
+		t.Fatal("find text was incorrectly compacted as navigation")
+	}
+}
+
+func TestDocumentReaderReflowRestoresSearchAndQueuedNext(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading = 80, 10, true
+	s.snapshot = document.Document{Body: strings.Repeat("x", asyncReaderSearchBytes), Layout: document.DefaultLayout()}
+	s.reader.SetWidth(30)
+	s.reader.SetHeight(5)
+	lines := strings.Split("beta first\nfiller\nfiller\nfiller\nfiller\nfiller\nbeta second\nfiller\nfiller\nfiller\nfiller\nfiller\nbeta third\nfiller\nfiller", "\n")
+	s.readerLines = lines
+	s.showReaderContent()
+	s.find.visible = true
+	s.find.input.SetValue("beta")
+	s.rebuildReaderMatches("beta")
+	s.readerMatch = 1
+	s.gotoReaderMatch()
+	s.requestReaderRender()
+	s.updateReaderKey(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	cmd := s.readerRenderFinished(documentReaderRenderMsg{
+		session: s.readerRenderSession,
+		lines:   lines,
+	})
+	if cmd == nil {
+		t.Fatal("expected asynchronous search")
+	}
+	s.update(cmd())
+	if s.readerSearching || s.readerMatch != 2 || s.reader.YOffset() != 10 {
+		t.Fatalf("search navigation was not restored: searching=%t match=%d offset=%d",
+			s.readerSearching, s.readerMatch, s.reader.YOffset())
+	}
+}
+
+func TestDocumentReaderDiscardsRenderAfterClose(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading = 80, 24, true
+	s.snapshot = document.Document{Body: "First paragraph.\n\n# Later", Layout: document.DefaultLayout()}
+	cmd := s.requestReaderRender()
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	s.close()
+	msg := (<-done).(documentReaderRenderMsg)
+	if next := s.readerRenderFinished(msg); next != nil || s.readerRendering || len(s.readerLines) != 0 {
+		t.Fatal("closed reader accepted or restarted a stale render")
+	}
+}
+
+func TestReaderSectionRowIndexPreservesSelection(t *testing.T) {
+	rows := []int{10, 5, 10, -1, 6}
+	index, err := indexReaderSectionRows(context.Background(), rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.readerRows, s.readerRowIndex = rows, index
+	s.readerSection = -1
+	s.reader.SetHeight(1)
+	s.reader.SetContentLines(make([]string, 20))
+	for _, tt := range []struct {
+		offset, current, atRow int
+	}{
+		{0, -1, -1},
+		{4, 1, -1},
+		{5, 4, 1},
+		{9, 4, 4},
+		{10, 4, 2},
+	} {
+		s.reader.SetYOffset(tt.offset)
+		if got := s.currentSection(); got != tt.current {
+			t.Errorf("currentSection at %d = %d, want %d", tt.offset, got, tt.current)
+		}
+		if got := s.sectionAtReaderRow(tt.offset); got != tt.atRow {
+			t.Errorf("sectionAtReaderRow(%d) = %d, want %d", tt.offset, got, tt.atRow)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := indexReaderSectionRows(ctx, rows); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled index error = %v", err)
+	}
+}
+
+func TestDocumentReaderRenderHonorsCancellation(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading = 80, 24, true
+	s.snapshot = document.Document{Body: "# Heading\n\ntext", Layout: document.DefaultLayout()}
+	cmd := s.requestReaderRender()
+	s.cancelReaderRender()
+	msg := cmd().(documentReaderRenderMsg)
+	if !errors.Is(msg.err, context.Canceled) {
+		t.Fatalf("cancelled render returned %v", msg.err)
+	}
+}
+
+func TestDocumentReaderCancelsRunningRender(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading = 80, 24, true
+	s.snapshot = document.Document{Body: strings.Repeat("# Heading\n\n", 100000), Layout: document.DefaultLayout()}
+	cmd := s.requestReaderRender()
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	s.cancelReaderRender()
+	select {
+	case result := <-done:
+		if err := result.(documentReaderRenderMsg).err; !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled render returned %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled render did not stop at a checkpoint")
+	}
+}
+
+func TestDocumentEditorImageListDoesNotMutateReaderSnapshot(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	doc := document.Document{
+		Body: "Document.", Layout: document.DefaultLayout(),
+		Images: []artifact.Image{{Name: "original.png", Data: []byte("unchanged")}},
+	}
+	s.startReading(doc)
+	if _, ok := s.startEdit(doc); !ok {
+		t.Fatal(s.errMessage)
+	}
+	s.images[0] = artifact.Image{Name: "replacement.png"}
+	if doc.Images[0].Name != "original.png" || s.snapshot.Images[0].Name != "original.png" {
+		t.Fatal("editing the image list mutated the reader snapshot")
+	}
+}
+
+func TestDocumentReaderQueuesFindInputDuringRender(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.width, s.height, s.reading = 80, 24, true
+	s.snapshot = document.Document{Body: "First paragraph.\n\nSecond paragraph.", Layout: document.DefaultLayout()}
+	cmd := s.requestReaderRender()
+	for _, key := range []tea.KeyPressMsg{
+		{Code: '/', Text: "/"}, {Code: 'q', Text: "q"}, {Code: tea.KeyEsc},
+	} {
+		s.updateReaderKey(key)
+	}
+	if len(s.readerQueuedInput) != 3 {
+		t.Fatal("find keys were not queued in order")
+	}
+	s.readerRenderFinished(cmd().(documentReaderRenderMsg))
+	if !s.reading || s.find.visible || s.find.query() != "" {
+		t.Fatal("queued find input did not close the find bar")
+	}
+}
+
+func TestDocumentReaderQueuesLinkTargetDuringReflow(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.resize(80, 24)
+	doc := document.Document{
+		Body:   "# Start\n\n[Jump](#target)\n\n" + strings.Repeat("Paragraph.\n\n", 40) + "# Target\n\n" + strings.Repeat("Last paragraph.\n\n", 20),
+		Layout: document.DefaultLayout(),
+	}
+	s.startReading(doc)
+	if len(s.readerLinks) != 1 {
+		t.Fatal("expected a reader link")
+	}
+	box := s.readerLinks[0]
+	outlineWidth, _ := s.readerPaneWidths()
+	cmd := s.requestReaderRender()
+	s.updateReaderMouse(mouseEvent{X: outlineWidth + 1 + box.startCol, Y: 3 + box.row, Action: mousePress, Button: mouseLeft})
+	s.readerRenderFinished(cmd().(documentReaderRenderMsg))
+	for i, section := range s.outline {
+		if section.Slug == "target" {
+			if s.reader.YOffset() != s.readerRows[i] {
+				t.Fatalf("queued link landed at %d, want %d", s.reader.YOffset(), s.readerRows[i])
+			}
+			return
+		}
+	}
+	t.Fatal("target heading missing")
+}
+
+func TestDocumentReaderQueuesDuplicateOutlineAnchor(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.resize(80, 24)
+	doc := document.Document{
+		Body:   "<a id=\"same\"></a>\n\nFirst.\n\n<a id=\"same\"></a>\n\n" + strings.Repeat("More.\n\n", 30),
+		Layout: document.DefaultLayout(),
+	}
+	s.startReading(doc)
+	if len(s.outline) != 2 || s.outline[0].Slug != "same" || s.outline[1].Slug != "same" {
+		t.Fatalf("unexpected outline: %+v", s.outline)
+	}
+	cmd := s.requestReaderRender()
+	s.updateReaderMouse(mouseEvent{X: 3, Y: 5, Action: mousePress, Button: mouseLeft})
+	s.readerRenderFinished(cmd().(documentReaderRenderMsg))
+	if s.currentSection() != 1 || s.reader.YOffset() != s.readerRows[1] {
+		t.Fatal("queued outline click did not preserve the duplicate anchor")
 	}
 }
 

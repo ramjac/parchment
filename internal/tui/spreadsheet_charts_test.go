@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2/compat"
 	"github.com/charmbracelet/colorprofile"
 
 	"example.com/parchment/internal/config"
@@ -57,9 +56,9 @@ func TestSpreadsheetChartUIStagesAndRecovers(t *testing.T) {
 }
 
 func TestRenderSpreadsheetChartUsesNTCharts(t *testing.T) {
-	previous := compat.Profile
-	t.Cleanup(func() { compat.Profile = previous })
-	compat.Profile = colorprofile.TrueColor
+	previous := terminalColorProfile
+	t.Cleanup(func() { terminalColorProfile = previous })
+	terminalColorProfile = colorprofile.TrueColor
 
 	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "3"}}})
 	m.theme = resolveTheme(config.Theme{Mode: "dark"})
@@ -223,9 +222,9 @@ func TestSpreadsheetNewChartShortcutAdaptsToTerminal(t *testing.T) {
 }
 
 func TestSpreadsheetChartFormPreviewRejectsStaleAndResizes(t *testing.T) {
-	previous := compat.Profile
-	t.Cleanup(func() { compat.Profile = previous })
-	compat.Profile = colorprofile.TrueColor
+	previous := terminalColorProfile
+	t.Cleanup(func() { terminalColorProfile = previous })
+	terminalColorProfile = colorprofile.TrueColor
 	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "3"}}})
 	m.column = 1
 	driveSheet(t, m, sheetKey("g"))
@@ -320,9 +319,9 @@ func TestSpreadsheetChartFormPreviewDoesNotSuspendAutosave(t *testing.T) {
 }
 
 func TestSpreadsheetChartFormLiveTypingAndMonochrome(t *testing.T) {
-	previous := compat.Profile
-	t.Cleanup(func() { compat.Profile = previous })
-	compat.Profile = colorprofile.Ascii
+	previous := terminalColorProfile
+	t.Cleanup(func() { terminalColorProfile = previous })
+	terminalColorProfile = colorprofile.Ascii
 	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Value: "3"}}})
 	m.column = 1
 	driveSheet(t, m, sheetKey("g"))

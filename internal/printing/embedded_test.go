@@ -2,6 +2,8 @@ package printing
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"image/png"
 	"strings"
 	"testing"
@@ -9,6 +11,100 @@ import (
 	"example.com/parchment/internal/presentation"
 	"example.com/parchment/internal/spreadsheet"
 )
+
+type cancelDuringEmbeddedEvaluation struct {
+	context.Context
+	checks int
+}
+
+func (c *cancelDuringEmbeddedEvaluation) Err() error {
+	c.checks++
+	if c.checks >= 8 {
+		return context.Canceled
+	}
+	return nil
+}
+
+func TestEmbeddedChartCancellationDuringWorkbookEvaluation(t *testing.T) {
+	book := spreadsheet.Workbook{
+		Sheets: []spreadsheet.Sheet{{Name: "Data", Rows: make([][]spreadsheet.Cell, 100)}},
+		Charts: []spreadsheet.Chart{{
+			ID: "chart", Type: "bar", Sheet: "Data", FirstRow: 1, LastRow: 2, FirstColumn: 1, LastColumn: 1,
+		}},
+	}
+	ref, err := spreadsheet.FormatReference(spreadsheet.Reference{Kind: spreadsheet.ChartReferenceKind, ID: "chart"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := &cancelDuringEmbeddedEvaluation{Context: context.Background()}
+	called := false
+	_, _, err = ExpandEmbeddedReferencesWithChartRendererContext(ctx, ref, book, func(spreadsheet.ChartData) string {
+		called = true
+		return "chart"
+	})
+	if !errors.Is(err, context.Canceled) || called {
+		t.Fatalf("chart expansion error = %v, renderer called = %t", err, called)
+	}
+}
+
+func TestEmbeddedExpansionLimit(t *testing.T) {
+	if _, _, err := ExpandEmbeddedReferencesWithChartRendererLimitedContext(
+		context.Background(), "ordinary prose", spreadsheet.Workbook{}, nil, EmbeddedChartLimits{ExpandedBytes: 4},
+	); !errors.Is(err, ErrEmbeddedExpansionLimit) {
+		t.Fatalf("plain source exceeded the limit: %v", err)
+	}
+	sheet, err := spreadsheet.NewEmbeddedSheet("Data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sheet.Rows = [][]spreadsheet.Cell{{{Value: strings.Repeat("x", 200)}}}
+	book := spreadsheet.Workbook{Sheets: []spreadsheet.Sheet{sheet}}
+	ref, err := spreadsheet.FormatReference(spreadsheet.Reference{Kind: spreadsheet.SheetReferenceKind, ID: sheet.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{ref, ref + "\n\n" + ref} {
+		if _, _, err := ExpandEmbeddedReferencesWithChartRendererLimitedContext(
+			context.Background(), source, book, nil, EmbeddedChartLimits{ExpandedBytes: 150},
+		); !errors.Is(err, ErrEmbeddedExpansionLimit) {
+			t.Fatalf("expanded source exceeded the limit: %v", err)
+		}
+	}
+	source := ref + "\n\n" + ref
+	expanded, _, err := ExpandEmbeddedReferencesWithChartRendererLimitedContext(
+		context.Background(), source, book, nil, EmbeddedChartLimits{ExpandedBytes: 1024},
+	)
+	if err != nil || strings.Count(expanded, strings.Repeat("x", 200)) != 2 {
+		t.Fatalf("valid expansion failed: %v", err)
+	}
+	if _, _, err := ExpandEmbeddedReferencesWithChartRendererLimitedContext(
+		context.Background(), source, book, nil, EmbeddedChartLimits{ExpandedBytes: len(expanded) - 1},
+	); !errors.Is(err, ErrEmbeddedExpansionLimit) {
+		t.Fatalf("cumulative expansion was not limited: %v", err)
+	}
+	if _, _, err := ExpandEmbeddedReferencesWithChartRendererLimitedContext(
+		context.Background(), source, book, nil, EmbeddedChartLimits{ExpandedBytes: 1024, ReferenceCount: 1},
+	); !errors.Is(err, ErrEmbeddedExpansionLimit) {
+		t.Fatalf("embedded reference count was not limited: %v", err)
+	}
+	malformed := "![Spreadsheet](parchment-sheet:)\n![Spreadsheet](parchment-sheet:)"
+	if _, _, err := ExpandEmbeddedReferencesWithChartRendererLimitedContext(
+		context.Background(), malformed, book, nil, EmbeddedChartLimits{ExpandedBytes: 1024, ReferenceCount: 1},
+	); !errors.Is(err, ErrEmbeddedExpansionLimit) {
+		t.Fatalf("malformed reference count was not limited: %v", err)
+	}
+}
+
+func TestEmbeddedExpansionCancelsWhileScanningLines(t *testing.T) {
+	ctx := &cancelDuringEmbeddedEvaluation{Context: context.Background()}
+	source := strings.Repeat("\n", 100000) + "![Spreadsheet](parchment-sheet:)\n"
+	_, _, err := ExpandEmbeddedReferencesWithChartRendererLimitedContext(
+		ctx, source, spreadsheet.Workbook{}, nil, EmbeddedChartLimits{ExpandedBytes: len(source) + 1024},
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expansion did not cancel while scanning lines: %v", err)
+	}
+}
 
 func TestExpandEmbeddedReferencesResolvesSheetAndCrossSheetChart(t *testing.T) {
 	sales, err := spreadsheet.NewEmbeddedSheet("Sales")
@@ -108,6 +204,19 @@ func TestExpandEmbeddedReferencesResolvesSheetAndCrossSheetChart(t *testing.T) {
 		!strings.Contains(custom, "**Spreadsheet: Sales**") {
 		t.Fatalf("custom rendering did not preserve reference boundaries: %q, %v", custom, customErrors)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	cancelled, _, err := ExpandEmbeddedReferencesWithChartRendererContext(ctx, chartRef+"\n\n"+chartRef, book, func(spreadsheet.ChartData) string {
+		calls++
+		cancel()
+		return "native chart"
+	})
+	if !errors.Is(err, context.Canceled) || calls != 1 || cancelled != "" {
+		t.Fatalf("cancelled expansion returned %q, %d calls, %v", cancelled, calls, err)
+	}
+	if _, _, _, err := ExpandEmbeddedReferencesWithImagesContext(ctx, chartRef, book); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled image expansion returned %v", err)
+	}
 }
 
 func TestExpandEmbeddedReferencesKeepsBrokenReferencePlaceholder(t *testing.T) {
@@ -123,6 +232,35 @@ func TestExpandEmbeddedReferencesLeavesOrdinaryProseUntouched(t *testing.T) {
 	expanded, errorsFound := ExpandEmbeddedReferences(source, spreadsheet.Workbook{})
 	if expanded != source || len(errorsFound) != 0 {
 		t.Fatalf("ordinary prose = %q, %v", expanded, errorsFound)
+	}
+}
+
+func TestExpandEmbeddedReferencesNormalizesCRLFWithoutReferences(t *testing.T) {
+	source := "first\r\n\r\nsecond\r\n"
+	expanded, errorsFound := ExpandEmbeddedReferences(source, spreadsheet.Workbook{})
+	if expanded != "first\n\nsecond\n" || len(errorsFound) != 0 {
+		t.Fatalf("expanded prose = %q, %v", expanded, errorsFound)
+	}
+}
+
+type cancellingExpansionContext struct {
+	context.Context
+	checks int
+}
+
+func (c *cancellingExpansionContext) Err() error {
+	c.checks++
+	if c.checks >= 2 {
+		return context.Canceled
+	}
+	return nil
+}
+
+func TestExpandEmbeddedReferencesFastPathCancellation(t *testing.T) {
+	ctx := &cancellingExpansionContext{Context: context.Background()}
+	got, _, err := ExpandEmbeddedReferencesWithChartRendererContext(ctx, "plain text", spreadsheet.Workbook{}, nil)
+	if got != "" || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled fast path returned %q, %v", got, err)
 	}
 }
 

@@ -252,8 +252,13 @@ func wordRune(r rune) bool {
 }
 
 func sourceLineForSection(source string, outline []document.Section, index int) int {
+	line, _ := findSourceLineForSection(source, outline, index)
+	return line
+}
+
+func findSourceLineForSection(source string, outline []document.Section, index int) (int, bool) {
 	if index < 0 || index >= len(outline) {
-		return 0
+		return 0, false
 	}
 	target := outline[index]
 	occurrence := 0
@@ -287,12 +292,12 @@ func sourceLineForSection(source string, outline []document.Section, index int) 
 		title = normalizeSourceHeading(title)
 		if strings.EqualFold(title, target.Title) {
 			if occurrence == 0 {
-				return lineNumber
+				return lineNumber, true
 			}
 			occurrence--
 		}
 	}
-	return 0
+	return 0, false
 }
 
 func normalizeSourceHeading(title string) string {

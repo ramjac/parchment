@@ -15,7 +15,6 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2/compat"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
 
@@ -160,9 +159,9 @@ func TestPresentationChartReferenceRendersAsEmbeddedImage(t *testing.T) {
 
 func TestPresentationChartFallbackKeepsReadableLabels(t *testing.T) {
 	documentImageEnv(t, "none")
-	previous := compat.Profile
-	compat.Profile = colorprofile.TrueColor
-	t.Cleanup(func() { compat.Profile = previous })
+	previous := terminalColorProfile
+	terminalColorProfile = colorprofile.TrueColor
+	t.Cleanup(func() { terminalColorProfile = previous })
 	m, _, _ := newPresentationTestModel(t)
 	m.theme = tuitheme.Resolve(config.Theme{Mode: "dark"})
 	book, reference := embeddedChartTestWorkbook(t, "bar")
@@ -688,9 +687,9 @@ func (m presentationRenderModel) Init() tea.Cmd {
 }
 
 func TestPresentationImagesRendererUpdates(t *testing.T) {
-	previousProfile := compat.Profile
-	compat.Profile = colorprofile.TrueColor
-	t.Cleanup(func() { compat.Profile = previousProfile })
+	previousProfile := terminalColorProfile
+	terminalColorProfile = colorprofile.TrueColor
+	t.Cleanup(func() { terminalColorProfile = previousProfile })
 	for _, protocol := range []string{"kitty", "iterm", "sixel"} {
 		t.Run(protocol, func(t *testing.T) {
 			documentImageEnv(t, protocol)
@@ -819,9 +818,9 @@ func TestExamplePresentationImageRenders(t *testing.T) {
 }
 
 func TestExamplePresentationImagePaintOrder(t *testing.T) {
-	previousProfile := compat.Profile
-	compat.Profile = colorprofile.TrueColor
-	t.Cleanup(func() { compat.Profile = previousProfile })
+	previousProfile := terminalColorProfile
+	terminalColorProfile = colorprofile.TrueColor
+	t.Cleanup(func() { terminalColorProfile = previousProfile })
 	for _, mode := range []string{"dark", "light"} {
 		for _, protocol := range []string{"kitty", "iterm", "sixel"} {
 			t.Run(mode+"/"+protocol, func(t *testing.T) {

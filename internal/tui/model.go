@@ -135,11 +135,14 @@ type Model struct {
 	images        *imageedit.Service
 	recoveryStore recovery.Store
 	theme         Theme
+	themeConfig   config.Theme
+	autoThemeDark bool
 	undoLimit     int
 	noteEncoding  string
 	stage         stage
 	width         int
 	height        int
+	sizeKnown     bool
 	pending       bool
 	status        string
 	errMessage    string
@@ -175,6 +178,8 @@ func NewModel(config Config) Model {
 		images:        config.Images,
 		recoveryStore: config.Recovery,
 		theme:         resolvedTheme,
+		themeConfig:   config.Theme,
+		autoThemeDark: tuitheme.AutoDark(),
 		undoLimit:     undoLimit,
 		noteEncoding:  config.NoteEncoding,
 		noteEditor:    newNoteEditor(undoLimit, resolvedTheme),
@@ -186,6 +191,7 @@ func NewModel(config Config) Model {
 	m.noteEditor.lastPDFPath = config.LastPDFPath
 	if config.Documents != nil {
 		m.documents = newDocumentsScreen(config.Documents, config.Path, m.newOperationContext, m.theme, undoLimit)
+		m.documents.backgroundReader = true
 		m.documents.recoveryStore = config.Recovery
 		m.documents.pdfStore = config.PDFStore
 		m.documents.lastPDFPath = config.LastPDFPath
@@ -283,14 +289,19 @@ func (m *Model) openFile(kind artifact.Kind) tea.Cmd {
 // Update applies a terminal message to the editor.
 func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	message = normalizeTerminalKey(message)
+	if background, ok := message.(tea.BackgroundColorMsg); ok {
+		return m, m.updateBackgroundTheme(background.IsDark())
+	}
 	// Record the size before delegating: the file may open before the first
 	// size arrives, and the shell's view checks the size too.
 	size, resized := message.(tea.WindowSizeMsg)
+	var documentResize tea.Cmd
 	if resized {
 		m.width, m.height = size.Width, size.Height
+		m.sizeKnown = true
 		m.resizeEditors()
 		if m.documents != nil {
-			m.documents.resize(size.Width, size.Height)
+			documentResize = m.documents.resize(size.Width, size.Height)
 		}
 	}
 	switch {
@@ -305,7 +316,7 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	if resized {
-		return m, nil
+		return m, documentResize
 	}
 	if _, ok := message.(documentMessage); ok && m.documents != nil {
 		return m, m.documents.update(message)
@@ -564,11 +575,15 @@ func (m *Model) enterEditor() tea.Cmd {
 	case artifact.DocumentKind:
 		// Existing documents open in the reader unless editing was requested;
 		// new ones start in the editor.
+		if !m.sizeKnown {
+			m.width, m.height = 80, 24
+			m.documents.resize(m.width, m.height)
+		}
 		m.stage = stageDocument
 		if !m.opened.created && !m.edit {
-			m.documents.startReading(m.opened.document)
+			cmd := m.documents.startReading(m.opened.document)
 			m.documents.status = m.status
-			return nil
+			return cmd
 		}
 		cmd, ok := m.documents.startEdit(m.opened.document)
 		if !ok {
@@ -820,11 +835,82 @@ func (m Model) View() tea.View {
 	return view
 }
 
+func (m *Model) updateBackgroundTheme(dark bool) tea.Cmd {
+	if m.themeConfig.Mode != "" && m.themeConfig.Mode != "auto" || dark == m.autoThemeDark {
+		return nil
+	}
+	m.autoThemeDark = dark
+	theme := tuitheme.ResolveBackground(m.themeConfig, dark)
+	m.theme, m.noteEditor.theme = theme, theme
+	m.bodyInput.SetTheme(theme)
+	setTextInputStyles(&m.noteEditor.find.input, theme.Chrome, theme.Muted)
+	if m.previewing {
+		m.noteEditor.resizePreview(m.width, m.height)
+	}
+	var cmds []tea.Cmd
+	if s := m.documents; s != nil {
+		s.theme = theme
+		s.body.SetTheme(theme)
+		setTextInputStyles(&s.find.input, theme.Chrome, theme.Muted)
+		switch {
+		case s.reading:
+			if s.readerPreambleShown {
+				s.showReaderPreamble()
+			}
+			cmds = append(cmds, s.refreshReader())
+		case s.previewing:
+			page, line := s.editPage, s.editPageLine
+			s.openPreview()
+			s.editPage, s.editPageLine = max(min(page, len(s.editPages)-1), 0), line
+			s.clampPreviewLine()
+		}
+		if s.embeddedEditor != nil {
+			s.embeddedEditor.theme = theme
+			s.embeddedEditor.gridChartDirty = true
+			setTextInputStyles(&s.embeddedEditor.find.input, theme.Chrome, theme.Muted)
+			_, cmd := s.embeddedEditor.Update(tea.BackgroundColorMsg{})
+			cmds = append(cmds, cmd)
+		}
+	}
+	if s := m.sheet; s != nil {
+		s.theme = theme
+		s.gridChartDirty = true
+		setTextInputStyles(&s.find.input, theme.Chrome, theme.Muted)
+		_, cmd := s.Update(tea.BackgroundColorMsg{})
+		cmds = append(cmds, cmd)
+	}
+	if d := m.deck; d != nil {
+		d.theme = theme
+		d.editor.SetTheme(theme)
+		setTextInputStyles(&d.find.input, theme.Chrome, theme.Muted)
+		d.imageRenderCache = make(map[string]renderedPresentationImage)
+		d.chartImages = make(map[string]artifact.Image)
+		d.imageRevision++
+		d.imageFrame++
+		if d.embeddedEditor != nil {
+			d.embeddedEditor.theme = theme
+			d.embeddedEditor.gridChartDirty = true
+			setTextInputStyles(&d.embeddedEditor.find.input, theme.Chrome, theme.Muted)
+			_, cmd := d.embeddedEditor.Update(tea.BackgroundColorMsg{})
+			cmds = append(cmds, cmd)
+		}
+	}
+	if m.image != nil {
+		m.image.theme = theme
+	}
+	return tea.Batch(cmds...)
+}
+
 type terminalModel struct {
 	tea.Model
 }
 
-func (m terminalModel) Init() tea.Cmd { return m.Model.Init() }
+func (m terminalModel) Init() tea.Cmd {
+	if model, ok := m.Model.(*Model); ok && (model.themeConfig.Mode == "" || model.themeConfig.Mode == "auto") {
+		return tea.Batch(m.Model.Init(), tea.RequestBackgroundColor)
+	}
+	return m.Model.Init()
+}
 
 func (m terminalModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	model, cmd := m.Model.Update(message)

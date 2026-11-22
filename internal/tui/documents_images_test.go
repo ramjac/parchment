@@ -3,6 +3,7 @@ package tui
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -12,9 +13,13 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2/compat"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/renderer"
+	"github.com/yuin/goldmark/text"
+	"github.com/yuin/goldmark/util"
 
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/config"
@@ -22,11 +27,87 @@ import (
 	"example.com/parchment/internal/tui/termimg"
 )
 
+type cancellingTestRenderer struct {
+	cancel    context.CancelFunc
+	textCalls *int
+}
+
+func (r cancellingTestRenderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
+	reg.Register(ast.KindParagraph, func(_ util.BufWriter, _ []byte, _ ast.Node, entering bool) (ast.WalkStatus, error) {
+		if entering {
+			r.cancel()
+		}
+		return ast.WalkContinue, nil
+	})
+	reg.Register(ast.KindText, func(_ util.BufWriter, _ []byte, _ ast.Node, _ bool) (ast.WalkStatus, error) {
+		(*r.textCalls)++
+		return ast.WalkContinue, nil
+	})
+}
+
+func TestDocumentRendererStopsDuringTreeWalk(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	textCalls := 0
+	nodeRenderer := cancellableNodeRenderer{
+		ctx: ctx, renderer: cancellingTestRenderer{cancel: cancel, textCalls: &textCalls},
+	}
+	md := goldmark.New()
+	source := []byte("first paragraph\n\nsecond paragraph")
+	root := md.Parser().Parse(text.NewReader(source))
+	r := renderer.NewRenderer(renderer.WithNodeRenderers(util.Prioritized(nodeRenderer, 1000)))
+	if err := r.Render(&bytes.Buffer{}, source, root); !errors.Is(err, context.Canceled) {
+		t.Fatalf("render error = %v, want context.Canceled", err)
+	}
+	if textCalls != 0 {
+		t.Fatalf("render visited %d text nodes after cancellation", textCalls)
+	}
+}
+
+func TestLargeReaderStreamingFormatterMatchesWholeDocument(t *testing.T) {
+	previous := terminalColorProfile
+	terminalColorProfile = colorprofile.TrueColor
+	t.Cleanup(func() { terminalColorProfile = previous })
+	img := documentTestImage(t)
+	body := strings.Repeat("# Repeated\n\nA **bold** paragraph with Unicode 世界 and [link](https://example.com).\n\n", 1800) +
+		"\n<a id=\"images\"></a>\n\n![Diagram](" + img.Name + ")\n\n" +
+		"[![Linked diagram](" + img.Name + ")](https://example.com)\n\n" +
+		"> ![First](" + img.Name + ") and ![Second](" + img.Name + ")\n\n" +
+		"![Outer ![Inner](" + img.Name + ")](" + img.Name + ")\n\n" +
+		"# Heading with ![image](" + img.Name + ")\n\n![Final](" + img.Name + ")\n"
+	doc := document.Document{Body: body, Images: []artifact.Image{img}, Layout: document.DefaultLayout()}
+	outline, err := document.ReaderOutline(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	render := func(parseBody string) ([]string, map[rune]int, documentImageState) {
+		s := newDocumentsScreen(nil, "", nil, resolveTheme(config.Theme{Mode: "dark"}), 10)
+		s.imageState.source = body
+		s.imageState.outline = outline
+		s.imageState.navigation = make(map[rune]int)
+		s.imageState.markNavigation = true
+		doc.Body = parseBody
+		lines := s.documentMarkdownSourceFormatterContext(context.Background(), doc)(body, 40)
+		return lines, s.imageState.navigation, s.imageState
+	}
+	for _, protocol := range []string{"none", "kitty", "iterm", "sixel"} {
+		t.Run(protocol, func(t *testing.T) {
+			documentImageEnv(t, protocol)
+			streamed, streamMarkers, streamImages := render(body)
+			full, fullMarkers, fullImages := render("")
+			if !reflect.DeepEqual(streamed, full) || !reflect.DeepEqual(streamMarkers, fullMarkers) ||
+				!reflect.DeepEqual(streamImages, fullImages) {
+				t.Fatal("streaming changed styled output, navigation markers, or images")
+			}
+		})
+	}
+}
+
 func TestDocumentChartFallbackKeepsReadableLabels(t *testing.T) {
 	documentImageEnv(t, "none")
-	previous := compat.Profile
-	compat.Profile = colorprofile.TrueColor
-	t.Cleanup(func() { compat.Profile = previous })
+	previous := terminalColorProfile
+	terminalColorProfile = colorprofile.TrueColor
+	t.Cleanup(func() { terminalColorProfile = previous })
 	book, reference := embeddedChartTestWorkbook(t, "line")
 	h := newDocumentHarness(t, document.Draft{Body: reference, Workbook: book})
 	h.openWithTheme(artifact.DocumentKind, false, config.Theme{Mode: "dark"})
@@ -281,6 +362,101 @@ func TestDocumentImagesPaginationAndNavigation(t *testing.T) {
 				t.Fatalf("anchor was not relocated after images: %+v", anchor)
 			}
 		})
+	}
+}
+
+func TestDocumentImageHeadingMarkersAcrossPrintRuns(t *testing.T) {
+	documentImageEnv(t, "")
+	img := documentTestImage(t)
+	body := fmt.Sprintf("# Repeat\n\n![One](%s)\n\n%s\n\n# Repeat\n\n![Two](%s)\n",
+		img.Name, document.PageBreakMarkup, img.Name)
+	doc := document.Document{Body: body, Layout: document.DefaultLayout(), Images: []artifact.Image{img}}
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	pages, _, err := s.paginateDocumentWithLinks(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.imageState.outline) != 2 || len(pages) < 2 {
+		t.Fatalf("outline = %+v, pages = %d", s.imageState.outline, len(pages))
+	}
+	first, second := s.imageState.outline[0], s.imageState.outline[1]
+	if first.Slug != "repeat" || second.Slug != "repeat-1" ||
+		first.Page < 1 || second.Page <= first.Page {
+		t.Fatalf("heading markers mapped to wrong pages: %+v", s.imageState.outline)
+	}
+}
+
+func TestDocumentImageMarkersAvoidSourceCharacters(t *testing.T) {
+	s := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	s.imageState.source = string(rune(0xf0000)) + string(rune(0xf0002))
+	if got := s.nextDocumentImageMarker(); got != 0xf0001 {
+		t.Fatalf("first marker = %U", got)
+	}
+	if got := s.nextDocumentImageMarker(); got != 0xf0003 {
+		t.Fatalf("second marker = %U", got)
+	}
+	s.imageState.nextMarker = 0x110000
+	if got := s.nextDocumentImageMarker(); got != 0 || s.imageState.err == nil {
+		t.Fatal("exhausted markers did not produce an error")
+	}
+}
+
+func TestDocumentFormatterReusesUnchangedParse(t *testing.T) {
+	documentImageEnv(t, "none")
+	previous := terminalColorProfile
+	terminalColorProfile = colorprofile.TrueColor
+	t.Cleanup(func() { terminalColorProfile = previous })
+	img := documentTestImage(t)
+	body := "# Repeated\n\nA [reference][later] and **bold**.\n\n" +
+		"Inline <a id=\"anchor\"></a> anchor.\n\n![Picture](" + img.Name + ")\n\n" +
+		"```go\nfmt.Println(\"code\")\n```\n\n# Repeated\n\n[later]: https://example.com\n"
+	outline, err := document.ReaderOutline(document.Document{Body: body, Layout: document.DefaultLayout()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	render := func(parseBody string) ([]string, map[rune]int) {
+		s := newDocumentsScreen(nil, "", nil, resolveTheme(config.Theme{Mode: "dark"}), 10)
+		s.imageState.source = body
+		s.imageState.outline = outline
+		s.imageState.navigation = make(map[rune]int)
+		s.imageState.markNavigation = true
+		doc := document.Document{Body: parseBody, Layout: document.DefaultLayout(), Images: []artifact.Image{img}}
+		lines := s.documentMarkdownFormatter(doc)(strings.Split(body, "\n"), 40, 0, "")
+		return lines, s.imageState.navigation
+	}
+	reused, reusedMarkers := render(body)
+	reparsed, reparsedMarkers := render(body + "\n")
+	if !reflect.DeepEqual(reused, reparsed) || !reflect.DeepEqual(reusedMarkers, reparsedMarkers) {
+		t.Fatal("reusing the full-document AST changed rendered output or navigation")
+	}
+}
+
+func TestCancellableDocumentRendererPreservesOutput(t *testing.T) {
+	documentImageEnv(t, "none")
+	img := documentTestImage(t)
+	doc := document.Document{
+		Body: "# Same\n\n[Jump](#same-1) and [reference][later].\n\n" +
+			"![Image](" + img.Name + ")\n\n| A | B |\n| --- | --- |\n| *one* | two |\n\n" +
+			"```go\nfmt.Println(\"code\")\n```\n\n# Same\n\n[later]: https://example.com\n",
+		Layout: document.DefaultLayout(),
+		Images: []artifact.Image{img},
+	}
+	render := func(ctx context.Context) ([]string, []document.Section, []int, []linkHitBox, documentImageState) {
+		s := newDocumentsScreen(nil, "", nil, resolveTheme(config.Theme{Mode: "dark"}), 10)
+		lines, outline, rows, links, err := s.renderReaderDocumentContext(ctx, doc, 40)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return lines, outline, rows, links, s.imageState
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	wantLines, wantOutline, wantRows, wantLinks, wantImages := render(context.Background())
+	lines, outline, rows, links, images := render(ctx)
+	if !reflect.DeepEqual(lines, wantLines) || !reflect.DeepEqual(outline, wantOutline) ||
+		!reflect.DeepEqual(rows, wantRows) || !reflect.DeepEqual(links, wantLinks) ||
+		!reflect.DeepEqual(images, wantImages) {
+		t.Fatal("cancellable rendering changed output, navigation, or media")
 	}
 }
 

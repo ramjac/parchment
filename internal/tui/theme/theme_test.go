@@ -121,6 +121,31 @@ func TestResolveUsesExplicitColorsInAutoMode(t *testing.T) {
 	}
 }
 
+func TestAutoDarkUsesEnvironmentWithoutTerminalIO(t *testing.T) {
+	for _, tt := range []struct {
+		value string
+		dark  bool
+	}{{"", true}, {"15;0", true}, {"0;15", false}, {"0;231", false}, {"15;16", true}, {"0;255", false}, {"bad", true}} {
+		t.Run(tt.value, func(t *testing.T) {
+			t.Setenv("COLORFGBG", tt.value)
+			if got := AutoDark(); got != tt.dark {
+				t.Fatalf("AutoDark() = %t, want %t", got, tt.dark)
+			}
+		})
+	}
+}
+
+func TestResolveBackgroundRespectsExplicitMode(t *testing.T) {
+	got := ResolveBackground(config.Theme{Mode: "light"}, true)
+	if got.Heading.GetForeground() != lipgloss.Color("#805500") {
+		t.Fatal("terminal response overrode an explicit light theme")
+	}
+	got = ResolveBackground(config.Theme{Mode: "auto"}, false)
+	if got.Heading.GetForeground() != lipgloss.Color("#805500") {
+		t.Fatal("auto mode did not use the reported light background")
+	}
+}
+
 func TestContentAndChromeStayDistinct(t *testing.T) {
 	for _, mode := range []string{"light", "dark"} {
 		styles := Resolve(config.Theme{Mode: mode})

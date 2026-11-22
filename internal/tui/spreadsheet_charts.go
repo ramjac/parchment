@@ -9,7 +9,6 @@ import (
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2/compat"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
@@ -297,7 +296,7 @@ func (m *spreadsheetModel) prepareChartFormPreview(msg spreadsheetChartFormPrevi
 	}
 	book := cloneSpreadsheetState(m.book)
 	_, cols, _, _, rows := m.chartFormSize()
-	monochrome := compat.Profile == colorprofile.Ascii
+	monochrome := terminalColorProfile == colorprofile.Ascii
 	theme := m.theme
 	return func() tea.Msg {
 		result := spreadsheetChartFormPreviewMsg{seq: msg.seq}

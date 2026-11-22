@@ -56,3 +56,6 @@ require (
 	golang.org/x/net v0.38.0 // indirect
 	golang.org/x/term v0.36.0 // indirect
 )
+
+// v1.0.0 with a streaming document-root renderer for the long-document reader.
+replace github.com/charmbracelet/glamour => ./third_party/glamour
