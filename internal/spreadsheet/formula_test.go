@@ -552,6 +552,7 @@ func TestDynamicArrayEdgeCases(t *testing.T) {
 		{`=FILTER(B1:B2,B1:B2>5)`, "#CALC!"},
 		{`=UNIQUE(B1:B2,FALSE,TRUE)`, "#CALC!"},
 		{`=SEQUENCE(0)`, "#VALUE!"},
+		{`=IF()`, "#VALUE!"},
 	}
 	for _, tt := range tests {
 		book := &Spreadsheet{Sheets: []Sheet{{Name: "Sheet1", Rows: [][]Cell{
@@ -574,6 +575,20 @@ func TestDynamicArrayEdgeCases(t *testing.T) {
 	}}}}}
 	if _, err := Evaluate(cycle, 0, 1, 1); err == nil || !strings.Contains(err.Error(), "circular reference") {
 		t.Fatalf("spill cycle = %v", err)
+	}
+}
+
+func TestConditionalArrayExpressionsSpill(t *testing.T) {
+	book := &Spreadsheet{Sheets: []Sheet{{Name: "Sheet1", Rows: [][]Cell{
+		{{Formula: `=IFERROR(1/0,IF(1,C1:C2,C2:C1))`}, {}, {Value: "3"}},
+		{{}, {}, {Value: "4"}},
+	}}}}
+	evaluator := NewEvaluator(book)
+	for row, want := range []string{"3", "4"} {
+		value, err := evaluator.Evaluate(0, row+1, 1)
+		if err != nil || value.Display() != want {
+			t.Fatalf("conditional spill cell %s = %q, %v; want %q", CellName(row+1, 1), value.Display(), err, want)
+		}
 	}
 }
 

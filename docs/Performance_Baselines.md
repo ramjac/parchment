@@ -110,8 +110,9 @@ and filesystem activity was uncontrolled.
 | Presentation: navigate five mixed-content slides, 80x24 | 23.36 ms |
 | Presentation: open source editor / edit and save / service save | 0.488 / 80.60 / 85.75 ms |
 | Spreadsheet: model open, 80x24 | 30.35 ms |
-| Spreadsheet: scroll, switch sheets and return, 80x24 / 120x40 | 22.07 / 19.70 ms |
-| Spreadsheet: service edit, recalculate and save / cycle rejection | 75.76 / 25.11 ms |
+| Spreadsheet: scroll, 80x24 / 120x40 | 1.33 / 1.76 ms |
+| Spreadsheet: switch sheets and return, 80x24 / 120x40 | 7.49 / 8.34 ms |
+| Spreadsheet: service edit, recalculate and save / cycle rejection | 50.27 / 15.67 ms |
 | Media: in-memory document reader / render two presentation slides, 80x24 | 18.58 / 4.51 ms |
 | Novel: in-memory reader, 80x24 / 120x40 | 2.544 / 2.634 s |
 | Novel: scroll, view and return, 80x24 / 120x40 | 0.859 / 1.697 ms |

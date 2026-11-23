@@ -50,7 +50,7 @@ func BenchmarkLargeSpreadsheet(b *testing.B) {
 		}
 	})
 	for _, size := range []struct{ width, height int }{{80, 24}, {120, 40}} {
-		b.Run(fmt.Sprintf("ScrollAndSwitch/%dx%d", size.width, size.height), func(b *testing.B) {
+		b.Run(fmt.Sprintf("Scroll/%dx%d", size.width, size.height), func(b *testing.B) {
 			m := newModel(size.width, size.height)
 			b.ReportAllocs()
 			b.ResetTimer()
@@ -58,13 +58,26 @@ func BenchmarkLargeSpreadsheet(b *testing.B) {
 				_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 				_ = m.View().Content
 				_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
-				_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 				_ = m.View().Content
-				_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 			}
 			b.StopTimer()
 			if m.sheet != 0 || m.row != 0 {
 				b.Fatalf("navigation state was not restored: sheet=%d row=%d", m.sheet, m.row)
+			}
+		})
+		b.Run(fmt.Sprintf("SwitchSheets/%dx%d", size.width, size.height), func(b *testing.B) {
+			m := newModel(size.width, size.height)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+				_ = m.View().Content
+				_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+				_ = m.View().Content
+			}
+			b.StopTimer()
+			if m.sheet != 0 {
+				b.Fatalf("sheet selection was not restored: sheet=%d", m.sheet)
 			}
 		})
 	}

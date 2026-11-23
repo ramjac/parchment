@@ -111,21 +111,24 @@ for the setup and other reader limits.
 
 ## Spreadsheet edit, recalculation, and save
 
-Investigate the cost of a single cell edit in large workbooks. In exploratory
-model benchmarks on the mortgage-and-budget fixture, editing an input cell,
-recalculating, and saving took about 151 ms and allocated about 84 MB
-cumulatively; opening took about 51 ms (29 MB) and a combined scroll and sheet
-switch at 80x24 took about 41 ms (22 MB). These are allocation totals, not
-peak live memory.
+Investigate the cost of a single cell edit in large workbooks. An earlier
+exploratory model benchmark on the mortgage-and-budget fixture measured about
+151 ms and 84 MB cumulatively for editing an input, recalculating, and saving.
+After reducing scalar-formula work during spill discovery and streaming
+aggregate calculation, the same saved-fixture workflow measured a 50.3 ms
+median and 47.6 MB/op over three single-iteration benchmark runs. Allocations
+are cumulative totals, not peak live memory; opening and remaining save-path
+costs still warrant separate profiling.
 
 - Profile recalculation, rendering, serialization, history, and atomic
-  persistence separately to determine where time and allocation go.
+  persistence separately to determine where the remaining time and allocation
+  go.
 - Evaluate recalculating only affected dependents and reducing unnecessary
   workbook copying or re-encoding, rather than assuming a particular design.
 - Preserve formula results, cross-sheet references, span semantics, cycle and
   depth errors, undo/redo and persistent history, and canonical file contents.
-- Separate scrolling from sheet switching in measurements, and verify results
-  against independently calculated mortgage and budget values.
+- Continue measuring scrolling separately from sheet switching, and verify
+  results against independently calculated mortgage and budget values.
 
 ## Presentation save cost
 

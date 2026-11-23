@@ -19,10 +19,17 @@ func hasArrayExpression(node Node) bool {
 		switch strings.ToUpper(n.Name) {
 		case "FILTER", "SORT", "UNIQUE", "SEQUENCE":
 			return true
-		}
-		for _, arg := range n.Args {
-			if hasArrayExpression(arg) {
-				return true
+		case "IF":
+			for i, arg := range n.Args {
+				if i > 0 && hasArrayExpression(arg) {
+					return true
+				}
+			}
+		case "IFERROR":
+			for _, arg := range n.Args {
+				if hasArrayExpression(arg) {
+					return true
+				}
 			}
 		}
 	case *BinaryOpNode:
