@@ -4,7 +4,7 @@
   "kind": "spreadsheet",
   "format_version": 2,
   "created_at": "2026-01-15T09:00:00Z",
-  "modified_at": "2026-11-20T19:38:25.220042491Z"
+  "modified_at": "2026-11-23T01:52:47.204699683Z"
 }
 ```
 
@@ -157,6 +157,14 @@ negative values are over plan.
           {},
           {}
         ]
+      ],
+      "spans": [
+        {
+          "first_row": 1,
+          "first_column": 4,
+          "last_row": 10,
+          "last_column": 7
+        }
       ]
     },
     {
@@ -247,6 +255,21 @@ negative values are over plan.
           }
         ]
       ]
+    }
+  ],
+  "charts": [
+    {
+      "id": "11c26976077d9ce6bcf235ac55e504ae",
+      "place_sheet": "Overview",
+      "place_row": 1,
+      "place_column": 4,
+      "title": "Test Chart",
+      "type": "bar",
+      "sheet": "Overview",
+      "first_row": 2,
+      "first_column": 2,
+      "last_row": 7,
+      "last_column": 2
     }
   ]
 }
