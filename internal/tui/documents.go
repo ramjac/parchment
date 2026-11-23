@@ -285,6 +285,10 @@ type documentEditorState struct {
 	editPageLine        int
 	discardWarning      bool
 	editorOutlineOffset int
+	editorOutlineCache  []document.Section
+	editorOutlineRev    uint64
+	editorOutlineLayout document.Layout
+	editorOutlineCached bool
 }
 
 // documentReaderState holds state for reading/viewing a document.

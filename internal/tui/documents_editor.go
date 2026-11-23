@@ -1173,8 +1173,20 @@ func (s *documentsScreen) editorView(header string) string {
 }
 
 func (s *documentsScreen) editorOutline() []document.Section {
-	outline, _ := document.Outline(s.editorDocument())
-	return outline
+	revision := s.body.ContentRevision()
+	if s.editorOutlineCached &&
+		s.editorOutlineRev == revision &&
+		s.editorOutlineLayout == s.layout {
+		return s.editorOutlineCache
+	}
+	outline, _ := document.ReaderOutline(document.Document{
+		Body: s.body.Value(), Layout: s.layout,
+	})
+	s.editorOutlineCache = outline
+	s.editorOutlineRev = revision
+	s.editorOutlineLayout = s.layout
+	s.editorOutlineCached = true
+	return s.editorOutlineCache
 }
 
 func (s *documentsScreen) changeEditorOutlineSelection(step int) {
@@ -1203,6 +1215,16 @@ func (s *documentsScreen) gotoEditorSection(index int) {
 	}
 	if line, ok := findSourceLineForSection(s.body.Value(), outline, index); ok {
 		s.body.SetCursorAtRow(editor.Point{Line: line}, 0)
+		room := max(s.body.Height-1, 0)
+		if room > 0 {
+			start := s.editorOutlineStart(len(outline))
+			if index < start {
+				start = index
+			} else if index >= start+room {
+				start = index - room + 1
+			}
+			s.editorOutlineOffset = min(max(start, 0), max(len(outline)-room, 0))
+		}
 	}
 }
 

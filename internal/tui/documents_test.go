@@ -1366,6 +1366,74 @@ func TestDocumentEditorOutlineMouseWheel(t *testing.T) {
 	}
 }
 
+func TestDocumentEditorOutlineCacheRefreshesOnContentRevision(t *testing.T) {
+	var body strings.Builder
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&body, "# Section %02d\n\nParagraph.\n\n", i)
+	}
+	h := newDocumentHarness(t, document.Draft{Body: body.String()})
+	s := h.m.documents
+	outline := s.editorOutline()
+	if len(outline) != 60 || outline[0].Page != 0 {
+		t.Fatalf("got %d outline entries, first page %d; want 60 source-only entries", len(outline), outline[0].Page)
+	}
+
+	revision := s.editorOutlineRev
+	s.scrollEditorOutline(3)
+	s.editorOutlineLines()
+	if s.editorOutlineRev != revision {
+		t.Fatal("scrolling rebuilt the outline without a content change")
+	}
+
+	s.body.SetCursorAtRow(editor.Point{Line: s.body.LineCount() - 1}, 0)
+	s.body.InsertString("# Added\n")
+	if got := len(s.editorOutline()); got != 61 {
+		t.Fatalf("outline after edit has %d entries, want 61", got)
+	}
+	if s.editorOutlineRev != s.body.ContentRevision() {
+		t.Fatal("outline cache did not advance to the edited content revision")
+	}
+
+	s.body.Undo()
+	if got := len(s.editorOutline()); got != 60 {
+		t.Fatalf("outline after undo has %d entries, want 60", got)
+	}
+	s.body.Redo()
+	if got := len(s.editorOutline()); got != 61 {
+		t.Fatalf("outline after redo has %d entries, want 61", got)
+	}
+}
+
+func TestDocumentEditorKeyboardNavigationKeepsOutlineSelectionVisible(t *testing.T) {
+	var body strings.Builder
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&body, "# Section %02d\n\nParagraph.\n\n", i)
+	}
+	h := newDocumentHarness(t, document.Draft{Body: body.String()})
+	s := h.m.documents
+	if !s.outlineVisible {
+		h.key("ctrl+o")
+	}
+	y := toolbarTop + s.toolbarRows() + 1
+	for i := 0; i < 30; i++ {
+		h.send(tea.MouseWheelMsg(tea.Mouse{X: 3, Y: y + 1, Button: tea.MouseWheelDown}))
+	}
+	s.readerSection = 30
+	h.key("f6")
+	h.key("down")
+
+	if s.body.Cursor.Line != 31*4 {
+		t.Fatalf("keyboard navigation moved cursor to line %d, want section 31", s.body.Cursor.Line)
+	}
+	_, targets := s.editorOutlineLines()
+	for _, target := range targets {
+		if target == 31 {
+			return
+		}
+	}
+	t.Fatalf("selected section 31 is outside the displayed outline: %v", targets)
+}
+
 func TestDocumentReaderContinuousRenderingAndNavigation(t *testing.T) {
 	h := newHarness(t, "")
 	layout := document.DefaultLayout()
