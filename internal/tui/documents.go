@@ -282,13 +282,17 @@ type documentEditorState struct {
 	previewMatches []renderedMatch
 	previewMatch   int
 	// editPageLine is the first page line shown by the print preview.
-	editPageLine        int
-	discardWarning      bool
-	editorOutlineOffset int
-	editorOutlineCache  []document.Section
-	editorOutlineRev    uint64
-	editorOutlineLayout document.Layout
-	editorOutlineCached bool
+	editPageLine               int
+	discardWarning             bool
+	editorOutlineOffset        int
+	editorOutlineCache         []document.Section
+	editorOutlineRev           uint64
+	editorOutlineLayout        document.Layout
+	editorOutlineCached        bool
+	editorOutlineSelection     int
+	editorOutlineSelectionRev  uint64
+	editorOutlineSelectionSlug string
+	editorOutlineSelectionSet  bool
 }
 
 // documentReaderState holds state for reading/viewing a document.

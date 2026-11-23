@@ -1434,6 +1434,45 @@ func TestDocumentEditorKeyboardNavigationKeepsOutlineSelectionVisible(t *testing
 	t.Fatalf("selected section 31 is outside the displayed outline: %v", targets)
 }
 
+func TestDocumentEditorKeyboardNavigationTracksSelection(t *testing.T) {
+	var body strings.Builder
+	for i := 0; i < 4; i++ {
+		fmt.Fprintf(&body, "# Section %d\n\nParagraph.\n\n", i)
+	}
+	h := newDocumentHarness(t, document.Draft{Body: body.String()})
+	s := h.m.documents
+	if !s.outlineVisible {
+		h.key("ctrl+o")
+	}
+	h.key("f6")
+
+	for _, step := range []struct {
+		key      string
+		wantLine int
+	}{
+		{key: "down", wantLine: 4},
+		{key: "down", wantLine: 8},
+		{key: "up", wantLine: 4},
+	} {
+		h.key(step.key)
+		if s.body.Cursor.Line != step.wantLine {
+			t.Fatalf("after %s, editor cursor is on line %d, want %d", step.key, s.body.Cursor.Line, step.wantLine)
+		}
+	}
+
+	s.body.SetCursorAtRow(editor.Point{Line: 0}, 0)
+	s.body.InsertString("# Added\n\n")
+	outline := s.editorOutline()
+	wantLine, ok := findSourceLineForSection(s.body.Value(), outline, 3)
+	if !ok {
+		t.Fatal("could not locate Section 2 after inserting a heading")
+	}
+	h.key("down")
+	if s.body.Cursor.Line != wantLine {
+		t.Fatalf("after editing and pressing down, editor cursor is on line %d, want Section 2 on line %d", s.body.Cursor.Line, wantLine)
+	}
+}
+
 func TestDocumentReaderContinuousRenderingAndNavigation(t *testing.T) {
 	h := newHarness(t, "")
 	layout := document.DefaultLayout()

@@ -183,6 +183,8 @@ func (s *documentsScreen) startEdit(d document.Document) (tea.Cmd, bool) {
 	s.prompt, s.previewing, s.showChanges, s.reviewing = promptNone, false, false, false
 	s.toolbarIndex = 0
 	s.editorOutlineOffset = 0
+	s.editorOutlineSelectionSet = false
+	s.editorOutlineSelectionSlug = ""
 	s.errMessage, s.status = "", ""
 	s.layoutEditor()
 	s.startDocumentAutosaveSession()
@@ -1194,7 +1196,28 @@ func (s *documentsScreen) changeEditorOutlineSelection(step int) {
 	if len(outline) == 0 {
 		return
 	}
-	current := s.currentSection()
+	revision := s.body.ContentRevision()
+	current := -1
+	if s.editorOutlineSelectionSet {
+		if s.editorOutlineSelectionRev == revision {
+			current = s.editorOutlineSelection
+		} else {
+			for i, section := range outline {
+				if section.Slug == s.editorOutlineSelectionSlug {
+					current = i
+					s.editorOutlineSelection = i
+					s.editorOutlineSelectionRev = revision
+					break
+				}
+			}
+			if current < 0 {
+				s.editorOutlineSelectionSet = false
+			}
+		}
+	}
+	if current < 0 {
+		current = s.currentSection()
+	}
 	if current < 0 {
 		current = 0
 	}
@@ -1215,6 +1238,10 @@ func (s *documentsScreen) gotoEditorSection(index int) {
 	}
 	if line, ok := findSourceLineForSection(s.body.Value(), outline, index); ok {
 		s.body.SetCursorAtRow(editor.Point{Line: line}, 0)
+		s.editorOutlineSelection = index
+		s.editorOutlineSelectionRev = s.body.ContentRevision()
+		s.editorOutlineSelectionSlug = outline[index].Slug
+		s.editorOutlineSelectionSet = true
 		room := max(s.body.Height-1, 0)
 		if room > 0 {
 			start := s.editorOutlineStart(len(outline))
