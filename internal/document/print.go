@@ -97,6 +97,76 @@ func Outline(d Document) ([]Section, error) {
 	return sections, nil
 }
 
+// ReaderOutline lists navigation targets without computing print page numbers.
+func ReaderOutline(d Document) ([]Section, error) {
+	return ReaderOutlineContext(context.Background(), d)
+}
+
+// ReaderOutlineContext builds reader navigation targets and honors cancellation.
+func ReaderOutlineContext(ctx context.Context, d Document) ([]Section, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := d.Layout.Validate(); err != nil {
+		return nil, err
+	}
+	if _, err := d.Layout.Geometry(); err != nil {
+		return nil, err
+	}
+	var sections []Section
+	seen := make(map[string]int)
+	var marks []headMark
+	f := blockFormatter{marks: &marks, seenSlugs: seen, indexOnly: true}
+	finishRun := func() {
+		f.flush()
+		for _, mark := range marks {
+			if mark.line < f.indexEnd {
+				sections = append(sections, Section{
+					Level: mark.level, Title: mark.title, Slug: mark.slug, Anchor: mark.anchor,
+				})
+			}
+		}
+		marks = nil
+		f = blockFormatter{marks: &marks, seenSlugs: seen, indexOnly: true}
+	}
+	body, err := artifactfile.StripPrivateBlocksContext(ctx, d.Body)
+	if err != nil {
+		return nil, err
+	}
+	body = strings.ReplaceAll(body, "\r\n", "\n")
+	fence := ""
+	for i := 0; ; i++ {
+		if i%256 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		line, rest, more := strings.Cut(body, "\n")
+		if fence != "" {
+			if strings.HasPrefix(strings.TrimSpace(line), fence) {
+				fence = ""
+			}
+			f.processLine(line)
+		} else if marker, ok := fenceOpener(line); ok {
+			fence = marker
+			f.processLine(line)
+		} else if _, ok := parseDirective(line); ok {
+			finishRun()
+		} else {
+			f.processLine(line)
+		}
+		if !more {
+			break
+		}
+		body = rest
+	}
+	finishRun()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return sections, nil
+}
+
 // Print renders every page as text with a form feed between pages, ready to
 // send to a printer.
 func Print(d Document) (string, error) {
@@ -524,12 +594,32 @@ type paragraph struct {
 }
 
 type blockFormatter struct {
-	seenSlugs map[string]int
-	width     int
-	marks     *[]headMark
-	out       []string
-	p         paragraph
-	fence     string
+	seenSlugs  map[string]int
+	width      int
+	marks      *[]headMark
+	out        []string
+	p          paragraph
+	fence      string
+	indexOnly  bool
+	indexRows  int
+	indexEnd   int
+	indexBlank bool
+}
+
+func (f *blockFormatter) position() int {
+	if f.indexOnly {
+		return f.indexRows
+	}
+	return len(f.out)
+}
+
+// The reader needs mark ordering and the last printable line, not wrapped rows.
+func (f *blockFormatter) indexLine(nonempty bool) {
+	f.indexRows++
+	f.indexBlank = !nonempty
+	if nonempty {
+		f.indexEnd = f.indexRows
+	}
 }
 
 // slugify converts a heading title into a GitHub-compatible anchor slug.
@@ -548,12 +638,36 @@ func slugify(title string, seen map[string]int) string {
 
 func (f *blockFormatter) flush() {
 	if f.p.active {
-		f.out = append(f.out, wrap(inlineText(strings.Join(f.p.text, " ")), f.width, f.p.first, f.p.rest)...)
+		if f.indexOnly {
+			plain, nonempty := true, false
+			for _, line := range f.p.text {
+				if strings.ContainsAny(line, "[]*_~`") {
+					plain = false
+					break
+				}
+				nonempty = nonempty || strings.TrimSpace(line) != ""
+			}
+			if !plain {
+				nonempty = strings.TrimSpace(inlineText(strings.Join(f.p.text, " "))) != ""
+			}
+			if nonempty {
+				f.indexLine(true)
+			}
+		} else {
+			text := inlineText(strings.Join(f.p.text, " "))
+			f.out = append(f.out, wrap(text, f.width, f.p.first, f.p.rest)...)
+		}
 	}
 	f.p = paragraph{}
 }
 
 func (f *blockFormatter) blank() {
+	if f.indexOnly {
+		if f.indexRows > 0 && !f.indexBlank {
+			f.indexLine(false)
+		}
+		return
+	}
 	if len(f.out) > 0 && f.out[len(f.out)-1] != "" {
 		f.out = append(f.out, "")
 	}
@@ -563,7 +677,18 @@ func (f *blockFormatter) heading(level int, raw string) {
 	f.blank()
 	text := inlineText(raw)
 	if f.marks != nil {
-		*f.marks = append(*f.marks, headMark{line: len(f.out), level: level, title: text, slug: slugify(text, f.seenSlugs)})
+		*f.marks = append(*f.marks, headMark{line: f.position(), level: level, title: text, slug: slugify(text, f.seenSlugs)})
+	}
+	if f.indexOnly {
+		hasText := len(strings.Fields(text)) > 0
+		if hasText {
+			f.indexLine(true)
+		}
+		if level <= 2 {
+			f.indexLine(hasText)
+		}
+		f.blank()
+		return
 	}
 	if level == 1 {
 		text = strings.ToUpper(text)
@@ -592,7 +717,11 @@ func (f *blockFormatter) processLine(raw string) {
 			f.blank()
 			return
 		}
-		f.out = append(f.out, hardWrap("    "+line, f.width)...)
+		if f.indexOnly {
+			f.indexLine(true)
+		} else {
+			f.out = append(f.out, hardWrap("    "+line, f.width)...)
+		}
 		return
 	}
 	trimmed := strings.TrimSpace(line)
@@ -603,11 +732,9 @@ func (f *blockFormatter) processLine(raw string) {
 		return
 	}
 
-	if matches := anchorRE.FindAllStringSubmatch(line, -1); len(matches) > 0 {
-		for _, match := range matches {
-			if f.marks != nil {
-				*f.marks = append(*f.marks, headMark{line: len(f.out), anchor: true, slug: match[1]})
-			}
+	if f.marks != nil && strings.Contains(line, "<") {
+		for _, match := range anchorRE.FindAllStringSubmatch(line, -1) {
+			*f.marks = append(*f.marks, headMark{line: f.position(), anchor: true, slug: match[1]})
 		}
 	}
 
@@ -615,8 +742,8 @@ func (f *blockFormatter) processLine(raw string) {
 	case trimmed == "":
 		f.flush()
 		f.blank()
-	case commentRE.MatchString(trimmed):
-	case f.p.active && !f.p.quote && f.p.first == "" && setextRE.MatchString(trimmed):
+	case strings.HasPrefix(trimmed, "<!--") && commentRE.MatchString(trimmed):
+	case f.p.active && !f.p.quote && f.p.first == "" && (trimmed[0] == '=' || trimmed[0] == '-') && setextRE.MatchString(trimmed):
 		level := 1
 		if trimmed[0] == '-' {
 			level = 2
@@ -624,24 +751,33 @@ func (f *blockFormatter) processLine(raw string) {
 		title := strings.Join(f.p.text, " ")
 		f.p = paragraph{}
 		f.heading(level, title)
-	case headingRE.MatchString(trimmed):
+	case trimmed[0] == '#' && headingRE.MatchString(trimmed):
 		f.flush()
 		match := headingRE.FindStringSubmatch(trimmed)
 		f.heading(len(match[1]), match[2])
-	case ruleRE.MatchString(trimmed):
+	case (trimmed[0] == '*' || trimmed[0] == '-' || trimmed[0] == '_') && ruleRE.MatchString(trimmed):
 		f.flush()
 		f.blank()
-		f.out = append(f.out, strings.Repeat("-", f.width))
+		if f.indexOnly {
+			f.indexLine(true)
+		} else {
+			f.out = append(f.out, strings.Repeat("-", f.width))
+		}
 		f.blank()
 	case strings.HasPrefix(trimmed, "|"):
 		f.flush()
-		f.out = append(f.out, hardWrap(line, f.width)...)
-	case listItemRE.MatchString(line):
+		if f.indexOnly {
+			f.indexLine(true)
+		} else {
+			f.out = append(f.out, hardWrap(line, f.width)...)
+		}
+	case (trimmed[0] == '-' || trimmed[0] == '*' || trimmed[0] == '+' ||
+		trimmed[0] >= '0' && trimmed[0] <= '9') && listItemRE.MatchString(line):
 		f.flush()
 		match := listItemRE.FindStringSubmatch(line)
 		prefix := match[1] + match[2] + " "
 		f.p = paragraph{active: true, first: prefix, rest: strings.Repeat(" ", runewidth.StringWidth(prefix)), text: []string{match[3]}}
-	case quoteRE.MatchString(trimmed):
+	case trimmed[0] == '>' && quoteRE.MatchString(trimmed):
 		text := quoteRE.FindStringSubmatch(trimmed)[1]
 		if !f.p.active || !f.p.quote {
 			f.flush()

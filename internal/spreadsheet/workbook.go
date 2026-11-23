@@ -1,6 +1,7 @@
 package spreadsheet
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -181,6 +182,11 @@ func NewWorkbookEvaluator(book *Workbook) *Evaluator {
 	return NewEvaluator(book.spreadsheetView())
 }
 
+// NewWorkbookEvaluatorContext stops workbook evaluation when ctx is canceled.
+func NewWorkbookEvaluatorContext(ctx context.Context, book *Workbook) *Evaluator {
+	return NewEvaluatorContext(ctx, book.spreadsheetView())
+}
+
 // NewWorkbookEvaluatorAt evaluates volatile time functions against a fixed UTC
 // instant.
 func NewWorkbookEvaluatorAt(book *Workbook, now time.Time) *Evaluator {
@@ -196,6 +202,11 @@ func EvaluateWorkbook(book *Workbook, sheetIndex, row, column int) (Value, error
 // data, including source ranges on other sheets in the same workbook.
 func EvaluateChartInWorkbook(book *Workbook, chart Chart) (ChartData, error) {
 	return EvaluateChart(book.spreadsheetView(), chart)
+}
+
+// EvaluateChartInWorkbookContext evaluates a chart with cancellation.
+func EvaluateChartInWorkbookContext(ctx context.Context, book *Workbook, chart Chart) (ChartData, error) {
+	return EvaluateChartContext(ctx, book.spreadsheetView(), chart)
 }
 
 // SpillCellsInWorkbook returns the array cells produced on one sheet.

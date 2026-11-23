@@ -81,6 +81,40 @@ territory. The same artifact can be opened by Parchment or by any text editor.
   `parchment-*` blocks while preserving ordinary code fences and user prose.
 - Never alter canonical Markdown during rendering, outline parsing, or link resolution.
 
+## Large-artifact performance
+
+Artifacts can be book-length. Existing code does not yet meet all of these
+rules (see `FutureWork.md`), but new and changed code must not add to the gap.
+
+- **Scale work with the change, not the artifact.** Per-keystroke, per-edit,
+  and per-frame paths must not copy, rebuild, re-render, or compare the whole
+  buffer, document, deck, or workbook. Avoid calling a full `Value()` rebuild,
+  full-text dirty comparisons, full-buffer undo snapshots, or whole-workbook
+  recalculation from these paths; maintain running counts, revision markers,
+  change-based undo, or dependent-only recalculation instead.
+- **Show the first screen before doing whole-artifact work.** Opening,
+  navigation, and resize should not require parsing, laying out, or rendering
+  content the user cannot see. Prefer on-demand or incremental work and
+  bounded caches. `View` runs often; keep it proportional to the visible area.
+- **Do not rework unchanged content on save.** Saving, recording history, and
+  writing recovery drafts should not decode, re-encode, or deep-copy unchanged
+  embedded images, chart data, or other structured blocks.
+- **Bound memory explicitly.** Caches, undo/redo, decoded media, and
+  history must have limits. Size limits must be defined once and enforced
+  consistently, refusing oversized input cleanly without altering the source.
+- **Never block startup on the terminal.** Do not hold the first usable view
+  on capability queries or other replies that a terminal may never send.
+- **Measure with the saved workloads.** For changes to loading, rendering,
+  editing, recalculation, or saving, run the relevant benchmarks against the
+  fixtures in `internal/tui/testdata/` (`war-and-peace.md`, `us-history.md`,
+  `mortgage-budget.md`) and the guide-based note, and compare with
+  [Performance Baselines](docs/Performance_Baselines.md). Commit fixtures
+  rather than regenerating them, and update recorded baselines when they
+  change materially.
+- **Every scrollable pane must stay usable at scale.** Panes such as outlines
+  and lists must scroll by keyboard and mouse wheel and keep the selection
+  visible, so long artifacts remain navigable.
+
 ## Architecture and technical reference
 
 `cmd/parchment` is the executable entry point; `internal/cli` builds the Cobra

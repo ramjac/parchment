@@ -16,6 +16,7 @@ import (
 	"example.com/parchment/internal/artifact"
 	"example.com/parchment/internal/document"
 	"example.com/parchment/internal/recovery"
+	"example.com/parchment/internal/tui/editor"
 )
 
 // toolbarButton is one always-visible toolbar control.
@@ -175,10 +176,15 @@ func (s *documentsScreen) startEdit(d document.Document) (tea.Cmd, bool) {
 		s.status = ""
 		return nil, false
 	}
+	s.cancelReaderRender()
+	s.cancelReaderSearch()
 	s.body.SetValue(d.Body)
 	s.loadDocument(d)
 	s.prompt, s.previewing, s.showChanges, s.reviewing = promptNone, false, false, false
 	s.toolbarIndex = 0
+	s.editorOutlineOffset = 0
+	s.editorOutlineSelectionSet = false
+	s.editorOutlineSelectionSlug = ""
 	s.errMessage, s.status = "", ""
 	s.layoutEditor()
 	s.startDocumentAutosaveSession()
@@ -191,13 +197,25 @@ func (s *documentsScreen) loadDocument(d document.Document) {
 	s.markSaved(d)
 }
 
+func (s *documentsScreen) loadReaderDocument(d document.Document) {
+	s.body.SetValue("")
+	s.snapshot, s.lastAutosave = d, nil
+	s.layout = d.Layout
+	if s.layout == (document.Layout{}) {
+		s.layout = document.DefaultLayout()
+	}
+	s.images, s.workbook = d.Images, d.Workbook
+	s.original = editorDraft{}
+	s.discardWarning = false
+}
+
 func (s *documentsScreen) markSaved(d document.Document) {
 	s.snapshot, s.lastAutosave = d, nil
 	s.layout = d.Layout
 	if s.layout == (document.Layout{}) {
 		s.layout = document.DefaultLayout()
 	}
-	s.images = d.Images
+	s.images = append([]artifact.Image(nil), d.Images...)
 	s.workbook = d.Workbook.Clone()
 	s.original = s.currentDraft()
 	s.discardWarning = false
@@ -205,6 +223,8 @@ func (s *documentsScreen) markSaved(d document.Document) {
 
 // close discards the autosaved draft and quits.
 func (s *documentsScreen) close() tea.Cmd {
+	s.cancelReaderRender()
+	s.cancelReaderSearch()
 	s.stopDocumentAutosave()
 	return closeEditor(s.recoveryStore, s.path)
 }
@@ -633,6 +653,12 @@ func (s *documentsScreen) updateMouse(msg mouseEvent) tea.Cmd {
 				return nil
 			}
 			if msg.Action == mousePress {
+				switch msg.Button {
+				case mouseWheelDown:
+					s.scrollEditorOutline(3)
+				case mouseWheelUp:
+					s.scrollEditorOutline(-3)
+				}
 				return nil
 			}
 		}
@@ -1149,8 +1175,20 @@ func (s *documentsScreen) editorView(header string) string {
 }
 
 func (s *documentsScreen) editorOutline() []document.Section {
-	outline, _ := document.Outline(s.editorDocument())
-	return outline
+	revision := s.body.ContentRevision()
+	if s.editorOutlineCached &&
+		s.editorOutlineRev == revision &&
+		s.editorOutlineLayout == s.layout {
+		return s.editorOutlineCache
+	}
+	outline, _ := document.ReaderOutline(document.Document{
+		Body: s.body.Value(), Layout: s.layout,
+	})
+	s.editorOutlineCache = outline
+	s.editorOutlineRev = revision
+	s.editorOutlineLayout = s.layout
+	s.editorOutlineCached = true
+	return s.editorOutlineCache
 }
 
 func (s *documentsScreen) changeEditorOutlineSelection(step int) {
@@ -1158,7 +1196,28 @@ func (s *documentsScreen) changeEditorOutlineSelection(step int) {
 	if len(outline) == 0 {
 		return
 	}
-	current := s.currentSection()
+	revision := s.body.ContentRevision()
+	current := -1
+	if s.editorOutlineSelectionSet {
+		if s.editorOutlineSelectionRev == revision {
+			current = s.editorOutlineSelection
+		} else {
+			for i, section := range outline {
+				if section.Slug == s.editorOutlineSelectionSlug {
+					current = i
+					s.editorOutlineSelection = i
+					s.editorOutlineSelectionRev = revision
+					break
+				}
+			}
+			if current < 0 {
+				s.editorOutlineSelectionSet = false
+			}
+		}
+	}
+	if current < 0 {
+		current = s.currentSection()
+	}
 	if current < 0 {
 		current = 0
 	}
@@ -1177,31 +1236,21 @@ func (s *documentsScreen) gotoEditorSection(index int) {
 	if index < 0 || index >= len(outline) {
 		return
 	}
-	section := outline[index]
-
-	pages, err := document.Paginate(s.editorDocument())
-	if err != nil || section.Page < 1 || section.Page > len(pages) {
-		return
-	}
-
-	// Try to find the heading in the page lines to jump the cursor
-	page := pages[section.Page-1]
-	for idx, line := range page.Lines {
-		if strings.HasPrefix(strings.TrimSpace(line), strings.Repeat("#", section.Level)+" "+section.Title) {
-			s.editPage = section.Page - 1
-			s.editPageLine = idx
-
-			// We can also try to move the cursor. Let's just find the line in the body text
-			bodyLines := strings.Split(s.body.Value(), "\n")
-			for i, bline := range bodyLines {
-				if strings.HasPrefix(strings.TrimSpace(bline), strings.Repeat("#", section.Level)+" "+section.Title) {
-					s.body.Cursor.Line = i
-					s.body.Cursor.Col = 0
-
-					break
-				}
+	if line, ok := findSourceLineForSection(s.body.Value(), outline, index); ok {
+		s.body.SetCursorAtRow(editor.Point{Line: line}, 0)
+		s.editorOutlineSelection = index
+		s.editorOutlineSelectionRev = s.body.ContentRevision()
+		s.editorOutlineSelectionSlug = outline[index].Slug
+		s.editorOutlineSelectionSet = true
+		room := max(s.body.Height-1, 0)
+		if room > 0 {
+			start := s.editorOutlineStart(len(outline))
+			if index < start {
+				start = index
+			} else if index >= start+room {
+				start = index - room + 1
 			}
-			break
+			s.editorOutlineOffset = min(max(start, 0), max(len(outline)-room, 0))
 		}
 	}
 }
@@ -1225,6 +1274,17 @@ func (s *documentsScreen) clickEditorOutline(x, row int) {
 	}
 }
 
+func (s *documentsScreen) editorOutlineStart(total int) int {
+	room := max(s.body.Height-1, 0)
+	return min(max(s.editorOutlineOffset, 0), max(total-room, 0))
+}
+
+func (s *documentsScreen) scrollEditorOutline(step int) {
+	total := len(s.editorOutline())
+	room := max(s.body.Height-1, 0)
+	s.editorOutlineOffset = min(max(s.editorOutlineStart(total)+step, 0), max(total-room, 0))
+}
+
 func (s *documentsScreen) editorOutlineLines() (lines []string, targets []int) {
 	outline := s.editorOutline()
 	add := func(line string, target int) {
@@ -1236,9 +1296,9 @@ func (s *documentsScreen) editorOutlineLines() (lines []string, targets []int) {
 		add("  No headings", -1)
 		return lines, targets
 	}
-	room := max(s.height-5-len(lines), 1)
+	room := max(s.body.Height-len(lines), 0)
 	current := -1
-	start := 0
+	start := s.editorOutlineStart(len(outline))
 	for i := start; i < min(start+room, len(outline)); i++ {
 		section := outline[i]
 		marker := "  "

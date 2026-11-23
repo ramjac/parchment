@@ -52,6 +52,13 @@ PNG and JPEG images open in the image viewer/editor. Every operation addresses
 the file by path. Parchment does not list, search, or delete files; use your
 usual file manager or command-line tools for those tasks.
 
+Parchment's supported upper file size limit is 16 MiB. Larger files are not
+guaranteed to work. Markdown artifacts and plain notes larger than 16 MiB
+cannot be opened or saved; an artifact's size includes its metadata and
+embedded data.
+Previously accepted larger files remain unchanged, but cannot be reopened
+until reduced in size. Back up files before upgrading.
+
 Use the corresponding `create` command to create an artifact without opening
 the editor:
 
@@ -134,8 +141,36 @@ An existing document opens in its continuously scrolling reader, with an outline
 beside the rendered text on wide terminals. Use `↑` / `↓` to scroll, `{` / `}`
 to move between sections, and click an outline entry to jump. Print layout and
 page breaks are shown only in print preview and printed output.
+Scroll the mouse wheel over the outline to browse its headings independently;
+scrolling the document resumes automatic outline tracking. The editor outline
+also scrolls with the mouse wheel.
 Press `e` to edit, `v` to list tracked changes, `u` or `Ctrl+R` to undo or redo, and
 `Esc` or `q` to leave the reader.
+For long documents, a full-screen preview can appear while the rest loads.
+The early preview is marked "preview may change": later references may change
+its formatting, and images and charts appear as placeholders. Navigation from
+that preview waits for verified rendering. The reader then adds rendered content
+in batches and moves a loading indicator to the end; you can scroll the
+verified portion and use the outline as soon as it appears. Outline and
+section jumps work as soon as their target has rendered; later targets wait
+until their batch arrives. Link styling can remain pending until rendering
+finishes. Other queued navigation and clicking text to open the editor wait
+until rendering is complete.
+After loading, some long documents load distant sections on demand and show
+"Loading section…" while doing so. Whole-document search may also take time;
+the reader shows "Searching…" until its results are ready.
+Searches in large documents are limited to 1,048,576 matches; if that limit
+is exceeded, refine the search.
+The reader reports an error if rendered output exceeds 256 MiB, 1,048,576
+lines, or 4 MiB for one line. These limits apply to rendered output, including
+terminal styling; they do not change the saved document.
+The reader also limits retained scaled images to 64 MiB and 4,096 distinct
+image/width combinations. If a limit is exceeded, the saved file is unchanged.
+For long documents, one Markdown block may contain at most 4 MiB of source.
+Markdown that cannot use progressive rendering is limited to 1 MiB of source.
+The reader limits embedded sheets and charts to 4,096 references total and
+limits rendered chart text or generated chart images to 64 MiB. Expanded
+embedded content is limited to 256 MiB of Markdown.
 
 In the editor, `Ctrl+S` saves and `F5` previews the rendered pages. `Ctrl+O`
 toggles the outline; the toolbar provides text formatting, page setup, and

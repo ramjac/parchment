@@ -1,11 +1,55 @@
 package spreadsheet
 
 import (
+	"context"
+	"errors"
 	"math"
 	"strings"
 	"testing"
 	"time"
 )
+
+type cancelAfterEvaluationChecks struct {
+	context.Context
+	checks, limit int
+}
+
+func (c *cancelAfterEvaluationChecks) Err() error {
+	c.checks++
+	if c.checks >= c.limit {
+		return context.Canceled
+	}
+	return nil
+}
+
+func TestEvaluatorCancelsDuringWorkbookScan(t *testing.T) {
+	book := &Spreadsheet{Sheets: []Sheet{{Name: "Data", Rows: make([][]Cell, 100)}}}
+	ctx := &cancelAfterEvaluationChecks{Context: context.Background(), limit: 8}
+	if _, err := NewEvaluatorContext(ctx, book).Evaluate(0, 1, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("evaluation error = %v, want cancellation", err)
+	}
+}
+
+func TestChartEvaluationCancelsDuringWorkbookScan(t *testing.T) {
+	book := &Spreadsheet{Sheets: []Sheet{{Name: "Data", Rows: make([][]Cell, 100)}}}
+	chart := Chart{ID: "chart", Type: "bar", Sheet: "Data", FirstRow: 1, LastRow: 2, FirstColumn: 1, LastColumn: 1}
+	ctx := &cancelAfterEvaluationChecks{Context: context.Background(), limit: 8}
+	if _, err := EvaluateChartContext(ctx, book, chart); !errors.Is(err, context.Canceled) {
+		t.Fatalf("chart error = %v, want cancellation", err)
+	}
+}
+
+func TestArrayEvaluationCancelsDuringGeneration(t *testing.T) {
+	node, err := NewParser("SEQUENCE(1000,256)").Parse()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := &cancelAfterEvaluationChecks{Context: context.Background(), limit: 3}
+	e := NewEvaluatorContext(ctx, &Spreadsheet{})
+	if _, err := node.Eval(&e.evaluator, 0); !errors.Is(err, context.Canceled) {
+		t.Fatalf("array error = %v, want cancellation", err)
+	}
+}
 
 func TestEvaluate(t *testing.T) {
 	tests := []struct {

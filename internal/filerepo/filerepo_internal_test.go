@@ -1,11 +1,39 @@
 package filerepo
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"example.com/parchment/internal/artifactfile"
 )
+
+func TestPlainNoteSaveRejectsOversizedFile(t *testing.T) {
+	repo, err := New(t.TempDir(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "note.md")
+	if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	original, err := repo.Get(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := original
+	edited.Body = strings.Repeat("x", artifactfile.MaxFileSize+1)
+	err = repo.Transition(context.Background(), path, &original, &edited)
+	if err == nil || !strings.Contains(err.Error(), "larger than 16 MiB") {
+		t.Fatalf("oversized save error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "original" {
+		t.Fatalf("source after rejected save = %q, error %v", data, err)
+	}
+}
 
 func TestNewInternal_EmptyStateDir(t *testing.T) {
 	repo, err := New("", Options{})

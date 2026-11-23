@@ -116,6 +116,7 @@ type Model struct {
 	markdown        markdownPalette
 	searchMatches   []MatchSpan
 	activeMatch     int
+	contentRevision uint64
 	preserveEndings bool
 	endings         []notetext.Ending
 	inputErr        error
@@ -442,6 +443,7 @@ func (m *Model) Undo() bool {
 	m.Selection = Selection{Anchor: m.Cursor, Active: false}
 	m.clampCursor()
 	m.ensureCursorVisible()
+	m.contentRevision++
 	return true
 }
 
@@ -466,6 +468,7 @@ func (m *Model) Redo() bool {
 	m.Selection = Selection{Anchor: m.Cursor, Active: false}
 	m.clampCursor()
 	m.ensureCursorVisible()
+	m.contentRevision++
 	return true
 }
 
@@ -486,6 +489,7 @@ func (m *Model) SetValue(text string) {
 	m.undoStack = nil
 	m.redoStack = nil
 	m.lastEditType = editNone
+	m.contentRevision++
 }
 
 // Value returns the canonical string content of the buffer.
@@ -503,6 +507,11 @@ func (m Model) Value() string {
 // LineCount returns the number of lines in the buffer.
 func (m Model) LineCount() int {
 	return len(m.Lines)
+}
+
+// ContentRevision reports the version of the editor's text content.
+func (m Model) ContentRevision() uint64 {
+	return m.contentRevision
 }
 
 // Line returns the current cursor line.
@@ -695,6 +704,7 @@ func (m *Model) DeleteSelection() bool {
 	m.updateStickyCol()
 	m.Selection = Selection{Anchor: start, Active: false}
 	m.clampCursor()
+	m.contentRevision++
 	return true
 }
 
@@ -729,6 +739,7 @@ func (m *Model) InsertRune(r rune) {
 	m.Selection = Selection{Anchor: m.Cursor, Active: false}
 	m.normalizeEndings()
 	m.ensureCursorVisible()
+	m.contentRevision++
 }
 
 // InsertString inserts multiple lines/characters at cursor position.
@@ -766,6 +777,7 @@ func (m *Model) insertRuneWithoutSnapshot(r rune) {
 	m.updateStickyCol()
 	m.Selection = Selection{Anchor: m.Cursor, Active: false}
 	m.ensureCursorVisible()
+	m.contentRevision++
 }
 
 func (m *Model) insertNewlineWithoutSnapshot(ending notetext.Ending) {
@@ -789,6 +801,7 @@ func (m *Model) insertNewlineWithoutSnapshot(ending notetext.Ending) {
 	m.Selection = Selection{Anchor: m.Cursor, Active: false}
 	m.normalizeEndings()
 	m.ensureCursorVisible()
+	m.contentRevision++
 }
 
 func (m *Model) insertNewline() {
@@ -1271,6 +1284,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) {
 				m.Lines[m.Cursor.Line] = append(line[:m.Cursor.Col-1], line[m.Cursor.Col:]...)
 				m.Cursor.Col--
 				m.updateStickyCol()
+				m.contentRevision++
 			} else if m.Cursor.Line > 0 {
 				prevLen := len(m.Lines[m.Cursor.Line-1])
 				m.Lines[m.Cursor.Line-1] = append(m.Lines[m.Cursor.Line-1], m.Lines[m.Cursor.Line]...)
@@ -1281,6 +1295,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) {
 				m.Cursor.Line--
 				m.Cursor.Col = prevLen
 				m.updateStickyCol()
+				m.contentRevision++
 			}
 		}
 
@@ -1291,12 +1306,14 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) {
 			line := m.Lines[m.Cursor.Line]
 			if m.Cursor.Col < len(line) {
 				m.Lines[m.Cursor.Line] = append(line[:m.Cursor.Col], line[m.Cursor.Col+1:]...)
+				m.contentRevision++
 			} else if m.Cursor.Line < len(m.Lines)-1 {
 				m.Lines[m.Cursor.Line] = append(m.Lines[m.Cursor.Line], m.Lines[m.Cursor.Line+1]...)
 				m.Lines = append(m.Lines[:m.Cursor.Line+1], m.Lines[m.Cursor.Line+2:]...)
 				if m.preserveEndings {
 					m.endings = slices.Delete(m.endings, m.Cursor.Line, m.Cursor.Line+1)
 				}
+				m.contentRevision++
 			}
 		}
 

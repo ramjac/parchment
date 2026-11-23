@@ -1,6 +1,7 @@
 package spreadsheet
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -74,6 +75,13 @@ func NewEvaluator(book *Spreadsheet) *Evaluator {
 	return NewEvaluatorAt(book, time.Now())
 }
 
+// NewEvaluatorContext creates an evaluator that stops when ctx is canceled.
+func NewEvaluatorContext(ctx context.Context, book *Spreadsheet) *Evaluator {
+	e := NewEvaluator(book)
+	e.evaluator.ctx = ctx
+	return e
+}
+
 // NewEvaluatorAt evaluates volatile time functions against a fixed UTC instant.
 func NewEvaluatorAt(book *Spreadsheet, now time.Time) *Evaluator {
 	return &Evaluator{evaluator: evaluator{
@@ -100,6 +108,7 @@ const maxFormulaDepth = 512
 
 type evaluator struct {
 	book        *Spreadsheet
+	ctx         context.Context
 	now         time.Time
 	visiting    map[cellCoordinate]bool
 	cache       map[cellCoordinate]Value
@@ -116,7 +125,17 @@ type cellCoordinate struct {
 	sheet, row, column int
 }
 
+func (e *evaluator) contextErr() error {
+	if e.ctx != nil {
+		return e.ctx.Err()
+	}
+	return nil
+}
+
 func (e *evaluator) cell(sheetIndex, row, column int) (Value, error) {
+	if err := e.contextErr(); err != nil {
+		return Value{}, err
+	}
 	coordinate := cellCoordinate{sheet: sheetIndex, row: row, column: column}
 	if spill, ok := e.spills[coordinate]; ok {
 		if _, err := e.cell(spill.owner.sheet, spill.owner.row, spill.owner.column); err != nil {

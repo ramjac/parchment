@@ -1,9 +1,12 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -11,6 +14,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 )
+
+var errReaderSearchLimit = errors.New("too many matches; refine the search")
 
 type findAction int
 
@@ -107,67 +112,142 @@ func (f *findBar) view(matches, current, width int) string {
 	return ansi.Truncate(f.input.View()+suffix, max(width, 1), "…")
 }
 
-func findTextMatches(text, query string) []textMatch {
-	queryRunes := []rune(query)
-	if len(queryRunes) == 0 {
-		return nil
-	}
-	caseSensitive := false
-	for _, r := range queryRunes {
-		caseSensitive = caseSensitive || unicode.IsUpper(r)
-	}
+type textMatcher struct {
+	query         []rune
+	caseSensitive bool
+}
 
-	runes := make([]rune, 0, len(text))
-	offsets := make([]int, 0, len(text)+1)
-	for byteOffset, r := range text {
-		offsets = append(offsets, byteOffset)
-		runes = append(runes, r)
+func newTextMatcher(query string) textMatcher {
+	m := textMatcher{query: []rune(query)}
+	for _, r := range m.query {
+		m.caseSensitive = m.caseSensitive || unicode.IsUpper(r)
 	}
-	offsets = append(offsets, len(text))
+	return m
+}
 
-	var matches []textMatch
-	for start := 0; start+len(queryRunes) <= len(runes); {
-		matched := true
-		for i, queryRune := range queryRunes {
-			textRune := runes[start+i]
-			if caseSensitive && textRune != queryRune ||
-				!caseSensitive && unicode.ToLower(textRune) != unicode.ToLower(queryRune) {
-				matched = false
-				break
-			}
-		}
-		if !matched {
-			start++
-			continue
-		}
-		startByte, endByte := offsets[start], offsets[start+len(queryRunes)]
-		startCol := runewidth.StringWidth(text[:startByte])
-		endCol := startCol + runewidth.StringWidth(text[startByte:endByte])
-		if endCol > startCol {
-			matches = append(matches, textMatch{
-				startByte: startByte, endByte: endByte,
-				startCol: startCol, endCol: endCol,
-			})
-		}
-		start += len(queryRunes)
-	}
+func (m textMatcher) matches(text string) []textMatch {
+	matches, _ := m.matchesContext(nil, text)
 	return matches
 }
 
-func renderedMatches(lines []string, query string, page int) []renderedMatch {
+func (m textMatcher) matchesContext(ctx context.Context, text string) ([]textMatch, error) {
+	var matches []textMatch
+	err := m.eachMatchContext(ctx, text, func(start, end int) error {
+		startCol := runewidth.StringWidth(text[:start])
+		matches = append(matches, textMatch{
+			startByte: start, endByte: end,
+			startCol: startCol, endCol: startCol + runewidth.StringWidth(text[start:end]),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return matches, err
+}
+
+func (m textMatcher) eachMatchContext(ctx context.Context, text string, visit func(int, int) error) error {
+	if len(m.query) == 0 {
+		return nil
+	}
+	nextCheck := 0
+	for start := 0; start < len(text); {
+		if ctx != nil && start >= nextCheck {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			nextCheck = start + 4096
+		}
+		matched := true
+		end := start
+		for _, queryRune := range m.query {
+			if end == len(text) {
+				matched = false
+				break
+			}
+			textRune, size := utf8.DecodeRuneInString(text[end:])
+			if m.caseSensitive && textRune != queryRune ||
+				!m.caseSensitive && unicode.ToLower(textRune) != unicode.ToLower(queryRune) {
+				matched = false
+				break
+			}
+			end += size
+		}
+		if !matched {
+			_, size := utf8.DecodeRuneInString(text[start:])
+			start += size
+			continue
+		}
+		if runewidth.StringWidth(text[start:end]) > 0 {
+			if err := visit(start, end); err != nil {
+				return err
+			}
+		}
+		start = end
+	}
+	return nil
+}
+
+// Reader navigation needs match rows, not their columns; highlighting computes
+// columns only for the visible lines. The limit bounds retained search state.
+func renderedReaderMatchesContext(ctx context.Context, lines []string, query string, limit int) ([]renderedMatch, error) {
 	var matches []renderedMatch
+	matcher := newTextMatcher(query)
 	for row, line := range lines {
-		for _, match := range findTextMatches(ansi.Strip(line), query) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		err := matcher.eachMatchContext(ctx, ansi.Strip(line), func(_, _ int) error {
+			if len(matches) >= limit {
+				return errReaderSearchLimit
+			}
+			matches = append(matches, renderedMatch{row: row})
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return matches, nil
+}
+
+func findTextMatches(text, query string) []textMatch {
+	return newTextMatcher(query).matches(text)
+}
+
+func renderedMatches(lines []string, query string, page int) []renderedMatch {
+	matches, _ := renderedMatchesContext(nil, lines, query, page)
+	return matches
+}
+
+func renderedMatchesContext(ctx context.Context, lines []string, query string, page int) ([]renderedMatch, error) {
+	var matches []renderedMatch
+	matcher := newTextMatcher(query)
+	for row, line := range lines {
+		if ctx != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		lineMatches, err := matcher.matchesContext(ctx, ansi.Strip(line))
+		if err != nil {
+			return nil, err
+		}
+		for _, match := range lineMatches {
 			matches = append(matches, renderedMatch{
 				page: page, row: row, startCol: match.startCol, endCol: match.endCol,
 			})
 		}
 	}
-	return matches
+	return matches, nil
 }
 
 func highlightLine(line, query string, style Theme) string {
-	matches := findTextMatches(ansi.Strip(line), query)
+	return highlightLineWithMatcher(line, newTextMatcher(query), style)
+}
+
+func highlightLineWithMatcher(line string, matcher textMatcher, style Theme) string {
+	matches := matcher.matches(ansi.Strip(line))
 	for i := len(matches) - 1; i >= 0; i-- {
 		match := matches[i]
 		prefix := ansi.Truncate(line, match.startCol, "")
@@ -180,8 +260,9 @@ func highlightLine(line, query string, style Theme) string {
 
 func highlightLines(lines []string, query string, style Theme) []string {
 	result := make([]string, len(lines))
+	matcher := newTextMatcher(query)
 	for i, line := range lines {
-		result[i] = highlightLine(line, query, style)
+		result[i] = highlightLineWithMatcher(line, matcher, style)
 	}
 	return result
 }

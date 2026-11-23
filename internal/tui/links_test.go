@@ -2,11 +2,12 @@ package tui
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2/compat"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
@@ -48,10 +49,44 @@ func TestExtractAndRewriteLinks(t *testing.T) {
 	}
 }
 
+func TestExtractDocumentLinksText(t *testing.T) {
+	for _, source := range []string{
+		"",
+		"[first](#start) and [second](#end)\n",
+		"~~~go\n[code](#ignored)\n~~~\n[link](#target)\n\n",
+		"External [link](https://example.com)\n[internal](#target)\r\nlast",
+	} {
+		wantLines, wantLinks := extractAndRewriteLinks(strings.Split(source, "\n"))
+		for _, collect := range []bool{false, true} {
+			for _, rewrite := range []bool{false, true} {
+				got, links, err := extractDocumentLinksTextContext(context.Background(), source, rewrite, collect)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := source
+				if rewrite {
+					want = strings.Join(wantLines, "\n")
+				}
+				if got != want {
+					t.Fatalf("rewrite=%t source=%q: got %q, want %q", rewrite, source, got, want)
+				}
+				if collect && !slices.Equal(links, wantLinks) || !collect && len(links) != 0 {
+					t.Fatalf("collect=%t source=%q: links=%v, want %v", collect, source, links, wantLinks)
+				}
+			}
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := extractDocumentLinksTextContext(ctx, "[link](#target)", true, true); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled extraction error = %v", err)
+	}
+}
+
 func TestDocumentReaderClickableInternalLinks(t *testing.T) {
-	previousProfile := compat.Profile
-	compat.Profile = colorprofile.TrueColor
-	t.Cleanup(func() { compat.Profile = previousProfile })
+	previousProfile := terminalColorProfile
+	terminalColorProfile = colorprofile.TrueColor
+	t.Cleanup(func() { terminalColorProfile = previousProfile })
 
 	h := newHarness(t, "")
 	brk := "\n\n" + document.PageBreakMarkup + "\n\n"

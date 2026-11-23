@@ -1,16 +1,18 @@
 package tui
 
 import (
+	"os"
 	"strconv"
 	"strings"
 
-	"charm.land/lipgloss/v2/compat"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/glamour"
 	"github.com/muesli/termenv"
 
 	"example.com/parchment/internal/tui/theme"
 )
+
+var terminalColorProfile = colorprofile.Detect(os.Stdout, os.Environ())
 
 func repaintImageFrame(view string, frame uint64) string {
 	tag := "\x1b_PARCHMENT-REFRESH:" + strconv.FormatUint(frame, 10) + "\x1b\\"
@@ -25,7 +27,7 @@ func renderMarkdown(content string, width int, theme theme.Theme) string {
 	r, err := glamour.NewTermRenderer(
 		glamour.WithStyles(theme.Markdown),
 		glamour.WithPreservedNewLines(),
-		glamour.WithColorProfile(glamourColorProfile(compat.Profile)),
+		glamour.WithColorProfile(glamourColorProfile(terminalColorProfile)),
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {

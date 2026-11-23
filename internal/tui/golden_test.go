@@ -14,7 +14,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"charm.land/lipgloss/v2/compat"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
@@ -28,10 +27,10 @@ import (
 )
 
 func TestTUIRenderGoldens(t *testing.T) {
-	previousProfile := compat.Profile
-	compat.Profile = colorprofile.TrueColor
+	previousProfile := terminalColorProfile
+	terminalColorProfile = colorprofile.TrueColor
 	t.Cleanup(func() {
-		compat.Profile = previousProfile
+		terminalColorProfile = previousProfile
 	})
 
 	darkTheme := config.Theme{Mode: "dark"}
@@ -293,11 +292,11 @@ func TestTUIRenderGoldens(t *testing.T) {
 }
 
 func TestMarkdownContentColors(t *testing.T) {
-	previousProfile := compat.Profile
-	t.Cleanup(func() { compat.Profile = previousProfile })
+	previousProfile := terminalColorProfile
+	t.Cleanup(func() { terminalColorProfile = previousProfile })
 
 	for _, profile := range []colorprofile.Profile{colorprofile.TrueColor, colorprofile.ANSI256, colorprofile.ANSI} {
-		compat.Profile = profile
+		terminalColorProfile = profile
 		for _, mode := range []string{"light", "dark"} {
 			styles := tuitheme.Resolve(config.Theme{Mode: mode})
 			for _, tt := range []struct {
@@ -328,9 +327,9 @@ func TestMarkdownContentColors(t *testing.T) {
 }
 
 func TestArtifactEditorsUseViewerMarkdownColors(t *testing.T) {
-	previousProfile := compat.Profile
-	compat.Profile = colorprofile.TrueColor
-	t.Cleanup(func() { compat.Profile = previousProfile })
+	previousProfile := terminalColorProfile
+	terminalColorProfile = colorprofile.TrueColor
+	t.Cleanup(func() { terminalColorProfile = previousProfile })
 	styles := tuitheme.Resolve(config.Theme{Mode: "dark", Primary: "#123456"})
 
 	note := newNoteEditor(10, styles)
@@ -378,10 +377,10 @@ func assertRenderedDocumentMarkdown(t *testing.T, pages []document.Page) {
 }
 
 func TestMarkdownHeadingsRemainDistinctWithoutColor(t *testing.T) {
-	previousProfile := compat.Profile
-	compat.Profile = colorprofile.Ascii
+	previousProfile := terminalColorProfile
+	terminalColorProfile = colorprofile.Ascii
 	t.Cleanup(func() {
-		compat.Profile = previousProfile
+		terminalColorProfile = previousProfile
 	})
 
 	rendered := renderMarkdown("# Title\n\n## Section\n\nBody text.", 40, tuitheme.Resolve(config.Theme{Mode: "dark"}))

@@ -34,6 +34,11 @@ func hasArrayExpression(node Node) bool {
 }
 
 func (e *evaluator) prepareSpills() error {
+	if e.ctx != nil {
+		if err := e.ctx.Err(); err != nil {
+			return err
+		}
+	}
 	if e.spillsReady || e.preparing {
 		return nil
 	}
@@ -42,7 +47,17 @@ func (e *evaluator) prepareSpills() error {
 	var anchors []cellCoordinate
 	for sheet, page := range e.book.Sheets {
 		for row, cells := range page.Rows {
+			if e.ctx != nil {
+				if err := e.ctx.Err(); err != nil {
+					return err
+				}
+			}
 			for col, cell := range cells {
+				if col%256 == 0 && e.ctx != nil {
+					if err := e.ctx.Err(); err != nil {
+						return err
+					}
+				}
 				if cell.Formula == "" {
 					continue
 				}
@@ -61,6 +76,11 @@ func (e *evaluator) prepareSpills() error {
 	for sheet, page := range e.book.Sheets {
 		for _, span := range page.Spans {
 			for row := span.FirstRow; row <= span.LastRow; row++ {
+				if e.ctx != nil {
+					if err := e.ctx.Err(); err != nil {
+						return err
+					}
+				}
 				for col := span.FirstColumn; col <= span.LastColumn; col++ {
 					spanned[cellCoordinate{sheet, row, col}] = true
 				}
@@ -68,6 +88,11 @@ func (e *evaluator) prepareSpills() error {
 		}
 	}
 	for pass := 0; pass <= maxFormulaDepth; pass++ {
+		if e.ctx != nil {
+			if err := e.ctx.Err(); err != nil {
+				return err
+			}
+		}
 		e.cache = make(map[cellCoordinate]Value)
 		e.depth = make(map[cellCoordinate]int)
 		e.arrays = make(map[cellCoordinate]valueGrid)
@@ -94,6 +119,11 @@ func (e *evaluator) prepareSpills() error {
 			}
 			blocked := false
 			for r := 0; r < grid.rows && !blocked; r++ {
+				if e.ctx != nil {
+					if err := e.ctx.Err(); err != nil {
+						return err
+					}
+				}
 				for c := 0; c < grid.cols; c++ {
 					if r == 0 && c == 0 {
 						continue
@@ -110,6 +140,11 @@ func (e *evaluator) prepareSpills() error {
 				continue
 			}
 			for r := 0; r < grid.rows; r++ {
+				if e.ctx != nil {
+					if err := e.ctx.Err(); err != nil {
+						return err
+					}
+				}
 				for c := 0; c < grid.cols; c++ {
 					if r != 0 || c != 0 {
 						coordinate := cellCoordinate{anchor.sheet, anchor.row + r, anchor.column + c}
@@ -146,7 +181,14 @@ func (e *Evaluator) SpillCells(sheet int) (map[[2]int]Value, error) {
 		return nil, err
 	}
 	result := make(map[[2]int]Value)
+	visited := 0
 	for coordinate, spill := range e.evaluator.spills {
+		visited++
+		if visited%256 == 0 && e.evaluator.ctx != nil {
+			if err := e.evaluator.ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		if coordinate.sheet == sheet {
 			result[[2]int{coordinate.row, coordinate.column}] = spill.value
 		}

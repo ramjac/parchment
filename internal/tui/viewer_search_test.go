@@ -2,16 +2,18 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2/compat"
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
@@ -35,6 +37,24 @@ func TestRenderedSearchUsesSmartCaseAndANSIColumns(t *testing.T) {
 	if strings.Count(highlighted, "\x1b[") < strings.Count(line, "\x1b[") ||
 		!strings.Contains(highlighted, "alpha") || !strings.Contains(highlighted, "ALPHA") {
 		t.Fatalf("highlighting lost ANSI styling or text: %q", highlighted)
+	}
+}
+
+func TestTextMatchesUnicodeAndNonOverlapping(t *testing.T) {
+	tests := []struct {
+		text, query string
+		want        []textMatch
+	}{
+		{"aaaa", "aa", []textMatch{{0, 2, 0, 2}, {2, 4, 2, 4}}},
+		{"KKk", "k", []textMatch{{0, 3, 0, 1}, {3, 4, 1, 2}, {4, 5, 2, 3}}},
+		{"KKk", "K", []textMatch{{3, 4, 1, 2}}},
+		{"界 a\u0301", "a\u0301", []textMatch{{4, 7, 3, 4}}},
+		{"a\xffb", "\ufffd", []textMatch{{1, 2, 1, 2}}},
+	}
+	for _, tt := range tests {
+		if got := findTextMatches(tt.text, tt.query); !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("findTextMatches(%q, %q) = %+v, want %+v", tt.text, tt.query, got, tt.want)
+		}
 	}
 }
 
@@ -87,6 +107,160 @@ func TestDocumentReaderAndPrintPreviewSearch(t *testing.T) {
 	if !reader.previewing || len(reader.previewMatches) != 1 || reader.previewMatch != 0 {
 		t.Fatalf("print preview search: previewing=%t matches=%+v current=%d",
 			reader.previewing, reader.previewMatches, reader.previewMatch)
+	}
+}
+
+func TestDocumentReaderHighlightsVisibleLines(t *testing.T) {
+	screen := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	screen.reader.SetWidth(14)
+	screen.reader.SetHeight(2)
+	screen.readerLines = []string{
+		"\x1b[31mwide界\x1b[0m alpha",
+		"ALPHA and alpha",
+		"no match here",
+		"last alpha",
+	}
+	screen.showReaderContent()
+	screen.find.visible = true
+	for _, query := range []string{"alpha", "ALPHA", " ", "界"} {
+		screen.find.input.SetValue(query)
+		for _, offset := range []int{0, 1, 2} {
+			screen.reader.SetYOffset(offset)
+			expected := screen.reader
+			expected.SetContent(highlightRenderedText(strings.Join(screen.readerLines, "\n"), query, screen.theme))
+			expected.SetYOffset(offset)
+			if got, want := screen.readerContentView(), expected.View(); got != want {
+				t.Fatalf("query %q offset %d: got %q, want %q", query, offset, got, want)
+			}
+			if screen.reader.YOffset() != offset {
+				t.Fatalf("query %q changed reader position", query)
+			}
+		}
+	}
+}
+
+func TestDocumentReaderSearchIgnoresStaleResults(t *testing.T) {
+	screen := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	screen.width = 80
+	screen.reading = true
+	screen.snapshot.Body = strings.Repeat("x", asyncReaderSearchBytes)
+	screen.reader.SetWidth(30)
+	screen.reader.SetHeight(1)
+	screen.readerLines = []string{"alpha beta", "beta again", "another alpha"}
+	screen.showReaderContent()
+	screen.find.visible = true
+	screen.find.input.SetValue("alpha")
+	first := screen.searchReader("alpha")
+	if first == nil || !screen.readerSearching || !strings.Contains(screen.readerStatus(), "Searching") {
+		t.Fatal("large reader search did not start asynchronously")
+	}
+	stale := first()
+	screen.find.input.SetValue("beta")
+	second := screen.searchReader("beta")
+	screen.moveReaderMatch(1)
+	model := Model{stage: stageDocument, documents: screen}
+	_, _ = model.Update(stale)
+	if !screen.readerSearching || len(screen.readerMatches) != 0 {
+		t.Fatal("stale search result replaced the current search")
+	}
+	_, _ = model.Update(second())
+	if screen.readerSearching || len(screen.readerMatches) != 2 || screen.readerMatch != 1 || screen.reader.YOffset() != 1 {
+		t.Fatalf("current search = %+v, match=%d, offset=%d", screen.readerMatches, screen.readerMatch, screen.reader.YOffset())
+	}
+	screen.find.input.SetValue("alpha")
+	cancelled := screen.searchReader("alpha")
+	screen.find.close()
+	screen.searchReader("")
+	screen.update(cancelled())
+	if screen.readerSearching || len(screen.readerMatches) != 0 {
+		t.Fatal("closed search accepted a cancelled result")
+	}
+}
+
+func TestRenderedMatchesCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := renderedMatchesContext(ctx, []string{strings.Repeat("x", 100000)}, "z", 0); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled search returned %v", err)
+	}
+}
+
+func TestRenderedReaderMatchesBoundAndSemantics(t *testing.T) {
+	lines := []string{"\x1b[31mAlpha alpha\x1b[0m", "界 alpha 界", "e\u0301 é", "missing"}
+	for _, query := range []string{"alpha", "Alpha", "界", "é", "\u0301", "missing"} {
+		want := renderedMatches(lines, query, 0)
+		got, err := renderedReaderMatchesContext(context.Background(), lines, query, 20)
+		if err != nil || len(got) != len(want) {
+			t.Fatalf("query %q: got %d matches, want %d: %v", query, len(got), len(want), err)
+		}
+		for i := range want {
+			if got[i].row != want[i].row {
+				t.Fatalf("query %q: row %d = %d, want %d", query, i, got[i].row, want[i].row)
+			}
+		}
+	}
+	matches, err := renderedReaderMatchesContext(context.Background(), []string{"xxx"}, "x", 3)
+	if err != nil || len(matches) != 3 {
+		t.Fatalf("matches at limit = %d, err=%v", len(matches), err)
+	}
+	matches, err = renderedReaderMatchesContext(context.Background(), []string{strings.Repeat("x", 10000)}, "x", 3)
+	if !errors.Is(err, errReaderSearchLimit) || matches != nil {
+		t.Fatalf("excess matches returned %v, err=%v", matches, err)
+	}
+}
+
+func TestDocumentReaderReportsSearchLimit(t *testing.T) {
+	screen := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	screen.width, screen.reading, screen.readerSearching = 80, true, true
+	screen.find.visible = true
+	screen.find.input.SetValue("x")
+	screen.readerSearchFinished(documentReaderSearchMsg{
+		session: screen.readerSearchSession, query: "x", err: errReaderSearchLimit,
+	})
+	if !strings.Contains(screen.readerStatus(), "refine the search") {
+		t.Fatal("reader did not report the match limit")
+	}
+	screen.searchReader("")
+	if screen.readerSearchError != "" {
+		t.Fatal("closing search retained the match-limit error")
+	}
+}
+
+func TestDocumentReaderSearchCancelWhileRunning(t *testing.T) {
+	screen := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	screen.reading = true
+	screen.snapshot.Body = strings.Repeat("x", 3<<20)
+	screen.readerLines = []string{screen.snapshot.Body}
+	screen.find.visible = true
+	screen.find.input.SetValue("absent")
+	cmd := screen.searchReader("absent")
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	screen.cancelReaderSearch()
+	select {
+	case result := <-done:
+		msg := result.(documentReaderSearchMsg)
+		if !errors.Is(msg.err, context.Canceled) {
+			t.Fatalf("cancelled search returned %v", msg.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled search did not stop")
+	}
+}
+
+func TestDocumentReaderResizePreservesPendingSearchNavigation(t *testing.T) {
+	screen := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	screen.resize(80, 24)
+	screen.startReading(document.Document{Body: "# Heading\n\nbeta beta", Layout: document.DefaultLayout()})
+	screen.find.visible = true
+	screen.find.input.SetValue("beta")
+	screen.readerSearching = true
+	screen.readerSearchSteps = 1
+	screen.readerMatches = nil
+	screen.readerMatch = -1
+	screen.resize(100, 30)
+	if screen.readerSearching || len(screen.readerMatches) != 2 || screen.readerMatch != 1 {
+		t.Fatalf("resize lost pending search navigation: matches=%+v current=%d", screen.readerMatches, screen.readerMatch)
 	}
 }
 
@@ -433,9 +607,9 @@ func TestSpreadsheetEscapeDismissesBlurredFindBeforeClosing(t *testing.T) {
 }
 
 func TestSpreadsheetHighlightedFormulaUsesDisplayWidth(t *testing.T) {
-	previousProfile := compat.Profile
-	compat.Profile = colorprofile.TrueColor
-	t.Cleanup(func() { compat.Profile = previousProfile })
+	previousProfile := terminalColorProfile
+	terminalColorProfile = colorprofile.TrueColor
+	t.Cleanup(func() { terminalColorProfile = previousProfile })
 	m, _, _, _ := newSheetModel(t, [][]spreadsheet.Cell{{{Formula: "=123456789+123456789"}}})
 	m.theme = resolveTheme(config.Theme{Mode: "dark"})
 	m.width = 18

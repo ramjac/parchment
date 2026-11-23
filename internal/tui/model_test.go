@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/color"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -28,6 +29,57 @@ import (
 )
 
 type terminalRenderOutput chan string
+
+func TestModelRoutesDocumentReaderPreviews(t *testing.T) {
+	model := NewModel(Config{})
+	model.stage = stageDocument
+	screen := newDocumentsScreen(nil, "", nil, Theme{}, 10)
+	screen.reading, screen.readerRendering, screen.readerRenderSession = true, true, 1
+	screen.reader.SetWidth(40)
+	screen.reader.SetHeight(2)
+	model.documents = screen
+	next := make(chan tea.Msg, 1)
+	_, cmd := model.Update(documentReaderEarlyMsg{session: 1, lines: []string{"early one", "early two"}, next: next})
+	if cmd == nil || !screen.readerProvisional || len(screen.readerLines) != 2 {
+		t.Fatal("model did not route the early preview")
+	}
+	_, cmd = model.Update(documentReaderPreviewMsg{session: 1, lines: []string{"verified one", "verified two"}, next: next})
+	if cmd == nil || screen.readerProvisional || !screen.readerStreamPreview || screen.readerLines[0] != "verified one" {
+		t.Fatal("model did not route the verified preview")
+	}
+}
+
+func TestBackgroundColorResponseUpdatesAutoDocumentTheme(t *testing.T) {
+	t.Setenv("COLORFGBG", "15;0")
+	model := NewModel(Config{Kind: artifact.DocumentKind, Documents: document.NewService(nil, 10)})
+	_, _ = model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	doc := document.Document{
+		Body:   "First paragraph.\n\nSecond paragraph.\n\n" + strings.Repeat("x", asyncReaderSearchBytes),
+		Layout: document.DefaultLayout(),
+	}
+	_, render := model.Update(fileOpenedMsg{kind: artifact.DocumentKind, document: doc})
+	if render == nil || !model.documents.readerPreambleShown {
+		t.Fatal("document did not start background rendering")
+	}
+	session := model.documents.readerRenderSession
+	_, cmd := model.Update(tea.BackgroundColorMsg{Color: color.White})
+	if cmd != nil || model.documents.readerRenderSession == session ||
+		model.documents.theme.Markdown.H1.Color == nil || *model.documents.theme.Markdown.H1.Color != "#805500" {
+		t.Fatal("terminal response did not coalesce a render using the light theme")
+	}
+	_, next := model.Update(documentReaderRenderMsg{session: session})
+	if next == nil || !model.documents.readerRendering {
+		t.Fatal("stale render did not schedule the themed render")
+	}
+}
+
+func TestBackgroundColorResponseDoesNotOverrideExplicitTheme(t *testing.T) {
+	model := NewModel(Config{Theme: config.Theme{Mode: "light"}})
+	_, cmd := model.Update(tea.BackgroundColorMsg{Color: color.Black})
+	if cmd != nil || model.theme.Markdown.H1.Color == nil || *model.theme.Markdown.H1.Color != "#805500" {
+		t.Fatal("terminal response overrode an explicit theme")
+	}
+}
 
 func setTextInputCursorStatic(input *textinput.Model) {
 	input.SetVirtualCursor(true)
@@ -1238,6 +1290,38 @@ func TestModelUpdateDocumentMessageWhenDocumentsNil(t *testing.T) {
 	model, cmd := m.Update(msg)
 	if model != &m || cmd != nil {
 		t.Fatalf("expected m and nil cmd when documents is nil, got model=%v cmd=%v", model, cmd)
+	}
+}
+
+func TestDocumentOpensBeforeTerminalSize(t *testing.T) {
+	repo, err := filerepo.New(t.TempDir(), filerepo.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := document.NewService(repo, 10)
+	path := filepath.Join(t.TempDir(), "document.md")
+	if _, err := service.Create(context.Background(), path, document.Draft{Body: "# Heading\n\nReader content."}); err != nil {
+		t.Fatal(err)
+	}
+	open := func(size *tea.WindowSizeMsg) *Model {
+		m := NewModel(Config{Path: path, Kind: artifact.DocumentKind, Documents: service})
+		if size != nil {
+			_, _ = m.Update(*size)
+		}
+		_, _ = m.Update(m.Init()())
+		return &m
+	}
+	m := open(nil)
+	if m.width != 80 || m.height != 24 || !strings.Contains(m.View().Content, "Reader content.") {
+		t.Fatalf("document opened without usable fallback size: %dx%d\n%s", m.width, m.height, m.View().Content)
+	}
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 60, Height: 20})
+	if m.width != 60 || m.height != 20 || !strings.Contains(m.View().Content, "Reader content.") {
+		t.Fatal("reader did not reflow at the reported terminal size")
+	}
+	small := open(&tea.WindowSizeMsg{Width: 20, Height: 5})
+	if small.width != 20 || !strings.Contains(small.View().Content, "terminal too small") {
+		t.Fatal("fallback size replaced a reported small terminal")
 	}
 }
 

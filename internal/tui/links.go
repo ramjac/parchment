@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"regexp"
 	"strings"
 
@@ -29,32 +30,88 @@ type linkHitBox struct {
 // extractAndRewriteLinks rewrites [text](#target) into bare text and extracts
 // the links in document order, ignoring fenced code blocks.
 func extractAndRewriteLinks(lines []string) ([]string, []linkRef) {
+	rewritten, links, _ := extractAndRewriteLinksContext(context.Background(), lines)
+	return rewritten, links
+}
+
+func extractAndRewriteLinksContext(ctx context.Context, lines []string) ([]string, []linkRef, error) {
 	var links []linkRef
 	inFence := false
 	rewritten := make([]string, len(lines))
 	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-			inFence = !inFence
-			rewritten[i] = line
-			continue
-		}
-		if inFence {
-			rewritten[i] = line
-			continue
-		}
-		rewritten[i] = internalLinkRE.ReplaceAllStringFunc(line, func(match string) string {
-			sub := internalLinkRE.FindStringSubmatch(match)
-			if len(sub) == 3 {
-				label := sub[1]
-				target := strings.TrimPrefix(sub[2], "#")
-				links = append(links, linkRef{label: label, target: target})
-				return label
+		if i%256 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
 			}
-			return match
-		})
+		}
+		rewritten[i] = rewriteDocumentLinkLine(line, &inFence, &links)
 	}
-	return rewritten, links
+	return rewritten, links, nil
+}
+
+func rewriteDocumentLinkLine(line string, inFence *bool, links *[]linkRef) string {
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+		*inFence = !*inFence
+		return line
+	}
+	if *inFence || !strings.Contains(line, "](") {
+		return line
+	}
+	return internalLinkRE.ReplaceAllStringFunc(line, func(match string) string {
+		sub := internalLinkRE.FindStringSubmatch(match)
+		if len(sub) != 3 {
+			return match
+		}
+		if links != nil {
+			*links = append(*links, linkRef{label: sub[1], target: strings.TrimPrefix(sub[2], "#")})
+		}
+		return sub[1]
+	})
+}
+
+func extractDocumentLinksTextContext(ctx context.Context, source string, rewrite, collect bool) (string, []linkRef, error) {
+	var links []linkRef
+	var linkList *[]linkRef
+	if collect {
+		linkList = &links
+	}
+	var result strings.Builder
+	inFence := false
+	last, start, lineCount := 0, 0, 0
+	for {
+		if lineCount%256 == 0 {
+			if err := ctx.Err(); err != nil {
+				return "", nil, err
+			}
+		}
+		end := strings.IndexByte(source[start:], '\n')
+		if end < 0 {
+			end = len(source)
+		} else {
+			end += start
+		}
+		line := source[start:end]
+		rewritten := rewriteDocumentLinkLine(line, &inFence, linkList)
+		if rewrite && rewritten != line {
+			if result.Len() == 0 {
+				result.Grow(len(source))
+			}
+			result.WriteString(source[last:start])
+			result.WriteString(rewritten)
+			last = end
+		}
+		if end == len(source) {
+			break
+		}
+		start = end + 1
+		lineCount++
+	}
+	if result.Len() == 0 {
+		return source, links, nil
+	}
+	result.WriteString(source[last:])
+	return result.String(), links, nil
 }
 
 // paginateDocumentWithLinks paginates a document using Glamour, rewrites internal links
@@ -63,8 +120,11 @@ func extractAndRewriteLinks(lines []string) ([]string, []linkRef) {
 func (s *documentsScreen) paginateDocumentWithLinks(doc document.Document) ([]document.Page, []linkHitBox, error) {
 	s.imageState.markNavigation = false
 	s.imageState.rows = make(map[rune]documentImageRow)
+	s.imageState.pendingRows = nil
 	s.imageState.prepared = make(map[string][]string)
 	s.imageState.nextMarker = 0
+	s.imageState.usedMarkers = nil
+	s.imageState.err = nil
 	s.imageState.outline, _ = document.Outline(doc)
 	s.imageState.navigation = make(map[rune]int)
 	s.imageState.source = doc.Body
@@ -74,36 +134,66 @@ func (s *documentsScreen) paginateDocumentWithLinks(doc document.Document) ([]do
 	if err != nil {
 		return nil, nil, err
 	}
+	if s.imageState.err != nil {
+		return nil, nil, s.imageState.err
+	}
 	s.locateDocumentSections(pages)
 	return pages, s.styleDocumentLinks(pages, allLinks), nil
 }
 
 func (s *documentsScreen) renderReaderDocument(doc document.Document, width int) ([]string, []document.Section, []int, []linkHitBox, error) {
-	doc.Body = artifactfile.StripPrivateBlocks(doc.Body)
-	outline, err := document.Outline(doc)
+	return s.renderReaderDocumentContext(context.Background(), doc, width)
+}
+
+func (s *documentsScreen) renderReaderDocumentContext(ctx context.Context, doc document.Document, width int) ([]string, []document.Section, []int, []linkHitBox, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, nil, err
+	}
+	var err error
+	doc.Body, err = artifactfile.StripPrivateBlocksContext(ctx, doc.Body)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	filtered := outline[:0]
-	for _, section := range outline {
-		if !section.SectionBreak {
-			filtered = append(filtered, section)
-		}
+	outline, err := document.ReaderOutlineContext(ctx, doc)
+	if err != nil {
+		return nil, nil, nil, nil, err
 	}
-	outline = filtered
+	return s.renderReaderIndexedContext(ctx, doc, width, outline)
+}
+
+func (s *documentsScreen) renderReaderIndexedContext(ctx context.Context, doc document.Document, width int, outline []document.Section) ([]string, []document.Section, []int, []linkHitBox, error) {
+	s.readerSource = nil
 	s.imageState.rows = make(map[rune]documentImageRow)
+	s.imageState.pendingRows = nil
 	s.imageState.prepared = make(map[string][]string)
 	s.imageState.nextMarker = 0
+	s.imageState.usedMarkers = nil
+	s.imageState.err = nil
 	s.imageState.outline = outline
 	s.imageState.navigation = make(map[rune]int)
 	s.imageState.source = doc.Body
 	s.imageState.markNavigation = true
-	lines := s.documentMarkdownFormatter(doc)(strings.Split(doc.Body, "\n"), width, 0, "")
+	formatter := s.documentMarkdownSourceFormatterContext(ctx, doc)
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, nil, err
+	}
+	lines := formatter(doc.Body, width)
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if s.imageState.err != nil {
+		return nil, nil, nil, nil, s.imageState.err
+	}
 	rows := make([]int, len(outline))
 	for i := range rows {
 		rows[i] = -1
 	}
 	for row, line := range lines {
+		if row%256 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, nil, nil, err
+			}
+		}
 		lines[row] = strings.Map(func(r rune) rune {
 			if index, ok := s.imageState.navigation[r]; ok {
 				rows[index] = row
@@ -112,19 +202,42 @@ func (s *documentsScreen) renderReaderDocument(doc document.Document, width int)
 			return r
 		}, line)
 	}
-	_, links := extractAndRewriteLinks(strings.Split(doc.Body, "\n"))
+	var links []linkRef
+	var err error
+	if strings.Contains(doc.Body, "](") {
+		_, links, err = extractDocumentLinksTextContext(ctx, doc.Body, false, true)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+	}
 	pages := []document.Page{{Lines: lines}}
-	boxes := s.styleDocumentLinks(pages, links)
-	return lines, outline, rows, boxes, nil
+	boxes, err := s.styleDocumentLinksContext(ctx, pages, links)
+	if err == nil && s.readerSource != nil && !s.readerSource.setLinks(boxes, s.theme.Link) {
+		s.readerSource = nil
+	}
+	if err == nil && s.readerSource != nil {
+		s.readerSource.setSearchIndex(ctx, lines)
+	}
+	return lines, outline, rows, boxes, err
 }
 
 func (s *documentsScreen) styleDocumentLinks(pages []document.Page, allLinks []linkRef) []linkHitBox {
+	boxes, _ := s.styleDocumentLinksContext(context.Background(), pages, allLinks)
+	return boxes
+}
+
+func (s *documentsScreen) styleDocumentLinksContext(ctx context.Context, pages []document.Page, allLinks []linkRef) ([]linkHitBox, error) {
 	var hitBoxes []linkHitBox
 	linkStyle := s.theme.Link
 
 	linkIdx := 0
 	for p := 0; p < len(pages) && linkIdx < len(allLinks); p++ {
 		for r := 0; r < len(pages[p].Lines) && linkIdx < len(allLinks); r++ {
+			if r%256 == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+			}
 			line := pages[p].Lines[r]
 			clean := ansi.Strip(line)
 			searchOffset := 0
@@ -215,5 +328,5 @@ func (s *documentsScreen) styleDocumentLinks(pages []document.Page, allLinks []l
 		}
 	}
 
-	return hitBoxes
+	return hitBoxes, ctx.Err()
 }

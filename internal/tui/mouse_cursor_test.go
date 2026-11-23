@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2/compat"
 	"github.com/charmbracelet/colorprofile"
 
 	"example.com/parchment/internal/artifact"
@@ -72,8 +71,8 @@ func TestSpreadsheetClickSelectsCellAndPositionsInput(t *testing.T) {
 }
 
 func TestNoteEditorShowsCursorAwayFromTextEnd(t *testing.T) {
-	compat.Profile = colorprofile.TrueColor
-	t.Cleanup(func() { compat.Profile = colorprofile.Ascii })
+	terminalColorProfile = colorprofile.TrueColor
+	t.Cleanup(func() { terminalColorProfile = colorprofile.Ascii })
 	model := NewModel(Config{Path: "note.md", Kind: artifact.NoteKind})
 	model.width, model.height = 80, 24
 	model.resizeEditors()

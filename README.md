@@ -5,6 +5,8 @@ notes, documents, spreadsheets, presentations, and images. Each Markdown
 artifact stays in the ordinary file you name and place; Parchment does not
 require an account, workspace, or managed library.
 
+Parchment's supported upper file size limit is 16 MiB.
+
 ## Features
 
 - Native terminal editors and readers for Markdown notes, laid-out documents,
