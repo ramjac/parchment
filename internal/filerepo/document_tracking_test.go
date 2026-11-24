@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"example.com/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/document"
 )
 
 func TestDocumentTrackingPersistsAndSupportsUndo(t *testing.T) {

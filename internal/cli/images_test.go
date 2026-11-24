@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/parchment/internal/imageedit"
+	"github.com/ramjac/parchment/internal/imageedit"
 )
 
 func writeCLIImage(t *testing.T, path string) []byte {

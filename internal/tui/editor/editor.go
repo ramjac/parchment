@@ -12,8 +12,8 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/mattn/go-runewidth"
 
-	"example.com/parchment/internal/notetext"
-	"example.com/parchment/internal/tui/theme"
+	"github.com/ramjac/parchment/internal/notetext"
+	"github.com/ramjac/parchment/internal/tui/theme"
 )
 
 // Point represents a line and column location in the line-based buffer.

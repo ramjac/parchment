@@ -13,9 +13,9 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
-	"example.com/parchment/internal/artifactfile"
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/tui/editor"
+	"github.com/ramjac/parchment/internal/artifactfile"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/tui/editor"
 )
 
 // The document reader shows the saved document continuously, with an

@@ -11,8 +11,8 @@ import (
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
 
-	"example.com/parchment/internal/config"
-	"example.com/parchment/internal/tui/theme"
+	"github.com/ramjac/parchment/internal/config"
+	"github.com/ramjac/parchment/internal/tui/theme"
 )
 
 func TestEditorCursorAtWrapBoundaryAndResize(t *testing.T) {

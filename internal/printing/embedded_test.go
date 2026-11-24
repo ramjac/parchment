@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/parchment/internal/presentation"
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/presentation"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 type cancelDuringEmbeddedEvaluation struct {

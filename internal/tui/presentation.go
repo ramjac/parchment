@@ -21,13 +21,13 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/presentation"
-	"example.com/parchment/internal/printing"
-	"example.com/parchment/internal/recovery"
-	"example.com/parchment/internal/spreadsheet"
-	"example.com/parchment/internal/tui/editor"
-	"example.com/parchment/internal/tui/termimg"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/presentation"
+	"github.com/ramjac/parchment/internal/printing"
+	"github.com/ramjac/parchment/internal/recovery"
+	"github.com/ramjac/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/tui/editor"
+	"github.com/ramjac/parchment/internal/tui/termimg"
 )
 
 // presentationChromeLines counts the header, status, and help lines.

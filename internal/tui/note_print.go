@@ -10,7 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattn/go-runewidth"
 
-	"example.com/parchment/internal/printing"
+	"github.com/ramjac/parchment/internal/printing"
 )
 
 type notePDFExportedMsg struct{ pdfExportResult }

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"example.com/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/artifact"
 )
 
 func TestSingleFileWorkbookEncodesMetadataCellsAndFormulas(t *testing.T) {

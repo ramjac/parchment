@@ -16,11 +16,11 @@ import (
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/config"
-	"example.com/parchment/internal/filerepo"
-	"example.com/parchment/internal/imageedit"
-	tuitheme "example.com/parchment/internal/tui/theme"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/config"
+	"github.com/ramjac/parchment/internal/filerepo"
+	"github.com/ramjac/parchment/internal/imageedit"
+	tuitheme "github.com/ramjac/parchment/internal/tui/theme"
 )
 
 type imageHarness struct {

@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"example.com/parchment/internal/filerepo"
-	"example.com/parchment/internal/note"
-	"example.com/parchment/internal/notetext"
+	"github.com/ramjac/parchment/internal/filerepo"
+	"github.com/ramjac/parchment/internal/note"
+	"github.com/ramjac/parchment/internal/notetext"
 )
 
 type transientTextRepository struct {

@@ -15,8 +15,8 @@ import (
 
 	"github.com/go-pdf/fpdf"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/document"
 )
 
 const (

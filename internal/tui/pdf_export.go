@@ -7,12 +7,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/pdfrender"
-	"example.com/parchment/internal/presentation"
-	"example.com/parchment/internal/printing"
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/pdfrender"
+	"github.com/ramjac/parchment/internal/presentation"
+	"github.com/ramjac/parchment/internal/printing"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 type pdfExportResult struct {

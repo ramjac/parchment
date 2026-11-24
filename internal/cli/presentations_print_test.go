@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/parchment/internal/filerepo"
+	"github.com/ramjac/parchment/internal/filerepo"
 )
 
 func TestPresentationPrintCLI(t *testing.T) {

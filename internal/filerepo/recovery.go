@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"example.com/parchment/internal/recovery"
+	"github.com/ramjac/parchment/internal/recovery"
 )
 
 const maxRecoveryFileSize = 128 << 20

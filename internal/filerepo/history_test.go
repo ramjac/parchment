@@ -13,11 +13,11 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/history"
-	"example.com/parchment/internal/note"
-	"example.com/parchment/internal/presentation"
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/history"
+	"github.com/ramjac/parchment/internal/note"
+	"github.com/ramjac/parchment/internal/presentation"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 func TestPersistentHistoryBaselineUndoRedoAndExternalEditGuard(t *testing.T) {

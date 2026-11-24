@@ -13,8 +13,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 func addSpreadsheetCommands(root *cobra.Command, streams output) {

@@ -8,7 +8,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"example.com/parchment/internal/config"
+	"github.com/ramjac/parchment/internal/config"
 )
 
 func TestResolveAppliesConfiguredColorsToSemanticRoles(t *testing.T) {

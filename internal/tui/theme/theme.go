@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/glamour/ansi"
 	glamourstyles "github.com/charmbracelet/glamour/styles"
 
-	"example.com/parchment/internal/config"
+	"github.com/ramjac/parchment/internal/config"
 )
 
 // Theme contains semantic styles shared by TUI screens, editors, and Markdown.

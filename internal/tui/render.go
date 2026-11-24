@@ -9,7 +9,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/muesli/termenv"
 
-	"example.com/parchment/internal/tui/theme"
+	"github.com/ramjac/parchment/internal/tui/theme"
 )
 
 var terminalColorProfile = colorprofile.Detect(os.Stdout, os.Environ())

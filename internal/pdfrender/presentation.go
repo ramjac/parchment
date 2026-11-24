@@ -8,9 +8,9 @@ import (
 
 	"github.com/go-pdf/fpdf"
 
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/presentation"
-	"example.com/parchment/internal/printing"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/presentation"
+	"github.com/ramjac/parchment/internal/printing"
 )
 
 const (

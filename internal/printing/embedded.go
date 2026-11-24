@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/chartrender"
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/chartrender"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 const (

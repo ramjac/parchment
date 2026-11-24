@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"example.com/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/artifact"
 )
 
 func TestResolveImageTUITarget(t *testing.T) {

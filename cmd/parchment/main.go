@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"example.com/parchment/internal/cli"
+	"github.com/ramjac/parchment/internal/cli"
 )
 
 func main() {

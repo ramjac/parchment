@@ -5,7 +5,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"example.com/parchment/internal/notetext"
+	"github.com/ramjac/parchment/internal/notetext"
 )
 
 func TestPreservedBoundariesFollowEditsAndUndo(t *testing.T) {

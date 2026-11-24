@@ -9,8 +9,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"example.com/parchment/internal/filerepo"
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/filerepo"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 func BenchmarkLargeSpreadsheet(b *testing.B) {

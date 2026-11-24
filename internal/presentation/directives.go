@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/artifact"
 )
 
 var (

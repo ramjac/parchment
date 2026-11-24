@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/document"
 	"github.com/yuin/goldmark/ast"
 	east "github.com/yuin/goldmark/extension/ast"
 )

@@ -6,9 +6,9 @@ import (
 	"os"
 	"testing"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/notetext"
-	"example.com/parchment/internal/tui/editor"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/notetext"
+	"github.com/ramjac/parchment/internal/tui/editor"
 )
 
 func TestPlainNoteBoundaryOnlyEditsAreDirtyAndSaved(t *testing.T) {
