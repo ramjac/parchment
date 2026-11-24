@@ -42,7 +42,7 @@ func (r *Repository) TransitionPresentation(ctx context.Context, path string, ex
 	if err != nil {
 		return err
 	}
-	return r.update(ctx, path, expected == nil, presentation.ErrNotFound, func(content []byte) ([]byte, error) {
+	return r.updateCanonical(ctx, path, expected == nil, presentation.ErrNotFound, func(content []byte) ([]byte, error) {
 		if expected != nil {
 			if err := checkKind(path, content, artifact.PresentationKind); err != nil {
 				return nil, err

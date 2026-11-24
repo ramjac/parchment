@@ -132,15 +132,22 @@ costs still warrant separate profiling.
 
 ## Presentation save cost
 
-Investigate why saving the 251-slide history presentation after a small
-source edit took about 86 ms and allocated about 48 MB cumulatively in
-exploratory benchmarks; the service-level save alone was similar.
+For the 251-slide history presentation, three single-iteration Linux
+benchmarks now measure a service save at a 31.1 ms median and 33.6 MB/op with
+embedded media, and 12.1 ms and 3.24 MB/op without media. The editor edit/save
+median is 35.6 ms and 37.8 MB/op with media. These are lower than the earlier
+86 ms and 48 MB exploratory service-save result, but allocations remain
+cumulative totals rather than peak memory. Source-only saves now reuse the
+unchanged presentation metadata block; redundant workbook/image copies and a
+history re-encode check of the newly encoded target were also removed while
+retaining exact history snapshot reconstruction checks.
 
 - Determine whether unchanged embedded images, chart data, or other structured
-  blocks are copied, decoded, re-encoded, or rewritten unnecessarily during
-  save, history recording, or recovery drafts.
-- Preserve single-file atomic writes, canonical Markdown, external-edit
-  detection, and history behavior; compare decks with and without media.
+  blocks can be kept from being copied or encoded during recovery-draft writes.
+  Current recovery-draft measurements are 4.10 ms and 7.33 MB/op with media,
+  and 0.91 ms and 1.02 MB/op without media.
+- Continue preserving single-file atomic writes, canonical Markdown,
+  external-edit detection, and history behavior.
 
 ## Embedded media memory
 
