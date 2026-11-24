@@ -9,10 +9,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/artifactfile"
-	"example.com/parchment/internal/note"
-	"example.com/parchment/internal/notetext"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/artifactfile"
+	"github.com/ramjac/parchment/internal/note"
+	"github.com/ramjac/parchment/internal/notetext"
 )
 
 func (r *Repository) GetText(ctx context.Context, path, encoding string) (note.TextSnapshot, error) {

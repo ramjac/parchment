@@ -10,14 +10,14 @@ import (
 
 	"log/slog"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/config"
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/filerepo"
-	"example.com/parchment/internal/logging"
-	"example.com/parchment/internal/note"
-	"example.com/parchment/internal/presentation"
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/config"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/filerepo"
+	"github.com/ramjac/parchment/internal/logging"
+	"github.com/ramjac/parchment/internal/note"
+	"github.com/ramjac/parchment/internal/presentation"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 type output struct {

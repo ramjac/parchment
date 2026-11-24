@@ -12,9 +12,9 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/config"
-	"example.com/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/config"
+	"github.com/ramjac/parchment/internal/document"
 )
 
 func TestExtractAndRewriteLinks(t *testing.T) {

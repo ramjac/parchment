@@ -3,7 +3,7 @@ package document
 import (
 	"testing"
 
-	"example.com/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/artifact"
 )
 
 func BenchmarkWithImage(b *testing.B) {

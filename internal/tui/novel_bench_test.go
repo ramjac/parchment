@@ -18,13 +18,13 @@ import (
 	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/text"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/artifactfile"
-	"example.com/parchment/internal/config"
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/filerepo"
-	"example.com/parchment/internal/notetext"
-	"example.com/parchment/internal/printing"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/artifactfile"
+	"github.com/ramjac/parchment/internal/config"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/filerepo"
+	"github.com/ramjac/parchment/internal/notetext"
+	"github.com/ramjac/parchment/internal/printing"
 )
 
 func BenchmarkReaderUnsafeFallback(b *testing.B) {

@@ -18,13 +18,13 @@ import (
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/config"
-	"example.com/parchment/internal/presentation"
-	"example.com/parchment/internal/spreadsheet"
-	"example.com/parchment/internal/tui/editor"
-	"example.com/parchment/internal/tui/termimg"
-	tuitheme "example.com/parchment/internal/tui/theme"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/config"
+	"github.com/ramjac/parchment/internal/presentation"
+	"github.com/ramjac/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/tui/editor"
+	"github.com/ramjac/parchment/internal/tui/termimg"
+	tuitheme "github.com/ramjac/parchment/internal/tui/theme"
 )
 
 // drivePresentation sends a message and feeds presentation results back in.

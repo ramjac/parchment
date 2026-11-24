@@ -7,9 +7,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"example.com/parchment/internal/note"
-	"example.com/parchment/internal/notetext"
-	"example.com/parchment/internal/recovery"
+	"github.com/ramjac/parchment/internal/note"
+	"github.com/ramjac/parchment/internal/notetext"
+	"github.com/ramjac/parchment/internal/recovery"
 )
 
 // A draft can supply an encoding only for the exact saved bytes it describes.

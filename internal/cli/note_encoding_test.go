@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/artifact"
 )
 
 func TestNoteEncodingFlagsAndScope(t *testing.T) {

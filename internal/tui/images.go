@@ -13,8 +13,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"example.com/parchment/internal/imageedit"
-	"example.com/parchment/internal/tui/termimg"
+	"github.com/ramjac/parchment/internal/imageedit"
+	"github.com/ramjac/parchment/internal/tui/termimg"
 )
 
 type imagePrompt int

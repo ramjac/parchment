@@ -8,8 +8,8 @@ import (
 	"runtime"
 	"testing"
 
-	"example.com/parchment/internal/note"
-	"example.com/parchment/internal/notetext"
+	"github.com/ramjac/parchment/internal/note"
+	"github.com/ramjac/parchment/internal/notetext"
 )
 
 func TestTextSessionConflictsIncludeFormatOnlyChangesAndNoOpSaves(t *testing.T) {

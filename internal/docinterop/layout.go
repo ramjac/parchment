@@ -4,7 +4,7 @@ import (
 	"math"
 	"strings"
 
-	"example.com/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/document"
 )
 
 // TwipToMM converts twips (1/1440 inch) to millimeters.

@@ -14,10 +14,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"example.com/parchment/internal/filerepo"
-	"example.com/parchment/internal/presentation"
-	"example.com/parchment/internal/spreadsheet"
-	"example.com/parchment/internal/tui/editor"
+	"github.com/ramjac/parchment/internal/filerepo"
+	"github.com/ramjac/parchment/internal/presentation"
+	"github.com/ramjac/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/tui/editor"
 )
 
 //go:embed testdata/us-history.md

@@ -10,8 +10,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
 
-	"example.com/parchment/internal/config"
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/config"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 func TestSpreadsheetChartUIStagesAndRecovers(t *testing.T) {

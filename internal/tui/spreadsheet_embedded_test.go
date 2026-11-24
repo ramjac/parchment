@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 func embeddedChartTestWorkbook(t *testing.T, kind string) (spreadsheet.Workbook, string) {

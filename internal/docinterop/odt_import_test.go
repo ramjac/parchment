@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/document"
 )
 
 func TestOdtImportRoundTrip(t *testing.T) {

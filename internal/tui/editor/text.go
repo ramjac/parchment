@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	"example.com/parchment/internal/notetext"
+	"github.com/ramjac/parchment/internal/notetext"
 )
 
 func (m *Model) allowInsertion(text string) bool {

@@ -10,7 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"example.com/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/artifact"
 )
 
 func newConvertCmd(streams output) *cobra.Command {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 func TestSpreadsheetChartsCLI(t *testing.T) {

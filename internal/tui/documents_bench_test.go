@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/document"
 )
 
 func BenchmarkToolbarView(b *testing.B) {

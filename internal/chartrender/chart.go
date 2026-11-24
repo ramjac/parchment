@@ -15,7 +15,7 @@ import (
 	"golang.org/x/image/math/fixed"
 	"golang.org/x/image/vector"
 
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 type Point struct{ X, Y float64 }

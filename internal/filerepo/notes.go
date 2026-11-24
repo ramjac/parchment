@@ -8,9 +8,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/artifactfile"
-	"example.com/parchment/internal/note"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/artifactfile"
+	"github.com/ramjac/parchment/internal/note"
 )
 
 // Get reads the note stored at path. An ordinary Markdown file without

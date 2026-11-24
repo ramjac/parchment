@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/parchment/internal/notetext"
+	"github.com/ramjac/parchment/internal/notetext"
 )
 
 func BenchmarkGuideNoteEditor(b *testing.B) {

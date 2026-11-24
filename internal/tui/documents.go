@@ -16,15 +16,15 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/tui/editor"
-	"example.com/parchment/internal/tui/termimg"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/tui/editor"
+	"github.com/ramjac/parchment/internal/tui/termimg"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/recovery"
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/recovery"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 // documentMessage marks results of document operations, which are routed to

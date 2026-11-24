@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/presentation"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/presentation"
 )
 
 func TestPrintPresentationPagesAndNotes(t *testing.T) {

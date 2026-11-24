@@ -12,7 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"golang.org/x/sys/unix"
 
-	"example.com/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/artifact"
 )
 
 type terminalSizeModel struct {

@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 // GetSpreadsheet reads the spreadsheet stored at path.

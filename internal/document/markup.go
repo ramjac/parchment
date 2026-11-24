@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/parchment/internal/artifactfile"
+	"github.com/ramjac/parchment/internal/artifactfile"
 )
 
 // PageBreakMarkup starts a new page. Layout directives are HTML comments so

@@ -11,15 +11,15 @@ import (
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/filerepo"
-	"example.com/parchment/internal/imageedit"
-	"example.com/parchment/internal/note"
-	"example.com/parchment/internal/notetext"
-	"example.com/parchment/internal/presentation"
-	"example.com/parchment/internal/spreadsheet"
-	"example.com/parchment/internal/tui"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/filerepo"
+	"github.com/ramjac/parchment/internal/imageedit"
+	"github.com/ramjac/parchment/internal/note"
+	"github.com/ramjac/parchment/internal/notetext"
+	"github.com/ramjac/parchment/internal/presentation"
+	"github.com/ramjac/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/tui"
 )
 
 var editorKinds = []artifact.Kind{

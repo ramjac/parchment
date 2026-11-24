@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/filerepo"
-	"example.com/parchment/internal/note"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/filerepo"
+	"github.com/ramjac/parchment/internal/note"
 )
 
 func newService(t *testing.T, undoLimit int) (*note.Service, *filerepo.Repository, string) {

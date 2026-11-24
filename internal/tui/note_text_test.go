@@ -10,11 +10,11 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/note"
-	"example.com/parchment/internal/notetext"
-	"example.com/parchment/internal/recovery"
-	"example.com/parchment/internal/tui/editor"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/note"
+	"github.com/ramjac/parchment/internal/notetext"
+	"github.com/ramjac/parchment/internal/recovery"
+	"github.com/ramjac/parchment/internal/tui/editor"
 )
 
 func TestPlainNoteTUIEncodingAndBoundaries(t *testing.T) {

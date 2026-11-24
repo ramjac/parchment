@@ -6,7 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 func TestChartInSpannedCellCreateEditAndDelete(t *testing.T) {

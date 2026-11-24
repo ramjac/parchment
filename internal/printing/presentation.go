@@ -8,9 +8,9 @@ import (
 
 	"github.com/mattn/go-runewidth"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/presentation"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/presentation"
 )
 
 // PresentationSlides prepares the title page and slides for printing.

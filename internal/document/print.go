@@ -10,8 +10,8 @@ import (
 
 	"github.com/mattn/go-runewidth"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/artifactfile"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/artifactfile"
 )
 
 // Page is one printed page: PageRows lines of PageCols characters, including

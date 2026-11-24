@@ -13,7 +13,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 type chartMode uint8

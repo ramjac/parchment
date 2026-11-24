@@ -9,9 +9,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/filerepo"
-	"example.com/parchment/internal/note"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/filerepo"
+	"github.com/ramjac/parchment/internal/note"
 )
 
 func guideNoteModel(tb testing.TB, width, height int) (*Model, string, string) {

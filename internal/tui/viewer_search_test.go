@@ -18,10 +18,10 @@ import (
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/config"
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/config"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 func TestRenderedSearchUsesSmartCaseAndANSIColumns(t *testing.T) {

@@ -9,13 +9,13 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/note"
-	"example.com/parchment/internal/notetext"
-	"example.com/parchment/internal/presentation"
-	"example.com/parchment/internal/recovery"
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/note"
+	"github.com/ramjac/parchment/internal/notetext"
+	"github.com/ramjac/parchment/internal/presentation"
+	"github.com/ramjac/parchment/internal/recovery"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 // spreadsheetRecoveryData is the autosaved spreadsheet editor state: the saved

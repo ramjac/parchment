@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"example.com/parchment/internal/imageedit"
+	"github.com/ramjac/parchment/internal/imageedit"
 )
 
 var _ imageedit.Repository = (*Repository)(nil)

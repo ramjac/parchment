@@ -19,7 +19,7 @@ import (
 	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/text"
 
-	"example.com/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/document"
 )
 
 const (
