@@ -10,10 +10,10 @@ import (
 	"io"
 	"strings"
 
-	"example.com/parchment/internal/chartrender"
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/printing"
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/chartrender"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/printing"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 // RenderSpreadsheet writes the same row-major page bands as text printing.

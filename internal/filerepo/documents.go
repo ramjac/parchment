@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/artifactfile"
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/artifactfile"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 const documentDataBlock = "parchment-document"

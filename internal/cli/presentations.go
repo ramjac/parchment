@@ -11,9 +11,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/presentation"
-	"example.com/parchment/internal/printing"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/presentation"
+	"github.com/ramjac/parchment/internal/printing"
 )
 
 func addPresentationCommands(root *cobra.Command, streams output) {

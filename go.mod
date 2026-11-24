@@ -1,4 +1,4 @@
-module example.com/parchment
+module github.com/ramjac/parchment
 
 go 1.26.8
 

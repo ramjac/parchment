@@ -21,10 +21,10 @@ import (
 	"github.com/yuin/goldmark/text"
 	"github.com/yuin/goldmark/util"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/config"
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/tui/termimg"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/config"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/tui/termimg"
 )
 
 type cancellingTestRenderer struct {

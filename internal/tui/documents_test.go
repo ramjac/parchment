@@ -21,13 +21,13 @@ import (
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/config"
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/pdfrender"
-	"example.com/parchment/internal/recovery"
-	"example.com/parchment/internal/spreadsheet"
-	"example.com/parchment/internal/tui/editor"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/config"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/pdfrender"
+	"github.com/ramjac/parchment/internal/recovery"
+	"github.com/ramjac/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/tui/editor"
 )
 
 // newDocumentHarness opens the editor on a document file, creating it with

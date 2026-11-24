@@ -7,10 +7,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/note"
-	"example.com/parchment/internal/spreadsheet"
-	"example.com/parchment/internal/tui/editor"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/note"
+	"github.com/ramjac/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/tui/editor"
 )
 
 func TestEditorClickAndScrolledText(t *testing.T) {

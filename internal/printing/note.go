@@ -2,8 +2,8 @@
 package printing
 
 import (
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/note"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/note"
 )
 
 // NoteDocument supplies the default printer layout without changing the note.

@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"testing"
 
-	"example.com/parchment/internal/filerepo"
+	"github.com/ramjac/parchment/internal/filerepo"
 )
 
 func TestPDFDestinationState(t *testing.T) {

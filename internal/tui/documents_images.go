@@ -25,11 +25,11 @@ import (
 	"github.com/yuin/goldmark/text"
 	"github.com/yuin/goldmark/util"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/printing"
-	"example.com/parchment/internal/spreadsheet"
-	"example.com/parchment/internal/tui/termimg"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/printing"
+	"github.com/ramjac/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/tui/termimg"
 )
 
 // Image rows are represented by single-cell private-use characters until the

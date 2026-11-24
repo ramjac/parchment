@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"time"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/history"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/history"
 )
 
 // Note is a Markdown artifact with the shared artifact metadata envelope.

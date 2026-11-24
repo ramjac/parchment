@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/parchment/internal/artifactfile"
+	"github.com/ramjac/parchment/internal/artifactfile"
 )
 
 func TestPlainNoteSaveRejectsOversizedFile(t *testing.T) {

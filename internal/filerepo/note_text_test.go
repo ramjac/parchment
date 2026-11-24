@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"example.com/parchment/internal/note"
-	"example.com/parchment/internal/notetext"
+	"github.com/ramjac/parchment/internal/note"
+	"github.com/ramjac/parchment/internal/notetext"
 )
 
 func TestPlainTextSessionsPreserveBytesAndHistory(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"example.com/parchment/internal/tui/theme"
+	"github.com/ramjac/parchment/internal/tui/theme"
 )
 
 type markdownRole uint8

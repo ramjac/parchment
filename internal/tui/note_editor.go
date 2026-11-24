@@ -11,10 +11,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattn/go-runewidth"
 
-	"example.com/parchment/internal/artifactfile"
-	"example.com/parchment/internal/note"
-	"example.com/parchment/internal/tui/editor"
-	tuitheme "example.com/parchment/internal/tui/theme"
+	"github.com/ramjac/parchment/internal/artifactfile"
+	"github.com/ramjac/parchment/internal/note"
+	"github.com/ramjac/parchment/internal/tui/editor"
+	tuitheme "github.com/ramjac/parchment/internal/tui/theme"
 )
 
 // noteEditor holds UI and autosave state for the note editor.

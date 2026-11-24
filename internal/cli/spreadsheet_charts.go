@@ -9,9 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"example.com/parchment/internal/chartrender"
-	"example.com/parchment/internal/pdfrender"
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/chartrender"
+	"github.com/ramjac/parchment/internal/pdfrender"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 func chartRange(value string) (int, int, int, int, error) {

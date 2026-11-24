@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/artifactfile"
-	"example.com/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/artifactfile"
+	"github.com/ramjac/parchment/internal/document"
 )
 
 // Convert converts a plain Markdown file into a typed Parchment artifact in place.

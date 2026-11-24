@@ -9,7 +9,7 @@ import (
 	"github.com/NimbleMarkets/ntcharts/v2/spec"
 	"github.com/mattn/go-runewidth"
 
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 var errSpreadsheetChartPreviewTooSmall = errors.New("chart preview is too small")

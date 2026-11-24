@@ -14,16 +14,16 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/config"
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/imageedit"
-	"example.com/parchment/internal/note"
-	"example.com/parchment/internal/notetext"
-	"example.com/parchment/internal/presentation"
-	"example.com/parchment/internal/recovery"
-	"example.com/parchment/internal/spreadsheet"
-	tuitheme "example.com/parchment/internal/tui/theme"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/config"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/imageedit"
+	"github.com/ramjac/parchment/internal/note"
+	"github.com/ramjac/parchment/internal/notetext"
+	"github.com/ramjac/parchment/internal/presentation"
+	"github.com/ramjac/parchment/internal/recovery"
+	"github.com/ramjac/parchment/internal/spreadsheet"
+	tuitheme "github.com/ramjac/parchment/internal/tui/theme"
 )
 
 // Config selects the one artifact file the interactive editor opens.

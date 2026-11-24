@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/artifact"
 	"github.com/mattn/go-runewidth"
 )
 

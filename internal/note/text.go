@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"example.com/parchment/internal/history"
-	"example.com/parchment/internal/notetext"
+	"github.com/ramjac/parchment/internal/history"
+	"github.com/ramjac/parchment/internal/notetext"
 )
 
 // TextSnapshot keeps an editable Unicode document separate from its saved bytes.

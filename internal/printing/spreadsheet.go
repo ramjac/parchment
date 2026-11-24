@@ -10,8 +10,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 const spreadsheetPrintColumnWidth = 12

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"example.com/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/artifact"
 )
 
 const metadataBlock = "parchment-meta"

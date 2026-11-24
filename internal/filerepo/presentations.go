@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/presentation"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/presentation"
 )
 
 // GetPresentation reads the presentation stored at path.

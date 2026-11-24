@@ -7,8 +7,8 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"example.com/parchment/internal/spreadsheet"
-	"example.com/parchment/internal/tui/editor"
+	"github.com/ramjac/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/tui/editor"
 )
 
 type embeddedSheetSelection struct {

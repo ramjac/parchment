@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/document"
 )
 
 // DocxImporter imports a DOCX archive into a Parchment Document draft.

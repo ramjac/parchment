@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"example.com/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/document"
 )
 
 // Warning is an error that represents a lossy conversion or approximation during import/export.

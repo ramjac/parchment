@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/presentation"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/presentation"
 )
 
 func TestPresentationPDFPagesNotesAndImages(t *testing.T) {

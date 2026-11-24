@@ -6,7 +6,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/atotto/clipboard"
 
-	"example.com/parchment/internal/notetext"
+	"github.com/ramjac/parchment/internal/notetext"
 )
 
 func TestPlainTextClipboardPasteUsesLocalEndings(t *testing.T) {

@@ -16,10 +16,10 @@ import (
 	"strings"
 	"time"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/artifactfile"
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/history"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/artifactfile"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/history"
 )
 
 const historySchemaVersion = 1

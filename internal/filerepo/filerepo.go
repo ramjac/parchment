@@ -22,9 +22,9 @@ import (
 	"sync"
 	"time"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/artifactfile"
-	"example.com/parchment/internal/history"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/artifactfile"
+	"github.com/ramjac/parchment/internal/history"
 )
 
 // ErrExists reports that a create operation targeted an existing path.

@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"example.com/parchment/internal/imageedit"
+	"github.com/ramjac/parchment/internal/imageedit"
 )
 
 func addImageCommands(root *cobra.Command, streams output) {

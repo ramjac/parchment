@@ -10,8 +10,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/spreadsheet"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 const (

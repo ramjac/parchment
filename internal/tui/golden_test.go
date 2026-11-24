@@ -18,12 +18,12 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/config"
-	"example.com/parchment/internal/document"
-	"example.com/parchment/internal/presentation"
-	"example.com/parchment/internal/spreadsheet"
-	tuitheme "example.com/parchment/internal/tui/theme"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/config"
+	"github.com/ramjac/parchment/internal/document"
+	"github.com/ramjac/parchment/internal/presentation"
+	"github.com/ramjac/parchment/internal/spreadsheet"
+	tuitheme "github.com/ramjac/parchment/internal/tui/theme"
 )
 
 func TestTUIRenderGoldens(t *testing.T) {

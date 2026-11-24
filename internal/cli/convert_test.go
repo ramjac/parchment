@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"example.com/parchment/internal/artifact"
-	"example.com/parchment/internal/artifactfile"
+	"github.com/ramjac/parchment/internal/artifact"
+	"github.com/ramjac/parchment/internal/artifactfile"
 )
 
 func TestConvertCommand(t *testing.T) {

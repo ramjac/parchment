@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/parchment/internal/filerepo"
-	"example.com/parchment/internal/imageedit"
+	"github.com/ramjac/parchment/internal/filerepo"
+	"github.com/ramjac/parchment/internal/imageedit"
 )
 
 func TestImageRebasedSavesAndHistory(t *testing.T) {
