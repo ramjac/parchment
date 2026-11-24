@@ -72,6 +72,21 @@ parchment presentation create ~/Documents/tour.md
 Create commands refuse to overwrite existing files. Run
 `parchment <command> --help` for command-specific options.
 
+To turn an existing plain Markdown file into a typed artifact in place, use
+`convert`:
+
+```sh
+parchment convert ~/Documents/brief.md --kind document
+parchment convert ~/Documents/ideas.md --kind note --yes
+```
+
+`--kind` accepts `document` (the default), `note`, or `presentation`. The file
+body is preserved unchanged; `created_at` is taken from the file's last
+modification time and `modified_at` is set to the conversion time. The command
+prompts before converting unless `--yes` is given, and noninteractive runs
+require `--yes`. Files that already carry a Parchment metadata envelope are
+refused.
+
 The note, document, and presentation source editors color Markdown using the
 viewer palette while keeping its syntax visible and unchanged.
 
