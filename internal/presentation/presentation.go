@@ -4,9 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -51,6 +54,9 @@ type Presentation struct {
 	Images   []artifact.Image
 	Workbook spreadsheet.Workbook
 	Blocks   map[string]json.RawMessage `json:"-"`
+
+	rawPayload            []byte
+	rawPayloadFingerprint [32]byte
 }
 
 type embeddedImage struct {
@@ -160,7 +166,9 @@ func (s *Service) UpdateContent(ctx context.Context, expected Presentation, sour
 	if expected.Source == source && expected.Workbook.Equal(workbook) {
 		return expected, nil
 	}
-	after := clonePresentation(expected)
+	after := expected
+	after.Blocks = cloneBlocks(expected.Blocks)
+	after.Images = clonePresentationImages(expected.Images)
 	after.Source = source
 	after.Workbook = workbook.Clone()
 	after.ModifiedAt = s.now().UTC()
@@ -170,7 +178,7 @@ func (s *Service) UpdateContent(ctx context.Context, expected Presentation, sour
 	if err := s.change(ctx, &expected, &after, "Edit presentation"); err != nil {
 		return Presentation{}, err
 	}
-	return clonePresentation(after), nil
+	return after, nil
 }
 
 func (s *Service) Undo(ctx context.Context) (string, error) {
@@ -524,6 +532,18 @@ func stripAnchor(title string) string {
 
 // Validate checks the shared artifact envelope and the embedded Markdown.
 func Validate(item Presentation) error {
+	if err := validatePresentationFields(item); err != nil {
+		return err
+	}
+	workbook := item.Workbook.Clone()
+	if err := spreadsheet.NormalizeEmbeddedWorkbook(&workbook); err != nil {
+		return fmt.Errorf("validate embedded workbook: %w", err)
+	}
+	_, err := Parse(item.Source)
+	return err
+}
+
+func validatePresentationFields(item Presentation) error {
 	if err := item.Artifact.Validate(); err != nil {
 		return err
 	}
@@ -544,21 +564,19 @@ func Validate(item Presentation) error {
 	if err := ValidateDirectives(item); err != nil {
 		return err
 	}
-	workbook := item.Workbook.Clone()
-	if err := spreadsheet.NormalizeEmbeddedWorkbook(&workbook); err != nil {
-		return fmt.Errorf("validate embedded workbook: %w", err)
-	}
-	_, err := Parse(item.Source)
-	return err
+	return nil
 }
 
 func normalize(p *Presentation) error {
-	if err := Validate(*p); err != nil {
+	if err := validatePresentationFields(*p); err != nil {
 		return err
 	}
 	p.Workbook = p.Workbook.Clone()
 	if err := spreadsheet.NormalizeEmbeddedWorkbook(&p.Workbook); err != nil {
 		return fmt.Errorf("validate embedded workbook: %w", err)
+	}
+	if _, err := Parse(p.Source); err != nil {
+		return err
 	}
 	referenced := artifact.ReferencedImages(p.Source)
 	for _, match := range presentationDirectiveRE.FindAllStringSubmatch(p.Source, -1) {
@@ -585,7 +603,14 @@ func normalize(p *Presentation) error {
 
 // Encode writes a self-contained Markdown file with a leading metadata block.
 func Encode(item Presentation) ([]byte, error) {
-	if err := Validate(item); err != nil {
+	if err := validatePresentationFields(item); err != nil {
+		return nil, err
+	}
+	if _, err := Parse(item.Source); err != nil {
+		return nil, err
+	}
+	workbook, err := spreadsheet.EncodeEmbeddedWorkbook(item.Workbook)
+	if err != nil {
 		return nil, err
 	}
 	blocks := make(map[string]any, len(item.Blocks)+1)
@@ -593,15 +618,15 @@ func Encode(item Presentation) ([]byte, error) {
 		blocks[name] = payload
 	}
 	payload := fileContent{Version: item.Version, Font: item.Font}
-	for _, img := range item.Images {
-		payload.Images = append(payload.Images, embeddedImage{Name: img.Name, Data: img.Data})
-	}
-	blocks["parchment-presentation"] = payload
-	if len(item.Workbook.Sheets) > 0 {
-		workbook, err := spreadsheet.EncodeEmbeddedWorkbook(item.Workbook)
-		if err != nil {
-			return nil, err
+	if len(item.rawPayload) > 0 && item.rawPayloadFingerprint == presentationPayloadFingerprint(item.Version, item.Font, item.Images) {
+		blocks["parchment-presentation"] = json.RawMessage(item.rawPayload)
+	} else {
+		for _, img := range item.Images {
+			payload.Images = append(payload.Images, embeddedImage{Name: img.Name, Data: img.Data})
 		}
+		blocks["parchment-presentation"] = payload
+	}
+	if len(item.Workbook.Sheets) > 0 {
 		blocks["parchment-workbook"] = json.RawMessage(workbook)
 	}
 	return artifactfile.Encode(item.Artifact, item.Source, blocks)
@@ -629,8 +654,9 @@ func Decode(data []byte) (Presentation, error) {
 	}
 	item := Presentation{
 		Artifact: file.Artifact, Version: payload.Version, Source: file.Body,
-		Font:   payload.Font,
-		Blocks: cloneBlocksExcept(file.Blocks, "parchment-presentation", "parchment-workbook"),
+		Font:       payload.Font,
+		Blocks:     cloneBlocksExcept(file.Blocks, "parchment-presentation", "parchment-workbook"),
+		rawPayload: content,
 	}
 	if data, ok := file.Blocks["parchment-workbook"]; ok {
 		item.Workbook, err = spreadsheet.DecodeEmbeddedWorkbook(data)
@@ -646,7 +672,51 @@ func Decode(data []byte) (Presentation, error) {
 	if err := normalize(&item); err != nil {
 		return Presentation{}, fmt.Errorf("validate presentation: %w", err)
 	}
+	if sameEmbeddedImages(payload.Images, item.Images) {
+		item.rawPayloadFingerprint = presentationPayloadFingerprint(item.Version, item.Font, item.Images)
+	} else {
+		item.rawPayload = nil
+	}
 	return item, nil
+}
+
+func sameEmbeddedImages(left []embeddedImage, right []artifact.Image) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i].Name != right[i].Name || !bytes.Equal(left[i].Data, right[i].Data) {
+			return false
+		}
+	}
+	return true
+}
+
+func presentationPayloadFingerprint(version int, font string, images []artifact.Image) [32]byte {
+	hasher := sha256.New()
+	var size [8]byte
+	writeBytes := func(data []byte) {
+		binary.BigEndian.PutUint64(size[:], uint64(len(data)))
+		_, _ = hasher.Write(size[:])
+		_, _ = hasher.Write(data)
+	}
+	writeString := func(value string) {
+		binary.BigEndian.PutUint64(size[:], uint64(len(value)))
+		_, _ = hasher.Write(size[:])
+		_, _ = io.WriteString(hasher, value)
+	}
+	binary.BigEndian.PutUint64(size[:], uint64(version))
+	_, _ = hasher.Write(size[:])
+	writeString(font)
+	binary.BigEndian.PutUint64(size[:], uint64(len(images)))
+	_, _ = hasher.Write(size[:])
+	for _, img := range images {
+		writeString(img.Name)
+		writeBytes(img.Data)
+	}
+	var fingerprint [32]byte
+	copy(fingerprint[:], hasher.Sum(fingerprint[:0]))
+	return fingerprint
 }
 
 // Preview returns slide text without speaker notes or comments. It deliberately
@@ -676,12 +746,16 @@ func Preview(deck Deck) string {
 func clonePresentation(item Presentation) Presentation {
 	item.Blocks = cloneBlocks(item.Blocks)
 	item.Workbook = item.Workbook.Clone()
-	images := make([]artifact.Image, len(item.Images))
-	for i, img := range item.Images {
-		images[i] = artifact.Image{Name: img.Name, Data: append([]byte(nil), img.Data...)}
-	}
-	item.Images = images
+	item.Images = clonePresentationImages(item.Images)
 	return item
+}
+
+func clonePresentationImages(images []artifact.Image) []artifact.Image {
+	clone := make([]artifact.Image, len(images))
+	for i, img := range images {
+		clone[i] = artifact.Image{Name: img.Name, Data: append([]byte(nil), img.Data...)}
+	}
+	return clone
 }
 
 func cloneBlocks(blocks map[string]json.RawMessage) map[string]json.RawMessage {
@@ -711,6 +785,8 @@ func cloneBlocksExcept(blocks map[string]json.RawMessage, excluded ...string) ma
 
 func Equal(left, right Presentation) bool {
 	left.Title, right.Title = "", ""
+	left.rawPayload, right.rawPayload = nil, nil
+	left.rawPayloadFingerprint, right.rawPayloadFingerprint = [32]byte{}, [32]byte{}
 	if len(left.Images) != len(right.Images) {
 		return false
 	}

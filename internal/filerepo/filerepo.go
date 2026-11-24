@@ -199,6 +199,21 @@ func pathTitle(path string) string {
 // create is true the path must not exist and write receives nil; otherwise the
 // file must exist and write receives its current content.
 func (r *Repository) update(ctx context.Context, path string, create bool, notFound error, write func([]byte) ([]byte, error)) error {
+	return r.updateWithCanonicalTarget(ctx, path, create, notFound, false, write)
+}
+
+func (r *Repository) updateCanonical(ctx context.Context, path string, create bool, notFound error, write func([]byte) ([]byte, error)) error {
+	return r.updateWithCanonicalTarget(ctx, path, create, notFound, true, write)
+}
+
+func (r *Repository) updateWithCanonicalTarget(
+	ctx context.Context,
+	path string,
+	create bool,
+	notFound error,
+	canonicalTarget bool,
+	write func([]byte) ([]byte, error),
+) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -225,7 +240,8 @@ func (r *Repository) update(ctx context.Context, path string, create bool, notFo
 		if len(data) > artifactfile.MaxFileSize {
 			return fmt.Errorf("artifact file is larger than %d MiB", artifactfile.MaxFileSize>>20)
 		}
-		manifest, historyDir, tracked, err := r.prepareHistoryUnlocked(ctx, resolved, current, data, history.DescriptionFromContext(ctx), create)
+		manifest, historyDir, tracked, err := r.prepareHistoryUnlocked(ctx, resolved, current, data,
+			history.DescriptionFromContext(ctx), create, canonicalTarget)
 		if err != nil {
 			return fmt.Errorf("prepare history for %s: %w", path, err)
 		}

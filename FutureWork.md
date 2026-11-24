@@ -111,33 +111,43 @@ for the setup and other reader limits.
 
 ## Spreadsheet edit, recalculation, and save
 
-Investigate the cost of a single cell edit in large workbooks. In exploratory
-model benchmarks on the mortgage-and-budget fixture, editing an input cell,
-recalculating, and saving took about 151 ms and allocated about 84 MB
-cumulatively; opening took about 51 ms (29 MB) and a combined scroll and sheet
-switch at 80x24 took about 41 ms (22 MB). These are allocation totals, not
-peak live memory.
+Investigate the cost of a single cell edit in large workbooks. An earlier
+exploratory model benchmark on the mortgage-and-budget fixture measured about
+151 ms and 84 MB cumulatively for editing an input, recalculating, and saving.
+After reducing scalar-formula work during spill discovery and streaming
+aggregate calculation, the same saved-fixture workflow measured a 50.3 ms
+median and 47.6 MB/op over three single-iteration benchmark runs. Allocations
+are cumulative totals, not peak live memory; opening and remaining save-path
+costs still warrant separate profiling.
 
 - Profile recalculation, rendering, serialization, history, and atomic
-  persistence separately to determine where time and allocation go.
+  persistence separately to determine where the remaining time and allocation
+  go.
 - Evaluate recalculating only affected dependents and reducing unnecessary
   workbook copying or re-encoding, rather than assuming a particular design.
 - Preserve formula results, cross-sheet references, span semantics, cycle and
   depth errors, undo/redo and persistent history, and canonical file contents.
-- Separate scrolling from sheet switching in measurements, and verify results
-  against independently calculated mortgage and budget values.
+- Continue measuring scrolling separately from sheet switching, and verify
+  results against independently calculated mortgage and budget values.
 
 ## Presentation save cost
 
-Investigate why saving the 251-slide history presentation after a small
-source edit took about 86 ms and allocated about 48 MB cumulatively in
-exploratory benchmarks; the service-level save alone was similar.
+For the 251-slide history presentation, three single-iteration Linux
+benchmarks now measure a service save at a 31.1 ms median and 33.6 MB/op with
+embedded media, and 12.1 ms and 3.24 MB/op without media. The editor edit/save
+median is 35.6 ms and 37.8 MB/op with media. These are lower than the earlier
+86 ms and 48 MB exploratory service-save result, but allocations remain
+cumulative totals rather than peak memory. Source-only saves now reuse the
+unchanged presentation metadata block; redundant workbook/image copies and a
+history re-encode check of the newly encoded target were also removed while
+retaining exact history snapshot reconstruction checks.
 
 - Determine whether unchanged embedded images, chart data, or other structured
-  blocks are copied, decoded, re-encoded, or rewritten unnecessarily during
-  save, history recording, or recovery drafts.
-- Preserve single-file atomic writes, canonical Markdown, external-edit
-  detection, and history behavior; compare decks with and without media.
+  blocks can be kept from being copied or encoded during recovery-draft writes.
+  Current recovery-draft measurements are 4.10 ms and 7.33 MB/op with media,
+  and 0.91 ms and 1.02 MB/op without media.
+- Continue preserving single-file atomic writes, canonical Markdown,
+  external-edit detection, and history behavior.
 
 ## Embedded media memory
 

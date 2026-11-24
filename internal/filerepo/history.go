@@ -139,8 +139,8 @@ func (r *Repository) readHistoryBlob(hash string) ([]byte, error) {
 	return data, nil
 }
 
-func (r *Repository) snapshotHistory(ctx context.Context, data []byte) (history.Snapshot, error) {
-	snapshot, supported, err := r.decomposeHistorySnapshot(ctx, data)
+func (r *Repository) snapshotHistory(ctx context.Context, data []byte, canonical bool) (history.Snapshot, error) {
+	snapshot, supported, err := r.decomposeHistorySnapshot(ctx, data, canonical)
 	if err != nil {
 		return history.Snapshot{}, err
 	}
@@ -182,18 +182,20 @@ type historyPresentationData struct {
 	Images  []historyEmbeddedImage `json:"images,omitempty"`
 }
 
-func (r *Repository) decomposeHistorySnapshot(ctx context.Context, data []byte) (history.Snapshot, bool, error) {
+func (r *Repository) decomposeHistorySnapshot(ctx context.Context, data []byte, canonical bool) (history.Snapshot, bool, error) {
 	file, err := artifactfile.Decode(data)
 	if err != nil {
 		return history.Snapshot{}, false, nil
 	}
-	blocks := make(map[string]any, len(file.Blocks))
-	for name, payload := range file.Blocks {
-		blocks[name] = payload
-	}
-	canonical, err := artifactfile.Encode(file.Artifact, file.Body, blocks)
-	if err != nil || !bytes.Equal(canonical, data) {
-		return history.Snapshot{}, false, nil
+	if !canonical {
+		blocks := make(map[string]any, len(file.Blocks))
+		for name, payload := range file.Blocks {
+			blocks[name] = payload
+		}
+		encoded, err := artifactfile.Encode(file.Artifact, file.Body, blocks)
+		if err != nil || !bytes.Equal(encoded, data) {
+			return history.Snapshot{}, false, nil
+		}
 	}
 	meta, err := json.Marshal(historyMetadata{
 		ID: file.Artifact.ID, Kind: file.Artifact.Kind, Title: file.Artifact.Title,
@@ -324,7 +326,7 @@ func nextHistoryID(manifest *history.Manifest) string {
 	return id
 }
 
-func (r *Repository) prepareHistoryUnlocked(ctx context.Context, path string, before, after []byte, description string, create bool) (history.Manifest, string, bool, error) {
+func (r *Repository) prepareHistoryUnlocked(ctx context.Context, path string, before, after []byte, description string, create, canonicalTarget bool) (history.Manifest, string, bool, error) {
 	canonical, dir, err := r.historyPaths(path)
 	if err != nil {
 		return history.Manifest{}, "", false, err
@@ -339,7 +341,7 @@ func (r *Repository) prepareHistoryUnlocked(ctx context.Context, path string, be
 	limitChanged := manifest.UndoLimit != r.historyLimit
 	manifest.UndoLimit = r.historyLimit
 	if create {
-		snapshot, err := r.snapshotHistory(ctx, after)
+		snapshot, err := r.snapshotHistory(ctx, after, canonicalTarget)
 		if err != nil {
 			return history.Manifest{}, "", false, err
 		}
@@ -351,7 +353,7 @@ func (r *Repository) prepareHistoryUnlocked(ctx context.Context, path string, be
 		manifest.Entries = manifest.Entries[:manifest.HeadIndex+1]
 	}
 	if len(manifest.Entries) > 0 && manifest.Entries[manifest.HeadIndex].Snapshot.FileDigest != historyDigest(before) {
-		snapshot, err := r.snapshotHistory(ctx, before)
+		snapshot, err := r.snapshotHistory(ctx, before, false)
 		if err != nil {
 			return history.Manifest{}, "", false, err
 		}
@@ -363,7 +365,7 @@ func (r *Repository) prepareHistoryUnlocked(ctx context.Context, path string, be
 		manifest.HeadIndex++
 	}
 	if len(manifest.Entries) == 0 {
-		snapshot, err := r.snapshotHistory(ctx, before)
+		snapshot, err := r.snapshotHistory(ctx, before, false)
 		if err != nil {
 			return history.Manifest{}, "", false, err
 		}
@@ -384,7 +386,7 @@ func (r *Repository) prepareHistoryUnlocked(ctx context.Context, path string, be
 		}
 		return manifest, dir, true, nil
 	}
-	snapshot, err := r.snapshotHistory(ctx, after)
+	snapshot, err := r.snapshotHistory(ctx, after, canonicalTarget)
 	if err != nil {
 		return history.Manifest{}, "", false, err
 	}
@@ -628,7 +630,7 @@ func (r *Repository) Restore(ctx context.Context, path, stepID string) (string, 
 		}
 		manifest.UndoLimit = r.historyLimit
 		if historyDigest(current) != manifest.Entries[manifest.HeadIndex].Snapshot.FileDigest {
-			checkpoint, err := r.snapshotHistory(ctx, current)
+			checkpoint, err := r.snapshotHistory(ctx, current, false)
 			if err != nil {
 				return err
 			}

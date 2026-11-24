@@ -735,7 +735,22 @@ func (n *FunctionCallNode) Eval(e *evaluator, currentSheet int) (Value, error) {
 		return Value{Kind: ErrKind, Err: ErrName}, nil
 	}
 
-	var nums []float64
+	var sum, minVal, maxVal float64
+	count := 0
+	addNumber := func(value float64) {
+		if count == 0 {
+			minVal, maxVal = value, value
+		} else {
+			if value < minVal {
+				minVal = value
+			}
+			if value > maxVal {
+				maxVal = value
+			}
+		}
+		sum += value
+		count++
+	}
 
 	for _, arg := range n.Args {
 		if rng, ok := arg.(*RangeNode); ok {
@@ -767,7 +782,7 @@ func (n *FunctionCallNode) Eval(e *evaluator, currentSheet int) (Value, error) {
 						return val, nil
 					}
 					if val.Kind == NumKind {
-						nums = append(nums, val.Num)
+						addNumber(val.Num)
 					}
 				}
 			}
@@ -785,60 +800,40 @@ func (n *FunctionCallNode) Eval(e *evaluator, currentSheet int) (Value, error) {
 						return item, nil
 					}
 					if item.Kind == NumKind {
-						nums = append(nums, item.Num)
+						addNumber(item.Num)
 					}
 				}
 			} else if val.Kind == NumKind {
-				nums = append(nums, val.Num)
+				addNumber(val.Num)
 			} else if val.Kind == StrKind {
 				trimmed := strings.TrimSpace(val.Str)
 				num, err := strconv.ParseFloat(trimmed, 64)
 				if err != nil || math.IsNaN(num) || math.IsInf(num, 0) {
 					return Value{Kind: ErrKind, Err: ErrValue}, nil
 				}
-				nums = append(nums, num)
+				addNumber(num)
 			}
 		}
 	}
 
 	switch name {
 	case "SUM":
-		sum := 0.0
-		for _, v := range nums {
-			sum += v
-		}
 		return Value{Kind: NumKind, Num: sum}, nil
 	case "AVERAGE":
-		if len(nums) == 0 {
+		if count == 0 {
 			return Value{Kind: ErrKind, Err: ErrDiv0}, nil
 		}
-		sum := 0.0
-		for _, v := range nums {
-			sum += v
-		}
-		return Value{Kind: NumKind, Num: sum / float64(len(nums))}, nil
+		return Value{Kind: NumKind, Num: sum / float64(count)}, nil
 	case "COUNT":
-		return Value{Kind: NumKind, Num: float64(len(nums))}, nil
+		return Value{Kind: NumKind, Num: float64(count)}, nil
 	case "MIN":
-		if len(nums) == 0 {
+		if count == 0 {
 			return Value{Kind: ErrKind, Err: ErrValue}, nil
-		}
-		minVal := nums[0]
-		for _, v := range nums[1:] {
-			if v < minVal {
-				minVal = v
-			}
 		}
 		return Value{Kind: NumKind, Num: minVal}, nil
 	case "MAX":
-		if len(nums) == 0 {
+		if count == 0 {
 			return Value{Kind: ErrKind, Err: ErrValue}, nil
-		}
-		maxVal := nums[0]
-		for _, v := range nums[1:] {
-			if v > maxVal {
-				maxVal = v
-			}
 		}
 		return Value{Kind: NumKind, Num: maxVal}, nil
 	}

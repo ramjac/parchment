@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,12 +11,15 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/ramjac/parchment/internal/artifact"
 	"github.com/ramjac/parchment/internal/filerepo"
 	"github.com/ramjac/parchment/internal/presentation"
+	"github.com/ramjac/parchment/internal/recovery"
 	"github.com/ramjac/parchment/internal/spreadsheet"
 	"github.com/ramjac/parchment/internal/tui/editor"
 )
@@ -179,6 +183,43 @@ func BenchmarkHistoryPresentation(b *testing.B) {
 		b.Fatal(err)
 	}
 	b.Logf("251 slides, %d source bytes", len(source))
+	noMedia := presentationWithoutEmbeddedMedia(item)
+	if err := presentation.Validate(noMedia); err != nil {
+		b.Fatal(err)
+	}
+	withMediaData, err := presentation.Encode(item)
+	if err != nil {
+		b.Fatal(err)
+	}
+	withoutMediaData, err := presentation.Encode(noMedia)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for _, workload := range []struct {
+		name string
+		item presentation.Presentation
+		data []byte
+	}{
+		{name: "WithMedia", item: item, data: withMediaData},
+		{name: "WithoutMedia", item: noMedia, data: withoutMediaData},
+	} {
+		b.Run("Encode"+workload.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if _, err := presentation.Encode(workload.item); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run("Decode"+workload.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if _, err := presentation.Decode(workload.data); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 	b.Run("Load", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
@@ -306,4 +347,80 @@ func BenchmarkHistoryPresentation(b *testing.B) {
 			b.Fatalf("saved source did not round-trip: %v", err)
 		}
 	})
+	noMediaPath := filepath.Join(b.TempDir(), "history-no-media.md")
+	noMediaItem, err := service.Create(ctx, noMediaPath, noMedia.Source)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Run("SaveNoMedia", func(b *testing.B) {
+		current, err := service.Get(ctx, noMediaPath)
+		if err != nil {
+			b.Fatal(err)
+		}
+		initialSource := current.Source
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			next := initialSource
+			if current.Source == initialSource {
+				next += "\n: benchmark edit\n"
+			}
+			current, err = service.Update(ctx, current, next)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+		b.StopTimer()
+		loaded, err := service.Get(ctx, noMediaPath)
+		if err != nil || loaded.Source != current.Source || len(loaded.Images) != 0 ||
+			len(loaded.Workbook.Charts) != 0 || !noMediaItem.Workbook.Equal(loaded.Workbook) {
+			b.Fatalf("no-media presentation did not round-trip: %v", err)
+		}
+	})
+	for _, workload := range []struct {
+		name string
+		path string
+		item presentation.Presentation
+	}{
+		{name: "WithMedia", path: path, item: item},
+		{name: "WithoutMedia", path: noMediaPath, item: noMediaItem},
+	} {
+		b.Run("RecoveryDraft"+workload.name, func(b *testing.B) {
+			recoveryData := presentationRecoveryData{
+				Baseline: workload.item,
+				Source:   workload.item.Source + "\n: recovery edit\n",
+				Workbook: workload.item.Workbook,
+			}
+			draft := recovery.Draft{
+				Path: workload.path, Kind: string(artifact.PresentationKind),
+				UpdatedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+			}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				encoded, err := json.Marshal(recoveryData)
+				if err != nil {
+					b.Fatal(err)
+				}
+				draft.Data = encoded
+				if err := repo.SaveRecovery(ctx, draft); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func presentationWithoutEmbeddedMedia(item presentation.Presentation) presentation.Presentation {
+	lines := strings.Split(item.Source, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		if strings.Contains(line, ".image ") || strings.Contains(line, "(parchment-chart:") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	item.Source = strings.Join(kept, "\n")
+	item.Images = nil
+	item.Workbook = spreadsheet.Workbook{}
+	return item
 }

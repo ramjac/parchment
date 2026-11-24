@@ -79,6 +79,9 @@ of three runs, rounded, and are indicative only.
 | Guide note editor view, 120x40, middle | 306 µs | 19.1 KB |
 | Guide note editor find | 176 µs | 4.1 KB |
 | Guide note editor insert and undo | 278 µs | 583 KB |
+| History presentation encode, with / without media | 6.34 / 2.57 ms | 9.07 / 0.54 MB |
+| History presentation decode, with / without media | 7.73 / 4.07 ms | 6.04 / 0.65 MB |
+| History presentation recovery draft, with / without media | 4.10 / 0.91 ms | 7.33 / 1.02 MB |
 
 ```sh
 go test ./internal/filerepo -run '^$' -bench '^BenchmarkLoadNovelDocument$' -benchmem -benchtime=1x -count=3
@@ -108,10 +111,12 @@ and filesystem activity was uncontrolled.
 | Presentation: service load | 31.63 ms |
 | Presentation: navigate and render three slides, 80x24 / 120x40 | 4.20 / 3.40 ms |
 | Presentation: navigate five mixed-content slides, 80x24 | 23.36 ms |
-| Presentation: open source editor / edit and save / service save | 0.488 / 80.60 / 85.75 ms |
+| Presentation: open source editor / edit and save / service save, with media | 0.488 / 35.63 / 31.07 ms |
+| Presentation: service save, without media | 12.14 ms |
 | Spreadsheet: model open, 80x24 | 30.35 ms |
-| Spreadsheet: scroll, switch sheets and return, 80x24 / 120x40 | 22.07 / 19.70 ms |
-| Spreadsheet: service edit, recalculate and save / cycle rejection | 75.76 / 25.11 ms |
+| Spreadsheet: scroll, 80x24 / 120x40 | 1.33 / 1.76 ms |
+| Spreadsheet: switch sheets and return, 80x24 / 120x40 | 7.49 / 8.34 ms |
+| Spreadsheet: service edit, recalculate and save / cycle rejection | 50.27 / 15.67 ms |
 | Media: in-memory document reader / render two presentation slides, 80x24 | 18.58 / 4.51 ms |
 | Novel: in-memory reader, 80x24 / 120x40 | 2.544 / 2.634 s |
 | Novel: scroll, view and return, 80x24 / 120x40 | 0.859 / 1.697 ms |
@@ -131,14 +136,24 @@ case starts with the reader already constructed. Spreadsheet edit/save above
 uses the service, not a simulated grid edit. None of the model benchmarks
 include terminal I/O.
 
-The presentation measurements were repeated after adding lists and media. Novel
-measurements were repeated after adding headings; their benchmark and load
-samples ran concurrently with other tests. Other workflow numbers are from the
-earlier run. The updated presentation samples also ran on the shared machine,
-concurrently with another test.
+The presentation source edit/save allocated a median 37.8 MB/op; the service
+save allocated 33.6 MB/op with media and 3.24 MB/op without media. Recovery
+draft allocations are listed in the component table above. These totals count
+cumulative allocations, not peak live memory.
+
+The presentation measurements were repeated after adding lists and media.
+Latest source edit/save samples include a presentation with 25 PNGs and 25
+charts, or a copy with embedded media removed. The no-media service benchmark
+retains the same 251-slide source. Recovery-draft measurements include JSON
+encoding and repository persistence. Novel measurements were repeated after
+adding headings; their benchmark and load samples ran concurrently with other
+tests. Other workflow numbers are from the earlier run. The updated
+presentation samples also ran on the shared machine, concurrently with another
+test.
 
 ```sh
 PARCHMENT_BENCH_MEDIA=1 GOMEMLIMIT=512MiB go test ./internal/tui -run '^$' -bench '^(BenchmarkNovelDocumentScreen|BenchmarkGuideNoteWorkflow|BenchmarkLargeSpreadsheet|BenchmarkHistoryPresentation|BenchmarkEmbeddedMedia)$' -benchmem -benchtime=1x -count=3
+PARCHMENT_BENCH_MEDIA=1 GOMEMLIMIT=512MiB go test ./internal/tui -run '^$' -bench '^BenchmarkHistoryPresentation/(Encode|Decode|Save|EditSave|RecoveryDraft)' -benchmem -benchtime=1x -count=3
 go test ./internal/spreadsheet -run '^$' -bench '^BenchmarkMortgageBudget/PasteAndRecalculate$' -benchmem -benchtime=1x -count=1
 ```
 

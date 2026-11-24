@@ -1,9 +1,13 @@
 package presentation
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,6 +16,7 @@ import (
 
 	"github.com/ramjac/parchment/internal/artifact"
 	"github.com/ramjac/parchment/internal/artifactfile"
+	"github.com/ramjac/parchment/internal/spreadsheet"
 )
 
 func TestParseMarkdownSlidesNotesCommentsAndCodeFences(t *testing.T) {
@@ -111,6 +116,66 @@ func TestEncodeDecodeSinglePresentationFile(t *testing.T) {
 	if item.Source != decoded.Source || item.Version != decoded.Version ||
 		!item.CreatedAt.Equal(decoded.CreatedAt) || !item.ModifiedAt.Equal(decoded.ModifiedAt) {
 		t.Fatalf("round trip changed persisted presentation content:\noriginal: %+v\ndecoded: %+v", item, decoded)
+	}
+}
+
+func TestEncodeReusesUnchangedPresentationPayload(t *testing.T) {
+	makeImage := func(c color.Color) artifact.Image {
+		t.Helper()
+		var data bytes.Buffer
+		img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+		img.Set(0, 0, c)
+		if err := png.Encode(&data, img); err != nil {
+			t.Fatal(err)
+		}
+		result, err := artifact.NewImage(data.Bytes())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	item := testPresentation()
+	image := makeImage(color.RGBA{R: 255, A: 255})
+	item.Source += ".image " + image.Name + "\n"
+	item.Images = []artifact.Image{image}
+	original, err := Encode(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalFile, err := artifactfile.Decode(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := Decode(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded.Source += "\n: changed source only\n"
+	updated, err := Encode(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedFile, err := artifactfile.Decode(updated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(originalFile.Blocks["parchment-presentation"], updatedFile.Blocks["parchment-presentation"]) {
+		t.Fatal("source-only edit re-encoded unchanged presentation metadata")
+	}
+
+	changedImage := makeImage(color.RGBA{B: 255, A: 255})
+	decoded.Source = strings.Replace(decoded.Source, decoded.Images[0].Name, changedImage.Name, 1)
+	decoded.Images[0] = changedImage
+	updated, err = Encode(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roundTrip, err := Decode(updated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(decoded.Images[0].Data, roundTrip.Images[0].Data) {
+		t.Fatal("changed image was not encoded")
 	}
 }
 
@@ -351,6 +416,65 @@ func TestUpdateUsesExpectedSnapshotAndUndoRedo(t *testing.T) {
 	renamed, err := service.Update(ctx, redone, "# Renamed\n\n## Start\n\nAfter\n")
 	if err != nil || renamed.Title != redone.Title {
 		t.Fatalf("Markdown title update changed transient artifact title: %+v, %v", renamed, err)
+	}
+}
+
+func TestUpdateContentReturnsDetachedPresentation(t *testing.T) {
+	ctx := context.Background()
+	repository := newMemoryRepository()
+	service := NewService(repository, 10)
+	expected := testPresentation()
+	expected.Path = "demo.md"
+	expected.Blocks = map[string]json.RawMessage{"custom": json.RawMessage(`{"value":"original"}`)}
+	repository.items[expected.Path] = clonePresentation(expected)
+	workbook := spreadsheet.Workbook{
+		Sheets: []spreadsheet.Sheet{{
+			ID: "data", Name: "Data",
+			Rows: [][]spreadsheet.Cell{{{Value: "original"}}},
+		}},
+	}
+
+	updated, err := service.UpdateContent(ctx, expected, expected.Source+"\n: edited\n", workbook)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated.Blocks["custom"][0] = 'x'
+	updated.Workbook.Sheets[0].Rows[0][0].Value = "result"
+	if got := expected.Blocks["custom"][0]; got != '{' {
+		t.Fatalf("update changed input block: first byte = %q", got)
+	}
+	if got := workbook.Sheets[0].Rows[0][0].Value; got != "original" {
+		t.Fatalf("update changed input workbook cell: %q", got)
+	}
+
+	saved, err := service.Get(ctx, expected.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := saved.Blocks["custom"][0]; got != '{' {
+		t.Fatalf("update result changed persisted block: first byte = %q", got)
+	}
+	if got := saved.Workbook.Sheets[0].Rows[0][0].Value; got != "original" {
+		t.Fatalf("update result changed persisted workbook cell: %q", got)
+	}
+
+	expected.Blocks["custom"][0] = 'y'
+	workbook.Sheets[0].Rows[0][0].Value = "input"
+	if got := updated.Blocks["custom"][0]; got != 'x' {
+		t.Fatalf("changing input changed update result block: first byte = %q", got)
+	}
+	if got := updated.Workbook.Sheets[0].Rows[0][0].Value; got != "result" {
+		t.Fatalf("changing input changed update result workbook cell: %q", got)
+	}
+	saved, err = service.Get(ctx, expected.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := saved.Blocks["custom"][0]; got != '{' {
+		t.Fatalf("changing input changed persisted block: first byte = %q", got)
+	}
+	if got := saved.Workbook.Sheets[0].Rows[0][0].Value; got != "original" {
+		t.Fatalf("changing input changed persisted workbook cell: %q", got)
 	}
 }
 
